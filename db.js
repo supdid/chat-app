@@ -1,0 +1,836 @@
+const path = require('path');
+const Database = require('better-sqlite3');
+
+const db = new Database(path.join(__dirname, 'valk.db'));
+db.pragma('journal_mode = WAL');
+
+// Schema for the whole feature batch is created up front, even though only
+// rooms/messages get populated right away — later phases (reactions, pins,
+// read receipts, whiteboard) reuse these tables instead of adding their own.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS rooms (
+    code TEXT PRIMARY KEY,
+    name TEXT,
+    created_at INTEGER,
+    last_active_at INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY,
+    room_code TEXT,
+    name TEXT,
+    text TEXT,
+    media_url TEXT,
+    media_type TEXT,
+    reply_to_id TEXT,
+    at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_messages_room_at ON messages(room_code, at);
+
+  CREATE TABLE IF NOT EXISTS reactions (
+    message_id TEXT,
+    emoji TEXT,
+    name TEXT,
+    at INTEGER,
+    PRIMARY KEY (message_id, emoji, name)
+  );
+
+  CREATE TABLE IF NOT EXISTS pins (
+    room_code TEXT PRIMARY KEY,
+    message_id TEXT,
+    pinned_by TEXT,
+    at INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS read_receipts (
+    room_code TEXT,
+    name TEXT,
+    last_read_message_id TEXT,
+    at INTEGER,
+    PRIMARY KEY (room_code, name)
+  );
+
+  CREATE TABLE IF NOT EXISTS whiteboard_strokes (
+    id TEXT PRIMARY KEY,
+    room_code TEXT,
+    stroke_json TEXT,
+    at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_wb_room ON whiteboard_strokes(room_code);
+
+  CREATE TABLE IF NOT EXISTS bc_worlds (
+    room_code TEXT PRIMARY KEY,
+    seed INTEGER,
+    created_at INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS bc_overrides (
+    room_code TEXT,
+    cell_key TEXT,
+    type INTEGER,
+    PRIMARY KEY (room_code, cell_key)
+  );
+
+  CREATE TABLE IF NOT EXISTS profiles (
+    name TEXT PRIMARY KEY,
+    avatar_url TEXT,
+    status TEXT,
+    updated_at INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS leaderboard (
+    room_code TEXT,
+    game TEXT,
+    name TEXT,
+    score INTEGER,
+    updated_at INTEGER,
+    PRIMARY KEY (room_code, game, name)
+  );
+
+  CREATE TABLE IF NOT EXISTS bc_blueprints (
+    id TEXT PRIMARY KEY,
+    room_code TEXT,
+    name TEXT,
+    author TEXT,
+    size_x INTEGER,
+    size_y INTEGER,
+    size_z INTEGER,
+    blocks_json TEXT,
+    created_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_blueprints_room ON bc_blueprints(room_code);
+`);
+
+// Idempotent column additions for tables that already existed before this feature —
+// CREATE TABLE IF NOT EXISTS above won't add columns to a table that's already on disk from
+// an earlier run, so new columns on existing tables go through this instead.
+function ensureColumn(table, column, definition) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+  if (!cols.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+ensureColumn('messages', 'edited', 'INTEGER DEFAULT 0');
+ensureColumn('messages', 'deleted', 'INTEGER DEFAULT 0');
+ensureColumn('rooms', 'host_name', 'TEXT');
+ensureColumn('rooms', 'announcement', 'TEXT');
+ensureColumn('rooms', 'pin_required', 'TEXT');
+ensureColumn('rooms', 'wallpaper_url', 'TEXT');
+
+// One-time migration: pins used to be single-pin-per-room (PK: room_code) — multi-pin needs a
+// composite PK (room_code, message_id) instead, which ALTER TABLE can't change in place.
+// Guarded by checking the actual PK columns on disk so this only ever runs once.
+{
+  const pinsInfo = db.prepare('PRAGMA table_info(pins)').all();
+  const pinsHasCompositeKey = pinsInfo.filter((c) => c.pk > 0).length > 1;
+  if (!pinsHasCompositeKey) {
+    db.exec(`
+      ALTER TABLE pins RENAME TO pins_old;
+      CREATE TABLE pins (
+        room_code TEXT,
+        message_id TEXT,
+        pinned_by TEXT,
+        at INTEGER,
+        PRIMARY KEY (room_code, message_id)
+      );
+      INSERT INTO pins (room_code, message_id, pinned_by, at) SELECT room_code, message_id, pinned_by, at FROM pins_old;
+      DROP TABLE pins_old;
+    `);
+  }
+}
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS poll_votes (
+    message_id TEXT,
+    name TEXT,
+    option_index INTEGER,
+    PRIMARY KEY (message_id, name)
+  );
+
+  CREATE TABLE IF NOT EXISTS dms (
+    id TEXT PRIMARY KEY,
+    room_code TEXT,
+    from_name TEXT,
+    to_name TEXT,
+    text TEXT,
+    at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_dms_room_pair ON dms(room_code, from_name, to_name);
+
+  CREATE TABLE IF NOT EXISTS push_subscriptions (
+    endpoint TEXT PRIMARY KEY,
+    room_code TEXT,
+    name TEXT,
+    subscription_json TEXT,
+    at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_push_room ON push_subscriptions(room_code);
+
+  CREATE TABLE IF NOT EXISTS accounts (
+    id TEXT PRIMARY KEY,
+    username TEXT UNIQUE COLLATE NOCASE,
+    password_hash TEXT,
+    salt TEXT,
+    created_at INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    account_id TEXT,
+    created_at INTEGER,
+    last_seen_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_sessions_account ON sessions(account_id);
+
+  CREATE TABLE IF NOT EXISTS account_recent_rooms (
+    account_id TEXT,
+    room_code TEXT,
+    room_name TEXT,
+    at INTEGER,
+    PRIMARY KEY (account_id, room_code)
+  );
+  CREATE INDEX IF NOT EXISTS idx_account_recent_rooms ON account_recent_rooms(account_id, at);
+
+  CREATE TABLE IF NOT EXISTS error_reports (
+    id TEXT PRIMARY KEY,
+    source TEXT,
+    message TEXT,
+    stack TEXT,
+    context_json TEXT,
+    status TEXT DEFAULT 'new',
+    created_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_error_reports_status ON error_reports(status, created_at);
+
+  CREATE TABLE IF NOT EXISTS patch_proposals (
+    id TEXT PRIMARY KEY,
+    error_report_id TEXT,
+    target_file TEXT,
+    old_string TEXT,
+    new_string TEXT,
+    explanation TEXT,
+    status TEXT DEFAULT 'pending',
+    created_at INTEGER,
+    decided_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_patch_proposals_status ON patch_proposals(status, created_at);
+`);
+
+// These three ensureColumn calls (and the indexes below) reference the accounts/push_subscriptions
+// tables created in the db.exec() block just above — must run after it, not before, or a
+// brand-new database (no accounts table on disk yet) throws "no such table: accounts".
+ensureColumn('accounts', 'email', 'TEXT');
+ensureColumn('accounts', 'google_id', 'TEXT');
+ensureColumn('push_subscriptions', 'account_id', 'TEXT');
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email COLLATE NOCASE) WHERE email IS NOT NULL');
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_google_id ON accounts(google_id) WHERE google_id IS NOT NULL');
+db.exec('CREATE INDEX IF NOT EXISTS idx_push_account ON push_subscriptions(account_id)');
+
+// ---- direct messages (per-room, between two display names) ----
+
+function insertDm(entry) {
+  db.prepare(
+    `INSERT INTO dms (id, room_code, from_name, to_name, text, at) VALUES (@id, @roomCode, @fromName, @toName, @text, @at)`
+  ).run(entry);
+}
+
+function getDmThread(code, nameA, nameB, limit = 200) {
+  const rows = db
+    .prepare(
+      `SELECT * FROM dms WHERE room_code = ? AND ((from_name = ? AND to_name = ?) OR (from_name = ? AND to_name = ?)) ORDER BY at ASC LIMIT ?`
+    )
+    .all(code, nameA, nameB, nameB, nameA, limit);
+  return rows.map((r) => ({ id: r.id, fromName: r.from_name, toName: r.to_name, text: r.text, at: r.at }));
+}
+
+// ---- rooms ----
+
+function upsertRoom(code, name) {
+  const now = Date.now();
+  const existing = db.prepare('SELECT code FROM rooms WHERE code = ?').get(code);
+  if (existing) {
+    if (name !== undefined) {
+      db.prepare('UPDATE rooms SET name = ?, last_active_at = ? WHERE code = ?').run(name, now, code);
+    } else {
+      db.prepare('UPDATE rooms SET last_active_at = ? WHERE code = ?').run(now, code);
+    }
+  } else {
+    db.prepare('INSERT INTO rooms (code, name, created_at, last_active_at) VALUES (?, ?, ?, ?)').run(
+      code,
+      name || null,
+      now,
+      now
+    );
+  }
+}
+
+function getRoom(code) {
+  return db.prepare('SELECT * FROM rooms WHERE code = ?').get(code) || null;
+}
+
+// Set only the first time a room gets a host (room creation) — never overwritten by a later
+// upsertRoom call (e.g. renaming), so the host stays whoever actually created the room.
+function setRoomHostIfUnset(code, name) {
+  db.prepare("UPDATE rooms SET host_name = ? WHERE code = ? AND (host_name IS NULL OR host_name = '')").run(name, code);
+}
+
+function setAnnouncement(code, text) {
+  db.prepare('UPDATE rooms SET announcement = ? WHERE code = ?').run(text || null, code);
+}
+
+function setRoomPin(code, pin) {
+  db.prepare('UPDATE rooms SET pin_required = ? WHERE code = ?').run(pin || null, code);
+}
+
+function setWallpaper(code, url) {
+  db.prepare('UPDATE rooms SET wallpaper_url = ? WHERE code = ?').run(url || null, code);
+}
+
+// ---- messages ----
+
+function insertMessage(entry) {
+  db.prepare(
+    `INSERT INTO messages (id, room_code, name, text, media_url, media_type, reply_to_id, at)
+     VALUES (@id, @roomCode, @name, @text, @mediaUrl, @mediaType, @replyToId, @at)`
+  ).run({
+    id: entry.id,
+    roomCode: entry.roomCode,
+    name: entry.name,
+    text: entry.text || '',
+    mediaUrl: entry.mediaUrl || null,
+    mediaType: entry.mediaType || null,
+    replyToId: entry.replyToId || null,
+    at: entry.at,
+  });
+}
+
+function getMessage(id) {
+  return db.prepare('SELECT * FROM messages WHERE id = ?').get(id) || null;
+}
+
+function updateMessageText(id, text) {
+  db.prepare('UPDATE messages SET text = ?, edited = 1 WHERE id = ?').run(text, id);
+}
+
+// Soft delete — the row stays (reactions, pins, and reply-quotes all reference the message id)
+// but its content is cleared and flagged, same idea as every chat app's "message was deleted".
+function deleteMessageRow(id) {
+  db.prepare("UPDATE messages SET text = '', media_url = NULL, media_type = NULL, deleted = 1 WHERE id = ?").run(id);
+}
+
+function getRecentMessages(code, limit) {
+  const rows = db
+    .prepare('SELECT * FROM messages WHERE room_code = ? ORDER BY at DESC LIMIT ?')
+    .all(code, limit);
+  return rows.reverse().map(rowToHistoryEntry);
+}
+
+function getAllMessagesForExport(code) {
+  return db.prepare('SELECT * FROM messages WHERE room_code = ? ORDER BY at ASC').all(code).map(rowToHistoryEntry);
+}
+
+function searchMessages(code, query, limit) {
+  const rows = db
+    .prepare(
+      `SELECT * FROM messages WHERE room_code = ? AND text LIKE ? COLLATE NOCASE
+       ORDER BY at DESC LIMIT ?`
+    )
+    .all(code, `%${query}%`, limit);
+  return rows.map((r) => ({ id: r.id, name: r.name, text: r.text, at: r.at }));
+}
+
+function rowToHistoryEntry(r) {
+  return {
+    type: 'message',
+    id: r.id,
+    name: r.name,
+    text: r.text,
+    mediaUrl: r.media_url,
+    mediaType: r.media_type,
+    replyToId: r.reply_to_id || null,
+    at: r.at,
+    edited: !!r.edited,
+    deleted: !!r.deleted,
+  };
+}
+
+// ---- reactions ----
+
+function toggleReaction(messageId, emoji, name) {
+  const existing = db
+    .prepare('SELECT 1 FROM reactions WHERE message_id = ? AND emoji = ? AND name = ?')
+    .get(messageId, emoji, name);
+  if (existing) {
+    db.prepare('DELETE FROM reactions WHERE message_id = ? AND emoji = ? AND name = ?').run(messageId, emoji, name);
+    return false;
+  }
+  db.prepare('INSERT INTO reactions (message_id, emoji, name, at) VALUES (?, ?, ?, ?)').run(
+    messageId,
+    emoji,
+    name,
+    Date.now()
+  );
+  return true;
+}
+
+function getReactionsForRoom(code) {
+  return db
+    .prepare(
+      `SELECT r.message_id as messageId, r.emoji, r.name FROM reactions r
+       JOIN messages m ON m.id = r.message_id
+       WHERE m.room_code = ?`
+    )
+    .all(code);
+}
+
+// ---- pins ----
+// Multiple pins per room (composite PK) — see the pins table migration near ensureColumn.
+
+function setPin(code, messageId, pinnedBy) {
+  db.prepare('INSERT OR REPLACE INTO pins (room_code, message_id, pinned_by, at) VALUES (?, ?, ?, ?)').run(
+    code,
+    messageId,
+    pinnedBy,
+    Date.now()
+  );
+}
+
+function unpinMessage(code, messageId) {
+  db.prepare('DELETE FROM pins WHERE room_code = ? AND message_id = ?').run(code, messageId);
+}
+
+function getPins(code) {
+  const rows = db.prepare('SELECT * FROM pins WHERE room_code = ? ORDER BY at ASC').all(code);
+  return rows
+    .map((pin) => {
+      const message = getMessage(pin.message_id);
+      return message ? { pinnedBy: pin.pinned_by, message: rowToHistoryEntry(message) } : null;
+    })
+    .filter(Boolean);
+}
+
+// ---- read receipts ----
+
+function setReadReceipt(code, name, messageId) {
+  db.prepare(
+    `INSERT INTO read_receipts (room_code, name, last_read_message_id, at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(room_code, name) DO UPDATE SET last_read_message_id = excluded.last_read_message_id, at = excluded.at`
+  ).run(code, name, messageId, Date.now());
+}
+
+function getReadReceipts(code) {
+  return db.prepare('SELECT name, last_read_message_id as messageId FROM read_receipts WHERE room_code = ?').all(code);
+}
+
+// ---- whiteboard ----
+
+function insertStroke(code, stroke) {
+  db.prepare('INSERT INTO whiteboard_strokes (id, room_code, stroke_json, at) VALUES (?, ?, ?, ?)').run(
+    stroke.id,
+    code,
+    JSON.stringify(stroke),
+    Date.now()
+  );
+}
+
+function getWhiteboardStrokes(code) {
+  const rows = db.prepare('SELECT stroke_json FROM whiteboard_strokes WHERE room_code = ? ORDER BY at ASC').all(code);
+  return rows.map((r) => JSON.parse(r.stroke_json));
+}
+
+function clearStrokes(code) {
+  db.prepare('DELETE FROM whiteboard_strokes WHERE room_code = ?').run(code);
+}
+
+// ---- Build Craft worlds (seed + per-cell block overrides) ----
+
+function getBcWorld(code) {
+  return db.prepare('SELECT * FROM bc_worlds WHERE room_code = ?').get(code) || null;
+}
+
+function createBcWorld(code, seed) {
+  db.prepare('INSERT OR IGNORE INTO bc_worlds (room_code, seed, created_at) VALUES (?, ?, ?)').run(code, seed, Date.now());
+}
+
+const setBcOverrideStmt = db.prepare(
+  `INSERT INTO bc_overrides (room_code, cell_key, type) VALUES (?, ?, ?)
+   ON CONFLICT(room_code, cell_key) DO UPDATE SET type = excluded.type`
+);
+// Building/mining can send up to a couple thousand cell changes in a single batch (e.g. a
+// cave-in) — wrapped in one transaction so that doesn't become a couple thousand separate disk syncs.
+const setBcOverridesBulk = db.transaction((code, entries) => {
+  for (const [key, type] of entries) setBcOverrideStmt.run(code, key, type);
+});
+
+function setBcOverrides(code, entries) {
+  if (entries.length) setBcOverridesBulk(code, entries);
+}
+
+function getBcOverrides(code) {
+  return db
+    .prepare('SELECT cell_key, type FROM bc_overrides WHERE room_code = ?')
+    .all(code)
+    .map((r) => [r.cell_key, r.type]);
+}
+
+// ---- Profiles (avatar + status, keyed by display name like rooms are keyed by code — this
+// app has no accounts, so "the same name" is the closest thing to an identity to hang these on) ----
+
+function getProfile(name) {
+  return db.prepare('SELECT * FROM profiles WHERE name = ?').get(name) || null;
+}
+
+function upsertProfile(name, { avatarUrl, status }) {
+  db.prepare(
+    `INSERT INTO profiles (name, avatar_url, status, updated_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(name) DO UPDATE SET
+       avatar_url = COALESCE(excluded.avatar_url, profiles.avatar_url),
+       status = COALESCE(excluded.status, profiles.status),
+       updated_at = excluded.updated_at`
+  ).run(name, avatarUrl ?? null, status ?? null, Date.now());
+  return getProfile(name);
+}
+
+// ---- Leaderboard (per room + game) ----
+
+function bumpLeaderboard(code, game, name, score) {
+  db.prepare(
+    `INSERT INTO leaderboard (room_code, game, name, score, updated_at) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(room_code, game, name) DO UPDATE SET
+       score = CASE WHEN excluded.score > leaderboard.score THEN excluded.score ELSE leaderboard.score END,
+       updated_at = excluded.updated_at`
+  ).run(code, game, name, score, Date.now());
+}
+
+function getLeaderboard(code, game, limit = 10) {
+  return db
+    .prepare('SELECT name, score FROM leaderboard WHERE room_code = ? AND game = ? ORDER BY score DESC LIMIT ?')
+    .all(code, game, limit);
+}
+
+// ---- Build Craft blueprints ----
+
+function saveBlueprint(bp) {
+  db.prepare(
+    `INSERT INTO bc_blueprints (id, room_code, name, author, size_x, size_y, size_z, blocks_json, created_at)
+     VALUES (@id, @roomCode, @name, @author, @sizeX, @sizeY, @sizeZ, @blocksJson, @createdAt)`
+  ).run(bp);
+}
+
+function getBlueprints(code) {
+  return db
+    .prepare('SELECT id, name, author, size_x as sizeX, size_y as sizeY, size_z as sizeZ, created_at as createdAt FROM bc_blueprints WHERE room_code = ? ORDER BY created_at DESC')
+    .all(code);
+}
+
+function getBlueprint(id) {
+  const row = db.prepare('SELECT * FROM bc_blueprints WHERE id = ?').get(id);
+  if (!row) return null;
+  return { ...row, blocks: JSON.parse(row.blocks_json) };
+}
+
+// ---- Polls (a poll "lives" as a normal chat message with mediaType 'poll'; this just tracks votes) ----
+
+function setPollVote(messageId, name, optionIndex) {
+  db.prepare(
+    `INSERT INTO poll_votes (message_id, name, option_index) VALUES (?, ?, ?)
+     ON CONFLICT(message_id, name) DO UPDATE SET option_index = excluded.option_index`
+  ).run(messageId, name, optionIndex);
+}
+
+function getPollVotes(messageId) {
+  return db.prepare('SELECT name, option_index as optionIndex FROM poll_votes WHERE message_id = ?').all(messageId);
+}
+
+// ---- Media gallery (all images/videos ever shared in a room) ----
+
+function getRoomMedia(code, limit = 200) {
+  return db
+    .prepare(
+      `SELECT id, name, media_url as mediaUrl, media_type as mediaType, at FROM messages
+       WHERE room_code = ? AND media_url IS NOT NULL AND deleted = 0 AND media_type IN ('image','video')
+       ORDER BY at DESC LIMIT ?`
+    )
+    .all(code, limit);
+}
+
+// ---- Threads (direct replies to a message — one level, not deeply nested) ----
+
+function getThreadReplies(code, messageId, limit = 200) {
+  return db
+    .prepare('SELECT * FROM messages WHERE room_code = ? AND reply_to_id = ? ORDER BY at ASC LIMIT ?')
+    .all(code, messageId, limit)
+    .map(rowToHistoryEntry);
+}
+
+// ---- Push subscriptions (real OS/browser push, delivered even with the tab/app closed —
+// keyed by endpoint since that's what's unique per browser+device, re-saved on every room
+// join so it always reflects whichever room/name the subscriber most recently had open) ----
+
+function savePushSubscription(roomCode, name, subscription, accountId) {
+  db.prepare(
+    `INSERT INTO push_subscriptions (endpoint, room_code, name, subscription_json, account_id, at) VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(endpoint) DO UPDATE SET room_code = excluded.room_code, name = excluded.name,
+       subscription_json = excluded.subscription_json, account_id = excluded.account_id, at = excluded.at`
+  ).run(subscription.endpoint, roomCode, name, JSON.stringify(subscription), accountId || null, Date.now());
+}
+
+function removePushSubscription(endpoint) {
+  db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').run(endpoint);
+}
+
+function getPushSubscriptionsForRoom(roomCode) {
+  return db
+    .prepare('SELECT endpoint, name, subscription_json FROM push_subscriptions WHERE room_code = ?')
+    .all(roomCode)
+    .map((r) => ({ endpoint: r.endpoint, name: r.name, subscription: JSON.parse(r.subscription_json) }));
+}
+
+// Every device an account has ever subscribed push from, across all rooms — used for direct
+// @mention-by-email pushes, which must reach someone regardless of which room (if any) they
+// currently have open, unlike getPushSubscriptionsForRoom above which is room-scoped.
+function getPushSubscriptionsForAccount(accountId) {
+  return db
+    .prepare('SELECT endpoint, subscription_json FROM push_subscriptions WHERE account_id = ?')
+    .all(accountId)
+    .map((r) => ({ endpoint: r.endpoint, subscription: JSON.parse(r.subscription_json) }));
+}
+
+// ---- Accounts (optional — the app still works entirely name-only without one; an account just
+// lets recent-rooms sync across devices, see account_recent_rooms below) ----
+
+function createAccount(id, username, email, passwordHash, salt) {
+  db.prepare('INSERT INTO accounts (id, username, email, password_hash, salt, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(
+    id,
+    username,
+    email,
+    passwordHash,
+    salt,
+    Date.now()
+  );
+}
+
+function getAccountByUsername(username) {
+  return db.prepare('SELECT * FROM accounts WHERE username = ? COLLATE NOCASE').get(username) || null;
+}
+
+function getAccountByEmail(email) {
+  return db.prepare('SELECT * FROM accounts WHERE email = ? COLLATE NOCASE').get(email) || null;
+}
+
+function getAccountById(id) {
+  return db.prepare('SELECT * FROM accounts WHERE id = ?').get(id) || null;
+}
+
+// ---- Google sign-in (optional, alongside username/password) — an account created this way has
+// no password_hash/salt (both stay NULL; verifyPassword is never called for it) until/unless the
+// user later sets one, which no UI for yet exists.
+function createAccountWithGoogle(id, username, email, googleId) {
+  db.prepare('INSERT INTO accounts (id, username, email, google_id, created_at) VALUES (?, ?, ?, ?, ?)').run(
+    id,
+    username,
+    email,
+    googleId,
+    Date.now()
+  );
+}
+
+function getAccountByGoogleId(googleId) {
+  return db.prepare('SELECT * FROM accounts WHERE google_id = ?').get(googleId) || null;
+}
+
+function linkGoogleId(accountId, googleId) {
+  db.prepare('UPDATE accounts SET google_id = ? WHERE id = ?').run(googleId, accountId);
+}
+
+// ---- Sessions (bearer token handed to the client on signup/login, sent back as
+// `Authorization: Bearer <token>` on subsequent requests) ----
+
+function createSession(token, accountId) {
+  const now = Date.now();
+  db.prepare('INSERT INTO sessions (token, account_id, created_at, last_seen_at) VALUES (?, ?, ?, ?)').run(
+    token,
+    accountId,
+    now,
+    now
+  );
+}
+
+function getSessionAccount(token) {
+  const row = db
+    .prepare(
+      `SELECT a.* FROM sessions s JOIN accounts a ON a.id = s.account_id WHERE s.token = ?`
+    )
+    .get(token);
+  if (row) db.prepare('UPDATE sessions SET last_seen_at = ? WHERE token = ?').run(Date.now(), token);
+  return row || null;
+}
+
+function deleteSession(token) {
+  db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+}
+
+// ---- Account recent rooms (server-side mirror of the client's localStorage recent-rooms list,
+// only populated for signed-in accounts, so switching devices doesn't lose the room list) ----
+
+function upsertAccountRecentRoom(accountId, code, name) {
+  db.prepare(
+    `INSERT INTO account_recent_rooms (account_id, room_code, room_name, at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(account_id, room_code) DO UPDATE SET room_name = excluded.room_name, at = excluded.at`
+  ).run(accountId, code, name || null, Date.now());
+}
+
+function getAccountRecentRooms(accountId, limit = 10) {
+  return db
+    .prepare(
+      `SELECT room_code as code, room_name as name, at FROM account_recent_rooms
+       WHERE account_id = ? ORDER BY at DESC LIMIT ?`
+    )
+    .all(accountId, limit);
+}
+
+// ---- Self-healing: error reports (uncaught server/client errors) and the AI-drafted patch
+// proposals generated from them, see patcher.js. Everything here is admin-reviewed — nothing
+// in this section ever applies a change to the running app by itself. ----
+
+function insertErrorReport(entry) {
+  db.prepare(
+    `INSERT INTO error_reports (id, source, message, stack, context_json, status, created_at) VALUES (?, ?, ?, ?, ?, 'new', ?)`
+  ).run(entry.id, entry.source, entry.message, entry.stack || null, JSON.stringify(entry.context || {}), Date.now());
+}
+
+function getErrorReport(id) {
+  return db.prepare('SELECT * FROM error_reports WHERE id = ?').get(id) || null;
+}
+
+function setErrorReportStatus(id, status) {
+  db.prepare('UPDATE error_reports SET status = ? WHERE id = ?').run(status, id);
+}
+
+function getRecentErrorReports(limit = 50) {
+  return db.prepare('SELECT * FROM error_reports ORDER BY created_at DESC LIMIT ?').all(limit);
+}
+
+function insertPatchProposal(entry) {
+  db.prepare(
+    `INSERT INTO patch_proposals (id, error_report_id, target_file, old_string, new_string, explanation, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`
+  ).run(entry.id, entry.errorReportId, entry.targetFile, entry.oldString, entry.newString, entry.explanation, Date.now());
+}
+
+function getPatchProposal(id) {
+  return db.prepare('SELECT * FROM patch_proposals WHERE id = ?').get(id) || null;
+}
+
+function setPatchProposalStatus(id, status) {
+  db.prepare('UPDATE patch_proposals SET status = ?, decided_at = ? WHERE id = ?').run(status, Date.now(), id);
+}
+
+function getPendingPatchProposals() {
+  return db.prepare(`SELECT * FROM patch_proposals WHERE status = 'pending' ORDER BY created_at DESC`).all();
+}
+
+// ---- Room retention cleanup — nothing here ever expired before, so a long-running install's
+// DB and public/uploads/ would grow forever. A room counts as inactive by rooms.last_active_at,
+// which every message/game action already bumps (see touchRoom-style callers in server.js).
+// A room with a missing/zero/corrupted last_active_at (e.g. from an older bug, or a row
+// inserted by a raw script that skipped the column) would read as "inactive since 1970" and
+// get purged the very next sweep even though it might be in active use — require the
+// timestamp to also be *plausible* (after this app could possibly have existed), not just old.
+const MIN_PLAUSIBLE_ROOM_TS = 1700000000000; // 2023-11-14 — long before this app existed
+function getInactiveRoomCodes(cutoffTs) {
+  return db.prepare('SELECT code FROM rooms WHERE last_active_at < ? AND last_active_at > ?')
+    .all(cutoffTs, MIN_PLAUSIBLE_ROOM_TS).map((r) => r.code);
+}
+
+function getRoomMediaUrls(code) {
+  return db.prepare("SELECT media_url FROM messages WHERE room_code = ? AND media_url IS NOT NULL")
+    .all(code).map((r) => r.media_url);
+}
+
+// One transaction per room so a crash mid-sweep can't leave a room half-deleted (e.g. messages
+// gone but the room row still present, which would resurrect it as an empty room on next visit).
+const deleteRoomCascade = db.transaction((code) => {
+  db.prepare('DELETE FROM reactions WHERE message_id IN (SELECT id FROM messages WHERE room_code = ?)').run(code);
+  db.prepare('DELETE FROM poll_votes WHERE message_id IN (SELECT id FROM messages WHERE room_code = ?)').run(code);
+  db.prepare('DELETE FROM messages WHERE room_code = ?').run(code);
+  db.prepare('DELETE FROM pins WHERE room_code = ?').run(code);
+  db.prepare('DELETE FROM read_receipts WHERE room_code = ?').run(code);
+  db.prepare('DELETE FROM whiteboard_strokes WHERE room_code = ?').run(code);
+  db.prepare('DELETE FROM bc_worlds WHERE room_code = ?').run(code);
+  db.prepare('DELETE FROM bc_overrides WHERE room_code = ?').run(code);
+  db.prepare('DELETE FROM leaderboard WHERE room_code = ?').run(code);
+  db.prepare('DELETE FROM bc_blueprints WHERE room_code = ?').run(code);
+  db.prepare('DELETE FROM dms WHERE room_code = ?').run(code);
+  db.prepare('DELETE FROM push_subscriptions WHERE room_code = ?').run(code);
+  db.prepare('DELETE FROM rooms WHERE code = ?').run(code);
+});
+
+module.exports = {
+  upsertRoom,
+  getRoom,
+  insertMessage,
+  getMessage,
+  updateMessageText,
+  deleteMessageRow,
+  getRecentMessages,
+  getAllMessagesForExport,
+  searchMessages,
+  toggleReaction,
+  getReactionsForRoom,
+  setPin,
+  unpinMessage,
+  getPins,
+  setReadReceipt,
+  getReadReceipts,
+  insertStroke,
+  getWhiteboardStrokes,
+  clearStrokes,
+  getBcWorld,
+  createBcWorld,
+  setBcOverrides,
+  getBcOverrides,
+  getProfile,
+  upsertProfile,
+  bumpLeaderboard,
+  getLeaderboard,
+  saveBlueprint,
+  getBlueprints,
+  getBlueprint,
+  setRoomHostIfUnset,
+  setAnnouncement,
+  setRoomPin,
+  setWallpaper,
+  insertDm,
+  getDmThread,
+  setPollVote,
+  getPollVotes,
+  getRoomMedia,
+  getThreadReplies,
+  rowToHistoryEntry,
+  savePushSubscription,
+  removePushSubscription,
+  getPushSubscriptionsForRoom,
+  getPushSubscriptionsForAccount,
+  createAccount,
+  getAccountByUsername,
+  getAccountByEmail,
+  getAccountById,
+  createAccountWithGoogle,
+  getAccountByGoogleId,
+  linkGoogleId,
+  createSession,
+  getSessionAccount,
+  deleteSession,
+  upsertAccountRecentRoom,
+  getAccountRecentRooms,
+  insertErrorReport,
+  getErrorReport,
+  setErrorReportStatus,
+  getRecentErrorReports,
+  insertPatchProposal,
+  getPatchProposal,
+  setPatchProposalStatus,
+  getPendingPatchProposals,
+  getInactiveRoomCodes,
+  getRoomMediaUrls,
+  deleteRoomCascade,
+};

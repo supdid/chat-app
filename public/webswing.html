@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Web Swing</title>
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="webswing.css">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0a1420">
+<link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+</head>
+<body>
+
+  <a id="back-link" href="index.html">&larr; Back to chat</a>
+
+  <div id="menu">
+    <div class="panel">
+      <h1>Web Swing</h1>
+      <p class="tagline">Sling webs between skyscrapers and swing through the city like a superhero. Collect glowing orbs as you go.</p>
+      <button id="start-btn" class="primary">Start Swinging</button>
+      <ul class="controls-list" id="controls-list-desktop">
+        <li><strong>WASD</strong> &mdash; run (reel in/out &amp; pump the swing while airborne, or climb/shuffle while on a wall or ceiling)</li>
+        <li><strong>Mouse</strong> &mdash; click the city to look around / aim</li>
+        <li><strong>E</strong> (or Left Click) &mdash; shoot a web at the crosshair / let go outside; punches a nearby bad guy instead once you're indoors. Aim near a rooftop to grapple straight up onto it; aim lower to swing from it</li>
+        <li><strong>Scroll wheel</strong> &mdash; zoom the camera in and out</li>
+        <li><strong>Space</strong> &mdash; jump (or push off a wall while climbing). Press it again in mid-air near a ceiling to grab on and crawl across it</li>
+        <li><strong>F</strong> &mdash; also punches a bad guy standing close to you</li>
+        <li>Move into a building's wall to grab on and crawl it &mdash; works while running straight at it or strafing past it</li>
+        <li>Walk up to a building's 🚪 door to go inside &mdash; every building has rooms, and some have a bad guy waiting: you have 10 hearts (lose 2 per hit), he has 5 (loses 1 per punch)</li>
+        <li>Pump A/D while swinging to build momentum &mdash; let go at the right moment for a huge boosted jump</li>
+      </ul>
+      <ul class="controls-list hidden" id="controls-list-touch">
+        <li><strong>Joystick</strong> (bottom-left) &mdash; run, reel/pump while swinging, or climb/shuffle while on a wall or ceiling</li>
+        <li><strong>Drag the screen</strong> &mdash; look around / aim</li>
+        <li><strong>Pinch with two fingers</strong> &mdash; zoom the camera in and out</li>
+        <li><strong>🕸️ button</strong> &mdash; shoot a web at the crosshair / let go outside; punches a nearby bad guy instead once you're indoors. Aim near a rooftop to grapple up onto it; aim lower to swing from it</li>
+        <li><strong>⤒ button</strong> &mdash; jump (or push off a wall while climbing). Tap it again in mid-air near a ceiling to grab on and crawl across it</li>
+        <li><strong>👊 button</strong> &mdash; also punches a bad guy standing close to you</li>
+        <li>Move into a building's wall to grab on and crawl it &mdash; works while running straight at it or strafing past it</li>
+        <li>Walk up to a building's 🚪 door to go inside &mdash; every building has rooms, and some have a bad guy waiting: you have 10 hearts (lose 2 per hit), he has 5 (loses 1 per punch)</li>
+        <li>Pump the joystick side to side while swinging to build momentum &mdash; let go at the right moment for a huge boosted jump</li>
+      </ul>
+    </div>
+  </div>
+
+  <div id="hud" class="hidden">
+    <div id="hud-row">
+      <span id="score-label">🕸️ 0</span>
+      <span id="best-label">Best: 0</span>
+      <button id="sound-toggle-btn" class="icon-btn" aria-label="Toggle sound">🔊</button>
+      <button id="leaderboard-btn" class="icon-btn" aria-label="Leaderboard">🏆</button>
+    </div>
+  </div>
+
+  <div id="leaderboard-overlay" class="hidden">
+    <div class="panel">
+      <div class="panel-header">
+        <h2>🏆 Leaderboard</h2>
+        <button id="leaderboard-close-btn" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+      <ul id="leaderboard-list" class="controls-list"></ul>
+    </div>
+  </div>
+
+  <div id="crosshair" class="hidden"></div>
+  <div id="pickup-toast" class="hidden">+1</div>
+  <div id="hit-flash" class="hidden"></div>
+  <div id="heart-hud"></div>
+
+  <canvas id="game-canvas" class="hidden"></canvas>
+
+  <div id="touch-controls" class="hidden">
+    <div id="touch-joystick"><div id="touch-joystick-knob"></div></div>
+    <div id="touch-buttons">
+      <button id="touch-jump" class="touch-btn" aria-label="Jump">⤒</button>
+      <button id="touch-web" class="touch-btn" aria-label="Shoot web / let go">🕸️</button>
+      <button id="touch-punch" class="touch-btn" aria-label="Punch">👊</button>
+    </div>
+  </div>
+
+  <script src="error-report.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="webswing.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));
+    }
+  </script>
+</body>
+</html>

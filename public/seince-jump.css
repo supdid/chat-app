@@ -1,0 +1,192 @@
+* { box-sizing: border-box; }
+
+:root {
+  --bg: #0b0d12;
+  --panel: #161922;
+  --panel-2: #1d212c;
+  --border: #2a2f3b;
+  --text: #f2f3f6;
+  --text-dim: #b7bccb;
+  --text-faint: #7d8496;
+  --accent: #3ddc84;
+  --accent-2: #2bb96e;
+}
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow-x: hidden;
+}
+
+.bg-glow {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(600px 400px at 15% -10%, rgba(61, 220, 132, 0.16), transparent 60%),
+    radial-gradient(600px 500px at 90% 110%, rgba(61, 160, 220, 0.10), transparent 60%);
+}
+
+.topbar {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 24px;
+  background: rgba(22, 25, 34, 0.85);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border);
+}
+.back-link {
+  color: var(--text-dim);
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  transition: border-color 0.15s, color 0.15s;
+}
+.back-link:hover { color: var(--text); border-color: var(--accent); }
+.brand { display: flex; align-items: center; gap: 10px; }
+.logo-mark {
+  width: 30px; height: 30px; border-radius: 8px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 800; font-size: 12px; color: #0b0d12;
+}
+.brand-text {
+  font-weight: 800; font-size: 18px; letter-spacing: 0.3px; color: var(--text);
+}
+.spacer { width: 90px; }
+
+.stage {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px;
+}
+
+.panel {
+  background: linear-gradient(180deg, var(--panel), var(--panel-2));
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 30px 28px;
+  width: 100%;
+  max-width: 620px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.4);
+}
+.panel h1 { margin: 0 0 6px; font-size: 24px; font-weight: 800; }
+.panel .subtitle { color: var(--text-dim); font-size: 14px; margin: 0 0 20px; line-height: 1.5; }
+
+.level-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.level-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--lvl-color, var(--accent));
+  border-radius: 12px;
+  cursor: pointer;
+  transition: transform 0.12s, border-color 0.15s;
+}
+.level-card:hover { transform: translateX(3px); border-color: var(--lvl-color, var(--accent)); }
+.level-num {
+  width: 26px; text-align: center; font-weight: 800; font-size: 15px; color: var(--text-faint);
+}
+.level-face {
+  width: 40px; height: 40px; border-radius: 9px; flex-shrink: 0;
+  background: var(--lvl-color, var(--accent));
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: inset 0 -4px 0 rgba(0,0,0,0.25);
+}
+.level-face svg { width: 22px; height: 22px; }
+.level-info { flex: 1; min-width: 0; }
+.level-info .name { font-weight: 800; font-size: 15px; color: var(--text); }
+.level-info .meta { font-size: 12px; color: var(--text-faint); margin-top: 2px; }
+.level-stars { color: #ffd23d; font-size: 13px; white-space: nowrap; }
+.level-best { font-size: 11px; color: var(--text-faint); margin-top: 2px; }
+
+.hidden { display: none !important; }
+
+.game-panel { max-width: 1000px; padding: 18px 20px 24px; }
+.hud {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+.hud-center { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 5px; }
+.level-name { font-weight: 800; font-size: 14px; color: var(--text); }
+.progress-track {
+  width: 100%; max-width: 480px; height: 8px; border-radius: 999px;
+  background: var(--panel-2); border: 1px solid var(--border); overflow: hidden;
+}
+.progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width 0.05s linear; }
+.attempt-count { font-size: 12px; color: var(--text-faint); font-weight: 700; white-space: nowrap; }
+
+.ghost-btn {
+  background: transparent; color: var(--text-dim); box-shadow: none;
+  padding: 8px 12px; border: 1px solid var(--border); border-radius: 10px;
+  cursor: pointer; font-size: 13px; font-weight: 700; transition: border-color 0.15s, color 0.15s;
+}
+.ghost-btn:hover { color: var(--text); border-color: var(--accent); }
+.ghost-btn.small { padding: 6px 10px; font-size: 12px; }
+
+.canvas-wrap {
+  position: relative;
+  width: 100%;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  box-shadow: 0 12px 30px rgba(0,0,0,0.35);
+}
+#game { display: block; width: 100%; height: auto; touch-action: manipulation; cursor: pointer; }
+
+.overlay {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  background: rgba(10, 12, 18, 0.55);
+  text-align: center;
+  gap: 6px;
+}
+.overlay-title { font-size: 28px; font-weight: 900; color: #fff; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+.overlay-sub { font-size: 14px; color: #e8eaf0; }
+
+.flash {
+  position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none;
+}
+.flash.hit { animation: flashHit 0.35s ease-out; }
+.flash.win { animation: flashWin 0.7s ease-out; }
+@keyframes flashHit {
+  0% { opacity: 0.85; background: #ff3b3b; }
+  100% { opacity: 0; background: #ff3b3b; }
+}
+@keyframes flashWin {
+  0% { opacity: 0; }
+  35% { opacity: 0.95; background: #ffffff; }
+  100% { opacity: 0; background: #ffffff; }
+}
+
+.hint { text-align: center; color: var(--text-faint); font-size: 12px; margin: 10px 0 0; }
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f4f5f8; --panel: #ffffff; --panel-2: #eef0f5; --border: #dde1ea;
+    --text: #14161c; --text-dim: #4b5163; --text-faint: #7a8091;
+  }
+}

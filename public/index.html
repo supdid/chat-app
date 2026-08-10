@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Valk</title>
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="style.css">
+<link rel="manifest" href="manifest.json">
+<script>
+  (function () {
+    var saved = localStorage.getItem('valk-theme');
+    if (saved === 'light') document.documentElement.dataset.theme = 'light';
+  })();
+</script>
+<meta name="theme-color" content="#050b14">
+<link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Valk">
+</head>
+<body>
+
+  <div id="worldwide-badge" class="worldwide-badge hidden">🌍 <span id="worldwide-count">0</span> online worldwide</div>
+  <button id="theme-toggle-btn" class="theme-toggle" aria-label="Toggle dark mode" type="button">🌙</button>
+  <button id="menu-music-toggle-btn" class="theme-toggle music-toggle" aria-label="Toggle menu music" type="button">🔊</button>
+  <div id="app-toast" class="app-toast"></div>
+
+  <!-- Screen 1: pick a name -->
+  <div id="login-screen" class="screen">
+    <div class="card">
+      <img src="images/logo.png" alt="Valk" class="logo">
+      <h1>Valk</h1>
+      <p class="subtitle">Pick a name to continue</p>
+      <form id="login-form">
+        <input id="username-input" type="text" placeholder="Your name" maxlength="30" autocomplete="off" required>
+        <button type="submit" class="primary">Continue</button>
+      </form>
+      <p id="login-error" class="error hidden"></p>
+
+      <button id="account-toggle-btn" type="button" class="link-btn">Sign in to sync your rooms across devices</button>
+      <div id="account-panel" class="account-panel hidden">
+        <div id="account-signed-out-view">
+          <div id="google-signin-container" class="hidden"></div>
+          <form id="account-form">
+            <input id="account-username-input" type="text" placeholder="Username" maxlength="20" autocomplete="username">
+            <input id="account-email-input" type="email" placeholder="Email (required to create an account)" maxlength="255" autocomplete="email">
+            <input id="account-password-input" type="password" placeholder="Password" maxlength="72" autocomplete="current-password">
+            <div class="account-actions">
+              <button type="submit" id="account-signin-btn">Sign in</button>
+              <button type="button" id="account-signup-btn">Create account</button>
+            </div>
+          </form>
+          <p id="account-error" class="error hidden"></p>
+        </div>
+        <div id="account-signed-in-view" class="hidden">
+          <p>Signed in as <strong id="account-signed-in-name"></strong></p>
+          <button type="button" id="account-signout-btn" class="link-btn">Sign out</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen 2: create or join a room -->
+  <div id="room-select-screen" class="screen hidden">
+    <div class="card">
+      <img src="images/logo.png" alt="Valk" class="logo">
+      <h1>Valk</h1>
+      <p class="subtitle" id="welcome-text"></p>
+
+      <button id="create-room-btn" class="primary">Create a room</button>
+
+      <div class="divider">or</div>
+
+      <form id="join-room-form">
+        <input id="room-code-input" type="text" placeholder="Room code" maxlength="5" autocomplete="off" required>
+        <input id="room-pin-input" type="text" placeholder="Room PIN" maxlength="12" autocomplete="off" class="hidden">
+        <button type="submit">Join room</button>
+      </form>
+      <p id="room-error" class="error hidden"></p>
+
+      <div id="recent-rooms-section" class="recent-rooms hidden">
+        <div class="divider">Recent rooms</div>
+        <div id="recent-rooms-list" class="recent-rooms-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen 3: chat -->
+  <div id="chat-screen" class="screen hidden">
+    <header>
+      <div class="header-left">
+        <img src="images/logo.png" alt="Valk" class="logo small">
+        <h1>Valk</h1>
+        <span id="room-code-chip" class="room-code-chip"></span>
+      </div>
+      <div class="header-right">
+        <span id="header-worldwide" class="worldwide-chip hidden">🌍 <span id="worldwide-count-chat">0</span></span>
+        <button id="fullscreen-btn" class="icon-btn" aria-label="Enter fullscreen">⛶</button>
+        <button id="menu-btn" class="icon-btn" aria-label="Menu">☰</button>
+      </div>
+    </header>
+
+    <div id="announcement-banner" class="announcement-banner hidden"></div>
+    <div id="pinned-banner" class="pinned-banner hidden"></div>
+
+    <div id="messages"></div>
+
+    <div id="typing-indicator" class="typing-indicator hidden"></div>
+
+    <div id="reply-preview" class="reply-preview hidden"></div>
+
+    <div id="sticker-picker" class="sticker-picker hidden"></div>
+
+    <div id="mention-dropdown" class="mention-dropdown hidden"></div>
+
+    <form id="message-form">
+      <span id="theme-toggle-slot"></span>
+      <button type="button" id="attach-btn" class="icon-btn" aria-label="Attach photo or video">📎</button>
+      <input type="file" id="file-input" accept="image/*,video/*" class="hidden">
+      <button type="button" id="sticker-btn" class="icon-btn" aria-label="Send a sticker">🙂</button>
+      <button type="button" id="voice-clip-btn" class="icon-btn hidden" aria-label="Record a voice message">🎙️</button>
+      <button type="button" id="mic-btn" class="icon-btn hidden" aria-label="Speak your message">🎤</button>
+      <input id="message-input" type="text" placeholder="Type a message..." maxlength="2000" autocomplete="off">
+      <button type="submit">Send</button>
+    </form>
+  </div>
+
+  <!-- Call overlay: starts docked as a small pill on the right edge (one avatar +
+       name per person, like the original side bar), and can be expanded to a
+       fullscreen tile grid with the ⛶ button — which then also reads "Exit
+       fullscreen" so it's obvious how to get back. A tile's avatar switches to a
+       live video feed (with a LIVE indicator) while that person is sharing their
+       screen — visible in both the docked and expanded sizes. Only visible during
+       an active call. -->
+  <div id="call-overlay" class="call-overlay hidden">
+    <div id="call-bar" class="call-bar">
+      <span id="call-drag-handle" class="call-drag-handle" title="Drag to move" role="button" aria-label="Drag to move"></span>
+      <span class="call-room-label">📞 Room <strong id="call-room-code"></strong></span>
+      <p id="voice-error" class="error hidden"></p>
+      <div class="call-bar-actions">
+        <button id="mic-retry-btn" class="call-action hidden" type="button" aria-label="Enable microphone">🎤<span class="call-action-label"> Enable microphone</span></button>
+        <button id="mic-mute-btn" class="call-action hidden" type="button" aria-label="Mute microphone"><span id="mic-mute-icon">🎤</span><span class="call-action-label"> Mute</span></button>
+        <select id="mic-device-select" class="call-action mic-device-select hidden" aria-label="Choose microphone"></select>
+        <button id="ptt-toggle-btn" class="call-action" type="button" aria-label="Enable push-to-talk">🎙️<span class="call-action-label"> Push-to-talk</span></button>
+        <button id="ptt-btn" class="call-action hidden" type="button" aria-label="Hold to talk">🗣️<span class="call-action-label"> Hold to talk</span></button>
+        <button id="raise-hand-btn" class="call-action" type="button" aria-label="Raise hand">✋<span class="call-action-label"> Raise hand</span></button>
+        <button id="mute-all-btn" class="call-action" type="button" aria-label="Ask everyone to mute">🔇<span class="call-action-label"> Ask everyone to mute</span></button>
+        <button id="call-record-btn" class="call-action" type="button" aria-label="Start recording">⏺️<span class="call-action-label"> Record</span></button>
+        <button id="call-expand-btn" class="call-action" type="button" aria-label="Expand fullscreen">⛶<span class="call-action-label"> Fullscreen</span></button>
+        <button id="call-share-btn" class="call-action" type="button">🖥️<span class="call-action-label"> Share screen</span></button>
+        <button id="call-hangup-btn" class="call-action danger" type="button">📵<span class="call-action-label"> Hang up</span></button>
+      </div>
+    </div>
+    <div id="call-grid" class="call-grid"></div>
+  </div>
+
+  <!-- Slide-out menu -->
+  <div id="menu-overlay" class="menu-overlay hidden">
+    <div id="menu-panel" class="menu-panel">
+      <div class="menu-header">
+        <h2>Room</h2>
+        <button id="menu-close-btn" class="icon-btn" aria-label="Close menu">✕</button>
+      </div>
+      <div class="my-profile">
+        <button id="my-avatar-btn" class="my-avatar-btn" aria-label="Change your profile picture" type="button"></button>
+        <input type="file" id="avatar-file-input" accept="image/*" class="hidden">
+        <input id="my-status-input" type="text" placeholder="Set a status (optional)" maxlength="60" autocomplete="off">
+      </div>
+      <div class="notify-sound-row">
+        <label for="notify-sound-select">🔔 Notification sound</label>
+        <div class="notify-sound-controls">
+          <select id="notify-sound-select">
+            <option value="chime">Chime</option>
+            <option value="pop">Pop</option>
+            <option value="blip">Blip</option>
+            <option value="none">Off</option>
+          </select>
+          <button id="notify-sound-test-btn" class="icon-btn" type="button" aria-label="Test sound">▶️</button>
+        </div>
+      </div>
+      <p>Room code: <strong id="menu-room-code"></strong></p>
+      <form id="rename-room-form" class="rename-room-form">
+        <input id="rename-room-input" type="text" placeholder="Give this room a name" maxlength="50" autocomplete="off">
+        <button type="submit" class="icon-btn" aria-label="Save room name">✓</button>
+      </form>
+      <form id="announcement-form" class="rename-room-form hidden">
+        <input id="announcement-input" type="text" placeholder="Pinned announcement (host only, blank to clear)" maxlength="200" autocomplete="off">
+        <button type="submit" class="icon-btn" aria-label="Save announcement">✓</button>
+      </form>
+      <form id="room-pin-form" class="rename-room-form hidden">
+        <input id="room-pin-form-input" type="text" placeholder="Room PIN (host only, blank to remove)" maxlength="12" autocomplete="off">
+        <button type="submit" class="icon-btn" aria-label="Save room PIN">✓</button>
+      </form>
+      <div id="wallpaper-row" class="hidden">
+        <input type="file" id="wallpaper-file-input" accept="image/*" class="hidden">
+        <button id="wallpaper-set-btn" class="menu-link" type="button">🖼️ Set room wallpaper (host only)</button>
+        <button id="wallpaper-clear-btn" class="menu-link hidden" type="button">🚫 Clear room wallpaper</button>
+      </div>
+      <h3>Online in this room</h3>
+      <ul id="menu-online-list"></ul>
+      <h3>AI Studio</h3>
+      <div class="menu-section">
+        <a id="aistudio-link" href="aistudio.html" class="menu-link">🎨 Generate a picture</a>
+        <a id="videoeditor-link" href="videoeditor.html" class="menu-link">🎬 Edit a video</a>
+      </div>
+      <h3>Creative Tools</h3>
+      <div class="menu-section">
+        <a id="whiteboard-link" href="whiteboard.html" class="menu-link">🖌️ Shared Whiteboard</a>
+      </div>
+      <h3>Minigames</h3>
+      <div class="menu-section">
+        <a id="webswing-link" href="webswing.html" class="menu-link">🕸️ Play Web Swing</a>
+        <a id="buildcraft-link" href="buildcraft.html" class="menu-link">🏝️ Play Build Craft</a>
+        <a id="geometrywave-link" href="geometrywave.html" class="menu-link">🔺 Play Geometry Wave</a>
+        <a id="seincejump-link" href="seince-jump.html" class="menu-link">🕹️ Play Seince Jump</a>
+        <a id="pictionary-link" href="pictionary.html" class="menu-link">🖍️ Play Pictionary</a>
+        <a id="trivia-link" href="trivia.html" class="menu-link">❓ Play Trivia Night</a>
+        <a id="tictactoe-link" href="tictactoe.html" class="menu-link">⭕ Play Tic-Tac-Toe</a>
+        <a id="chess-link" href="chess.html" class="menu-link">♟️ Play Chess</a>
+        <a id="hangman-link" href="hangman.html" class="menu-link">🪢 Play Hangman</a>
+        <a id="snake-link" href="snake.html" class="menu-link">🐍 Play Snake</a>
+        <a id="g2048-link" href="2048.html" class="menu-link">🔢 Play 2048</a>
+      </div>
+      <button id="voicecall-btn" class="menu-link" type="button">📞 Start Voice Call</button>
+      <button id="search-btn" class="menu-link" type="button">🔍 Search messages</button>
+      <button id="gallery-btn" class="menu-link" type="button">🖼️ Media gallery</button>
+      <button id="poll-btn" class="menu-link" type="button">📊 Create a poll</button>
+      <button id="saved-btn" class="menu-link" type="button">🔖 Saved messages</button>
+      <button id="qr-btn" class="menu-link" type="button">📱 Room QR code</button>
+      <a id="export-link" href="#" class="menu-link">📥 Export chat history</a>
+      <button id="account-signout-menu-btn" class="menu-link hidden" type="button">🚪 Sign out (<span id="account-signout-menu-name"></span>)</button>
+      <button id="leave-room-btn" class="danger">Leave room</button>
+    </div>
+  </div>
+
+  <!-- Search overlay: shares the same slide-out panel look as the main menu -->
+  <div id="search-overlay" class="menu-overlay hidden">
+    <div class="menu-panel">
+      <div class="menu-header">
+        <h2>Search</h2>
+        <button id="search-close-btn" class="icon-btn" aria-label="Close search">✕</button>
+      </div>
+      <form id="search-form">
+        <input id="search-input" type="text" placeholder="Search this room's messages" autocomplete="off">
+        <button type="submit">Go</button>
+      </form>
+      <ul id="search-results" class="search-results"></ul>
+    </div>
+  </div>
+
+  <!-- Media gallery overlay -->
+  <div id="gallery-overlay" class="menu-overlay hidden">
+    <div class="menu-panel">
+      <div class="menu-header">
+        <h2>Media gallery</h2>
+        <button id="gallery-close-btn" class="icon-btn" aria-label="Close gallery">✕</button>
+      </div>
+      <div id="gallery-grid" class="gallery-grid"></div>
+    </div>
+  </div>
+
+  <!-- Room QR code overlay -->
+  <div id="qr-overlay" class="menu-overlay hidden">
+    <div class="menu-panel qr-panel">
+      <div class="menu-header">
+        <h2>Scan to join</h2>
+        <button id="qr-close-btn" class="icon-btn" aria-label="Close QR code">✕</button>
+      </div>
+      <img id="qr-image" alt="QR code to join this room">
+      <p id="qr-link" class="qr-link"></p>
+    </div>
+  </div>
+
+  <!-- Direct message overlay -->
+  <div id="dm-overlay" class="menu-overlay hidden">
+    <div class="menu-panel">
+      <div class="menu-header">
+        <h2 id="dm-title">Direct message</h2>
+        <button id="dm-close-btn" class="icon-btn" aria-label="Close direct message">✕</button>
+      </div>
+      <div id="dm-messages" class="dm-messages"></div>
+      <form id="dm-form">
+        <input id="dm-input" type="text" placeholder="Message…" maxlength="2000" autocomplete="off">
+        <button type="submit">Send</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Saved messages overlay -->
+  <div id="saved-overlay" class="menu-overlay hidden">
+    <div class="menu-panel">
+      <div class="menu-header">
+        <h2>Saved messages</h2>
+        <button id="saved-close-btn" class="icon-btn" aria-label="Close saved messages">✕</button>
+      </div>
+      <ul id="saved-list" class="saved-list"></ul>
+    </div>
+  </div>
+
+  <!-- Thread overlay -->
+  <div id="thread-overlay" class="menu-overlay hidden">
+    <div class="menu-panel">
+      <div class="menu-header">
+        <h2>Thread</h2>
+        <button id="thread-close-btn" class="icon-btn" aria-label="Close thread">✕</button>
+      </div>
+      <div id="thread-root"></div>
+      <div id="thread-replies"></div>
+      <form id="thread-reply-form">
+        <input id="thread-reply-input" type="text" placeholder="Reply in thread…" maxlength="2000" autocomplete="off">
+        <button type="submit">Send</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Poll creation overlay -->
+  <div id="poll-overlay" class="menu-overlay hidden">
+    <div class="menu-panel">
+      <div class="menu-header">
+        <h2>Create a poll</h2>
+        <button id="poll-close-btn" class="icon-btn" aria-label="Close poll creator">✕</button>
+      </div>
+      <form id="poll-create-form">
+        <input id="poll-question-input" type="text" placeholder="Ask a question…" maxlength="200" autocomplete="off">
+        <div id="poll-options-list" class="poll-options-list"></div>
+        <button type="button" id="poll-add-option-btn" class="small-btn-link">+ Add option</button>
+        <button type="submit" class="primary">Post poll</button>
+      </form>
+    </div>
+  </div>
+
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="stickers.js"></script>
+  <script src="app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>AI Studio · Valk</title>
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="aistudio.css">
+<link rel="manifest" href="manifest.json">
+<script>
+  (function () {
+    var saved = localStorage.getItem('valk-theme');
+    if (saved === 'light') document.documentElement.dataset.theme = 'light';
+  })();
+</script>
+<meta name="theme-color" content="#050b14">
+<link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+</head>
+<body>
+
+  <a id="back-link" href="index.html">&larr; Back to chat</a>
+  <button id="theme-toggle-btn" class="theme-toggle" aria-label="Toggle dark mode" type="button">🌙</button>
+
+  <div id="studio">
+    <header>
+      <img src="images/logo.png" alt="Valk" class="logo">
+      <h1>AI Studio</h1>
+      <p class="subtitle">Free AI picture generation &mdash; describe anything, get a picture back.</p>
+    </header>
+
+    <div id="category-row" class="category-row"></div>
+    <p id="category-hint" class="category-hint"></p>
+    <div id="quick-ideas-row" class="quick-ideas-row"></div>
+
+    <div id="meme-fields" class="meme-fields hidden">
+      <input id="meme-top-input" type="text" placeholder="Top text" maxlength="80" autocomplete="off">
+      <input id="meme-bottom-input" type="text" placeholder="Bottom text" maxlength="80" autocomplete="off">
+    </div>
+
+    <form id="generate-form" class="prompt-bar">
+      <input id="prompt-input" type="text" placeholder="A cat riding a skateboard, cartoon style" maxlength="500" autocomplete="off" required>
+      <select id="ratio-select" aria-label="Picture shape">
+        <option value="1024x1024">Square</option>
+        <option value="1024x1792">Portrait</option>
+        <option value="1792x1024">Landscape</option>
+      </select>
+      <button type="submit" id="generate-btn" class="primary">Generate</button>
+    </form>
+    <p id="studio-error" class="error hidden"></p>
+
+    <div id="result-card" class="result-card hidden">
+      <div id="result-frame" class="result-frame">
+        <img id="result-img" alt="">
+        <div id="result-loading" class="result-loading hidden">
+          <div class="loading-orbs">
+            <span class="orb orb1"></span>
+            <span class="orb orb2"></span>
+            <span class="orb orb3"></span>
+          </div>
+          <div class="spinner"></div>
+          <div class="progress-track"><div id="progress-fill" class="progress-fill"></div></div>
+          <p id="loading-status">🎨 Mixing colors&hellip;</p>
+        </div>
+      </div>
+      <p id="result-prompt" class="result-prompt"></p>
+      <div class="result-actions">
+        <button type="button" id="regenerate-btn">🎲 New version</button>
+        <button type="button" id="download-btn">⬇️ Download</button>
+        <button type="button" id="send-chat-btn" class="primary hidden">💬 Send to chat</button>
+      </div>
+    </div>
+
+    <div id="video-note" class="video-note">
+      🎬 Free video generation isn't available yet &mdash; the reliable free options need a
+      Hugging Face account. Ask to add it if you're up for making one.
+    </div>
+
+    <div id="gallery-section" class="gallery-section hidden">
+      <div class="gallery-header">
+        <h2>Your pictures</h2>
+        <button type="button" id="clear-gallery-btn" class="link-btn">Clear all</button>
+      </div>
+      <div id="gallery-grid" class="gallery-grid"></div>
+    </div>
+  </div>
+
+  <script src="error-report.js"></script>
+  <script src="aistudio.js"></script>
+</body>
+</html>

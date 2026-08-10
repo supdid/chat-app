@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Tic-Tac-Toe</title>
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="tictactoe.css">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0a1420">
+<link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+</head>
+<body>
+
+  <a id="back-link" href="index.html">&larr; Back to chat</a>
+
+  <div id="lobby">
+    <div class="panel">
+      <h1 id="title">⭕ Tic-Tac-Toe</h1>
+      <p class="tagline">A quick 1v1 game — first two players to join get seated, everyone else can watch.</p>
+      <p id="lobby-status" class="mode-hint">Connecting…</p>
+      <div id="mode-buttons">
+        <button id="mode-tictactoe-btn" class="small-btn mode-btn active" type="button">⭕ Tic-Tac-Toe</button>
+        <button id="mode-connect4-btn" class="small-btn mode-btn" type="button">🔴 Connect Four</button>
+      </div>
+      <h3>Players</h3>
+      <ul id="lobby-players" class="player-list"></ul>
+    </div>
+  </div>
+
+  <div id="game" class="hidden">
+    <div id="top-bar">
+      <span id="round-status">Waiting…</span>
+      <button id="rematch-btn" class="small-btn hidden" type="button">🔁 Rematch</button>
+    </div>
+
+    <div id="board-wrap">
+      <div id="board" class="mode-tictactoe"></div>
+    </div>
+
+    <div id="seat-bar" class="hidden">
+      <span class="mode-hint">You're watching —</span>
+      <button id="claim-x-btn" class="small-btn" type="button">Play as ⭕/🔴 (open seat)</button>
+    </div>
+  </div>
+
+  <script src="error-report.js"></script>
+  <script src="tictactoe.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));
+    }
+  </script>
+</body>
+</html>

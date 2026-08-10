@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Build Craft</title>
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="buildcraft.css">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#7ec8e3">
+<link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+</head>
+<body>
+
+  <a id="back-link" href="index.html">&larr; Back to chat</a>
+  <button id="voice-toggle-btn" class="icon-btn hud-corner-btn voice-corner-btn" aria-label="Join voice chat">🎤</button>
+  <button id="music-toggle-btn" class="icon-btn hud-corner-btn" aria-label="Toggle sound">🔊</button>
+  <label id="skin-color-label" class="icon-btn hud-corner-btn skin-color-corner-btn" aria-label="Choose your player color" title="Choose your player color">
+    🎨<input type="color" id="skin-color-input" value="#2fb6ac">
+  </label>
+
+  <div id="health-bar"></div>
+  <div id="damage-flash"></div>
+  <canvas id="minimap-canvas" width="160" height="160"></canvas>
+
+  <div id="crosshair"></div>
+
+  <div id="hotbar"></div>
+  <div id="selected-label">Grass</div>
+  <div id="inventory-hint">[E] Inventory &middot; [C] Craft &middot; [T] Chat &middot; [B] Blueprints &middot; [M] Map</div>
+  <div id="toast"></div>
+
+  <div id="bc-chat-log"></div>
+  <form id="bc-chat-form" class="hidden">
+    <input id="bc-chat-input" type="text" placeholder="Message the world…" maxlength="300" autocomplete="off">
+  </form>
+
+  <div id="death-overlay" class="hidden">
+    <div class="panel">
+      <h1>You Died</h1>
+      <p class="tagline" id="death-cause">Better luck next time.</p>
+      <button id="respawn-btn" class="primary">Respawn</button>
+    </div>
+  </div>
+
+  <div id="start-overlay">
+    <div class="panel">
+      <h1>Build Craft</h1>
+      <p class="tagline">An archipelago of paradise islands &mdash; jungle, desert, oak forest, birch forest &amp; open ocean. Build a house, mine deep, find a cave.</p>
+      <p id="mp-status" class="mode-hint hidden">Connecting to shared world&hellip;</p>
+      <div class="mode-buttons">
+        <button id="start-creative-btn" class="primary">🌱 Creative</button>
+        <button id="start-survival-btn" class="primary">⛏️ Survival</button>
+      </div>
+      <p class="mode-hint">Creative: every block, unlimited, free flight. Survival: nothing to start, no flying &mdash; walk, swim, mine and craft everything yourself.</p>
+      <ul class="controls-list" id="controls-list-desktop">
+        <li><strong>WASD</strong> &mdash; move</li>
+        <li><strong>Mouse</strong> &mdash; look around</li>
+        <li><strong>Space</strong> &mdash; fly up (creative) / jump (survival) / swim up</li>
+        <li><strong>Shift</strong> &mdash; fly down (creative) / swim down</li>
+        <li><strong>Left click (hold)</strong> &mdash; break blocks</li>
+        <li><strong>Right click (hold)</strong> &mdash; place blocks</li>
+        <li><strong>1&ndash;9</strong> &mdash; select hotbar slot</li>
+        <li><strong>E</strong> &mdash; open inventory</li>
+        <li><strong>C</strong> &mdash; crafting (survival)</li>
+        <li><strong>Esc</strong> &mdash; release mouse</li>
+      </ul>
+      <ul class="controls-list hidden" id="controls-list-touch">
+        <li><strong>Left joystick</strong> &mdash; move</li>
+        <li><strong>Drag anywhere else</strong> &mdash; look around</li>
+        <li><strong>⤒ / ⤓</strong> &mdash; jump or fly up / fly down or swim down</li>
+        <li><strong>⛏️ (hold)</strong> &mdash; break blocks</li>
+        <li><strong>▦ (hold)</strong> &mdash; place blocks</li>
+        <li><strong>Tap a hotbar slot</strong> &mdash; select it</li>
+        <li><strong>🎒 / 🔨</strong> &mdash; inventory / crafting (survival)</li>
+      </ul>
+    </div>
+  </div>
+
+  <div id="touch-controls" class="hidden">
+    <div id="touch-joystick"><div id="touch-joystick-knob"></div></div>
+    <div id="touch-buttons">
+      <button id="touch-jump" class="touch-btn" aria-label="Jump / fly up">⤒</button>
+      <button id="touch-down" class="touch-btn" aria-label="Fly down / swim down">⤓</button>
+      <button id="touch-break" class="touch-btn" aria-label="Break block">⛏️</button>
+      <button id="touch-place" class="touch-btn" aria-label="Place block">▦</button>
+      <button id="touch-inventory" class="touch-btn" aria-label="Inventory">🎒</button>
+      <button id="touch-craft" class="touch-btn" aria-label="Crafting">🔨</button>
+      <button id="touch-dismount" class="touch-btn" aria-label="Exit horse/boat/minecart" style="display:none">🚪</button>
+    </div>
+  </div>
+
+  <div id="inventory-panel" class="hidden">
+    <div class="inv-panel">
+      <div class="inv-panel-header">
+        <h2 id="inventory-title">Inventory</h2>
+        <button id="inventory-close-btn" class="icon-btn" aria-label="Close inventory">✕</button>
+      </div>
+      <div id="inventory-grid" class="inv-grid"></div>
+    </div>
+  </div>
+
+  <div id="crafting-panel" class="hidden">
+    <div class="inv-panel">
+      <div class="inv-panel-header">
+        <h2>Crafting</h2>
+        <button id="crafting-close-btn" class="icon-btn" aria-label="Close crafting">✕</button>
+      </div>
+      <div id="crafting-list" class="crafting-list"></div>
+    </div>
+  </div>
+
+  <div id="blueprint-panel" class="hidden">
+    <div class="inv-panel">
+      <div class="inv-panel-header">
+        <h2>🧱 Blueprints</h2>
+        <button id="blueprint-close-btn" class="icon-btn" aria-label="Close blueprints">✕</button>
+      </div>
+      <form id="blueprint-save-form" class="blueprint-save-form">
+        <input id="blueprint-name-input" type="text" placeholder="Name this area (13×13×13 around you)" maxlength="40" autocomplete="off">
+        <button type="submit">💾 Save</button>
+      </form>
+      <p id="blueprint-hint" class="mode-hint">Pick a blueprint below, then click a block in the world to stamp it there.</p>
+      <ul id="blueprint-list" class="blueprint-list"></ul>
+    </div>
+  </div>
+
+  <script src="error-report.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="buildcraft.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));
+    }
+  </script>
+</body>
+</html>

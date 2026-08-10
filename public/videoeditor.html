@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Video Editor · Valk</title>
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="videoeditor.css">
+<link rel="manifest" href="manifest.json">
+<script>
+  (function () {
+    var saved = localStorage.getItem('valk-theme');
+    if (saved === 'light') document.documentElement.dataset.theme = 'light';
+  })();
+</script>
+<meta name="theme-color" content="#050b14">
+<link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+</head>
+<body>
+
+  <div id="topbar">
+    <a id="back-link" href="index.html">&larr; Back</a>
+    <div id="topbar-title">
+      <img src="images/logo.png" alt="Valk" class="logo-small">
+      <span>Video Editor</span>
+    </div>
+    <div id="topbar-actions">
+      <button id="theme-toggle-btn" class="icon-btn" aria-label="Toggle dark mode" type="button">🌙</button>
+      <button id="export-btn" class="primary" disabled>Export</button>
+    </div>
+  </div>
+
+  <div id="editor">
+    <div id="load-banner" class="load-banner">
+      <div class="spinner-small"></div>
+      <span>Loading the video engine&hellip; (first time only, a bigger download)</span>
+    </div>
+    <p id="editor-error" class="error hidden"></p>
+
+    <div id="workspace" class="hidden">
+
+      <!-- Preview -->
+      <div id="preview-stage">
+        <div id="preview-frame">
+          <video id="preview-video" playsinline preload="auto"></video>
+          <div id="caption-layer">
+            <div class="caption-slot" id="caption-top"></div>
+            <div class="caption-slot" id="caption-center"></div>
+            <div class="caption-slot" id="caption-bottom"></div>
+          </div>
+          <div id="preview-empty" class="preview-empty">Add a clip to get started</div>
+        </div>
+        <div id="transport">
+          <button type="button" id="play-btn" class="icon-btn" aria-label="Play">▶️</button>
+          <span id="time-readout">0:00 / 0:00</span>
+        </div>
+      </div>
+
+      <!-- Toolbar -->
+      <div id="toolbar">
+        <label id="add-clip-label" class="tool-btn">
+          🎞️ Media
+          <input id="clip-file-input" type="file" accept="video/*" multiple class="visually-hidden">
+        </label>
+        <button type="button" id="split-btn" class="tool-btn" disabled>✂️ Split</button>
+        <button type="button" id="add-title-btn" class="tool-btn">🔤 Titles</button>
+        <button type="button" id="add-music-btn" class="tool-btn">🎵 Audio</button>
+        <button type="button" id="delete-selected-btn" class="tool-btn danger hidden">🗑️ Delete</button>
+      </div>
+
+      <!-- Timeline -->
+      <div id="timeline-wrap">
+        <div id="timeline-inner">
+          <div id="ruler"></div>
+          <div id="track-video" class="track"></div>
+          <div id="track-titles" class="track"></div>
+          <div id="track-music" class="track"></div>
+          <div id="playhead"><div class="playhead-grip"></div></div>
+        </div>
+      </div>
+      <p id="timeline-hint" class="hint">Drag clips to reorder &middot; drag their edges to trim &middot; drag the playhead and tap Split to cut a clip in two &middot; tap a clip, title, or the audio track to edit it.</p>
+
+      <!-- Inspector -->
+      <div id="inspector" class="panel">
+        <p class="hint">Select a clip, title, or the audio track above to edit it here.</p>
+      </div>
+    </div>
+
+    <div id="render-progress" class="render-progress hidden">
+      <div class="progress-track"><div id="render-progress-fill" class="progress-fill"></div></div>
+      <p id="render-status">Getting started&hellip;</p>
+    </div>
+
+    <section id="result-section" class="panel hidden">
+      <h2>Your video</h2>
+      <video id="result-video" controls playsinline preload="auto"></video>
+      <div class="result-actions">
+        <button type="button" id="download-btn">⬇️ Download</button>
+        <button type="button" id="send-chat-btn" class="primary hidden">💬 Send to chat</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="music-picker-overlay" class="hidden">
+    <div id="music-picker" role="dialog" aria-label="Choose music">
+      <div class="music-picker-header">
+        <h2>Add music</h2>
+        <button type="button" id="music-picker-close" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+      <p class="hint">Little royalty-free loops generated right in your browser — pick one, or upload your own track.</p>
+      <div id="song-list"></div>
+      <label id="upload-own-label" class="tool-btn">
+        ⬆️ Upload your own file instead
+        <input id="music-file-input" type="file" accept="audio/*" class="visually-hidden">
+      </label>
+    </div>
+  </div>
+
+
+  <!-- Self-hosted (not CDN): @ffmpeg/ffmpeg spawns a Worker from its own script's
+       directory, and browsers refuse to construct a Worker from a cross-origin URL,
+       so this one file — unlike the core/util libraries below — has to be same-origin. -->
+  <script src="error-report.js"></script>
+  <script src="vendor/ffmpeg/ffmpeg.js"></script>
+  <script src="https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
+  <script src="videoeditor.js"></script>
+</body>
+</html>

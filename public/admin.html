@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Valk — Self-healing admin</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { font-family: -apple-system, sans-serif; background: #16181d; color: #e8e8e8; margin: 0; padding: 24px; }
+  h1 { font-size: 20px; }
+  h2 { font-size: 15px; color: #9aa; margin-top: 32px; }
+  .card { background: #1f232b; border: 1px solid #2c313c; border-radius: 8px; padding: 14px 16px; margin-bottom: 12px; }
+  .meta { color: #8a8f99; font-size: 12px; margin-bottom: 6px; }
+  .explanation { margin: 8px 0; }
+  pre { background: #12141a; border-radius: 6px; padding: 10px; overflow-x: auto; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+  .old { border-left: 3px solid #d9534f; }
+  .new { border-left: 3px solid #4caf50; }
+  button { border: none; border-radius: 6px; padding: 8px 14px; margin-right: 8px; cursor: pointer; font-size: 13px; }
+  .approve { background: #2e7d32; color: white; }
+  .reject { background: #555; color: white; }
+  .empty { color: #666; font-style: italic; }
+  #key-gate { max-width: 400px; margin: 80px auto; text-align: center; }
+  input { background: #12141a; border: 1px solid #2c313c; color: #e8e8e8; border-radius: 6px; padding: 8px; width: 100%; box-sizing: border-box; }
+</style>
+</head>
+<body>
+  <div id="key-gate">
+    <h1>Admin key required</h1>
+    <p style="color:#8a8f99;font-size:13px;">Find it in the server console log, or <code>~/chat-app/admin-key.json</code>.</p>
+    <input id="key-input" placeholder="Paste admin key">
+  </div>
+  <div id="panel" style="display:none;">
+    <h1>Self-healing panel</h1>
+    <h2>Storage cleanup</h2>
+    <div class="card">
+      <div class="meta">Rooms inactive 90+ days (and their messages/media) are purged automatically once a day.</div>
+      <button class="approve" id="cleanup-btn" type="button">Run cleanup now</button>
+      <span id="cleanup-result" class="meta"></span>
+    </div>
+    <h2>Pending patch proposals</h2>
+    <div id="patches"></div>
+    <h2>Recent error reports</h2>
+    <div id="errors"></div>
+  </div>
+
+<script>
+const KEY_STORAGE = 'valk-admin-key';
+let adminKey = new URLSearchParams(location.search).get('key') || localStorage.getItem(KEY_STORAGE) || '';
+
+function headers() {
+  return { 'Content-Type': 'application/json', Authorization: `Bearer ${adminKey}` };
+}
+
+async function tryLoad() {
+  const res = await fetch('/admin/patches', { headers: headers() });
+  if (!res.ok) return false;
+  localStorage.setItem(KEY_STORAGE, adminKey);
+  document.getElementById('key-gate').style.display = 'none';
+  document.getElementById('panel').style.display = 'block';
+  refresh();
+  return true;
+}
+
+document.getElementById('key-input').addEventListener('input', async (e) => {
+  adminKey = e.target.value.trim();
+  if (adminKey.length >= 20) tryLoad();
+});
+
+function esc(s) {
+  return String(s || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+}
+
+async function refresh() {
+  const [patchesRes, errorsRes] = await Promise.all([
+    fetch('/admin/patches', { headers: headers() }),
+    fetch('/admin/errors', { headers: headers() }),
+  ]);
+  const { patches } = await patchesRes.json();
+  const { errors } = await errorsRes.json();
+
+  const patchesEl = document.getElementById('patches');
+  patchesEl.innerHTML = patches.length ? '' : '<p class="empty">No pending proposals.</p>';
+  for (const p of patches) {
+    const div = document.createElement('div');
+    div.className = 'card';
+    div.innerHTML = `
+      <div class="meta">${esc(p.target_file)} — ${new Date(p.created_at).toLocaleString()}</div>
+      <div class="explanation">${esc(p.explanation)}</div>
+      <pre class="old">${esc(p.old_string)}</pre>
+      <pre class="new">${esc(p.new_string)}</pre>
+      <button class="approve" data-id="${p.id}" data-action="approve">Approve &amp; apply</button>
+      <button class="reject" data-id="${p.id}" data-action="reject">Reject</button>
+    `;
+    patchesEl.appendChild(div);
+  }
+  patchesEl.querySelectorAll('button').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      const res = await fetch(`/admin/patches/${btn.dataset.id}/${btn.dataset.action}`, { method: 'POST', headers: headers() });
+      const data = await res.json();
+      if (!res.ok) { alert(data.error || 'Failed'); btn.disabled = false; return; }
+      if (data.restarted) alert('Applied — server is restarting to pick up the change.');
+      refresh();
+    });
+  });
+
+  const errorsEl = document.getElementById('errors');
+  errorsEl.innerHTML = errors.length ? '' : '<p class="empty">No errors reported yet.</p>';
+  for (const e of errors) {
+    const div = document.createElement('div');
+    div.className = 'card';
+    div.innerHTML = `
+      <div class="meta">[${esc(e.source)}] ${new Date(e.created_at).toLocaleString()} — status: ${esc(e.status)}</div>
+      <div>${esc(e.message)}</div>
+      ${e.stack ? `<pre>${esc(e.stack)}</pre>` : ''}
+    `;
+    errorsEl.appendChild(div);
+  }
+}
+
+document.getElementById('cleanup-btn').addEventListener('click', async (e) => {
+  e.target.disabled = true;
+  const resultEl = document.getElementById('cleanup-result');
+  resultEl.textContent = 'Running…';
+  try {
+    const res = await fetch('/admin/cleanup/run', { method: 'POST', headers: headers() });
+    const data = await res.json();
+    resultEl.textContent = res.ok
+      ? `Purged ${data.roomsDeleted} room(s), removed ${data.filesDeleted} media file(s).`
+      : (data.error || 'Failed');
+  } catch {
+    resultEl.textContent = 'Failed — network error';
+  }
+  e.target.disabled = false;
+});
+
+if (adminKey) tryLoad().then((ok) => { if (!ok) { adminKey = ''; localStorage.removeItem(KEY_STORAGE); } });
+</script>
+</body>
+</html>

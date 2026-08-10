@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Seince Jump</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%233ddc84'/%3E%3Cpath d='M9 11 L15 16 L9 21 Z' fill='%230b0d12'/%3E%3Cpath d='M23 11 L17 16 L23 21 Z' fill='%230b0d12'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="seince-jump.css" />
+</head>
+<body>
+
+<div class="bg-glow"></div>
+
+<header class="topbar">
+  <a href="index.html" id="back-link" class="back-link">&larr; Back to chat</a>
+  <div class="brand">
+    <span class="logo-mark">SJ</span>
+    <span class="brand-text">Seince Jump</span>
+  </div>
+  <div class="spacer"></div>
+</header>
+
+<main class="stage">
+
+  <!-- Level select -->
+  <section id="menuScreen" class="panel">
+    <h1>Main Levels</h1>
+    <p class="subtitle">A little geometry-jumping minigame. Tap, click, or press Space to jump.</p>
+    <ul id="levelList" class="level-list"></ul>
+  </section>
+
+  <!-- Game -->
+  <section id="gameScreen" class="panel game-panel hidden">
+    <div class="hud">
+      <button id="quitBtn" class="ghost-btn small">&larr; Menu</button>
+      <div class="hud-center">
+        <div id="levelName" class="level-name">Stereo Madness</div>
+        <div class="progress-track"><div id="progressFill" class="progress-fill"></div></div>
+      </div>
+      <div id="attemptCount" class="attempt-count">Attempt 1</div>
+    </div>
+    <div class="canvas-wrap">
+      <canvas id="game" width="960" height="400"></canvas>
+      <div id="overlay" class="overlay hidden">
+        <div id="overlayTitle" class="overlay-title">Level Complete!</div>
+        <div id="overlaySub" class="overlay-sub"></div>
+      </div>
+      <div id="flash" class="flash"></div>
+    </div>
+    <p class="hint">Space / Click / Tap to jump</p>
+  </section>
+
+</main>
+
+<script src="error-report.js"></script>
+<script src="seince-jump.js"></script>
+</body>
+</html>

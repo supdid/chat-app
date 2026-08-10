@@ -1,0 +1,20 @@
+{
+  "name": "valk",
+  "version": "1.0.0",
+  "description": "Valk - real-time room-based chat app",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.116.0",
+    "better-sqlite3": "^11.10.0",
+    "express": "^5.2.1",
+    "google-auth-library": "^11.0.0",
+    "multer": "^2.2.0",
+    "qrcode": "^1.5.4",
+    "web-push": "^3.6.7",
+    "ws": "^8.21.2"
+  }
+}

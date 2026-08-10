@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Geometry Wave</title>
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="geometrywave.css">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0a1420">
+<link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+</head>
+<body>
+
+  <a id="back-link" href="index.html">&larr; Back to chat</a>
+
+  <div id="menu">
+    <div class="panel">
+      <h1>Geometry Wave</h1>
+      <p class="tagline">Click or hold to fly up, let go to dive down. Don't touch the walls or spikes.</p>
+      <div class="level-list">
+        <button class="level-btn" data-level="easy" style="--accent:#34e89e">
+          <span class="level-name">Easy</span>
+          <span class="level-sub" id="best-easy">Best: 0%</span>
+        </button>
+        <button class="level-btn" data-level="medium" style="--accent:#f9a825">
+          <span class="level-name">Medium</span>
+          <span class="level-sub" id="best-medium">Best: 0%</span>
+        </button>
+        <button class="level-btn" data-level="hard" style="--accent:#e53935">
+          <span class="level-name">Hard</span>
+          <span class="level-sub" id="best-hard">Best: 0%</span>
+        </button>
+        <button class="level-btn" data-level="extreme" style="--accent:#c400ff">
+          <span class="level-name">Extreme</span>
+          <span class="level-sub" id="best-extreme">Best: 0%</span>
+        </button>
+        <button class="level-btn" data-level="straight" style="--accent:#4fd1ff">
+          <span class="level-name">Straight Flight</span>
+          <span class="level-sub" id="best-straight">Best: 0%</span>
+        </button>
+      </div>
+      <ul class="controls-list">
+        <li><strong>Click / tap / hold (or Space)</strong> &mdash; go up while held</li>
+        <li><strong>Release</strong> &mdash; go down</li>
+        <li>Touch a wall or spike and you restart instantly</li>
+      </ul>
+    </div>
+  </div>
+
+  <div id="hud" class="hidden">
+    <div id="progress-bar"><div id="progress-fill"></div></div>
+    <div id="hud-row">
+      <span id="progress-label">0%</span>
+      <span id="attempts-label">Attempt 1</span>
+      <button id="leaderboard-btn" class="icon-btn" aria-label="Leaderboard">🏆</button>
+      <button id="music-toggle-btn" class="icon-btn" aria-label="Toggle music">🔊</button>
+      <button id="menu-btn-from-hud" class="icon-btn" aria-label="Back to level select">☰</button>
+    </div>
+  </div>
+
+  <div id="leaderboard-overlay" class="hidden">
+    <div class="panel">
+      <div class="panel-header">
+        <h2>🏆 Leaderboard — <span id="leaderboard-level-name"></span></h2>
+        <button id="leaderboard-close-btn" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+      <ul id="leaderboard-list" class="controls-list"></ul>
+    </div>
+  </div>
+
+  <canvas id="game-canvas" class="hidden"></canvas>
+
+  <div id="complete-overlay" class="hidden">
+    <div class="panel">
+      <h1>Level Complete!</h1>
+      <p class="tagline"><span id="complete-level-name"></span> &mdash; 100%</p>
+      <button id="retry-btn" class="primary">Play Again</button>
+      <button id="complete-menu-btn" class="secondary">Level Select</button>
+    </div>
+  </div>
+
+  <script src="error-report.js"></script>
+  <script src="geometrywave.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));
+    }
+  </script>
+</body>
+</html>

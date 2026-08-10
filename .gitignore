@@ -1,0 +1,9 @@
+node_modules/
+valk.db
+valk.db-wal
+valk.db-shm
+vapid-keys.json
+admin-key.json
+google-config.json
+patch_backups/
+public/uploads/

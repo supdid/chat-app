@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Whiteboard</title>
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="whiteboard.css">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0a1420">
+<link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+</head>
+<body>
+
+  <a id="back-link" href="index.html">&larr; Back to chat</a>
+
+  <div id="top-bar">
+    <span id="status-label">Connecting…</span>
+    <button id="send-chat-btn" class="small-btn" type="button">📤 Send to chat</button>
+    <button id="clear-btn" class="small-btn" type="button">Clear</button>
+  </div>
+
+  <div id="board-wrap">
+    <canvas id="board"></canvas>
+  </div>
+
+  <div id="toolbar">
+    <div id="color-swatches"></div>
+    <input id="brush-size" type="range" min="2" max="24" value="5">
+  </div>
+
+  <div id="toast" class="hidden"></div>
+
+  <script src="error-report.js"></script>
+  <script src="whiteboard.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));
+    }
+  </script>
+</body>
+</html>

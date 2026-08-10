@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Hangman</title>
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="hangman.css">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0a1420">
+<link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+</head>
+<body>
+
+  <a id="back-link" href="index.html">&larr; Back to chat</a>
+
+  <div id="lobby">
+    <div class="panel">
+      <h1>🪢 Hangman</h1>
+      <p class="tagline">Guess the word one letter at a time — everyone in the room plays together.</p>
+      <p id="lobby-status" class="mode-hint">Connecting…</p>
+      <h3>Players</h3>
+      <ul id="lobby-players" class="player-list"></ul>
+      <button id="start-btn" class="primary">Start round</button>
+    </div>
+  </div>
+
+  <div id="game" class="hidden">
+    <div id="top-bar">
+      <span id="round-status">Waiting for a round to start…</span>
+      <span id="wrong-count"></span>
+      <button id="menu-btn-game" class="icon-btn" aria-label="Player list">👥</button>
+    </div>
+
+    <div id="word-wrap">
+      <div id="word-display"></div>
+      <div id="wrong-letters"></div>
+    </div>
+
+    <div id="keyboard"></div>
+
+    <button id="game-start-btn" class="primary hidden">Next word</button>
+  </div>
+
+  <div id="players-overlay" class="hidden">
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Players</h2>
+        <button id="players-close-btn" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+      <ul id="players-list" class="player-list"></ul>
+      <h3>🏆 All-time leaderboard (this room)</h3>
+      <ul id="leaderboard-list" class="player-list"></ul>
+    </div>
+  </div>
+
+  <script src="error-report.js"></script>
+  <script src="hangman.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));
+    }
+  </script>
+</body>
+</html>
