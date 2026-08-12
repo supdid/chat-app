@@ -246,6 +246,13 @@ const upload = multer({
 
 app.use(express.static(path.join(__dirname, 'public')));
 
+// The WS join-room handler is the only place that used to check a room's PIN — these four plain
+// HTTP routes (below) could read or post into a PIN-protected room without ever supplying it.
+// Shared here so all four check it the same way join-room already does.
+function roomPinOk(dbRoom, suppliedPin) {
+  return !dbRoom || !dbRoom.pin_required || String(suppliedPin || '').trim() === dbRoom.pin_required;
+}
+
 // Lets the AI Studio page (its own tab, no live WebSocket/presence session) drop a
 // generated image into a room's chat without going through the join-server/join-room
 // flow — which would spuriously fire "X joined the room" for a tab that isn't really
@@ -258,6 +265,7 @@ app.post('/post-image', (req, res) => {
   if (!code || !mediaUrl) return res.status(400).json({ error: 'Missing room code or image' });
   const room = rooms.get(code);
   if (!room) return res.status(404).json({ error: 'Room not found' });
+  if (!roomPinOk(db.getRoom(code), req.body.pin)) return res.status(403).json({ error: 'Incorrect or missing room PIN' });
 
   const entry = {
     type: 'message',
@@ -289,6 +297,7 @@ app.post('/post-media', (req, res) => {
   if (!code || !mediaUrl || !mediaType) return res.status(400).json({ error: 'Missing room code or media' });
   const room = rooms.get(code);
   if (!room) return res.status(404).json({ error: 'Room not found' });
+  if (!roomPinOk(db.getRoom(code), req.body.pin)) return res.status(403).json({ error: 'Incorrect or missing room PIN' });
 
   const entry = {
     type: 'message',
@@ -316,7 +325,9 @@ app.get('/search', (req, res) => {
   const code = String(req.query.code || '').toUpperCase().trim();
   const q = String(req.query.q || '').trim();
   if (!code || !q) return res.json({ results: [] });
-  if (!rooms.has(code) && !db.getRoom(code)) return res.status(404).json({ error: 'Room not found' });
+  const dbRoom = db.getRoom(code);
+  if (!rooms.has(code) && !dbRoom) return res.status(404).json({ error: 'Room not found' });
+  if (!roomPinOk(dbRoom, req.query.pin)) return res.status(403).json({ error: 'Incorrect or missing room PIN' });
   res.json({ results: db.searchMessages(code, q, 50) });
 });
 
@@ -324,9 +335,10 @@ app.get('/search', (req, res) => {
 // and reads full history from SQLite rather than the in-memory 50-message window.
 app.get('/export', (req, res) => {
   const code = String(req.query.code || '').toUpperCase().trim();
-  if (!code || (!rooms.has(code) && !db.getRoom(code))) return res.status(404).json({ error: 'Room not found' });
-  const messages = db.getAllMessagesForExport(code);
   const dbRoom = db.getRoom(code);
+  if (!code || (!rooms.has(code) && !dbRoom)) return res.status(404).json({ error: 'Room not found' });
+  if (!roomPinOk(dbRoom, req.query.pin)) return res.status(403).json({ error: 'Incorrect or missing room PIN' });
+  const messages = db.getAllMessagesForExport(code);
   const roomLabel = dbRoom && dbRoom.name ? `${dbRoom.name} (${code})` : code;
   const lines = [`Valk chat export — ${roomLabel}`, `Exported ${new Date().toISOString()}`, ''];
   messages.forEach((m) => {
@@ -509,15 +521,17 @@ app.get('/push/vapid-public-key', (req, res) => {
   res.json({ publicKey: vapidKeys.publicKey });
 });
 
+// roomCode is optional — an account-only subscribe (not currently in any room, e.g. right after
+// sign-in) still needs a row so friend-DM push notifications below have somewhere to deliver to.
 app.post('/push/subscribe', (req, res) => {
   const roomCode = String(req.body.roomCode || '').toUpperCase().trim();
   const name = String(req.body.name || '').slice(0, 30).trim();
   const subscription = req.body.subscription;
-  if (!roomCode || !name || !subscription || !subscription.endpoint) {
-    return res.status(400).json({ error: 'Missing roomCode, name, or subscription' });
+  if (!name || !subscription || !subscription.endpoint) {
+    return res.status(400).json({ error: 'Missing name or subscription' });
   }
   const account = getAccountFromReq(req);
-  db.savePushSubscription(roomCode, name, subscription, account ? account.id : null);
+  db.savePushSubscription(roomCode || null, name, subscription, account ? account.id : null);
   res.json({ ok: true });
 });
 
@@ -687,8 +701,376 @@ app.post('/account/recent-rooms', (req, res) => {
   res.json({ ok: true });
 });
 
+// ---- Friends (account-only — an anonymous per-room display name isn't a stable enough
+// identity to hang a friends list off of) ----
+
+app.get('/friends', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  res.json({
+    friends: db.getFriends(account.id),
+    incoming: db.getIncomingFriendRequests(account.id),
+    outgoing: db.getOutgoingFriendRequests(account.id),
+    blocked: db.getBlockedUsers(account.id),
+  });
+});
+
+app.post('/friends/request', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  const target = db.getAccountByUsername(String(req.body.username || '').trim());
+  if (!target) return res.status(404).json({ error: 'No account with that username' });
+  if (target.id === account.id) return res.status(400).json({ error: "You can't add yourself" });
+  if (db.isBlockedBetween(account.id, target.id)) {
+    return res.status(403).json({ error: 'Unable to send a friend request to this user' });
+  }
+  const existing = db.getFriendshipBetween(account.id, target.id);
+  if (existing && existing.status === 'accepted') return res.status(409).json({ error: 'Already friends' });
+  if (existing && existing.status === 'pending' && existing.requester_id === target.id) {
+    // They already sent us a request — this "add" completes it instead of creating a duplicate.
+    db.acceptFriendRequest(target.id, account.id);
+    return res.json({ status: 'accepted' });
+  }
+  db.upsertFriendRequest(account.id, target.id);
+  res.json({ status: 'pending' });
+});
+
+app.post('/friends/accept', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  const target = db.getAccountByUsername(String(req.body.username || '').trim());
+  if (!target) return res.status(404).json({ error: 'No account with that username' });
+  const existing = db.getFriendshipBetween(account.id, target.id);
+  if (!existing || existing.status !== 'pending' || existing.requester_id !== target.id) {
+    return res.status(400).json({ error: 'No pending request from that user' });
+  }
+  db.acceptFriendRequest(target.id, account.id);
+  res.json({ ok: true });
+});
+
+// Also used to decline an incoming request and to cancel one you sent — same "remove whatever
+// relationship exists" operation either way.
+app.post('/friends/remove', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  const target = db.getAccountByUsername(String(req.body.username || '').trim());
+  if (!target) return res.status(404).json({ error: 'No account with that username' });
+  db.removeFriendship(account.id, target.id);
+  res.json({ ok: true });
+});
+
+app.post('/friends/block', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  const target = db.getAccountByUsername(String(req.body.username || '').trim());
+  if (!target) return res.status(404).json({ error: 'No account with that username' });
+  if (target.id === account.id) return res.status(400).json({ error: "You can't block yourself" });
+  db.setBlocked(account.id, target.id);
+  res.json({ ok: true });
+});
+
+app.post('/friends/unblock', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  const target = db.getAccountByUsername(String(req.body.username || '').trim());
+  if (!target) return res.status(404).json({ error: 'No account with that username' });
+  db.unblock(account.id, target.id);
+  res.json({ ok: true });
+});
+
+app.get('/friends/presence', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  const presence = db.getFriends(account.id).map((f) => {
+    const friendAccount = db.getAccountByUsername(f.username);
+    const p = friendAccount ? getAccountPresence(friendAccount.id) : { online: false, roomCode: null, roomName: null };
+    return { username: f.username, ...p };
+  });
+  res.json({ presence });
+});
+
+// ---- Scorpture (account-based video sharing app) — browsing/watching works signed-out,
+// uploading/commenting/liking/subscribing all require an account, same split as Friends above.
+// Video/thumbnail files themselves go through the existing generic /upload endpoint (already
+// accepts video/* mimetypes, 300MB limit) — these routes only ever handle the metadata rows.
+app.get('/api/scorpture/videos', (req, res) => {
+  const search = String(req.query.search || '').slice(0, 100).trim();
+  const channel = String(req.query.channel || '').trim();
+  let uploaderId = null;
+  if (channel) {
+    const channelAccount = db.getAccountByUsername(channel);
+    if (!channelAccount) return res.json({ videos: [] });
+    uploaderId = channelAccount.id;
+  }
+  const videos = db.listScorptureVideos({ search: search || null, uploaderId });
+  // Cached per-request — a channel page lists many videos from the same one uploader, no need to
+  // re-fetch their account row for every single one.
+  const avatarCache = new Map();
+  function uploaderAvatar(id) {
+    if (!avatarCache.has(id)) {
+      const acc = db.getAccountById(id);
+      avatarCache.set(id, acc ? acc.scorpture_avatar_url || null : null);
+    }
+    return avatarCache.get(id);
+  }
+  res.json({
+    videos: videos.map((v) => ({
+      id: v.id,
+      title: v.title,
+      thumbnailUrl: v.thumbnail_url,
+      uploaderUsername: v.uploader_username,
+      uploaderAvatarUrl: uploaderAvatar(v.uploader_id),
+      views: v.views,
+      createdAt: v.created_at,
+      uploaderLive: liveStreams.has(v.uploader_id),
+    })),
+  });
+});
+
+app.get('/api/scorpture/videos/:id', (req, res) => {
+  const account = getAccountFromReq(req);
+  const video = db.getScorptureVideo(req.params.id);
+  if (!video) return res.status(404).json({ error: 'Video not found' });
+  db.bumpScorptureViews(video.id);
+  const uploaderAccount = db.getAccountById(video.uploader_id);
+  res.json({
+    id: video.id,
+    title: video.title,
+    description: video.description,
+    videoUrl: video.video_url,
+    thumbnailUrl: video.thumbnail_url,
+    uploaderUsername: video.uploader_username,
+    uploaderAvatarUrl: uploaderAccount ? uploaderAccount.scorpture_avatar_url || null : null,
+    views: video.views + 1,
+    createdAt: video.created_at,
+    likeCount: db.getScorptureLikeCount(video.id),
+    liked: account ? db.hasScorptureLiked(video.id, account.id) : false,
+    subscriberCount: db.getScorptureSubscriberCount(video.uploader_id),
+    subscribed: account ? db.isScorptureSubscribed(account.id, video.uploader_id) : false,
+    isOwner: account ? account.id === video.uploader_id : false,
+    live: liveStreams.has(video.uploader_id),
+  });
+});
+
+app.post('/api/scorpture/videos', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  const title = String(req.body.title || '').slice(0, 100).trim();
+  const description = String(req.body.description || '').slice(0, 2000).trim();
+  const videoUrl = typeof req.body.videoUrl === 'string' ? req.body.videoUrl.slice(0, 2000) : '';
+  const thumbnailUrl = typeof req.body.thumbnailUrl === 'string' ? req.body.thumbnailUrl.slice(0, 2000) : null;
+  if (!title || !videoUrl.startsWith('/uploads/')) return res.status(400).json({ error: 'Missing title or video file' });
+  const id = crypto.randomUUID();
+  db.insertScorptureVideo({
+    id,
+    uploaderId: account.id,
+    uploaderUsername: account.username,
+    title,
+    description,
+    videoUrl,
+    thumbnailUrl,
+    createdAt: Date.now(),
+  });
+  res.json({ id });
+});
+
+app.delete('/api/scorpture/videos/:id', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  const video = db.getScorptureVideo(req.params.id);
+  if (!video) return res.status(404).json({ error: 'Video not found' });
+  if (video.uploader_id !== account.id) return res.status(403).json({ error: 'Not your video' });
+  db.deleteScorptureVideo(video.id);
+  res.json({ ok: true });
+});
+
+app.get('/api/scorpture/videos/:id/comments', (req, res) => {
+  res.json({ comments: db.getScorptureComments(req.params.id) });
+});
+
+app.post('/api/scorpture/videos/:id/comments', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  const video = db.getScorptureVideo(req.params.id);
+  if (!video) return res.status(404).json({ error: 'Video not found' });
+  const text = String(req.body.text || '').slice(0, 1000).trim();
+  if (!text) return res.status(400).json({ error: 'Empty comment' });
+  const comment = {
+    id: crypto.randomUUID(),
+    videoId: video.id,
+    accountId: account.id,
+    username: account.username,
+    text,
+    createdAt: Date.now(),
+  };
+  db.insertScorptureComment(comment);
+  res.json({ comment: { id: comment.id, username: comment.username, text: comment.text, created_at: comment.createdAt } });
+});
+
+app.post('/api/scorpture/videos/:id/like', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  const video = db.getScorptureVideo(req.params.id);
+  if (!video) return res.status(404).json({ error: 'Video not found' });
+  const liked = db.toggleScorptureLike(video.id, account.id);
+  res.json({ liked, likeCount: db.getScorptureLikeCount(video.id) });
+});
+
+app.get('/api/scorpture/channels/:username', (req, res) => {
+  const account = getAccountFromReq(req);
+  const channelAccount = db.getAccountByUsername(req.params.username);
+  if (!channelAccount) return res.status(404).json({ error: 'No such channel' });
+  const liveStream = liveStreams.get(channelAccount.id);
+  res.json({
+    username: channelAccount.username,
+    subscriberCount: db.getScorptureSubscriberCount(channelAccount.id),
+    subscribed: account ? db.isScorptureSubscribed(account.id, channelAccount.id) : false,
+    isOwner: account ? account.id === channelAccount.id : false,
+    live: !!liveStream,
+    liveTitle: liveStream ? liveStream.title : null,
+    bannerUrl: channelAccount.scorpture_banner_url || null,
+    avatarUrl: channelAccount.scorpture_avatar_url || null,
+  });
+});
+
+app.post('/api/scorpture/channels/:username/subscribe', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  const channelAccount = db.getAccountByUsername(req.params.username);
+  if (!channelAccount) return res.status(404).json({ error: 'No such channel' });
+  if (channelAccount.id === account.id) return res.status(400).json({ error: "Can't subscribe to your own channel" });
+  const subscribed = db.toggleScorptureSubscription(account.id, channelAccount.id);
+  res.json({ subscribed, subscriberCount: db.getScorptureSubscriberCount(channelAccount.id) });
+});
+
+// Banner image is set for your own channel only (there's no username in the URL — it always
+// targets whichever account the bearer token resolves to), same "already uploaded via /upload,
+// this just records the URL" pattern as posting a video.
+app.post('/api/scorpture/banner', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  const bannerUrl = typeof req.body.bannerUrl === 'string' ? req.body.bannerUrl.slice(0, 2000) : '';
+  if (!bannerUrl.startsWith('/uploads/')) return res.status(400).json({ error: 'Missing banner image' });
+  db.setScorptureBanner(account.id, bannerUrl);
+  res.json({ ok: true, bannerUrl });
+});
+
+// Same "own account only" shape as /api/scorpture/banner — replaces the auto-generated
+// initial-letter avatar (see avatarHtml() client-side) with an uploaded picture.
+app.post('/api/scorpture/avatar', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  const avatarUrl = typeof req.body.avatarUrl === 'string' ? req.body.avatarUrl.slice(0, 2000) : '';
+  if (!avatarUrl.startsWith('/uploads/')) return res.status(400).json({ error: 'Missing avatar image' });
+  db.setScorptureAvatar(account.id, avatarUrl);
+  res.json({ ok: true, avatarUrl });
+});
+
 // roomCode -> { history: [], clients: Set<ws>, bc?: {...}, gw?: Map<level, {...}> }
 const rooms = new Map();
+
+// accountId -> Set<ws> — every live connection an account is signed into (a friend can have
+// several tabs/devices open), used for the online dot / "join their room" in the friends panel.
+// Populated from join-server (below) when the client includes its account token; anonymous
+// (no-account) connections never appear here since there's no stable identity to key on.
+const accountConnections = new Map();
+
+function registerAccountConnection(ws, accountId) {
+  ws.accountId = accountId;
+  if (!accountConnections.has(accountId)) accountConnections.set(accountId, new Set());
+  accountConnections.get(accountId).add(ws);
+}
+
+function unregisterAccountConnection(ws) {
+  if (!ws.accountId) return;
+  const set = accountConnections.get(ws.accountId);
+  if (!set) return;
+  set.delete(ws);
+  if (set.size === 0) accountConnections.delete(ws.accountId);
+}
+
+// Online = has any live connection at all; roomCode/roomName come from whichever of those
+// connections happens to be in a room (picking the first is fine — in practice one account is
+// only ever actually chatting in one room at a time, extra tabs are usually just idle).
+function getAccountPresence(accountId) {
+  const set = accountConnections.get(accountId);
+  if (!set || set.size === 0) return { online: false, roomCode: null, roomName: null };
+  let roomCode = null;
+  for (const c of set) {
+    if (c.room) {
+      roomCode = c.room;
+      break;
+    }
+  }
+  const dbRoom = roomCode ? db.getRoom(roomCode) : null;
+  return { online: true, roomCode, roomName: dbRoom ? dbRoom.name : null };
+}
+
+// ---- Scorpture live streaming — one-to-many WebRTC, entirely in-memory/ephemeral (no DB rows,
+// a stream that isn't currently running has nothing to persist). Star topology, not a mesh like
+// Voice Call: the broadcaster holds one RTCPeerConnection per viewer, each viewer holds exactly
+// one connection back to the broadcaster. Scoped by account id (accountId -> stream), not by
+// room, since Scorpture channels are account-based — see scorpture-hello below for how a
+// videos.html tab gets registered in accountConnections without going through join-server's
+// room-oriented profile setup.
+// accountId -> { ws, username, title, startedAt, viewers: Map<viewerId, ws> }
+const liveStreams = new Map();
+
+function endScorptureLive(accountId) {
+  const stream = liveStreams.get(accountId);
+  if (!stream) return;
+  liveStreams.delete(accountId);
+  for (const viewerWs of stream.viewers.values()) {
+    send(viewerWs, { type: 'scorpture-stream-ended' });
+    viewerWs.scorptureStreamerAccountId = null;
+    viewerWs.scorptureViewerId = null;
+  }
+}
+
+// A viewer's own connection dropping — tell the streamer so it can close that one peer connection
+// instead of leaving a dead RTCPeerConnection open forever.
+function leaveScorptureLive(ws) {
+  if (!ws.scorptureStreamerAccountId) return;
+  const stream = liveStreams.get(ws.scorptureStreamerAccountId);
+  if (stream && ws.scorptureViewerId) {
+    stream.viewers.delete(ws.scorptureViewerId);
+    send(stream.ws, { type: 'scorpture-viewer-left', viewerId: ws.scorptureViewerId });
+  }
+  ws.scorptureStreamerAccountId = null;
+  ws.scorptureViewerId = null;
+}
+
+app.get('/api/scorpture/live', (req, res) => {
+  const streams = [...liveStreams.values()].map((s) => ({
+    username: s.username,
+    title: s.title,
+    startedAt: s.startedAt,
+    viewerCount: s.viewers.size,
+  }));
+  res.json({ streams });
+});
+
+// Friend DMs are deliberately not persisted anywhere (no thread/inbox to load later) — this is
+// a one-shot "poke" a friend with a message, delivered live to any open tab/device they have
+// (accountConnections) and, since the ask is to notify them "if they are offline or online",
+// unconditionally via real push too — unlike pushNewMessage's room broadcasts above, this never
+// skips someone just because they're currently connected.
+function sendFriendDm(fromName, targetAccountId, text) {
+  const livePayload = JSON.stringify({ type: 'friend-dm', from: fromName, text, at: Date.now() });
+  const liveConnections = accountConnections.get(targetAccountId);
+  if (liveConnections) {
+    for (const c of liveConnections) {
+      if (c.readyState === c.OPEN) c.send(livePayload);
+    }
+  }
+  const subs = db.getPushSubscriptionsForAccount(targetAccountId);
+  const pushPayload = JSON.stringify({ title: `${fromName} sent you a DM`, body: text, friendDm: true, fromUsername: fromName });
+  for (const sub of subs) {
+    webpush.sendNotification(sub.subscription, pushPayload).catch((err) => {
+      if (err.statusCode === 404 || err.statusCode === 410) db.removePushSubscription(sub.endpoint);
+    });
+  }
+}
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I
 const HISTORY_LIMIT = 50;
 const MAX_GAME_PLAYERS = 20;
@@ -713,8 +1095,8 @@ const BC_MAX_COORD = 10000;
 // ---- Single-player arcade games (Snake, 2048) — no shared room state to speak of, just a
 // per-room best-score leaderboard reusing the same generic `leaderboard` table every other
 // game already uses. One handler pair covers both instead of duplicating near-identical code.
-const ARCADE_LEADERBOARD_KEY = { snake: 'snake', '2048': 'g2048' };
-const ARCADE_ACTIVITY_CODE = { snake: 'sk', '2048': 'tf' };
+const ARCADE_LEADERBOARD_KEY = { snake: 'snake', '2048': 'g2048', fighterplane: 'fighterplane' };
+const ARCADE_ACTIVITY_CODE = { snake: 'sk', '2048': 'tf', fighterplane: 'fp' };
 const RATE_LIMIT_WINDOW_MS = 6000;
 const RATE_LIMIT_MAX_MESSAGES = 8; // generous for real typing/conversation, tight enough to stop a flood
 const ROOM_CREATE_WINDOW_MS = 60000;
@@ -885,7 +1267,10 @@ function applyBcDamage(code, targetWs, targetEntry, amount, byId) {
   // back up to 1 every time. See ARMOR_REDUCTION on the client for the matching solo-mode logic.
   let dealt = amount;
   if (targetEntry.armorReduction && Math.random() < targetEntry.armorReduction) dealt = Math.max(0, dealt - 1);
-  targetEntry.health = Math.max(0, targetEntry.health - dealt);
+  // Creative players can still be hit (health visibly drops, regen brings it back) but never
+  // actually die — floor at 1 instead of 0 so the death branch below is unreachable for them.
+  const minHealth = targetEntry.gameMode === 'creative' ? 1 : 0;
+  targetEntry.health = Math.max(minHealth, targetEntry.health - dealt);
   targetEntry.lastDamageAt = Date.now();
   if (targetEntry.health > 0) {
     broadcastBc(code, { type: 'bc-hit', targetId: targetEntry.id, health: targetEntry.health, byId });
@@ -1490,8 +1875,94 @@ wss.on('connection', (ws) => {
         avatarUrl: saved ? saved.avatar_url : null,
         status: saved ? saved.status : null,
       };
+      if (msg.accountToken) {
+        const account = db.getSessionAccount(String(msg.accountToken));
+        if (account) registerAccountConnection(ws, account.id);
+      }
       send(ws, { type: 'joined-server', profile: ws.profile });
       broadcastWorldwideCount();
+      return;
+    }
+
+    // Scorpture (videos.html) opens its own WebSocket, independent of the room-oriented
+    // join-server flow above — it has no room, no display-name profile, just an account. This is
+    // the minimal registration it needs: resolve the token, register in accountConnections (so a
+    // viewer can look a streamer up by username -> account id), and nothing else.
+    if (msg.type === 'scorpture-hello') {
+      const account = msg.accountToken ? db.getSessionAccount(String(msg.accountToken)) : null;
+      if (account) registerAccountConnection(ws, account.id);
+      send(ws, { type: 'scorpture-hello-ack', username: account ? account.username : null });
+      return;
+    }
+
+    if (msg.type === 'scorpture-go-live') {
+      if (!ws.accountId) return;
+      const title = String(msg.title || 'Untitled stream').slice(0, 100).trim() || 'Untitled stream';
+      const account = db.getAccountById(ws.accountId);
+      if (!account) return;
+      liveStreams.set(ws.accountId, { ws, username: account.username, title, startedAt: Date.now(), viewers: new Map() });
+      send(ws, { type: 'scorpture-go-live-ack', ok: true });
+      return;
+    }
+
+    if (msg.type === 'scorpture-end-live') {
+      if (ws.accountId) endScorptureLive(ws.accountId);
+      return;
+    }
+
+    if (msg.type === 'scorpture-watch-live') {
+      const streamerAccount = db.getAccountByUsername(String(msg.streamerUsername || '').trim());
+      const stream = streamerAccount ? liveStreams.get(streamerAccount.id) : null;
+      if (!stream) {
+        send(ws, { type: 'scorpture-watch-ack', live: false });
+        return;
+      }
+      const viewerId = crypto.randomUUID();
+      stream.viewers.set(viewerId, ws);
+      ws.scorptureStreamerAccountId = streamerAccount.id;
+      ws.scorptureViewerId = viewerId;
+      send(ws, { type: 'scorpture-watch-ack', live: true, title: stream.title });
+      send(stream.ws, { type: 'scorpture-viewer-joined', viewerId });
+      return;
+    }
+
+    if (msg.type === 'scorpture-leave-live') {
+      leaveScorptureLive(ws);
+      return;
+    }
+
+    // Generic SDP offer/answer + ICE relay, both directions. A viewer only ever has one
+    // streamer, so it addresses implicitly via ws.scorptureStreamerAccountId; the streamer
+    // addresses a specific viewer explicitly via msg.viewerId (it may be broadcasting to several).
+    if (msg.type === 'scorpture-signal') {
+      if (ws.scorptureStreamerAccountId) {
+        const stream = liveStreams.get(ws.scorptureStreamerAccountId);
+        if (stream) send(stream.ws, { type: 'scorpture-signal', viewerId: ws.scorptureViewerId, signal: msg.signal });
+        return;
+      }
+      if (ws.accountId && msg.viewerId) {
+        const stream = liveStreams.get(ws.accountId);
+        const viewerWs = stream && stream.viewers.get(msg.viewerId);
+        if (viewerWs) send(viewerWs, { type: 'scorpture-signal', signal: msg.signal });
+      }
+      return;
+    }
+
+    // Live chat — one flat broadcast to the streamer + every current viewer (including the
+    // sender, so their own message renders the same way whether they sent it or received it
+    // back). Sign-in required (need a real username to attribute it to); watching itself doesn't.
+    if (msg.type === 'scorpture-live-chat') {
+      const text = String(msg.text || '').slice(0, 300).trim();
+      if (!text || !ws.accountId) return;
+      const account = db.getAccountById(ws.accountId);
+      if (!account) return;
+      const stream = ws.scorptureStreamerAccountId
+        ? liveStreams.get(ws.scorptureStreamerAccountId)
+        : liveStreams.get(ws.accountId);
+      if (!stream) return;
+      const chatMsg = { type: 'scorpture-live-chat', username: account.username, text, at: Date.now() };
+      send(stream.ws, chatMsg);
+      for (const viewerWs of stream.viewers.values()) send(viewerWs, chatMsg);
       return;
     }
 
@@ -1524,7 +1995,10 @@ wss.on('connection', (ws) => {
       ws.bcRoom = code;
       ws.bcId = id;
       const players = [...room.bc.players.values()].map((p) => ({ id: p.id, name: p.name, x: p.x, y: p.y, z: p.z, yaw: p.yaw, health: p.health, color: p.color, armorTier: p.armorTier || null }));
-      room.bc.players.set(ws, { id, name, x: 0, y: 2.4, z: 0, yaw: 0, health: BC_MAX_HEALTH, lastPunchAt: 0, lastDamageAt: 0, armorReduction: 0, armorTier: null, color });
+      // gameMode starts unset (treated as survival by applyBcDamage) — bc-join fires the instant
+      // the socket opens, before the player has actually picked Creative/Survival on the start
+      // screen; the real value arrives moments later via bc-set-mode once they click a mode.
+      room.bc.players.set(ws, { id, name, x: 0, y: 2.4, z: 0, yaw: 0, health: BC_MAX_HEALTH, lastPunchAt: 0, lastDamageAt: 0, armorReduction: 0, armorTier: null, color, gameMode: null });
       send(ws, {
         type: 'bc-init',
         id,
@@ -1602,6 +2076,14 @@ wss.on('connection', (ws) => {
       const amount = Math.max(0, Math.min(BC_MAX_HEALTH, Math.floor(+msg.amount || 0)));
       if (amount <= 0) return;
       applyBcDamage(ws.bcRoom, ws, me, amount, null);
+      return;
+    }
+
+    if (msg.type === 'bc-set-mode' && ws.bcRoom) {
+      const room = rooms.get(ws.bcRoom);
+      const me = room && room.bc && room.bc.players.get(ws);
+      if (!me) return;
+      me.gameMode = msg.gameMode === 'creative' ? 'creative' : 'survival';
       return;
     }
 
@@ -2519,6 +3001,32 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    if (msg.type === 'friend-dm') {
+      if (!ws.accountId) {
+        send(ws, { type: 'error', message: 'Sign in to send private DMs' });
+        return;
+      }
+      const toUsername = String(msg.toUsername || '').trim();
+      const text = String(msg.text || '').slice(0, 500).trim();
+      if (!toUsername || !text) {
+        send(ws, { type: 'error', message: 'Missing recipient or message' });
+        return;
+      }
+      const targetAccount = db.getAccountByUsername(toUsername);
+      if (!targetAccount) {
+        send(ws, { type: 'error', message: 'No account with that username' });
+        return;
+      }
+      const friendship = db.getFriendshipBetween(ws.accountId, targetAccount.id);
+      if (!friendship || friendship.status !== 'accepted') {
+        send(ws, { type: 'error', message: 'You can only send private DMs to friends' });
+        return;
+      }
+      sendFriendDm(ws.profile.name, targetAccount.id, text);
+      send(ws, { type: 'friend-dm-sent', toUsername });
+      return;
+    }
+
     if (msg.type === 'create-room') {
       const nowCreate = Date.now();
       ws.roomCreateTimestamps = (ws.roomCreateTimestamps || []).filter((t) => nowCreate - t < ROOM_CREATE_WINDOW_MS);
@@ -2819,6 +3327,17 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    // Scroll-to-top pagination — the room's initial history (see 'joined-room') only ever sends
+    // the newest HISTORY_LIMIT messages; this is the only way to reach anything older.
+    if (msg.type === 'load-older-messages' && ws.room) {
+      const beforeAt = Number(msg.beforeAt);
+      if (!Number.isFinite(beforeAt)) return;
+      const LOAD_OLDER_LIMIT = 50;
+      const messages = db.getMessagesBefore(ws.room, beforeAt, LOAD_OLDER_LIMIT);
+      send(ws, { type: 'older-messages', messages, hasMore: messages.length === LOAD_OLDER_LIMIT });
+      return;
+    }
+
     if (msg.type === 'message' && ws.room) {
       const room = rooms.get(ws.room);
       if (!room) return;
@@ -2947,6 +3466,7 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
+    unregisterAccountConnection(ws);
     if (ws.room) leaveRoom(ws);
     if (ws.profile) broadcastWorldwideCount();
     if (ws.bcRoom) leaveBc(ws);
@@ -2959,6 +3479,8 @@ wss.on('connection', (ws) => {
     if (ws.chRoom) leaveCh(ws);
     if (ws.hmRoom) leaveHm(ws);
     if (ws.arcadeRoom && ws.arcadeName) clearRoomActivity(ws.arcadeRoom, ws.arcadeName);
+    if (ws.accountId && liveStreams.has(ws.accountId)) endScorptureLive(ws.accountId);
+    leaveScorptureLive(ws);
   });
 });
 

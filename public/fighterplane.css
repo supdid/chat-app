@@ -1,0 +1,595 @@
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #071018;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #eaf6ff;
+}
+
+.hidden {
+  display: none !important;
+}
+
+#back-link {
+  position: fixed;
+  top: 0.75rem;
+  left: 0.75rem;
+  z-index: 30;
+  background: rgba(6, 14, 22, 0.65);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 999px;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.85rem;
+  color: #eaf6ff;
+  text-decoration: none;
+}
+
+#back-link:hover {
+  background: rgba(6, 14, 22, 0.85);
+}
+
+#game-canvas {
+  display: block;
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  background: #071018;
+  touch-action: none;
+}
+
+#menu, #leaderboard-overlay, #gameover-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at center, rgba(30, 40, 50, 0.6), rgba(4, 8, 16, 0.92));
+}
+
+.panel {
+  background: rgba(8, 18, 28, 0.75);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 2rem 2.5rem;
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  text-align: center;
+  max-width: 440px;
+  width: min(90vw, 440px);
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.panel h1 {
+  margin: 0 0 0.25rem;
+  background: linear-gradient(90deg, #ff8a3d, #3bb0ff);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.panel h2 {
+  margin: 0 0 1rem;
+}
+
+.tagline {
+  margin: 0 0 1.25rem;
+  color: #a7bdd1;
+  font-size: 0.9rem;
+}
+
+.controls-list {
+  list-style: none;
+  margin: 1.25rem 0 0;
+  padding: 0;
+  text-align: left;
+  font-size: 0.8rem;
+  color: #c3d6e5;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+button.primary {
+  width: 100%;
+  padding: 0.7rem 1.5rem;
+  border: none;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #ff8a3d, #3bb0ff);
+  color: #04121c;
+  font-weight: 700;
+  font-size: 1rem;
+  cursor: pointer;
+  margin-top: 0.5rem;
+}
+
+button.primary:hover {
+  filter: brightness(1.08);
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.panel-header h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  text-align: left;
+}
+
+#leaderboard-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+#leaderboard-list li {
+  display: flex;
+  justify-content: space-between;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  padding: 0.4rem 0.7rem;
+  font-size: 0.9rem;
+}
+
+#hud {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  align-items: flex-end;
+}
+
+#hud-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  font-size: 0.9rem;
+  color: #eaf6ff;
+  width: 100%;
+}
+
+#score-label {
+  margin-right: auto;
+  font-weight: 700;
+  font-size: 1.1rem;
+  background: rgba(6, 14, 22, 0.55);
+  backdrop-filter: blur(8px);
+  padding: 0.35rem 0.8rem;
+  border-radius: 999px;
+}
+
+#best-label {
+  color: #a7bdd1;
+  font-size: 0.8rem;
+}
+
+.icon-btn {
+  background: rgba(255, 255, 255, 0.1);
+  border: none;
+  color: inherit;
+  font-size: 1.1rem;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0.3rem 0.6rem;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.icon-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+#health-bar {
+  display: flex;
+  gap: 0.2rem;
+  background: rgba(6, 14, 22, 0.55);
+  backdrop-filter: blur(8px);
+  padding: 0.35rem 0.6rem;
+  border-radius: 999px;
+}
+
+#health-bar .heart {
+  font-size: 1.1rem;
+  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.6));
+}
+
+#health-bar .heart.empty {
+  opacity: 0.25;
+  filter: grayscale(1);
+}
+
+#missile-status {
+  background: rgba(6, 14, 22, 0.55);
+  backdrop-filter: blur(8px);
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  color: #ffd93d;
+}
+
+#missile-status.locked {
+  color: #ff5a5a;
+}
+
+#missile-status.guiding {
+  color: #34e89e;
+}
+
+#minimap {
+  border-radius: 50%;
+  background: rgba(6, 14, 22, 0.6);
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  backdrop-filter: blur(4px);
+}
+
+#speed-status {
+  background: rgba(6, 14, 22, 0.55);
+  backdrop-filter: blur(8px);
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  color: #a7bdd1;
+}
+
+#speed-status.stalling {
+  color: #ff5a5a;
+  animation: stall-pulse 0.6s ease-in-out infinite;
+}
+
+#lives-status {
+  background: rgba(6, 14, 22, 0.55);
+  backdrop-filter: blur(8px);
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  color: #ff8fa3;
+}
+
+#war-status {
+  background: rgba(6, 14, 22, 0.55);
+  backdrop-filter: blur(8px);
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  color: #eaf6ff;
+}
+
+#attack-btn {
+  border: none;
+  border-radius: 999px;
+  padding: 0.35rem 0.9rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  background: linear-gradient(135deg, #ff8a3d, #ff5a5a);
+  color: #1a0800;
+}
+
+#attack-btn:hover {
+  filter: brightness(1.08);
+}
+
+@keyframes stall-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+#crosshair {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  margin: -5px 0 0 -5px;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  border-radius: 50%;
+  z-index: 9;
+  pointer-events: none;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.6);
+}
+
+#crosshair.missile-cam {
+  border-color: rgba(255, 90, 90, 0.9);
+}
+
+/* Sniper scope — Spider-Man's aim (right-click), a circular window with a hard black vignette
+   outside it (the huge box-shadow spread trick) plus a soft inner shadow at the rim and thin
+   crosshair lines across the circle, rather than onfoot's simple zoom + dot crosshair. */
+#scope-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 11;
+  pointer-events: none;
+  display: none;
+}
+
+#scope-overlay.show {
+  display: block;
+}
+
+#scope-circle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 48vh;
+  height: 48vh;
+  max-width: 92vw;
+  max-height: 92vw;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.97), inset 0 0 40px 14px rgba(0, 0, 0, 0.65);
+  border: 2px solid rgba(0, 0, 0, 0.55);
+}
+
+#scope-circle::before,
+#scope-circle::after {
+  content: '';
+  position: absolute;
+  background: rgba(10, 10, 10, 0.8);
+}
+
+#scope-circle::before {
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  transform: translateX(-50%);
+}
+
+#scope-circle::after {
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 2px;
+  transform: translateY(-50%);
+}
+
+
+#kill-toast {
+  position: fixed;
+  top: 40%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 15;
+  color: #34e89e;
+  font-weight: 800;
+  font-size: 1.6rem;
+  text-shadow: 0 0 8px rgba(0, 0, 0, 0.7);
+  pointer-events: none;
+  animation: pickup-float 0.9s ease-out forwards;
+}
+
+@keyframes pickup-float {
+  0% { opacity: 0; transform: translate(-50%, -30%) scale(0.6); }
+  25% { opacity: 1; transform: translate(-50%, -50%) scale(1.1); }
+  100% { opacity: 0; transform: translate(-50%, -90%) scale(1); }
+}
+
+/* Touch controls (mobile) */
+#touch-controls {
+  position: fixed;
+  inset: 0;
+  z-index: 12;
+  pointer-events: none;
+}
+
+#touch-controls.hidden {
+  display: none;
+}
+
+#touch-fire, #touch-gun, #touch-bail, #touch-aim, #touch-nuke, #touch-web, #touch-jump, #touch-grenade, #touch-call-plane, #touch-enter, #touch-attack {
+  position: absolute;
+  border-radius: 50%;
+  color: #eaf6ff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  padding: 0;
+  pointer-events: auto;
+}
+
+#touch-fire {
+  right: 18px;
+  bottom: 22px;
+  width: 76px;
+  height: 76px;
+  background: rgba(255, 90, 90, 0.3);
+  border: 2px solid rgba(255, 90, 90, 0.6);
+  font-size: 1.6rem;
+}
+
+#touch-fire:active {
+  background: rgba(255, 90, 90, 0.5);
+}
+
+#touch-gun {
+  right: 108px;
+  bottom: 34px;
+  width: 60px;
+  height: 60px;
+  background: rgba(255, 224, 102, 0.25);
+  border: 2px solid rgba(255, 224, 102, 0.55);
+  font-size: 1.3rem;
+}
+
+#touch-gun:active {
+  background: rgba(255, 224, 102, 0.45);
+}
+
+#touch-bail {
+  left: 18px;
+  top: 80px;
+  width: 60px;
+  height: 60px;
+  background: rgba(120, 200, 255, 0.25);
+  border: 2px solid rgba(120, 200, 255, 0.55);
+  font-size: 1.3rem;
+}
+
+#touch-bail:active {
+  background: rgba(120, 200, 255, 0.45);
+}
+
+#touch-aim {
+  left: 18px;
+  top: 152px;
+  width: 60px;
+  height: 60px;
+  background: rgba(52, 232, 158, 0.25);
+  border: 2px solid rgba(52, 232, 158, 0.55);
+  font-size: 1.3rem;
+}
+
+#touch-aim:active {
+  background: rgba(52, 232, 158, 0.45);
+}
+
+#touch-nuke {
+  left: 18px;
+  top: 224px;
+  width: 60px;
+  height: 60px;
+  background: rgba(255, 224, 102, 0.25);
+  border: 2px solid rgba(255, 224, 102, 0.6);
+  font-size: 1.3rem;
+}
+
+#touch-nuke:active {
+  background: rgba(255, 224, 102, 0.5);
+}
+
+#touch-grenade {
+  left: 18px;
+  top: 296px;
+  width: 60px;
+  height: 60px;
+  background: rgba(90, 130, 80, 0.3);
+  border: 2px solid rgba(90, 130, 80, 0.6);
+  font-size: 1.3rem;
+}
+
+#touch-grenade:active {
+  background: rgba(90, 130, 80, 0.5);
+}
+
+#touch-call-plane {
+  left: 18px;
+  top: 368px;
+  width: 60px;
+  height: 60px;
+  background: rgba(59, 157, 255, 0.3);
+  border: 2px solid rgba(59, 157, 255, 0.6);
+  font-size: 1.3rem;
+}
+
+#touch-call-plane:active {
+  background: rgba(59, 157, 255, 0.5);
+}
+
+#touch-enter {
+  left: 18px;
+  top: 440px;
+  width: 60px;
+  height: 60px;
+  background: rgba(255, 255, 255, 0.2);
+  border: 2px solid rgba(255, 255, 255, 0.5);
+  font-size: 1.3rem;
+}
+
+#touch-enter:active {
+  background: rgba(255, 255, 255, 0.4);
+}
+
+#touch-attack {
+  left: 18px;
+  top: 512px;
+  width: 60px;
+  height: 60px;
+  background: rgba(255, 90, 90, 0.3);
+  border: 2px solid rgba(255, 90, 90, 0.6);
+  font-size: 1.3rem;
+}
+
+#touch-attack:active {
+  background: rgba(255, 90, 90, 0.5);
+}
+
+#touch-web {
+  right: 18px;
+  bottom: 108px;
+  width: 60px;
+  height: 60px;
+  background: rgba(245, 247, 255, 0.2);
+  border: 2px solid rgba(245, 247, 255, 0.5);
+  font-size: 1.3rem;
+}
+
+#touch-web:active {
+  background: rgba(245, 247, 255, 0.4);
+}
+
+#touch-jump {
+  right: 108px;
+  bottom: 108px;
+  width: 60px;
+  height: 60px;
+  background: rgba(120, 200, 255, 0.25);
+  border: 2px solid rgba(120, 200, 255, 0.55);
+  font-size: 1.3rem;
+}
+
+#touch-jump:active {
+  background: rgba(120, 200, 255, 0.45);
+}
+
+#missile-joystick {
+  position: absolute;
+  left: 22px;
+  bottom: 22px;
+  width: 110px;
+  height: 110px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  border: 2px solid rgba(52, 232, 158, 0.4);
+  pointer-events: auto;
+  touch-action: none;
+}
+
+#missile-joystick-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 46px;
+  height: 46px;
+  margin: -23px 0 0 -23px;
+  border-radius: 50%;
+  background: rgba(52, 232, 158, 0.35);
+  border: 2px solid rgba(52, 232, 158, 0.6);
+}

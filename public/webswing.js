@@ -24,36 +24,11 @@ const CLIMB_SPEED = 6;
 const CLIMB_IDLE_SLIDE = -1.4; // slow slide down when not actively climbing up/down, for a little urgency
 const GRAPPLE_TOP_MARGIN = 4; // aiming within this many units of a building's roof grapples you up onto it
 const GRAPPLE_SPEED = 40;
+const TOWER_HEIGHT = 480; // the landmark spire at city center — dwarfs every regular building (max ~84)
+const TOWER_SIZE = 20;
 const PUMP_BUILD_RATE = 0.6; // momentum meter (0-1) gained per second while actively pumping A/D
 const PUMP_DECAY_RATE = 0.8; // and lost per second once you stop, so it rewards sustained pumping
 const RELEASE_BOOST_MAX = 1.8; // extra velocity multiplier at full pump momentum on release
-
-// ---- Building interiors (rooms) ----
-const INTERIOR_Y_BASE = 600; // interiors live far above the city so their geometry never overlaps it
-const ROOM_HEIGHT = 4.5; // fixed regardless of the building's own height, so every interior plays the same
-const WALL_THICK = 0.4;
-const DOOR_WIDTH = 2.6;
-const DOOR_HEIGHT = 3.4;
-const CROSS_GAP = 3.0; // width of the open crossway connecting the 4 rooms at the building's center
-const ENTER_TRIGGER_RADIUS = 2.8;
-const EXIT_TRIGGER_RADIUS = 1.4;
-const TELEPORT_COOLDOWN = 1.0; // blocks re-triggering entry/exit for a beat right after a teleport
-
-// ---- Ceiling climbing (grabbed with a mid-air jump press, unlike wall climbing which is grabbed
-// by running straight at a surface) ----
-const CEILING_GRAB_RANGE = 3.2;
-
-// ---- Combat ----
-const PLAYER_MAX_HEARTS = 10;
-const ENEMY_MAX_HEARTS = 5;
-const ENEMY_PUNCH_DAMAGE = 2;
-const PLAYER_PUNCH_DAMAGE = 1;
-const PLAYER_PUNCH_RANGE = 2.0;
-const ENEMY_PUNCH_RANGE = 1.8;
-const PLAYER_PUNCH_COOLDOWN = 0.4;
-const ENEMY_PUNCH_COOLDOWN = 1.2;
-const ENEMY_SPEED = 3.2;
-const HIT_FLASH_DURATION = 0.12; // how long a punched avatar's white flash lasts
 
 const isTouchDevice = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 
@@ -72,8 +47,6 @@ const leaderboardCloseBtn = document.getElementById('leaderboard-close-btn');
 const leaderboardList = document.getElementById('leaderboard-list');
 const pickupToastEl = document.getElementById('pickup-toast');
 const touchControlsEl = document.getElementById('touch-controls');
-const heartHudEl = document.getElementById('heart-hud');
-const hitFlashEl = document.getElementById('hit-flash');
 
 // ---- Seeded PRNG (same small mulberry32 implementation used by Build Craft) ----
 function mulberry32(seed) {
@@ -159,27 +132,6 @@ const buildingMeshes = [];
 const collidables = [];
 let spawnPlatform = { x: 0, y: 2, z: 0 };
 
-// Unlit (MeshBasicMaterial) on purpose — a normal lit material would go dark in shadow/fog at a
-// distance, and with ~70 doors scattered around the city, a real light source per door to keep
-// them bright would be far too expensive. Flat, always-bright color reads clearly from far away
-// for free instead.
-const doorMat = new THREE.MeshBasicMaterial({ color: 0xffb84d, side: THREE.DoubleSide });
-const doorGeo = new THREE.PlaneGeometry(DOOR_WIDTH, DOOR_HEIGHT);
-
-function makeEmojiSprite(emoji, scale) {
-  const c = document.createElement('canvas');
-  c.width = 64; c.height = 64;
-  const ctx = c.getContext('2d');
-  ctx.font = '48px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(emoji, 32, 36);
-  const tex = new THREE.CanvasTexture(c);
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }));
-  sprite.scale.set(scale, scale, 1);
-  return sprite;
-}
-
 function buildCity() {
   const rng = mulberry32(CITY_SEED);
   const windowTex = makeWindowTexture();
@@ -187,6 +139,9 @@ function buildCity() {
   let spawnCandidate = null;
   for (let i = 0; i < GRID; i++) {
     for (let j = 0; j < GRID; j++) {
+      // The exact center cell is reserved for the landmark tower below, always present (no plaza
+      // roll, no jitter) so it's a fixed, unmistakable "middle of the city" reference point.
+      if (i === half && j === half) continue;
       if (rng() < 0.1) continue; // open plaza lot, keeps the skyline from feeling like a solid wall
       const x = (i - half) * CELL + (rng() - 0.5) * 2;
       const z = (j - half) * CELL + (rng() - 0.5) * 2;
@@ -201,28 +156,52 @@ function buildCity() {
       const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
       mesh.position.set(x, h / 2, z);
       scene.add(mesh);
-      // Every building can be walked into — the entrance sits off-center (a quarter of the way
-      // along the south face) so it lines up with one interior room's outer wall rather than the
-      // crossway partition that splits the floor plan into rooms (see buildInteriorFor()).
-      const doorX = x - w / 4;
-      const doorZ = z - d / 2;
-      const info = { mesh, x, z, w, d, h, door: { x: doorX, z: doorZ } };
+      const info = { mesh, x, z, w, d, h };
       mesh.userData.info = info;
       buildings.push(info);
       buildingMeshes.push(mesh);
       collidables.push(mesh);
-      const doorMarker = new THREE.Mesh(doorGeo, doorMat);
-      doorMarker.position.set(doorX, DOOR_HEIGHT / 2, doorZ - 0.03);
-      scene.add(doorMarker);
-      const doorIcon = makeEmojiSprite('🚪', 2);
-      doorIcon.position.set(doorX, DOOR_HEIGHT + 1.4, doorZ);
-      scene.add(doorIcon);
       if (Math.abs(i - half) <= 1 && Math.abs(j - half) <= 1 && (!spawnCandidate || h > spawnCandidate.h)) {
         spawnCandidate = info;
       }
     }
   }
   if (spawnCandidate) spawnPlatform = { x: spawnCandidate.x, y: spawnCandidate.h, z: spawnCandidate.z };
+
+  // ---- Landmark tower: a single, dramatically tall spire dead-center in the city (0,0) ----
+  // Reuses the exact same info shape as a regular building ({mesh,x,z,w,d,h}) and gets pushed
+  // into the same buildings/buildingMeshes/collidables arrays, so wall-climbing, roof-grappling,
+  // and collision push-out all work on it automatically with zero special-casing elsewhere.
+  {
+    const towerTex = windowTex.clone();
+    towerTex.needsUpdate = true;
+    towerTex.repeat.set(Math.max(1, Math.round(TOWER_SIZE / 4)), Math.max(1, Math.round(TOWER_HEIGHT / 4)));
+    const towerMat = new THREE.MeshLambertMaterial({ color: 0xc0392b, map: towerTex });
+    const towerMesh = new THREE.Mesh(new THREE.BoxGeometry(TOWER_SIZE, TOWER_HEIGHT, TOWER_SIZE), towerMat);
+    towerMesh.position.set(0, TOWER_HEIGHT / 2, 0);
+    scene.add(towerMesh);
+    const towerInfo = { mesh: towerMesh, x: 0, z: 0, w: TOWER_SIZE, d: TOWER_SIZE, h: TOWER_HEIGHT };
+    towerMesh.userData.info = towerInfo;
+    buildings.push(towerInfo);
+    buildingMeshes.push(towerMesh);
+    collidables.push(towerMesh);
+
+    // Purely decorative antenna spike on top — not in buildings/collidables, so the roof (and
+    // the top a grapple/climb lands you on) is the flat top of the main tower body, same as
+    // every other building; the spike just makes the landmark read as a proper spire from afar.
+    const spike = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.6, 3, 55, 8),
+      new THREE.MeshLambertMaterial({ color: 0x8a8f96 })
+    );
+    spike.position.set(0, TOWER_HEIGHT + 27.5, 0);
+    scene.add(spike);
+    const beacon = new THREE.Mesh(
+      new THREE.SphereGeometry(1.4, 8, 8),
+      new THREE.MeshBasicMaterial({ color: 0xff3b30 })
+    );
+    beacon.position.set(0, TOWER_HEIGHT + 55, 0);
+    scene.add(beacon);
+  }
 
   const groundSize = GRID * CELL + 80;
   const groundTex = makeGroundTexture();
@@ -238,143 +217,7 @@ function buildCity() {
 }
 buildCity();
 
-// ---- Building interiors: entering a door rebuilds a 4-room interior sized to that specific
-// building (floor plan split into a 2x2 grid of rooms by two crossing partition walls, each with
-// a gap in the middle so all 4 rooms open onto a shared crossway) far above the city so its
-// geometry never overlaps anything outside. Only one building's interior exists at a time — it's
-// rebuilt fresh (and the previous one discarded) on every entry rather than keeping all ~70 in
-// memory, since only the building you're currently in matters. ----
-const interiorGroup = new THREE.Group();
-scene.add(interiorGroup);
-let interiorWalls = []; // {x,z,w,d,h,yMin} AABBs, same shape as `buildings`, for wall push-out
-let interiorWallMeshes = []; // raycast targets for wall climbing
-let interiorFloorMeshes = [];
-let interiorCeilingMeshes = [];
-let interiorExitPoint = null; // local {x,z} inside the entrance room that teleports back outside
-let insideBuilding = null; // the building info of whichever interior is currently loaded, or null
-let teleportCooldown = 0; // blocks immediately re-triggering entry/exit right after a teleport
-
-// The physics/collision functions below (groundCheck, resolveWallCollisions, tryStartClimb, the
-// ceiling-grab check) all read through these instead of the city's own arrays directly, so the
-// exact same code drives movement whether you're outside in the city or inside a building — only
-// what these four point at changes on enter/exit.
-let activeCollidables = collidables;
-let activeWallInfos = buildings;
-let activeClimbMeshes = buildingMeshes;
-let activeCeilingMeshes = [];
-
-const interiorFloorMat = new THREE.MeshLambertMaterial({ color: 0x4a4437 });
-const interiorCeilMat = new THREE.MeshLambertMaterial({ color: 0x30343c });
-const interiorWallMat = new THREE.MeshLambertMaterial({ color: 0x8a7f6a });
-
-function buildInteriorFor(b) {
-  while (interiorGroup.children.length) interiorGroup.remove(interiorGroup.children[0]);
-  interiorWalls = [];
-  interiorWallMeshes = [];
-  interiorFloorMeshes = [];
-  interiorCeilingMeshes = [];
-
-  const baseX = b.x, baseZ = b.z;
-  const halfW = b.w / 2, halfD = b.d / 2;
-  const yMin = INTERIOR_Y_BASE, yMax = INTERIOR_Y_BASE + ROOM_HEIGHT;
-
-  const floor = new THREE.Mesh(new THREE.BoxGeometry(b.w, 0.3, b.d), interiorFloorMat);
-  floor.position.set(baseX, INTERIOR_Y_BASE - 0.15, baseZ);
-  interiorGroup.add(floor);
-  interiorFloorMeshes.push(floor);
-
-  const ceiling = new THREE.Mesh(new THREE.BoxGeometry(b.w, 0.3, b.d), interiorCeilMat);
-  ceiling.position.set(baseX, yMax + 0.15, baseZ);
-  interiorGroup.add(ceiling);
-  interiorCeilingMeshes.push(ceiling);
-
-  function addWall(cx, cz, sizeX, sizeZ) {
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(sizeX, ROOM_HEIGHT, sizeZ), interiorWallMat);
-    mesh.position.set(cx, INTERIOR_Y_BASE + ROOM_HEIGHT / 2, cz);
-    interiorGroup.add(mesh);
-    const info = { x: cx, z: cz, w: sizeX, d: sizeZ, h: yMax, yMin };
-    mesh.userData.info = info; // tryStartClimb() reads this off the raycast hit to grab the wall
-    interiorWallMeshes.push(mesh);
-    interiorWalls.push(info);
-  }
-
-  // Perimeter walls. The south wall carries the door gap (matching the exterior door marker's
-  // off-center position from buildCity()), so the entrance opens straight into one room instead
-  // of into the crossway partition below.
-  const doorHalf = DOOR_WIDTH / 2;
-  const doorX = b.door.x;
-  const southZ = baseZ - halfD;
-  addWall((baseX - halfW + doorX - doorHalf) / 2, southZ, (doorX - doorHalf) - (baseX - halfW), WALL_THICK);
-  addWall((doorX + doorHalf + baseX + halfW) / 2, southZ, (baseX + halfW) - (doorX + doorHalf), WALL_THICK);
-  addWall(baseX, baseZ + halfD, b.w, WALL_THICK); // north wall, no gap
-  addWall(baseX - halfW, baseZ, WALL_THICK, b.d); // west wall, no gap
-  addWall(baseX + halfW, baseZ, WALL_THICK, b.d); // east wall, no gap
-
-  // Two crossing interior partitions split the floor into 4 rooms, each with a gap at the
-  // building's center so every room opens onto a shared crossway.
-  const gapHalf = CROSS_GAP / 2;
-  addWall(baseX, baseZ + (halfD + gapHalf) / 2, WALL_THICK, halfD - gapHalf);
-  addWall(baseX, baseZ - (halfD + gapHalf) / 2, WALL_THICK, halfD - gapHalf);
-  addWall(baseX + (halfW + gapHalf) / 2, baseZ, halfW - gapHalf, WALL_THICK);
-  addWall(baseX - (halfW + gapHalf) / 2, baseZ, halfW - gapHalf, WALL_THICK);
-
-  interiorExitPoint = { x: doorX, z: southZ + 1.0 };
-  // Raycasts (wall/ceiling climb grabs) read matrixWorld, which three.js only refreshes during a
-  // render pass — force it now so a grab attempted before the next render still sees these meshes
-  // in the right place instead of at their pre-transform default.
-  interiorGroup.updateMatrixWorld(true);
-  // Spawn well clear of the exit trigger point above (southZ + 1.0) — otherwise, the moment the
-  // post-entry teleport cooldown expires, the player would still be standing inside the exit
-  // radius and get bounced straight back outside without ever having moved.
-  return { spawnX: doorX, spawnZ: southZ + 3.5, enemyX: baseX + halfW / 2, enemyZ: baseZ + halfD / 2 };
-}
-
-function checkBuildingEntry() {
-  if (teleportCooldown > 0) return;
-  for (const b of buildings) {
-    const dx = player.x - b.door.x, dz = player.z - b.door.z;
-    if (dx * dx + dz * dz < ENTER_TRIGGER_RADIUS * ENTER_TRIGGER_RADIUS) { enterBuilding(b); return; }
-  }
-}
-
-function checkBuildingExit() {
-  if (teleportCooldown > 0 || !interiorExitPoint) return;
-  const dx = player.x - interiorExitPoint.x, dz = player.z - interiorExitPoint.z;
-  if (dx * dx + dz * dz < EXIT_TRIGGER_RADIUS * EXIT_TRIGGER_RADIUS) exitInterior();
-}
-
-function enterBuilding(b) {
-  const spawn = buildInteriorFor(b);
-  insideBuilding = b;
-  teleportCooldown = TELEPORT_COOLDOWN;
-  player.x = spawn.spawnX; player.y = INTERIOR_Y_BASE; player.z = spawn.spawnZ;
-  player.vx = player.vy = player.vz = 0;
-  player.grounded = true;
-  player.climbing = false; player.swinging = false; player.anchor = null; player.grappling = false;
-  activeCollidables = interiorFloorMeshes;
-  activeWallInfos = interiorWalls;
-  activeClimbMeshes = interiorWallMeshes;
-  activeCeilingMeshes = interiorCeilingMeshes;
-  spawnEnemy(spawn.enemyX, spawn.enemyZ);
-  showToast('Inside — find the door to leave', 1600);
-}
-
-function exitInterior() {
-  const b = insideBuilding;
-  insideBuilding = null;
-  teleportCooldown = TELEPORT_COOLDOWN;
-  player.x = b.door.x; player.y = 1; player.z = b.door.z - 3;
-  player.vx = player.vy = player.vz = 0;
-  player.grounded = false;
-  player.climbing = false; player.swinging = false; player.anchor = null;
-  activeCollidables = collidables;
-  activeWallInfos = buildings;
-  activeClimbMeshes = buildingMeshes;
-  activeCeilingMeshes = [];
-  despawnEnemy();
-}
-
-// ---- Avatars (shared between the local player, remote ghosts, and the enemy) ----
+// ---- Avatars (shared between the local player and remote ghosts) ----
 function makeAvatar(name, showName, bodyColor = 0xcc1f36, limbColor = 0x1f3fcc, emissive = 0x000000) {
   const group = new THREE.Group();
   const bodyMat = new THREE.MeshLambertMaterial({ color: bodyColor, emissive });
@@ -434,7 +277,6 @@ const player = {
   grappling: false,
   grappleTarget: null,
   pumpMomentum: 0,
-  punchCooldown: 0,
 };
 
 const localAvatar = makeAvatar('You', false);
@@ -465,135 +307,6 @@ function updateWebStrand(strand, from, to) {
 }
 
 const webStrand = makeWebStrand();
-
-// ---- Combat: a single enemy exists at a time, spawned fresh in the far corner room whenever a
-// building is entered (see enterBuilding()) and cleared again on exit. Hearts: player has 10 and
-// loses 2 per enemy punch, the enemy has 5 and loses 1 per player punch — punches land through
-// handlePunch()/updateEnemy() below, purely distance-gated (no aiming required), each on its own
-// cooldown so mashing the button doesn't spam damage. ----
-let playerHearts = PLAYER_MAX_HEARTS;
-const enemy = {
-  active: false,
-  alive: false,
-  x: 0, y: 0, z: 0,
-  hearts: ENEMY_MAX_HEARTS,
-  group: null,
-  punchCooldown: 0,
-  hitFlashTimer: 0,
-};
-let playerHitFlashTimer = 0;
-
-function renderHearts() {
-  heartHudEl.innerHTML = '';
-  for (let i = 0; i < PLAYER_MAX_HEARTS; i++) {
-    const span = document.createElement('span');
-    span.className = 'heart' + (i < playerHearts ? '' : ' heart-empty');
-    span.textContent = '❤️';
-    heartHudEl.appendChild(span);
-  }
-}
-renderHearts();
-
-function spawnEnemy(x, z) {
-  despawnEnemy();
-  enemy.x = x; enemy.y = INTERIOR_Y_BASE; enemy.z = z;
-  enemy.hearts = ENEMY_MAX_HEARTS;
-  enemy.alive = true;
-  enemy.active = true;
-  enemy.punchCooldown = 0.6; // a brief grace beat before it can land its first punch
-  enemy.hitFlashTimer = 0;
-  // Bright unlit-looking orange with a matching emissive glow so it reads clearly against the
-  // interior's dim tan/brown walls and floor, plus a floating ⚠️ overhead visible across a room.
-  enemy.group = makeAvatar('Thug', false, 0xff6a1a, 0x1a1a1a, 0x552200);
-  enemy.group.position.set(x, INTERIOR_Y_BASE, z);
-  const warningIcon = makeEmojiSprite('⚠️', 1.1);
-  warningIcon.position.y = 2.3;
-  enemy.group.add(warningIcon);
-  scene.add(enemy.group);
-}
-
-function despawnEnemy() {
-  if (enemy.group) scene.remove(enemy.group);
-  enemy.group = null;
-  enemy.active = false;
-  enemy.alive = false;
-}
-
-function flashAvatar(group, whiteMat) {
-  group.traverse((obj) => {
-    if (obj.isMesh && !obj._origMat) { obj._origMat = obj.material; obj.material = whiteMat; }
-  });
-}
-function unflashAvatar(group) {
-  group.traverse((obj) => {
-    if (obj.isMesh && obj._origMat) { obj.material = obj._origMat; obj._origMat = null; }
-  });
-}
-const hitFlashMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-
-function handlePunch() {
-  if (player.punchCooldown > 0 || !enemy.alive) return;
-  const dx = enemy.x - player.x, dy = enemy.y - player.y, dz = enemy.z - player.z;
-  if (Math.hypot(dx, dy, dz) > PLAYER_PUNCH_RANGE) return;
-  player.punchCooldown = PLAYER_PUNCH_COOLDOWN;
-  enemy.hearts -= PLAYER_PUNCH_DAMAGE;
-  enemy.hitFlashTimer = HIT_FLASH_DURATION;
-  flashAvatar(enemy.group, hitFlashMat);
-  playSound('punch');
-  if (enemy.hearts <= 0) {
-    despawnEnemy();
-    showToast('Bad guy defeated!', 1400);
-  }
-}
-
-function takePlayerDamage(amount) {
-  playerHearts = Math.max(0, playerHearts - amount);
-  renderHearts();
-  playerHitFlashTimer = HIT_FLASH_DURATION;
-  hitFlashEl.classList.remove('hidden');
-  playSound('hurt');
-  if (playerHearts <= 0) handlePlayerKO();
-}
-
-function handlePlayerKO() {
-  showToast('Knocked out! Kicked back outside.', 1600);
-  setTimeout(() => {
-    if (insideBuilding) exitInterior();
-    playerHearts = PLAYER_MAX_HEARTS;
-    renderHearts();
-  }, 1200);
-}
-
-function updateEnemy(dt) {
-  if (playerHitFlashTimer > 0) {
-    playerHitFlashTimer -= dt;
-    if (playerHitFlashTimer <= 0) hitFlashEl.classList.add('hidden');
-  }
-  if (!enemy.active || !enemy.alive) return;
-  if (enemy.hitFlashTimer > 0) {
-    enemy.hitFlashTimer -= dt;
-    if (enemy.hitFlashTimer <= 0) unflashAvatar(enemy.group);
-  }
-  if (enemy.punchCooldown > 0) enemy.punchCooldown -= dt;
-
-  const dx = player.x - enemy.x, dz = player.z - enemy.z;
-  const dist = Math.hypot(dx, dz);
-  let moving = false;
-  if (dist > ENEMY_PUNCH_RANGE) {
-    const nx = dx / (dist || 1), nz = dz / (dist || 1);
-    enemy.x += nx * ENEMY_SPEED * dt;
-    enemy.z += nz * ENEMY_SPEED * dt;
-    moving = true;
-  } else if (enemy.punchCooldown <= 0) {
-    enemy.punchCooldown = ENEMY_PUNCH_COOLDOWN;
-    takePlayerDamage(ENEMY_PUNCH_DAMAGE);
-  }
-  // A little bob while it walks makes it unmistakable that it's alive and closing in, not just
-  // a static prop standing in the room.
-  const bob = moving ? Math.abs(Math.sin(performance.now() * 0.012)) * 0.12 : 0;
-  enemy.group.position.set(enemy.x, enemy.y + bob, enemy.z);
-  enemy.group.rotation.y = Math.atan2(player.x - enemy.x, player.z - enemy.z);
-}
 
 // ---- Camera: third-person orbit driven by camYaw/camPitch (mouse drag or touch drag) ----
 let camYaw = 0;
@@ -704,7 +417,7 @@ function updateOrbs(dt) {
 // ---- Web-swing action ----
 const raycaster = new THREE.Raycaster();
 function shootWeb() {
-  if (player.grappling || insideBuilding) return; // no sky to swing to indoors — use punches instead
+  if (player.grappling) return;
   const origin = new THREE.Vector3(player.x, player.y + 1.5, player.z);
   const dir = aimDirection();
   raycaster.set(origin, dir);
@@ -752,11 +465,6 @@ function releaseWeb() {
 }
 
 function handleWebAction() {
-  // Same action button as outside (E / left click / the 🕸️ touch button) does the contextually
-  // useful thing indoors instead: there's no sky to swing to in a room, but there is a bad guy to
-  // hit. The dedicated F / 👊 punch button still works too — this just means you don't have to
-  // know about it to start fighting back.
-  if (insideBuilding) { handlePunch(); return; }
   if (player.grappling) return;
   if (player.swinging) releaseWeb();
   else shootWeb();
@@ -787,13 +495,6 @@ function updateGrapple(dt) {
 function doJump() {
   if (player.swinging) return;
   if (player.climbing) {
-    if (player.climbAxis === 'ceiling') {
-      player.climbing = false;
-      player.vy = -2;
-      player.grounded = false;
-      playSound('jump');
-      return;
-    }
     // Push off the wall the player was clinging to, in whichever direction its face pointed.
     player.climbing = false;
     player.vx = player.climbNormal.x * 7;
@@ -803,7 +504,7 @@ function doJump() {
     playSound('jump');
     return;
   }
-  if (!player.grounded) { tryGrabCeiling(); return; } // jumping again mid-air reaches for a ceiling
+  if (!player.grounded) return; // no double-jump
   player.vy = JUMP_VEL;
   player.grounded = false;
   playSound('jump');
@@ -812,9 +513,7 @@ function doJump() {
 // ---- Wall climbing: a short forward raycast while running toward a building grabs its wall.
 // The player is then pinned to a fixed offset outside that wall's plane (climbFixedCoord along
 // climbAxis) and W/S/A/D drive climbing up/down and shuffling sideways along the face instead of
-// normal ground/air movement. Ceiling climbing (below) is the same idea rotated 90° — grabbed by
-// jumping while airborne near a ceiling instead of running at a wall, since there's no "running at
-// the ceiling" equivalent — then W/S/A/D shuffle freely across it in camera-relative directions.
+// normal ground/air movement.
 const climbRay = new THREE.Raycaster();
 function tryStartClimb() {
   // Gated on actual horizontal speed/direction rather than requiring the literal forward key —
@@ -824,7 +523,7 @@ function tryStartClimb() {
   const dir = new THREE.Vector3(player.vx, 0, player.vz).normalize();
   climbRay.set(new THREE.Vector3(player.x, player.y + 1.0, player.z), dir);
   climbRay.far = 1.4;
-  const hits = climbRay.intersectObjects(activeClimbMeshes, false);
+  const hits = climbRay.intersectObjects(buildingMeshes, false);
   if (!hits.length) return;
   const hit = hits[0];
   const b = hit.object.userData.info;
@@ -845,44 +544,8 @@ function tryStartClimb() {
   player.vx = 0; player.vy = 0; player.vz = 0;
 }
 
-const ceilingRay = new THREE.Raycaster();
-function findCeilingAt(x, y, z) {
-  if (!activeCeilingMeshes.length) return null;
-  ceilingRay.set(new THREE.Vector3(x, y, z), UP_AXIS);
-  ceilingRay.far = CEILING_GRAB_RANGE;
-  const hits = ceilingRay.intersectObjects(activeCeilingMeshes, false);
-  return hits.length ? hits[0] : null;
-}
-
-function tryGrabCeiling() {
-  const hit = findCeilingAt(player.x, player.y + 1.0, player.z);
-  if (!hit) return;
-  player.climbing = true;
-  player.climbAxis = 'ceiling';
-  player.climbFixedCoord = hit.point.y - CLIMB_OFFSET;
-  player.climbNormal = { x: 0, z: 0 };
-  player.climbBuilding = null;
-  player.vx = player.vy = player.vz = 0;
-  player.grounded = false;
-  playSound('jump');
-}
-
 function updateClimb(dt) {
   const { f, r } = readMoveInput();
-  if (player.climbAxis === 'ceiling') {
-    const fwdX = -Math.sin(camYaw), fwdZ = -Math.cos(camYaw);
-    const rightX = -fwdZ, rightZ = fwdX;
-    player.x += (fwdX * f + rightX * r) * CLIMB_SPEED * dt;
-    player.z += (fwdZ * f + rightZ * r) * CLIMB_SPEED * dt;
-    player.y = player.climbFixedCoord;
-    // Wander out from under the ceiling and you drop — same "let go past the edge" feel as
-    // sliding off the bottom/top of a climbed wall.
-    if (!findCeilingAt(player.x, player.climbFixedCoord + CLIMB_OFFSET - 0.1, player.z)) {
-      player.climbing = false;
-      player.grounded = false;
-    }
-    return;
-  }
   player.y += (f !== 0 ? f * CLIMB_SPEED : CLIMB_IDLE_SLIDE) * dt;
   const b = player.climbBuilding;
   const floorY = b.yMin !== undefined ? b.yMin : 0;
@@ -926,7 +589,6 @@ window.addEventListener('keydown', (e) => {
   keys[e.code] = true;
   if (e.code === 'Space') { e.preventDefault(); doJump(); }
   if (e.code === 'KeyE') { e.preventDefault(); handleWebAction(); }
-  if (e.code === 'KeyF') { e.preventDefault(); handlePunch(); }
 });
 window.addEventListener('keyup', (e) => { keys[e.code] = false; });
 
@@ -1056,7 +718,6 @@ if (isTouchDevice) {
   }
   bindTap('touch-jump', () => doJump());
   bindTap('touch-web', () => handleWebAction());
-  bindTap('touch-punch', () => handlePunch());
 }
 
 // ---- Physics ----
@@ -1127,7 +788,7 @@ const downRay = new THREE.Raycaster();
 function groundCheck() {
   downRay.set(new THREE.Vector3(player.x, player.y + 1.0, player.z), new THREE.Vector3(0, -1, 0));
   downRay.far = 250;
-  const hits = downRay.intersectObjects(activeCollidables, false);
+  const hits = downRay.intersectObjects(collidables, false);
   if (hits.length) {
     const groundY = hits[0].point.y;
     if (player.y <= groundY + 0.15 && player.vy <= 0) {
@@ -1148,11 +809,6 @@ function updateRope() {
 }
 
 function update(dt) {
-  if (teleportCooldown > 0) teleportCooldown = Math.max(0, teleportCooldown - dt);
-  if (player.punchCooldown > 0) player.punchCooldown -= dt;
-  if (insideBuilding) checkBuildingExit(); else checkBuildingEntry();
-  updateEnemy(dt);
-
   updateInputMove(dt);
   if (!player.swinging && !player.climbing && !player.grappling) tryStartClimb();
 
@@ -1176,7 +832,7 @@ function update(dt) {
   // having hit the building's side wall and shoved off, instead of coming to a stand on top.
   if (!player.climbing && !player.grappling) {
     groundCheck();
-    resolveWallCollisions(activeWallInfos);
+    resolveWallCollisions(buildings);
   }
   if (player.grounded && player.swinging) releaseWeb();
 
@@ -1356,8 +1012,6 @@ function blip(kind) {
     collect: { type: 'triangle', f0: 600, f1: 1200, g: 0.14, dur: 0.2 },
     jump: { type: 'square', f0: 220, f1: 440, g: 0.06, dur: 0.09 },
     land: { type: 'sine', f0: 140, f1: 140, g: 0.12, dur: 0.12 },
-    punch: { type: 'square', f0: 160, f1: 70, g: 0.18, dur: 0.1 },
-    hurt: { type: 'sawtooth', f0: 220, f1: 90, g: 0.16, dur: 0.18 },
   };
   const p = presets[kind];
   if (!p) return;

@@ -99,8 +99,22 @@
       <div class="result-actions">
         <button type="button" id="download-btn">⬇️ Download</button>
         <button type="button" id="send-chat-btn" class="primary hidden">💬 Send to chat</button>
+        <button type="button" id="send-scorpture-btn" class="primary hidden">🦂 Publish to Scorpture</button>
       </div>
     </section>
+  </div>
+
+  <div id="scorpture-publish-overlay" class="hidden">
+    <div id="scorpture-publish-modal" role="dialog" aria-label="Publish to Scorpture">
+      <div class="music-picker-header">
+        <h2>🦂 Publish to Scorpture</h2>
+        <button type="button" id="scorpture-publish-close" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+      <input type="text" id="scorpture-title-input" placeholder="Title" maxlength="100">
+      <textarea id="scorpture-description-input" placeholder="Description (optional)" maxlength="2000"></textarea>
+      <p id="scorpture-publish-status" class="hint"></p>
+      <button type="button" id="scorpture-publish-submit" class="primary">Publish</button>
+    </div>
   </div>
 
   <div id="music-picker-overlay" class="hidden">

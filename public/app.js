@@ -52,6 +52,7 @@ const webswingLink = document.getElementById('webswing-link');
 const buildcraftLink = document.getElementById('buildcraft-link');
 const geometrywaveLink = document.getElementById('geometrywave-link');
 const seincejumpLink = document.getElementById('seincejump-link');
+const fighterplaneLink = document.getElementById('fighterplane-link');
 const pictionaryLink = document.getElementById('pictionary-link');
 const triviaLink = document.getElementById('trivia-link');
 const tictactoeLink = document.getElementById('tictactoe-link');
@@ -106,6 +107,30 @@ const galleryBtn = document.getElementById('gallery-btn');
 const galleryOverlay = document.getElementById('gallery-overlay');
 const galleryCloseBtn = document.getElementById('gallery-close-btn');
 const galleryGridEl = document.getElementById('gallery-grid');
+const friendsOpenBtn = document.getElementById('friends-open-btn');
+const friendsMenuBtn = document.getElementById('friends-menu-btn');
+const friendsOverlay = document.getElementById('friends-overlay');
+const friendsCloseBtn = document.getElementById('friends-close-btn');
+const friendsSignedOutMsg = document.getElementById('friends-signed-out-msg');
+const friendsSignedInContent = document.getElementById('friends-signed-in-content');
+const friendAddForm = document.getElementById('friend-add-form');
+const friendAddInput = document.getElementById('friend-add-input');
+const friendsErrorEl = document.getElementById('friends-error');
+const friendRequestsSection = document.getElementById('friend-requests-section');
+const friendRequestsList = document.getElementById('friend-requests-list');
+const friendOutgoingSection = document.getElementById('friend-outgoing-section');
+const friendOutgoingList = document.getElementById('friend-outgoing-list');
+const friendsListEl = document.getElementById('friends-list');
+const friendsEmptyMsg = document.getElementById('friends-empty-msg');
+const friendBlockedSection = document.getElementById('friend-blocked-section');
+const friendBlockedList = document.getElementById('friend-blocked-list');
+const friendContextMenu = document.getElementById('friend-context-menu');
+const friendDmContextBtn = document.getElementById('friend-dm-context-btn');
+const friendDmOverlay = document.getElementById('friend-dm-overlay');
+const friendDmCloseBtn = document.getElementById('friend-dm-close-btn');
+const friendDmTargetName = document.getElementById('friend-dm-target-name');
+const friendDmForm = document.getElementById('friend-dm-form');
+const friendDmInput = document.getElementById('friend-dm-input');
 const exportLink = document.getElementById('export-link');
 const savedBtn = document.getElementById('saved-btn');
 const savedOverlay = document.getElementById('saved-overlay');
@@ -149,6 +174,13 @@ let myUsername = null;
 let currentRoomCode = null;
 let currentRoomName = null;
 let isHost = false;
+// The WS join-room handler is the only place that ever verifies a room's PIN — /search,
+// /export, and the AI Studio/Video Editor post-to-chat endpoints are plain HTTP and need the
+// PIN threaded through separately. currentRoomPin is set once 'joined-room' actually confirms
+// the join succeeded (pendingJoinPin carries whatever was typed through that async gap); kept
+// in sync afterward if the host changes the PIN mid-session (see the roomPinForm handler).
+let pendingJoinPin = '';
+let currentRoomPin = '';
 let appToastTimeout = null;
 
 function showAppToast(msg) {
@@ -174,7 +206,7 @@ let activeReactionPopover = null;
 
 // --- Minigame activity badges ---
 const roomActivity = new Map(); // name -> game code ('bc'|'gw'|'dg')
-const ACTIVITY_BADGES = { bc: '🏝️', gw: '🔺', dg: '🖍️', wb: '🖌️', tv: '❓', tt: '⭕', ch: '♟️', hm: '🪢', sk: '🐍', tf: '🔢' };
+const ACTIVITY_BADGES = { bc: '🏝️', gw: '🔺', dg: '🖍️', wb: '🖌️', tv: '❓', tt: '⭕', ch: '♟️', hm: '🪢', sk: '🐍', tf: '🔢', fp: '🛩️' };
 let lastRoomUsers = [];
 
 // --- Saved messages — purely client-side (localStorage), stores a content snapshot (not just
@@ -483,7 +515,7 @@ function connect() {
 
   ws.addEventListener('open', () => {
     if (myUsername) {
-      ws.send(JSON.stringify({ type: 'join-server', username: myUsername }));
+      ws.send(JSON.stringify({ type: 'join-server', username: myUsername, accountToken: accountToken || undefined }));
     }
   });
 
@@ -522,7 +554,9 @@ function handleServerMessage(data) {
       loginErrorEl.classList.add('hidden');
       welcomeTextEl.textContent = `Hey, ${myProfile.name}`;
       requestNotificationPermission();
+      if (accountToken) subscribeToPush();
       if (currentRoomCode) {
+        pendingJoinPin = '';
         ws.send(JSON.stringify({ type: 'join-room', code: currentRoomCode }));
       } else {
         renderRecentRooms();
@@ -579,6 +613,8 @@ function handleServerMessage(data) {
       currentRoomCode = data.code;
       currentRoomName = data.name || null;
       isHost = !!data.isHost;
+      currentRoomPin = pendingJoinPin;
+      pendingJoinPin = '';
       roomPinInput.classList.add('hidden');
       roomPinInput.value = '';
       messagesEl.innerHTML = '';
@@ -610,7 +646,7 @@ function handleServerMessage(data) {
       renameRoomInput.value = currentRoomName || '';
       renderOnlineList(data.users);
       updateGameLinks();
-      exportLink.href = `/export?code=${encodeURIComponent(data.code)}`;
+      exportLink.href = `/export?code=${encodeURIComponent(data.code)}&pin=${encodeURIComponent(currentRoomPin)}`;
       saveRecentRoom(data.code, currentRoomName);
       showScreen(chatScreen);
       messageInput.focus();
@@ -719,6 +755,19 @@ function handleServerMessage(data) {
       }
       break;
     }
+
+    // Friend DM landing live (the sender is signed in and we have an open connection right
+    // now) — the server also always fires a real push notification alongside this, per the
+    // "notified whether online or offline" ask, so offline devices still get it.
+    case 'friend-dm':
+      showAppToast(`💬 ${data.from} sent you a DM: ${data.text}`);
+      playNotifySound();
+      notify(`${data.from} sent you a DM`, data.text);
+      break;
+
+    case 'friend-dm-sent':
+      showAppToast(`💬 DM sent to ${data.toUsername}`);
+      break;
 
     case 'announcement-updated':
       currentAnnouncement = data.text || null;
@@ -931,7 +980,8 @@ function renderLinkPreview(bubble, url) {
     .catch(() => {});
 }
 
-function renderMessage(data) {
+function renderMessage(data, opts = {}) {
+  const prepend = !!opts.prepend;
   const el = document.createElement('div');
   const isOwn = myProfile && data.sub === myProfile.sub;
   const isBlocked = !isOwn && blockedNames.has(data.name);
@@ -1629,7 +1679,9 @@ function requestNotificationPermission() {
 // Real push (delivered even with the tab/app fully closed), on top of the in-tab
 // Notification API above. Re-subscribes on every room join so the server always has the
 // subscriber's current room+name — subscriptions are keyed by push endpoint, which is
-// stable per browser+device, so re-saving just updates which room it points at.
+// stable per browser+device, so re-saving just updates which room it points at. Also called
+// with no room joined at all (right after 'joined-server', see handleServerMessage) so a
+// signed-in account still has a subscription for friend-DM push even between rooms.
 function urlBase64ToUint8Array(base64) {
   const padding = '='.repeat((4 - (base64.length % 4)) % 4);
   const base64Safe = (base64 + padding).replace(/-/g, '+').replace(/_/g, '/');
@@ -1639,7 +1691,7 @@ function urlBase64ToUint8Array(base64) {
 
 async function subscribeToPush() {
   if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) return;
-  if (!currentRoomCode || !myProfile) return;
+  if (!myProfile) return;
   // requestNotificationPermission() (fired on joined-server) is async and often hasn't
   // resolved yet by the time we get here — wait on the same pending browser prompt rather
   // than bailing out on a still-'default' permission and never retrying.
@@ -1666,7 +1718,7 @@ async function subscribeToPush() {
     await fetch('/push/subscribe', {
       method: 'POST',
       headers,
-      body: JSON.stringify({ roomCode: currentRoomCode, name: myProfile.name, subscription }),
+      body: JSON.stringify({ roomCode: currentRoomCode || '', name: myProfile.name, subscription }),
     });
   } catch (err) {
     console.error('Push subscribe failed:', err);
@@ -1766,13 +1818,16 @@ function closeMenu() {
 // WebSocket connection knows which shared multiplayer session to join.
 function updateGameLinks() {
   if (!currentRoomCode || !myProfile) return;
-  const params = `?room=${encodeURIComponent(currentRoomCode)}&name=${encodeURIComponent(myProfile.name)}`;
+  // pin is only actually read by aistudio.js/videoeditor.js (for /post-image, /post-media —
+  // see server.js) but carried on every link for simplicity; the other games ignore it.
+  const params = `?room=${encodeURIComponent(currentRoomCode)}&name=${encodeURIComponent(myProfile.name)}&pin=${encodeURIComponent(currentRoomPin)}`;
   aistudioLink.href = `aistudio.html${params}`;
   videoeditorLink.href = `videoeditor.html${params}`;
   webswingLink.href = `webswing.html${params}`;
   buildcraftLink.href = `buildcraft.html${params}`;
   geometrywaveLink.href = `geometrywave.html${params}`;
   seincejumpLink.href = `seince-jump.html${params}`;
+  fighterplaneLink.href = `fighterplane.html${params}`;
   pictionaryLink.href = `pictionary.html${params}`;
   triviaLink.href = `trivia.html${params}`;
   tictactoeLink.href = `tictactoe.html${params}`;
@@ -1824,6 +1879,7 @@ function renderRecentRooms() {
     chip.textContent = r.name ? `${r.name} (${r.code})` : r.code;
     chip.addEventListener('click', () => {
       roomErrorEl.classList.add('hidden');
+      pendingJoinPin = '';
       ws.send(JSON.stringify({ type: 'join-room', code: r.code }));
     });
     recentRoomsList.appendChild(chip);
@@ -1865,6 +1921,13 @@ async function finishAccountSignIn(data) {
   localStorage.setItem(ACCOUNT_TOKEN_KEY, accountToken);
   localStorage.setItem(ACCOUNT_USERNAME_KEY, accountUsername);
   renderAccountState();
+  // Covers signing into an account after the WebSocket already sent its (accountless)
+  // join-server — without this, ws.accountId on the server stays unset until the next
+  // reconnect, and friend-DM push subscribing below would have nothing to attach to.
+  if (ws && ws.readyState === WebSocket.OPEN && myProfile) {
+    ws.send(JSON.stringify({ type: 'join-server', username: myProfile.name, accountToken }));
+  }
+  subscribeToPush();
   await pushLocalRecentRoomsToAccount();
   syncRecentRoomsFromAccount();
 }
@@ -2009,6 +2072,225 @@ window.addEventListener('storage', (e) => {
   if (accountToken) syncRecentRoomsFromAccount();
 });
 
+// --- Friends (account-only) ---
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+// presence is only ever set on entries in the "Your friends" list (requests/outgoing/blocked
+// rows don't get a dot) — { online, roomCode } or omitted entirely.
+function friendRow(username, actions, presence) {
+  const li = document.createElement('li');
+  li.className = 'friend-row';
+  const buttonsHtml = actions
+    .map((a) => {
+      const roomAttr = a.roomCode ? ` data-room-code="${escapeHtml(a.roomCode)}"` : '';
+      return `<button type="button" class="friend-action-btn${a.danger ? ' danger' : ''}" data-action="${a.action}" data-username="${escapeHtml(username)}"${roomAttr}>${a.label}</button>`;
+    })
+    .join('');
+  const dotHtml = presence
+    ? `<span class="presence-dot ${presence.online ? 'online' : 'offline'}" title="${presence.online ? 'Online' : 'Offline'}"></span>`
+    : '';
+  li.innerHTML = `${dotHtml}<span class="friend-name">${escapeHtml(username)}</span><span class="friend-actions">${buttonsHtml}</span>`;
+  return li;
+}
+
+async function loadFriends() {
+  if (!accountToken) return;
+  friendsErrorEl.classList.add('hidden');
+  try {
+    const [friendsRes, presenceRes] = await Promise.all([
+      fetch('/friends', { headers: { Authorization: `Bearer ${accountToken}` } }),
+      fetch('/friends/presence', { headers: { Authorization: `Bearer ${accountToken}` } }),
+    ]);
+    if (!friendsRes.ok) return;
+    const data = await friendsRes.json();
+    const presenceByName = new Map();
+    if (presenceRes.ok) {
+      const presenceData = await presenceRes.json();
+      presenceData.presence.forEach((p) => presenceByName.set(p.username, p));
+    }
+    data.friends = data.friends.map((f) => ({
+      ...f,
+      ...(presenceByName.get(f.username) || { online: false, roomCode: null, roomName: null }),
+    }));
+    renderFriends(data);
+  } catch {
+    /* offline or server unreachable — panel just keeps showing whatever it last had */
+  }
+}
+
+function renderFriends(data) {
+  friendRequestsList.innerHTML = '';
+  friendRequestsSection.classList.toggle('hidden', data.incoming.length === 0);
+  data.incoming.forEach((r) => {
+    friendRequestsList.appendChild(
+      friendRow(r.username, [
+        { action: 'accept', label: 'Accept' },
+        { action: 'remove', label: 'Decline', danger: true },
+      ])
+    );
+  });
+
+  friendOutgoingList.innerHTML = '';
+  friendOutgoingSection.classList.toggle('hidden', data.outgoing.length === 0);
+  data.outgoing.forEach((r) => {
+    friendOutgoingList.appendChild(friendRow(r.username, [{ action: 'remove', label: 'Cancel', danger: true }]));
+  });
+
+  friendsListEl.innerHTML = '';
+  friendsEmptyMsg.classList.toggle('hidden', data.friends.length !== 0);
+  data.friends.forEach((f) => {
+    const actions = [];
+    if (f.online && f.roomCode) actions.push({ action: 'join', label: 'Join', roomCode: f.roomCode });
+    actions.push({ action: 'remove', label: 'Remove', danger: true });
+    actions.push({ action: 'block', label: 'Block', danger: true });
+    friendsListEl.appendChild(friendRow(f.username, actions, { online: f.online }));
+  });
+
+  friendBlockedList.innerHTML = '';
+  friendBlockedSection.classList.toggle('hidden', data.blocked.length === 0);
+  data.blocked.forEach((b) => {
+    friendBlockedList.appendChild(friendRow(b.username, [{ action: 'unblock', label: 'Unblock' }]));
+  });
+}
+
+async function friendAction(action, username) {
+  friendsErrorEl.classList.add('hidden');
+  try {
+    const res = await fetch(`/friends/${action}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accountToken}` },
+      body: JSON.stringify({ username }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Something went wrong');
+    await loadFriends();
+  } catch (err) {
+    friendsErrorEl.textContent = err.message;
+    friendsErrorEl.classList.remove('hidden');
+  }
+}
+
+// Switches straight into a friend's room: leaves the current one first (if any — same two
+// messages, sent back to back, that "Leave room" then a manual join would produce) so this
+// works identically whether it's clicked from the login screen or from inside another room.
+function joinFriendRoom(code) {
+  if (!code || !ws || ws.readyState !== WebSocket.OPEN) return;
+  friendsOverlay.classList.add('hidden');
+  clearInterval(friendsPollInterval);
+  closeMenu();
+  roomErrorEl.classList.add('hidden');
+  pendingJoinPin = '';
+  if (currentRoomCode) ws.send(JSON.stringify({ type: 'leave-room' }));
+  ws.send(JSON.stringify({ type: 'join-room', code }));
+}
+
+let friendsPollInterval = null;
+const FRIENDS_POLL_MS = 8000;
+
+function openFriendsPanel() {
+  const signedIn = !!accountToken;
+  friendsSignedOutMsg.classList.toggle('hidden', signedIn);
+  friendsSignedInContent.classList.toggle('hidden', !signedIn);
+  friendsOverlay.classList.remove('hidden');
+  if (signedIn) {
+    loadFriends();
+    clearInterval(friendsPollInterval);
+    friendsPollInterval = setInterval(loadFriends, FRIENDS_POLL_MS);
+  }
+}
+
+function closeFriendsPanel() {
+  friendsOverlay.classList.add('hidden');
+  clearInterval(friendsPollInterval);
+}
+
+friendsOpenBtn.addEventListener('click', openFriendsPanel);
+friendsMenuBtn.addEventListener('click', () => {
+  closeMenu();
+  openFriendsPanel();
+});
+friendsCloseBtn.addEventListener('click', closeFriendsPanel);
+friendsOverlay.addEventListener('click', (e) => {
+  if (e.target === friendsOverlay) closeFriendsPanel();
+});
+
+friendAddForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const username = friendAddInput.value.trim();
+  if (!username) return;
+  friendAddInput.value = '';
+  friendAction('request', username);
+});
+
+[friendRequestsList, friendOutgoingList, friendsListEl, friendBlockedList].forEach((list) => {
+  list.addEventListener('click', (e) => {
+    const btn = e.target.closest('.friend-action-btn');
+    if (!btn) return;
+    if (btn.dataset.action === 'join') {
+      joinFriendRoom(btn.dataset.roomCode);
+      return;
+    }
+    friendAction(btn.dataset.action, btn.dataset.username);
+  });
+});
+
+// --- Friend DM: right-click a name in "Your friends" for a context menu, "Send private DM"
+// opens a one-line compose box, Enter (form submit) or the button sends it. ---
+let friendContextTarget = null;
+
+function hideFriendContextMenu() {
+  friendContextMenu.classList.add('hidden');
+  friendContextTarget = null;
+}
+
+friendsListEl.addEventListener('contextmenu', (e) => {
+  const nameEl = e.target.closest('.friend-name');
+  if (!nameEl) return;
+  e.preventDefault();
+  friendContextTarget = nameEl.closest('.friend-row').querySelector('.friend-action-btn').dataset.username;
+  const menuWidth = 200;
+  const left = Math.min(e.clientX, window.innerWidth - menuWidth);
+  friendContextMenu.style.left = `${Math.max(4, left)}px`;
+  friendContextMenu.style.top = `${e.clientY}px`;
+  friendContextMenu.classList.remove('hidden');
+});
+
+document.addEventListener('click', (e) => {
+  if (!friendContextMenu.classList.contains('hidden') && !friendContextMenu.contains(e.target)) {
+    hideFriendContextMenu();
+  }
+});
+
+friendDmContextBtn.addEventListener('click', () => {
+  const target = friendContextTarget;
+  hideFriendContextMenu();
+  if (!target) return;
+  friendDmTargetName.textContent = target;
+  friendDmForm.dataset.username = target;
+  friendDmInput.value = '';
+  friendDmOverlay.classList.remove('hidden');
+  friendDmInput.focus();
+});
+
+friendDmCloseBtn.addEventListener('click', () => friendDmOverlay.classList.add('hidden'));
+friendDmOverlay.addEventListener('click', (e) => {
+  if (e.target === friendDmOverlay) friendDmOverlay.classList.add('hidden');
+});
+
+friendDmForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const toUsername = friendDmForm.dataset.username;
+  const text = friendDmInput.value.trim();
+  if (!toUsername || !text || !ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'friend-dm', toUsername, text }));
+  friendDmOverlay.classList.add('hidden');
+  friendDmInput.value = '';
+});
+
 renameRoomForm.addEventListener('submit', (e) => {
   e.preventDefault();
   if (!currentRoomCode || ws.readyState !== WebSocket.OPEN) return;
@@ -2024,7 +2306,14 @@ announcementForm.addEventListener('submit', (e) => {
 roomPinForm.addEventListener('submit', (e) => {
   e.preventDefault();
   if (!currentRoomCode || ws.readyState !== WebSocket.OPEN) return;
-  ws.send(JSON.stringify({ type: 'set-room-pin', pin: roomPinFormInput.value.trim() }));
+  const newPin = roomPinFormInput.value.trim();
+  ws.send(JSON.stringify({ type: 'set-room-pin', pin: newPin }));
+  // Optimistic — the host is the one setting it, so there's no real risk of this being wrong;
+  // keeps /search, /export, and the game-page links (see updateGameLinks) working with the new
+  // PIN immediately rather than only after some other event happens to refresh them.
+  currentRoomPin = newPin;
+  exportLink.href = `/export?code=${encodeURIComponent(currentRoomCode)}&pin=${encodeURIComponent(currentRoomPin)}`;
+  updateGameLinks();
 });
 
 // --- Room wallpaper (host only) — reuses the same /upload endpoint media messages already use. ---
@@ -2759,7 +3048,7 @@ loginForm.addEventListener('submit', (e) => {
   loginErrorEl.classList.add('hidden');
   setLoginPending(true);
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'join-server', username: myUsername }));
+    ws.send(JSON.stringify({ type: 'join-server', username: myUsername, accountToken: accountToken || undefined }));
   }
   clearTimeout(loginTimeoutId);
   loginTimeoutId = setTimeout(() => {
@@ -2772,6 +3061,7 @@ loginForm.addEventListener('submit', (e) => {
 // --- Room select ---
 createRoomBtn.addEventListener('click', () => {
   roomErrorEl.classList.add('hidden');
+  pendingJoinPin = '';
   ws.send(JSON.stringify({ type: 'create-room' }));
 });
 
@@ -2783,6 +3073,7 @@ joinRoomForm.addEventListener('submit', (e) => {
   const payload = { type: 'join-room', code };
   const pin = roomPinInput.value.trim();
   if (pin) payload.pin = pin;
+  pendingJoinPin = pin;
   ws.send(JSON.stringify(payload));
 });
 
@@ -3293,7 +3584,7 @@ searchForm.addEventListener('submit', async (e) => {
   if (!q || !currentRoomCode) return;
   searchResultsEl.innerHTML = '<li class="search-status">Searching…</li>';
   try {
-    const res = await fetch(`/search?code=${encodeURIComponent(currentRoomCode)}&q=${encodeURIComponent(q)}`);
+    const res = await fetch(`/search?code=${encodeURIComponent(currentRoomCode)}&q=${encodeURIComponent(q)}&pin=${encodeURIComponent(currentRoomPin)}`);
     const data = await res.json();
     renderSearchResults(data.results || []);
   } catch {

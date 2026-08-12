@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Scorpture</title>
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="videos.css">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#ff7a1a">
+<link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+</head>
+<body>
+
+  <header id="topbar">
+    <a id="back-link" href="index.html" title="Back to chat">&larr;</a>
+    <a id="logo-link" href="#/"><span id="logo-mark">🦂</span><span id="logo-text">Scorpture</span></a>
+    <a id="live-nav-link" href="#/live" class="pill-btn">🔴 Live</a>
+    <form id="search-form">
+      <input id="search-input" type="text" placeholder="Search Scorpture" autocomplete="off">
+      <button type="submit" aria-label="Search">🔍</button>
+    </form>
+    <button id="golive-btn" class="pill-btn">🔴 Go Live</button>
+    <button id="upload-btn" class="pill-btn">⬆️ Upload</button>
+    <div id="account-area">
+      <a id="account-name" class="hidden" title="View your channel"></a>
+      <button id="account-signin-btn" class="pill-btn hidden">Sign in</button>
+    </div>
+  </header>
+
+  <main id="app"></main>
+
+  <div id="upload-modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2>Upload a video</h2>
+        <button id="upload-close-btn" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+      <div id="upload-body">
+        <label id="file-drop" for="upload-file-input">
+          <span id="file-drop-label">🎬 Choose a video file</span>
+          <video id="upload-preview" class="hidden" muted></video>
+        </label>
+        <input type="file" id="upload-file-input" accept="video/*" class="hidden">
+        <a id="edit-first-link" href="videoeditor.html" class="pill-btn">🎬 Edit a video first</a>
+        <input type="text" id="upload-title-input" placeholder="Title" maxlength="100">
+        <textarea id="upload-description-input" placeholder="Description (optional)" maxlength="2000"></textarea>
+        <div id="upload-status"></div>
+        <button id="upload-submit-btn" class="pill-btn primary" disabled>Upload</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="golive-modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2 id="golive-header">Go live</h2>
+        <button id="golive-close-btn" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+      <div id="golive-body">
+        <video id="golive-preview" muted autoplay playsinline class="hidden"></video>
+        <input type="text" id="golive-title-input" placeholder="What are you streaming?" maxlength="100">
+        <label id="golive-record-row"><input type="checkbox" id="golive-record-checkbox" checked> Save as a video on Scorpture when I end the stream</label>
+        <div id="golive-source-row">
+          <button id="golive-camera-btn" class="pill-btn">📷 Camera</button>
+          <button id="golive-screen-btn" class="pill-btn">🖥️ Share screen</button>
+        </div>
+        <div id="golive-status"></div>
+        <div id="golive-live-controls" class="hidden">
+          <span id="golive-viewer-count">0 watching</span>
+          <button id="golive-switch-screen-btn" class="pill-btn">🖥️ Switch to screen</button>
+          <button id="golive-switch-camera-btn" class="pill-btn hidden">📷 Switch to camera</button>
+          <button id="golive-end-btn" class="pill-btn danger">⏹️ End stream</button>
+        </div>
+        <div id="golive-chat-container"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="hidden"></div>
+
+  <script src="error-report.js"></script>
+  <script src="videos.js"></script>
+</body>
+</html>

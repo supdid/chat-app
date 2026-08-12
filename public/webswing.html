@@ -22,25 +22,21 @@
       <p class="tagline">Sling webs between skyscrapers and swing through the city like a superhero. Collect glowing orbs as you go.</p>
       <button id="start-btn" class="primary">Start Swinging</button>
       <ul class="controls-list" id="controls-list-desktop">
-        <li><strong>WASD</strong> &mdash; run (reel in/out &amp; pump the swing while airborne, or climb/shuffle while on a wall or ceiling)</li>
+        <li><strong>WASD</strong> &mdash; run (reel in/out &amp; pump the swing while airborne, or climb/shuffle while on a wall)</li>
         <li><strong>Mouse</strong> &mdash; click the city to look around / aim</li>
-        <li><strong>E</strong> (or Left Click) &mdash; shoot a web at the crosshair / let go outside; punches a nearby bad guy instead once you're indoors. Aim near a rooftop to grapple straight up onto it; aim lower to swing from it</li>
+        <li><strong>E</strong> (or Left Click) &mdash; shoot a web at the crosshair / let go. Aim near a rooftop to grapple straight up onto it; aim lower to swing from it</li>
         <li><strong>Scroll wheel</strong> &mdash; zoom the camera in and out</li>
-        <li><strong>Space</strong> &mdash; jump (or push off a wall while climbing). Press it again in mid-air near a ceiling to grab on and crawl across it</li>
-        <li><strong>F</strong> &mdash; also punches a bad guy standing close to you</li>
+        <li><strong>Space</strong> &mdash; jump (or push off a wall while climbing)</li>
         <li>Move into a building's wall to grab on and crawl it &mdash; works while running straight at it or strafing past it</li>
-        <li>Walk up to a building's 🚪 door to go inside &mdash; every building has rooms, and some have a bad guy waiting: you have 10 hearts (lose 2 per hit), he has 5 (loses 1 per punch)</li>
         <li>Pump A/D while swinging to build momentum &mdash; let go at the right moment for a huge boosted jump</li>
       </ul>
       <ul class="controls-list hidden" id="controls-list-touch">
-        <li><strong>Joystick</strong> (bottom-left) &mdash; run, reel/pump while swinging, or climb/shuffle while on a wall or ceiling</li>
+        <li><strong>Joystick</strong> (bottom-left) &mdash; run, reel/pump while swinging, or climb/shuffle while on a wall</li>
         <li><strong>Drag the screen</strong> &mdash; look around / aim</li>
         <li><strong>Pinch with two fingers</strong> &mdash; zoom the camera in and out</li>
-        <li><strong>🕸️ button</strong> &mdash; shoot a web at the crosshair / let go outside; punches a nearby bad guy instead once you're indoors. Aim near a rooftop to grapple up onto it; aim lower to swing from it</li>
-        <li><strong>⤒ button</strong> &mdash; jump (or push off a wall while climbing). Tap it again in mid-air near a ceiling to grab on and crawl across it</li>
-        <li><strong>👊 button</strong> &mdash; also punches a bad guy standing close to you</li>
+        <li><strong>🕸️ button</strong> &mdash; shoot a web at the crosshair / let go. Aim near a rooftop to grapple up onto it; aim lower to swing from it</li>
+        <li><strong>⤒ button</strong> &mdash; jump (or push off a wall while climbing)</li>
         <li>Move into a building's wall to grab on and crawl it &mdash; works while running straight at it or strafing past it</li>
-        <li>Walk up to a building's 🚪 door to go inside &mdash; every building has rooms, and some have a bad guy waiting: you have 10 hearts (lose 2 per hit), he has 5 (loses 1 per punch)</li>
         <li>Pump the joystick side to side while swinging to build momentum &mdash; let go at the right moment for a huge boosted jump</li>
       </ul>
     </div>
@@ -67,8 +63,6 @@
 
   <div id="crosshair" class="hidden"></div>
   <div id="pickup-toast" class="hidden">+1</div>
-  <div id="hit-flash" class="hidden"></div>
-  <div id="heart-hud"></div>
 
   <canvas id="game-canvas" class="hidden"></canvas>
 
@@ -77,7 +71,6 @@
     <div id="touch-buttons">
       <button id="touch-jump" class="touch-btn" aria-label="Jump">⤒</button>
       <button id="touch-web" class="touch-btn" aria-label="Shoot web / let go">🕸️</button>
-      <button id="touch-punch" class="touch-btn" aria-label="Punch">👊</button>
     </div>
   </div>
 

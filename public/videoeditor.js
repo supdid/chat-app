@@ -23,6 +23,7 @@ themeToggleBtn.addEventListener('click', () => {
 const params = new URLSearchParams(location.search);
 const roomCode = params.get('room');
 const myName = params.get('name');
+const roomPin = params.get('pin') || '';
 if (roomCode && myName) {
   document.getElementById('back-link').href = `index.html?room=${encodeURIComponent(roomCode)}&name=${encodeURIComponent(myName)}`;
 }
@@ -68,8 +69,18 @@ const resultSection = document.getElementById('result-section');
 const resultVideo = document.getElementById('result-video');
 const downloadBtn = document.getElementById('download-btn');
 const sendChatBtn = document.getElementById('send-chat-btn');
+const sendScorptureBtn = document.getElementById('send-scorpture-btn');
+const scorptureOverlay = document.getElementById('scorpture-publish-overlay');
+const scorptureCloseBtn = document.getElementById('scorpture-publish-close');
+const scorptureTitleInput = document.getElementById('scorpture-title-input');
+const scorptureDescriptionInput = document.getElementById('scorpture-description-input');
+const scorptureStatusEl = document.getElementById('scorpture-publish-status');
+const scorpturePublishSubmit = document.getElementById('scorpture-publish-submit');
 
 if (roomCode && myName) sendChatBtn.classList.remove('hidden');
+// Same account-token auth as the rest of Scorpture (see videos.js) — this editor has no login
+// of its own, it just reuses whatever token app.js already stored, same-origin.
+if (localStorage.getItem('valk-account-token')) sendScorptureBtn.classList.remove('hidden');
 
 // --- State ---
 let clips = [];       // { id, file, name, url, duration, width, height, trimStart, trimEnd, speed, volume, thumb }
@@ -1640,7 +1651,7 @@ sendChatBtn.addEventListener('click', async () => {
     const postRes = await fetch('/post-media', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code: roomCode, name: myName, mediaUrl: uploadData.url, mediaType: 'video', caption: '🎬 Edited video' }),
+      body: JSON.stringify({ code: roomCode, name: myName, pin: roomPin, mediaUrl: uploadData.url, mediaType: 'video', caption: '🎬 Edited video' }),
     });
     if (!postRes.ok) throw new Error();
     sendChatBtn.textContent = '✅ Sent!';
@@ -1648,6 +1659,84 @@ sendChatBtn.addEventListener('click', async () => {
     sendChatBtn.textContent = '❌ Failed';
   } finally {
     setTimeout(() => { sendChatBtn.textContent = original; sendChatBtn.disabled = false; }, 1600);
+  }
+});
+
+// --- Publish to Scorpture ---
+sendScorptureBtn.addEventListener('click', () => {
+  if (!resultBlob) return;
+  scorptureTitleInput.value = '';
+  scorptureDescriptionInput.value = '';
+  scorptureStatusEl.textContent = '';
+  scorptureOverlay.classList.remove('hidden');
+  scorptureTitleInput.focus();
+});
+
+scorptureCloseBtn.addEventListener('click', () => scorptureOverlay.classList.add('hidden'));
+scorptureOverlay.addEventListener('click', (e) => { if (e.target === scorptureOverlay) scorptureOverlay.classList.add('hidden'); });
+
+// Grabs a frame from the already-rendered result video as the thumbnail — same technique
+// Scorpture's own upload modal uses (captureThumbnail in videos.js), just sourced from
+// #result-video (already loaded/seekable) instead of a freshly-picked file.
+function captureResultThumbnail() {
+  return new Promise((resolve) => {
+    const wasTime = resultVideo.currentTime;
+    const seekTo = Math.min(1, (resultVideo.duration || 2) * 0.1);
+    const onSeeked = () => {
+      resultVideo.removeEventListener('seeked', onSeeked);
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = resultVideo.videoWidth || 320;
+        canvas.height = resultVideo.videoHeight || 180;
+        canvas.getContext('2d').drawImage(resultVideo, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob((blob) => { resultVideo.currentTime = wasTime; resolve(blob); }, 'image/jpeg', 0.85);
+      } catch {
+        resultVideo.currentTime = wasTime;
+        resolve(null);
+      }
+    };
+    resultVideo.addEventListener('seeked', onSeeked);
+    resultVideo.currentTime = seekTo;
+  });
+}
+
+async function uploadToServer(fileOrBlob, filename) {
+  const formData = new FormData();
+  formData.append('file', fileOrBlob, filename);
+  const res = await fetch('/upload', { method: 'POST', body: formData });
+  const data = await res.json();
+  if (!res.ok || !data.url) throw new Error(data.error || 'Upload failed');
+  return data.url;
+}
+
+scorpturePublishSubmit.addEventListener('click', async () => {
+  const title = scorptureTitleInput.value.trim();
+  if (!title || !resultBlob) return;
+  scorpturePublishSubmit.disabled = true;
+  try {
+    scorptureStatusEl.textContent = 'Uploading video…';
+    const videoUrl = await uploadToServer(resultBlob, `valk-video-${Date.now()}.mp4`);
+    scorptureStatusEl.textContent = 'Generating thumbnail…';
+    const thumbBlob = await captureResultThumbnail();
+    let thumbnailUrl = null;
+    if (thumbBlob) {
+      scorptureStatusEl.textContent = 'Uploading thumbnail…';
+      thumbnailUrl = await uploadToServer(thumbBlob, 'thumb.jpg');
+    }
+    scorptureStatusEl.textContent = 'Publishing…';
+    const token = localStorage.getItem('valk-account-token') || '';
+    const res = await fetch('/api/scorpture/videos', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ title, description: scorptureDescriptionInput.value.trim(), videoUrl, thumbnailUrl }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Publish failed');
+    location.href = `videos.html#/watch?v=${encodeURIComponent(data.id)}`;
+  } catch (err) {
+    scorptureStatusEl.textContent = `❌ ${err.message}`;
+  } finally {
+    scorpturePublishSubmit.disabled = false;
   }
 });
 

@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Fighter Plane</title>
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="fighterplane.css">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#071018">
+<link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+</head>
+<body>
+
+  <a id="back-link" href="index.html">&larr; Back to chat</a>
+
+  <div id="menu">
+    <div class="panel">
+      <h1>Fighter Plane</h1>
+      <p class="tagline">Blue vs. red, 1,500 troops a side. Both sides start at peace — nobody fights until you hit the ⚔️ Order the Attack button, then it's on for good. Win by wiping out every red trooper before the reds wipe out the blues. You've got 5 lives; die with lives left and you drop into spectating the battle until you're back on your feet.</p>
+      <button id="start-btn" class="primary">Start Flying</button>
+      <button id="spiderman-start-btn" class="primary">🕸️ Play as Spider-Man</button>
+      <p class="tagline">Same web-swing physics as Web Swing — real pendulum rope, wall climbing, rooftop grapples — but you keep your gun, and the whole map (towns, cities, forest, bots) is your playground instead of a plane cockpit.</p>
+      <ul class="controls-list" id="controls-list-desktop">
+        <li>Both sides start at peace, wandering near their own home &mdash; nobody shoots until you press the <strong>⚔️ Order the Attack</strong> HUD button (or the touch equivalent). Once given, it can't be undone, and blue troops go on the offensive with red fighting straight back.</li>
+        <li>You start on foot near blue's home base &mdash; planes and tanks are parked out in the world, not something you spawn into. Walk up to one and press <strong>E</strong> to get in.</li>
+        <li><strong>WASD</strong> walks, <strong>left click</strong> shoots, <strong>right click (hold)</strong> aims down sights &mdash; watch for houses, barriers, and ditches, and help the blue troops hunt down the reds &mdash; troops and planes never target you, only a crash can kill you</li>
+        <li><strong>E</strong> &mdash; get in a nearby plane or tank while on foot; press <strong>E</strong> again to get back out</li>
+        <li><strong>In a plane &mdash; Mouse</strong> look steers the nose (always flies forward), <strong>left click (hold)</strong> fires the machine gun, <strong>Q</strong> fires a guided missile (steer it with <strong>WASD</strong> mid-flight), <strong>B</strong> bails out with a parachute</li>
+        <li>Diving builds speed, climbing bleeds it off &mdash; climb too hard for too long and you'll stall (nose drops until you dive to recover)</li>
+        <li><strong>In a tank &mdash; WASD</strong> drives, <strong>Mouse</strong> aims the turret, <strong>left click</strong> fires an explosive shell</li>
+        <li><strong>N</strong> &mdash; nuke: a huge blast that instantly destroys every bot on the map</li>
+        <li><strong>G</strong> &mdash; throw a grenade, a real gravity arc that explodes on impact or after a fuse</li>
+        <li><strong>F</strong> &mdash; call your plane back (works on foot or mid-swing) &mdash; climbs you back into flying on the spot</li>
+        <li>You have 5 lives &mdash; nothing targets you, but flying into the ground or another plane is still a fatal crash; dying drops you into spectating a random blue trooper until you respawn on foot, and only your 5th death ends the round for good.</li>
+        <li><strong>🕸️ Spider-Man role:</strong> <strong>E</strong> shoots/releases a web (aim near a rooftop to grapple straight up instead of swinging), <strong>W/S</strong> reel the rope in/out, <strong>A/D</strong> pump for speed while swinging, <strong>Space</strong> jumps or pushes off a wall while climbing &mdash; run at a building to grab and climb its wall. First-person, with a real sniper scope on right-click. Left/right click still shoot/aim your gun.</li>
+      </ul>
+      <ul class="controls-list hidden" id="controls-list-touch">
+        <li>Both sides start at peace, wandering near their own home &mdash; nobody shoots until you tap <strong>⚔️</strong>. Once given, it can't be undone, and blue troops go on the offensive with red fighting straight back.</li>
+        <li>You start on foot near blue's home base &mdash; planes and tanks are parked out in the world. Walk up to one and tap 🚪 to get in.</li>
+        <li>The joystick walks, 🔫 shoots, 🎯 (hold) aims &mdash; watch for houses, barriers, and ditches, and help the blue troops hunt down the reds &mdash; troops and planes never target you, only a crash can kill you</li>
+        <li><strong>🚪 button</strong> &mdash; get in a nearby plane or tank while on foot; tap it again to get back out</li>
+        <li><strong>In a plane &mdash; Drag the screen</strong> to look/steer, <strong>🔫 (hold)</strong> fires the machine gun, <strong>🚀 button</strong> fires a guided missile (steer it with the joystick)</li>
+        <li>Diving builds speed, climbing bleeds it off &mdash; climb too hard for too long and you'll stall (nose drops until you dive to recover)</li>
+        <li><strong>In a tank &mdash; joystick</strong> drives, drag to aim the turret, <strong>🔫</strong> fires an explosive shell</li>
+        <li><strong>🪂 button</strong> &mdash; bail out with a parachute (same joystick then steers your drift)</li>
+        <li><strong>☢️ button</strong> &mdash; nuke: a huge blast that instantly destroys every bot on the map</li>
+        <li><strong>💣 button</strong> &mdash; throw a grenade, a real gravity arc that explodes on impact or after a fuse</li>
+        <li><strong>🛩️ button</strong> &mdash; call your plane back (works on foot or mid-swing)</li>
+        <li>You have 5 lives &mdash; nothing targets you, but flying into the ground or another plane is still a fatal crash; dying drops you into spectating a random blue trooper until you respawn on foot, and only your 5th death ends the round for good.</li>
+        <li><strong>🕸️ Spider-Man role:</strong> <strong>🕸️ button</strong> shoots/releases a web (near a rooftop grapples straight up instead), the joystick reels/pumps while swinging, <strong>⤒ button</strong> jumps or pushes off a wall while climbing &mdash; run at a building to grab and climb it. First-person, with a real sniper scope on 🎯.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div id="hud" class="hidden">
+    <div id="hud-row">
+      <span id="score-label">🎯 0</span>
+      <span id="best-label">Best: 0</span>
+      <button id="sound-toggle-btn" class="icon-btn" aria-label="Toggle sound">🔊</button>
+      <button id="leaderboard-btn" class="icon-btn" aria-label="Leaderboard">🏆</button>
+    </div>
+    <div id="health-bar"></div>
+    <div id="lives-status">💙 Lives: 5</div>
+    <div id="war-status">☮️ 🔵 1500 vs 🔴 1500</div>
+    <button id="attack-btn">⚔️ Order the Attack</button>
+    <div id="speed-status">✈️ Speed: 100%</div>
+    <div id="missile-status">🚀 Ready (Q)</div>
+    <canvas id="minimap" width="140" height="140"></canvas>
+  </div>
+
+  <div id="leaderboard-overlay" class="hidden">
+    <div class="panel">
+      <div class="panel-header">
+        <h2>🏆 Leaderboard</h2>
+        <button id="leaderboard-close-btn" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+      <ul id="leaderboard-list" class="controls-list"></ul>
+    </div>
+  </div>
+
+  <div id="gameover-overlay" class="hidden">
+    <div class="panel">
+      <h2 id="gameover-text">Shot down!</h2>
+      <button id="restart-btn" class="primary">Fly Again</button>
+    </div>
+  </div>
+
+  <div id="crosshair" class="hidden"></div>
+  <div id="scope-overlay"><div id="scope-circle"></div></div>
+  <div id="kill-toast" class="hidden">Bot destroyed! +1</div>
+
+  <canvas id="game-canvas" class="hidden"></canvas>
+
+  <div id="touch-controls" class="hidden">
+    <button id="touch-bail" class="touch-btn" aria-label="Bail out with parachute">🪂</button>
+    <button id="touch-aim" class="touch-btn" aria-label="Aim (hold)">🎯</button>
+    <button id="touch-nuke" class="touch-btn" aria-label="Nuke">☢️</button>
+    <button id="touch-grenade" class="touch-btn" aria-label="Throw grenade">💣</button>
+    <button id="touch-call-plane" class="touch-btn" aria-label="Call your plane">🛩️</button>
+    <button id="touch-enter" class="touch-btn" aria-label="Enter or exit a vehicle">🚪</button>
+    <button id="touch-attack" class="touch-btn" aria-label="Order the attack">⚔️</button>
+    <button id="touch-gun" class="touch-btn" aria-label="Fire bullets or tank shell">🔫</button>
+    <button id="touch-fire" class="touch-btn" aria-label="Fire missile">🚀</button>
+    <button id="touch-web" class="touch-btn hidden" aria-label="Shoot or release web">🕸️</button>
+    <button id="touch-jump" class="touch-btn hidden" aria-label="Jump">⤒</button>
+    <div id="missile-joystick" class="hidden">
+      <div id="missile-joystick-knob"></div>
+    </div>
+  </div>
+
+  <script src="error-report.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="fighterplane.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));
+    }
+  </script>
+</body>
+</html>

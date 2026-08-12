@@ -56,6 +56,7 @@ body {
   background: var(--bg-color) url('images/background.png') center / cover no-repeat fixed;
   color: var(--text-color);
   height: 100vh;
+  height: 100dvh; /* mobile browsers: accounts for the address bar / keyboard instead of the fixed 100vh above clipping content or hiding it behind the keyboard */
   transition: background-color 0.2s ease, color 0.2s ease;
 }
 
@@ -65,6 +66,7 @@ body {
 
 .screen {
   height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
 }
@@ -1243,6 +1245,113 @@ button.danger:hover {
   margin-bottom: 0.2rem;
 }
 
+#friend-add-form {
+  display: flex;
+  gap: 0.5rem;
+}
+
+#friend-add-form input {
+  flex: 1;
+}
+
+.friends-list {
+  list-style: none;
+  margin: 0 0 0.75rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.friend-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--bubble-bg);
+  border: 1px solid var(--bubble-border);
+  border-radius: 8px;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.9rem;
+}
+
+.friend-row .friend-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.friend-row .friend-actions {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.friend-action-btn {
+  background: none;
+  border: 1px solid var(--chip-border);
+  color: var(--text-color);
+  font-size: 0.75rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 6px;
+}
+
+.friend-action-btn:hover {
+  filter: brightness(1.1);
+}
+
+.friend-action-btn.danger {
+  border-color: #ff6b6b;
+  color: #ff6b6b;
+}
+
+.presence-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: #8a94a6;
+}
+
+.presence-dot.online {
+  background: #34e89e;
+}
+
+.friend-name {
+  cursor: context-menu;
+}
+
+.friend-context-menu {
+  position: fixed;
+  z-index: 60;
+  background: var(--menu-panel-bg);
+  backdrop-filter: blur(20px);
+  border: 1px solid var(--header-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  padding: 0.3rem;
+}
+
+.friend-context-menu button {
+  background: none;
+  color: var(--text-color);
+  font-size: 0.85rem;
+  font-weight: 500;
+  padding: 0.5rem 0.9rem;
+  white-space: nowrap;
+  width: 100%;
+  text-align: left;
+  border-radius: 6px;
+}
+
+.friend-context-menu button:hover {
+  filter: none;
+  background: var(--icon-hover-bg);
+}
+
+#friend-dm-form button {
+  flex-shrink: 0;
+}
+
 .search-result-text {
   font-size: 0.85rem;
   white-space: pre-wrap;
@@ -1833,5 +1942,37 @@ button.danger:hover {
 
   .menu-panel {
     padding: 1.25rem;
+  }
+}
+
+/* Touch-device usability (real phones/tablets — `pointer: coarse` targets actual touch input,
+   not just a narrow desktop window). Icon buttons default to a smaller footprint that's fine for
+   a mouse cursor but is a well-documented mis-tap risk on a touchscreen (Apple HIG/WCAG both
+   recommend >=44x44px). Scoped to this media query so desktop sizing/density is untouched. */
+@media (pointer: coarse) {
+  .icon-btn {
+    min-width: 44px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .theme-toggle {
+    width: 44px;
+    height: 44px;
+  }
+
+  /* Keeps these two screen-corner-anchored controls clear of a notch, rounded corner, or the
+     home-indicator bar — env() only has an effect when the page opts in via
+     `viewport-fit=cover` in the viewport meta tag, which index.html already sets. */
+  .worldwide-badge {
+    top: max(0.75rem, env(safe-area-inset-top));
+    right: max(0.75rem, env(safe-area-inset-right));
+  }
+
+  .theme-toggle {
+    bottom: max(0.75rem, env(safe-area-inset-bottom));
+    left: max(0.75rem, env(safe-area-inset-left));
   }
 }

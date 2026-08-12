@@ -605,6 +605,44 @@ input[type="color"] { padding: 0.2rem; width: 2.6rem; height: 2.4rem; }
   flex: 1 1 auto;
 }
 
+/* --- Publish to Scorpture modal (same bottom-sheet/center pattern as the music picker) --- */
+#scorpture-publish-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(2, 6, 12, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+#scorpture-publish-modal {
+  width: 100%;
+  max-width: 420px;
+  background: var(--bg-color);
+  border: 1px solid var(--panel-border);
+  border-radius: 16px;
+  padding: 1rem 1.1rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+#scorpture-title-input, #scorpture-description-input {
+  width: 100%;
+  padding: 0.55rem 0.8rem;
+  border-radius: 8px;
+  border: 1px solid var(--panel-border);
+  background: var(--bg-color);
+  color: inherit;
+  font-family: inherit;
+  font-size: 0.92rem;
+}
+
+#scorpture-description-input { resize: vertical; min-height: 70px; }
+
 /* --- Music picker modal --- */
 #music-picker-overlay {
   position: fixed;

@@ -227,38 +227,6 @@ button.primary:hover {
   100% { opacity: 0; transform: translate(-50%, -90%) scale(1); }
 }
 
-#heart-hud {
-  position: fixed;
-  bottom: 18px;
-  right: 100px;
-  z-index: 15;
-  display: flex;
-  gap: 4px;
-  pointer-events: none;
-  text-shadow: 0 0 4px rgba(0, 0, 0, 0.8);
-}
-
-#heart-hud .heart {
-  font-size: 1.3rem;
-  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
-}
-
-#heart-hud .heart-empty {
-  filter: grayscale(1) opacity(0.35);
-}
-
-#hit-flash {
-  position: fixed;
-  inset: 0;
-  z-index: 40;
-  pointer-events: none;
-  background: radial-gradient(ellipse at center, rgba(224, 38, 63, 0) 45%, rgba(224, 38, 63, 0.45) 100%);
-}
-
-#hit-flash.hidden {
-  display: none;
-}
-
 /* Touch controls (mobile) */
 #touch-controls {
   position: fixed;
@@ -329,11 +297,6 @@ button.primary:hover {
   height: 76px;
   background: rgba(224, 38, 63, 0.3);
   border-color: rgba(224, 38, 63, 0.6);
-}
-
-#touch-punch {
-  background: rgba(255, 217, 61, 0.25);
-  border-color: rgba(255, 217, 61, 0.55);
 }
 
 .touch-btn:active {

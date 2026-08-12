@@ -180,6 +180,20 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_sessions_account ON sessions(account_id);
 
+  -- One row per (requester, addressee) pair. status is 'pending' (requester asked, not yet
+  -- accepted), 'accepted' (mutual friends — the pair reads the same regardless of who initiated),
+  -- or 'blocked' (requester has blocked addressee; direction matters here, unlike accepted).
+  CREATE TABLE IF NOT EXISTS friendships (
+    requester_id TEXT,
+    addressee_id TEXT,
+    status TEXT,
+    created_at INTEGER,
+    updated_at INTEGER,
+    PRIMARY KEY (requester_id, addressee_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_friendships_addressee ON friendships(addressee_id, status);
+  CREATE INDEX IF NOT EXISTS idx_friendships_requester ON friendships(requester_id, status);
+
   CREATE TABLE IF NOT EXISTS account_recent_rooms (
     account_id TEXT,
     room_code TEXT,
@@ -212,6 +226,47 @@ db.exec(`
     decided_at INTEGER
   );
   CREATE INDEX IF NOT EXISTS idx_patch_proposals_status ON patch_proposals(status, created_at);
+
+  -- Scorpture (account-based video sharing app, standalone from the room system — videos aren't
+  -- scoped to a room_code at all, just to the uploader's account, same as friendships).
+  CREATE TABLE IF NOT EXISTS scorpture_videos (
+    id TEXT PRIMARY KEY,
+    uploader_id TEXT,
+    uploader_username TEXT,
+    title TEXT,
+    description TEXT,
+    video_url TEXT,
+    thumbnail_url TEXT,
+    views INTEGER DEFAULT 0,
+    created_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_scorpture_videos_created ON scorpture_videos(created_at);
+  CREATE INDEX IF NOT EXISTS idx_scorpture_videos_uploader ON scorpture_videos(uploader_id);
+
+  CREATE TABLE IF NOT EXISTS scorpture_comments (
+    id TEXT PRIMARY KEY,
+    video_id TEXT,
+    account_id TEXT,
+    username TEXT,
+    text TEXT,
+    created_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_scorpture_comments_video ON scorpture_comments(video_id, created_at);
+
+  CREATE TABLE IF NOT EXISTS scorpture_likes (
+    video_id TEXT,
+    account_id TEXT,
+    created_at INTEGER,
+    PRIMARY KEY (video_id, account_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS scorpture_subscriptions (
+    subscriber_id TEXT,
+    channel_id TEXT,
+    created_at INTEGER,
+    PRIMARY KEY (subscriber_id, channel_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_scorpture_subs_channel ON scorpture_subscriptions(channel_id);
 `);
 
 // These three ensureColumn calls (and the indexes below) reference the accounts/push_subscriptions
@@ -219,6 +274,8 @@ db.exec(`
 // brand-new database (no accounts table on disk yet) throws "no such table: accounts".
 ensureColumn('accounts', 'email', 'TEXT');
 ensureColumn('accounts', 'google_id', 'TEXT');
+ensureColumn('accounts', 'scorpture_banner_url', 'TEXT');
+ensureColumn('accounts', 'scorpture_avatar_url', 'TEXT');
 ensureColumn('push_subscriptions', 'account_id', 'TEXT');
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email COLLATE NOCASE) WHERE email IS NOT NULL');
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_google_id ON accounts(google_id) WHERE google_id IS NOT NULL');
@@ -320,6 +377,17 @@ function getRecentMessages(code, limit) {
   const rows = db
     .prepare('SELECT * FROM messages WHERE room_code = ? ORDER BY at DESC LIMIT ?')
     .all(code, limit);
+  return rows.reverse().map(rowToHistoryEntry);
+}
+
+// Paginated backward scroll — getRecentMessages only ever returns the newest `limit` messages,
+// with no way to reach anything older once that window's been shown. beforeAt is the `at`
+// timestamp of the oldest message currently rendered on the client; strictly-less-than so the
+// boundary message itself isn't returned twice.
+function getMessagesBefore(code, beforeAt, limit) {
+  const rows = db
+    .prepare('SELECT * FROM messages WHERE room_code = ? AND at < ? ORDER BY at DESC LIMIT ?')
+    .all(code, beforeAt, limit);
   return rows.reverse().map(rowToHistoryEntry);
 }
 
@@ -687,6 +755,221 @@ function getAccountRecentRooms(accountId, limit = 10) {
     .all(accountId, limit);
 }
 
+// ---- Friends (account-only — needs a stable identity across devices, which anonymous
+// per-room display names don't have) ----
+
+// Order-independent lookup: a friendship/block row is stored once, keyed by who initiated it,
+// but callers usually just want "is there anything between these two accounts".
+function getFriendshipBetween(userA, userB) {
+  return (
+    db
+      .prepare(
+        `SELECT * FROM friendships WHERE (requester_id = ? AND addressee_id = ?) OR (requester_id = ? AND addressee_id = ?)`
+      )
+      .get(userA, userB, userB, userA) || null
+  );
+}
+
+function isBlockedBetween(userA, userB) {
+  return !!db
+    .prepare(
+      `SELECT 1 FROM friendships WHERE status = 'blocked' AND ((requester_id = ? AND addressee_id = ?) OR (requester_id = ? AND addressee_id = ?))`
+    )
+    .get(userA, userB, userB, userA);
+}
+
+function upsertFriendRequest(requesterId, addresseeId) {
+  const now = Date.now();
+  db.prepare(
+    `INSERT INTO friendships (requester_id, addressee_id, status, created_at, updated_at) VALUES (?, ?, 'pending', ?, ?)
+     ON CONFLICT(requester_id, addressee_id) DO UPDATE SET status = 'pending', updated_at = excluded.updated_at`
+  ).run(requesterId, addresseeId, now, now);
+}
+
+// Only flips a genuinely pending (requester -> addressee) row — a stale/mismatched call is a
+// silent no-op rather than an error, callers check getFriendshipBetween first anyway.
+function acceptFriendRequest(requesterId, addresseeId) {
+  db.prepare(
+    `UPDATE friendships SET status = 'accepted', updated_at = ? WHERE requester_id = ? AND addressee_id = ? AND status = 'pending'`
+  ).run(Date.now(), requesterId, addresseeId);
+}
+
+// Unfriend / decline / cancel are all "delete whatever row exists between these two" — but never
+// a blocked row, since block/unblock go through their own dedicated functions below.
+function removeFriendship(userA, userB) {
+  db.prepare(
+    `DELETE FROM friendships WHERE status != 'blocked' AND ((requester_id = ? AND addressee_id = ?) OR (requester_id = ? AND addressee_id = ?))`
+  ).run(userA, userB, userB, userA);
+}
+
+// Blocking replaces any prior relationship (pending request, accepted friendship, even a block
+// in the other direction) with a fresh one-directional block row from blocker -> blocked.
+function setBlocked(blockerId, blockedId) {
+  const now = Date.now();
+  db.prepare(
+    `DELETE FROM friendships WHERE (requester_id = ? AND addressee_id = ?) OR (requester_id = ? AND addressee_id = ?)`
+  ).run(blockerId, blockedId, blockedId, blockerId);
+  db.prepare(
+    `INSERT INTO friendships (requester_id, addressee_id, status, created_at, updated_at) VALUES (?, ?, 'blocked', ?, ?)`
+  ).run(blockerId, blockedId, now, now);
+}
+
+function unblock(blockerId, blockedId) {
+  db.prepare(`DELETE FROM friendships WHERE requester_id = ? AND addressee_id = ? AND status = 'blocked'`).run(
+    blockerId,
+    blockedId
+  );
+}
+
+function getFriends(accountId) {
+  return db
+    .prepare(
+      `SELECT a.username, f.updated_at as since
+       FROM friendships f
+       JOIN accounts a ON a.id = (CASE WHEN f.requester_id = ? THEN f.addressee_id ELSE f.requester_id END)
+       WHERE f.status = 'accepted' AND (f.requester_id = ? OR f.addressee_id = ?)
+       ORDER BY f.updated_at DESC`
+    )
+    .all(accountId, accountId, accountId);
+}
+
+function getIncomingFriendRequests(accountId) {
+  return db
+    .prepare(
+      `SELECT a.username, f.created_at
+       FROM friendships f JOIN accounts a ON a.id = f.requester_id
+       WHERE f.addressee_id = ? AND f.status = 'pending'
+       ORDER BY f.created_at DESC`
+    )
+    .all(accountId);
+}
+
+function getOutgoingFriendRequests(accountId) {
+  return db
+    .prepare(
+      `SELECT a.username, f.created_at
+       FROM friendships f JOIN accounts a ON a.id = f.addressee_id
+       WHERE f.requester_id = ? AND f.status = 'pending'
+       ORDER BY f.created_at DESC`
+    )
+    .all(accountId);
+}
+
+function getBlockedUsers(accountId) {
+  return db
+    .prepare(
+      `SELECT a.username, f.updated_at
+       FROM friendships f JOIN accounts a ON a.id = f.addressee_id
+       WHERE f.requester_id = ? AND f.status = 'blocked'
+       ORDER BY f.updated_at DESC`
+    )
+    .all(accountId);
+}
+
+// ---- Scorpture (video sharing) ----
+
+function insertScorptureVideo(v) {
+  db.prepare(
+    `INSERT INTO scorpture_videos (id, uploader_id, uploader_username, title, description, video_url, thumbnail_url, views, created_at)
+     VALUES (@id, @uploaderId, @uploaderUsername, @title, @description, @videoUrl, @thumbnailUrl, 0, @createdAt)`
+  ).run(v);
+}
+
+function getScorptureVideo(id) {
+  return db.prepare('SELECT * FROM scorpture_videos WHERE id = ?').get(id) || null;
+}
+
+function listScorptureVideos({ search, uploaderId, limit = 60 } = {}) {
+  if (uploaderId) {
+    return db
+      .prepare('SELECT * FROM scorpture_videos WHERE uploader_id = ? ORDER BY created_at DESC LIMIT ?')
+      .all(uploaderId, limit);
+  }
+  if (search) {
+    return db
+      .prepare('SELECT * FROM scorpture_videos WHERE title LIKE ? ORDER BY created_at DESC LIMIT ?')
+      .all(`%${search}%`, limit);
+  }
+  return db.prepare('SELECT * FROM scorpture_videos ORDER BY created_at DESC LIMIT ?').all(limit);
+}
+
+function bumpScorptureViews(id) {
+  db.prepare('UPDATE scorpture_videos SET views = views + 1 WHERE id = ?').run(id);
+}
+
+function deleteScorptureVideo(id) {
+  db.prepare('DELETE FROM scorpture_comments WHERE video_id = ?').run(id);
+  db.prepare('DELETE FROM scorpture_likes WHERE video_id = ?').run(id);
+  db.prepare('DELETE FROM scorpture_videos WHERE id = ?').run(id);
+}
+
+function insertScorptureComment(c) {
+  db.prepare(
+    `INSERT INTO scorpture_comments (id, video_id, account_id, username, text, created_at)
+     VALUES (@id, @videoId, @accountId, @username, @text, @createdAt)`
+  ).run(c);
+}
+
+function getScorptureComments(videoId) {
+  return db.prepare('SELECT * FROM scorpture_comments WHERE video_id = ? ORDER BY created_at ASC').all(videoId);
+}
+
+// Returns the new liked state (true = just liked, false = just unliked) — one call toggles
+// either direction, same pattern as reactions.toggleReaction elsewhere in this file.
+function toggleScorptureLike(videoId, accountId) {
+  const existing = db.prepare('SELECT 1 FROM scorpture_likes WHERE video_id = ? AND account_id = ?').get(videoId, accountId);
+  if (existing) {
+    db.prepare('DELETE FROM scorpture_likes WHERE video_id = ? AND account_id = ?').run(videoId, accountId);
+    return false;
+  }
+  db.prepare('INSERT INTO scorpture_likes (video_id, account_id, created_at) VALUES (?, ?, ?)').run(videoId, accountId, Date.now());
+  return true;
+}
+
+function getScorptureLikeCount(videoId) {
+  return db.prepare('SELECT COUNT(*) as c FROM scorpture_likes WHERE video_id = ?').get(videoId).c;
+}
+
+function hasScorptureLiked(videoId, accountId) {
+  if (!accountId) return false;
+  return !!db.prepare('SELECT 1 FROM scorpture_likes WHERE video_id = ? AND account_id = ?').get(videoId, accountId);
+}
+
+function toggleScorptureSubscription(subscriberId, channelId) {
+  const existing = db
+    .prepare('SELECT 1 FROM scorpture_subscriptions WHERE subscriber_id = ? AND channel_id = ?')
+    .get(subscriberId, channelId);
+  if (existing) {
+    db.prepare('DELETE FROM scorpture_subscriptions WHERE subscriber_id = ? AND channel_id = ?').run(subscriberId, channelId);
+    return false;
+  }
+  db.prepare('INSERT INTO scorpture_subscriptions (subscriber_id, channel_id, created_at) VALUES (?, ?, ?)').run(
+    subscriberId,
+    channelId,
+    Date.now()
+  );
+  return true;
+}
+
+function getScorptureSubscriberCount(channelId) {
+  return db.prepare('SELECT COUNT(*) as c FROM scorpture_subscriptions WHERE channel_id = ?').get(channelId).c;
+}
+
+function isScorptureSubscribed(subscriberId, channelId) {
+  if (!subscriberId) return false;
+  return !!db
+    .prepare('SELECT 1 FROM scorpture_subscriptions WHERE subscriber_id = ? AND channel_id = ?')
+    .get(subscriberId, channelId);
+}
+
+function setScorptureBanner(accountId, bannerUrl) {
+  db.prepare('UPDATE accounts SET scorpture_banner_url = ? WHERE id = ?').run(bannerUrl, accountId);
+}
+
+function setScorptureAvatar(accountId, avatarUrl) {
+  db.prepare('UPDATE accounts SET scorpture_avatar_url = ? WHERE id = ?').run(avatarUrl, accountId);
+}
+
 // ---- Self-healing: error reports (uncaught server/client errors) and the AI-drafted patch
 // proposals generated from them, see patcher.js. Everything here is admin-reviewed — nothing
 // in this section ever applies a change to the running app by itself. ----
@@ -772,6 +1055,7 @@ module.exports = {
   updateMessageText,
   deleteMessageRow,
   getRecentMessages,
+  getMessagesBefore,
   getAllMessagesForExport,
   searchMessages,
   toggleReaction,
@@ -822,6 +1106,17 @@ module.exports = {
   deleteSession,
   upsertAccountRecentRoom,
   getAccountRecentRooms,
+  getFriendshipBetween,
+  isBlockedBetween,
+  upsertFriendRequest,
+  acceptFriendRequest,
+  removeFriendship,
+  setBlocked,
+  unblock,
+  getFriends,
+  getIncomingFriendRequests,
+  getOutgoingFriendRequests,
+  getBlockedUsers,
   insertErrorReport,
   getErrorReport,
   setErrorReportStatus,
@@ -833,4 +1128,19 @@ module.exports = {
   getInactiveRoomCodes,
   getRoomMediaUrls,
   deleteRoomCascade,
+  insertScorptureVideo,
+  getScorptureVideo,
+  listScorptureVideos,
+  bumpScorptureViews,
+  deleteScorptureVideo,
+  insertScorptureComment,
+  getScorptureComments,
+  toggleScorptureLike,
+  getScorptureLikeCount,
+  hasScorptureLiked,
+  toggleScorptureSubscription,
+  getScorptureSubscriberCount,
+  isScorptureSubscribed,
+  setScorptureBanner,
+  setScorptureAvatar,
 };

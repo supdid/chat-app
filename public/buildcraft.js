@@ -2895,9 +2895,14 @@ function applyFallDamage(distance) {
 }
 
 // health/killedBy come from the server in multiplayer; killedBy is a player id (or null for a
-// fall) — solo mode calls this directly with killedBy always null.
+// fall) — solo mode calls this directly with killedBy always null. Floors at 1 instead of 0 in
+// creative so myHealth never actually reaches 0 and die() below never fires — solo mode has no
+// server to enforce this, so it has to happen here. (Multiplayer never even sends a health of 0
+// for a creative player in the first place — see applyBcDamage server-side — this is just the
+// matching floor for the no-server case.)
 function applyHealthChange(newHealth, killedBy) {
-  const clamped = Math.max(0, Math.min(BC_MAX_HEALTH, newHealth));
+  const minHealth = gameMode === 'creative' ? 1 : 0;
+  const clamped = Math.max(minHealth, Math.min(BC_MAX_HEALTH, newHealth));
   if (clamped < myHealth) { flashDamage(); playHurtSfx(); lastDamageAt = performance.now(); }
   myHealth = clamped;
   renderHealth();
@@ -3885,9 +3890,25 @@ function setHudVisible(visible) {
   minimapCanvas.style.display = visible && minimapVisible ? 'block' : 'none';
 }
 
+// Fall damage in creative is already prevented client-side above (flight never counts as a
+// fall) — the one remaining way a creative player could otherwise die is another player's punch,
+// which is server-authoritative like all Build Craft health. Tells the server which mode this
+// connection is in so it can enforce "can't die in creative" itself rather than trusting a
+// client-side-only check a modified client could just skip.
+function sendBcMode(mode) {
+  if (!bcSocket) return;
+  const payload = JSON.stringify({ type: 'bc-set-mode', gameMode: mode });
+  if (bcSocket.readyState === WebSocket.OPEN) {
+    bcSocket.send(payload);
+  } else {
+    bcSocket.addEventListener('open', () => bcSocket.send(payload), { once: true });
+  }
+}
+
 function startGame(mode) {
   gameMode = mode;
   gameStarted = true;
+  sendBcMode(mode);
   if (mode === 'creative') fillCreativeStarterHotbar();
   renderHotbar();
   startMusic();

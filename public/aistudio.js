@@ -23,6 +23,7 @@ themeToggleBtn.addEventListener('click', () => {
 const params = new URLSearchParams(location.search);
 const roomCode = params.get('room');
 const myName = params.get('name');
+const roomPin = params.get('pin') || '';
 if (roomCode && myName) {
   document.getElementById('back-link').href = `index.html?room=${encodeURIComponent(roomCode)}&name=${encodeURIComponent(myName)}`;
 }
@@ -389,7 +390,7 @@ sendChatBtn.addEventListener('click', async () => {
     const res = await fetch('/post-image', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code: roomCode, name: myName, mediaUrl: currentUrl, prompt: currentPrompt }),
+      body: JSON.stringify({ code: roomCode, name: myName, pin: roomPin, mediaUrl: currentUrl, prompt: currentPrompt }),
     });
     if (!res.ok) throw new Error();
     sendChatBtn.textContent = '✅ Sent!';

@@ -55,6 +55,7 @@
         </div>
         <div id="account-signed-in-view" class="hidden">
           <p>Signed in as <strong id="account-signed-in-name"></strong></p>
+          <button type="button" id="friends-open-btn" class="link-btn">👥 Friends</button>
           <button type="button" id="account-signout-btn" class="link-btn">Sign out</button>
         </div>
       </div>
@@ -208,12 +209,17 @@
       <div class="menu-section">
         <a id="whiteboard-link" href="whiteboard.html" class="menu-link">🖌️ Shared Whiteboard</a>
       </div>
+      <h3>Apps</h3>
+      <div class="menu-section">
+        <a id="scorpture-link" href="videos.html" class="menu-link">🦂 Scorpture — Videos</a>
+      </div>
       <h3>Minigames</h3>
       <div class="menu-section">
         <a id="webswing-link" href="webswing.html" class="menu-link">🕸️ Play Web Swing</a>
         <a id="buildcraft-link" href="buildcraft.html" class="menu-link">🏝️ Play Build Craft</a>
         <a id="geometrywave-link" href="geometrywave.html" class="menu-link">🔺 Play Geometry Wave</a>
         <a id="seincejump-link" href="seince-jump.html" class="menu-link">🕹️ Play Seince Jump</a>
+        <a id="fighterplane-link" href="fighterplane.html" class="menu-link">🛩️ Play Fighter Plane</a>
         <a id="pictionary-link" href="pictionary.html" class="menu-link">🖍️ Play Pictionary</a>
         <a id="trivia-link" href="trivia.html" class="menu-link">❓ Play Trivia Night</a>
         <a id="tictactoe-link" href="tictactoe.html" class="menu-link">⭕ Play Tic-Tac-Toe</a>
@@ -229,6 +235,7 @@
       <button id="saved-btn" class="menu-link" type="button">🔖 Saved messages</button>
       <button id="qr-btn" class="menu-link" type="button">📱 Room QR code</button>
       <a id="export-link" href="#" class="menu-link">📥 Export chat history</a>
+      <button id="friends-menu-btn" class="menu-link" type="button">👥 Friends</button>
       <button id="account-signout-menu-btn" class="menu-link hidden" type="button">🚪 Sign out (<span id="account-signout-menu-name"></span>)</button>
       <button id="leave-room-btn" class="danger">Leave room</button>
     </div>
@@ -257,6 +264,63 @@
         <button id="gallery-close-btn" class="icon-btn" aria-label="Close gallery">✕</button>
       </div>
       <div id="gallery-grid" class="gallery-grid"></div>
+    </div>
+  </div>
+
+  <!-- Friends overlay -->
+  <div id="friends-overlay" class="menu-overlay hidden">
+    <div class="menu-panel">
+      <div class="menu-header">
+        <h2>Friends</h2>
+        <button id="friends-close-btn" class="icon-btn" aria-label="Close friends">✕</button>
+      </div>
+      <p id="friends-signed-out-msg" class="search-status hidden">Sign in to add and manage friends.</p>
+      <div id="friends-signed-in-content" class="hidden">
+        <form id="friend-add-form" class="rename-room-form">
+          <input id="friend-add-input" type="text" placeholder="Add friend by username" maxlength="20" autocomplete="off">
+          <button type="submit" class="icon-btn" aria-label="Send friend request">✓</button>
+        </form>
+        <p id="friends-error" class="error hidden"></p>
+
+        <div id="friend-requests-section" class="hidden">
+          <h3>Requests</h3>
+          <ul id="friend-requests-list" class="friends-list"></ul>
+        </div>
+
+        <div id="friend-outgoing-section" class="hidden">
+          <h3>Sent</h3>
+          <ul id="friend-outgoing-list" class="friends-list"></ul>
+        </div>
+
+        <h3>Your friends</h3>
+        <p class="search-status">Right-click a friend's name to send them a private DM.</p>
+        <ul id="friends-list" class="friends-list"></ul>
+        <p id="friends-empty-msg" class="search-status hidden">No friends yet — add someone by username above.</p>
+
+        <div id="friend-blocked-section" class="hidden">
+          <h3>Blocked</h3>
+          <ul id="friend-blocked-list" class="friends-list"></ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right-click context menu on a friend's name -->
+  <div id="friend-context-menu" class="friend-context-menu hidden">
+    <button id="friend-dm-context-btn" type="button">💬 Send private DM</button>
+  </div>
+
+  <!-- Compose a private DM to a friend -->
+  <div id="friend-dm-overlay" class="menu-overlay hidden">
+    <div class="menu-panel dm-compose-panel">
+      <div class="menu-header">
+        <h2>DM <span id="friend-dm-target-name"></span></h2>
+        <button id="friend-dm-close-btn" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+      <form id="friend-dm-form" class="rename-room-form">
+        <input id="friend-dm-input" type="text" placeholder="Type a message…" maxlength="500" autocomplete="off">
+        <button type="submit">Send private DM</button>
+      </form>
     </div>
   </div>
 
