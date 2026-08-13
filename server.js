@@ -12,6 +12,10 @@ const db = require('./db');
 const patcher = require('./patcher');
 
 const app = express();
+// Only trust X-Forwarded-For from the local reverse proxy (nginx in front of this process in
+// production) — without this, req.ip (used by isAuthRateLimited) resolves to the proxy's own
+// loopback address for every request, collapsing every visitor into one shared rate-limit bucket.
+app.set('trust proxy', 'loopback');
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 // Registered this early so every route below — including the self-healing routes, which are
