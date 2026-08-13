@@ -934,6 +934,7 @@ app.get('/api/scorpture/videos/:id', (req, res) => {
     description: video.description,
     videoUrl: video.video_url,
     thumbnailUrl: video.thumbnail_url,
+    category: video.category,
     uploaderUsername: video.uploader_username,
     uploaderAvatarUrl: uploaderAccount ? uploaderAccount.scorpture_avatar_url || null : null,
     uploaderVerified: subscriberCount >= VERIFIED_SUBSCRIBER_THRESHOLD,
@@ -987,6 +988,25 @@ app.post('/api/scorpture/videos', (req, res) => {
   });
   notifyScorptureSubscribers(account.id, { title: `${account.username} uploaded a new video`, body: title });
   res.json({ id });
+});
+
+// Metadata-only edit (title/description/category, optionally a re-uploaded thumbnail) — the
+// video file itself stays fixed once published, same split delete has vs. what it can't undo.
+app.put('/api/scorpture/videos/:id', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  const video = db.getScorptureVideo(req.params.id);
+  if (!video) return res.status(404).json({ error: 'Video not found' });
+  if (video.uploader_id !== account.id) return res.status(403).json({ error: 'Not your video' });
+  const title = String(req.body.title || '').slice(0, 100).trim();
+  if (!title) return res.status(400).json({ error: 'Title required' });
+  const description = String(req.body.description || '').slice(0, 2000).trim();
+  const category = SCORPTURE_CATEGORIES.includes(req.body.category) ? req.body.category : null;
+  const thumbnailUrl = typeof req.body.thumbnailUrl === 'string' && req.body.thumbnailUrl.startsWith('/uploads/')
+    ? req.body.thumbnailUrl.slice(0, 2000)
+    : video.thumbnail_url;
+  db.updateScorptureVideo(video.id, { title, description, category, thumbnailUrl });
+  res.json({ ok: true, title, description, category, thumbnailUrl });
 });
 
 app.delete('/api/scorpture/videos/:id', (req, res) => {

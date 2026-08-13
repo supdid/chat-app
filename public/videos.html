@@ -54,6 +54,22 @@
     </div>
   </div>
 
+  <div id="edit-video-modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2>Edit video</h2>
+        <button id="edit-close-btn" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+      <div id="edit-body">
+        <input type="text" id="edit-title-input" placeholder="Title" maxlength="100">
+        <textarea id="edit-description-input" placeholder="Description (optional)" maxlength="2000"></textarea>
+        <select id="edit-category-select"></select>
+        <div id="edit-status"></div>
+        <button id="edit-submit-btn" class="pill-btn primary">Save changes</button>
+      </div>
+    </div>
+  </div>
+
   <div id="golive-modal" class="modal hidden">
     <div class="modal-card">
       <div class="modal-header">

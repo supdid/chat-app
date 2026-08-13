@@ -21,6 +21,13 @@ const uploadTitleInput = document.getElementById('upload-title-input');
 const uploadDescriptionInput = document.getElementById('upload-description-input');
 const uploadStatusEl = document.getElementById('upload-status');
 const uploadSubmitBtn = document.getElementById('upload-submit-btn');
+const editVideoModal = document.getElementById('edit-video-modal');
+const editCloseBtn = document.getElementById('edit-close-btn');
+const editTitleInput = document.getElementById('edit-title-input');
+const editDescriptionInput = document.getElementById('edit-description-input');
+const editCategorySelect = document.getElementById('edit-category-select');
+const editStatusEl = document.getElementById('edit-status');
+const editSubmitBtn = document.getElementById('edit-submit-btn');
 const accountNameEl = document.getElementById('account-name');
 const accountSigninBtn = document.getElementById('account-signin-btn');
 const subscriptionsNavLink = document.getElementById('subscriptions-nav-link');
@@ -335,6 +342,7 @@ async function renderWatch(id) {
         <div class="watch-actions">
           <button id="like-btn" class="pill-btn like-btn${video.liked ? ' liked' : ''}">👍 <span id="like-count">${formatCount(video.likeCount)}</span></button>
           ${video.isOwner ? '' : `<button id="report-video-btn" class="pill-btn">🚩 Report</button>`}
+          ${video.isOwner ? `<button id="edit-video-btn" class="pill-btn">✏️ Edit</button>` : ''}
           ${video.isOwner ? `<button id="delete-video-btn" class="pill-btn danger">🗑️ Delete</button>` : ''}
         </div>
       </div>
@@ -398,6 +406,9 @@ async function renderWatch(id) {
       }
     });
   }
+
+  const editBtn = document.getElementById('edit-video-btn');
+  if (editBtn) editBtn.addEventListener('click', () => openEditVideoModal(video));
 
   const deleteBtn = document.getElementById('delete-video-btn');
   if (deleteBtn) {
@@ -858,6 +869,47 @@ uploadSubmitBtn.addEventListener('click', async () => {
     showToast(err.message);
   } finally {
     uploadSubmitBtn.disabled = false;
+  }
+});
+
+// ---------- Edit video (title/description/category only — the file itself is fixed once
+// published, see updateScorptureVideo's comment in db.js) ----------
+let editingVideoId = null;
+
+async function openEditVideoModal(video) {
+  editingVideoId = video.id;
+  editTitleInput.value = video.title;
+  editDescriptionInput.value = video.description || '';
+  editStatusEl.textContent = '';
+  if (!editCategorySelect.options.length) {
+    const categories = await getCategories();
+    editCategorySelect.innerHTML = categories.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+  }
+  if (video.category) editCategorySelect.value = video.category;
+  editVideoModal.classList.remove('hidden');
+}
+
+editCloseBtn.addEventListener('click', () => editVideoModal.classList.add('hidden'));
+editVideoModal.addEventListener('click', (e) => { if (e.target === editVideoModal) editVideoModal.classList.add('hidden'); });
+
+editSubmitBtn.addEventListener('click', async () => {
+  const title = editTitleInput.value.trim();
+  if (!title) { editStatusEl.textContent = 'Title is required.'; return; }
+  editSubmitBtn.disabled = true;
+  editStatusEl.textContent = 'Saving…';
+  try {
+    await api(`/api/scorpture/videos/${encodeURIComponent(editingVideoId)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ title, description: editDescriptionInput.value.trim(), category: editCategorySelect.value || null }),
+    });
+    editVideoModal.classList.add('hidden');
+    showToast('Video updated');
+    renderWatch(editingVideoId);
+  } catch (err) {
+    editStatusEl.textContent = '';
+    showToast(err.message);
+  } finally {
+    editSubmitBtn.disabled = false;
   }
 });
 

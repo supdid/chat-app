@@ -629,7 +629,7 @@ a { color: inherit; text-decoration: none; }
 
 .modal-header h2 { margin: 0; font-size: 1.1rem; }
 
-#upload-body { padding: 1.2rem; display: flex; flex-direction: column; gap: 0.8rem; }
+#upload-body, #edit-body { padding: 1.2rem; display: flex; flex-direction: column; gap: 0.8rem; }
 
 #file-drop {
   display: flex;
@@ -647,7 +647,7 @@ a { color: inherit; text-decoration: none; }
 
 #upload-preview { width: 100%; height: 100%; object-fit: contain; background: #000; }
 
-#upload-title-input, #upload-description-input {
+#upload-title-input, #upload-description-input, #edit-title-input, #edit-description-input {
   width: 100%;
   padding: 0.6rem 0.8rem;
   border: 1px solid var(--border);
@@ -657,10 +657,11 @@ a { color: inherit; text-decoration: none; }
   outline: none;
 }
 
-#upload-title-input:focus, #upload-description-input:focus { border-color: var(--orange); }
-#upload-description-input { resize: vertical; min-height: 70px; }
+#upload-title-input:focus, #upload-description-input:focus,
+#edit-title-input:focus, #edit-description-input:focus { border-color: var(--orange); }
+#upload-description-input, #edit-description-input { resize: vertical; min-height: 70px; }
 
-#upload-category-select {
+#upload-category-select, #edit-category-select {
   width: 100%;
   padding: 0.55rem 0.8rem;
   border: 1px solid var(--border);
@@ -672,7 +673,7 @@ a { color: inherit; text-decoration: none; }
   color: var(--ink);
 }
 
-#upload-status { font-size: 0.85rem; color: var(--ink-soft); min-height: 1.1em; }
+#upload-status, #edit-status { font-size: 0.85rem; color: var(--ink-soft); min-height: 1.1em; }
 #upload-submit-btn { align-self: flex-end; }
 
 /* ---------- Scorpture admin panel ---------- */

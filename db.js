@@ -1015,6 +1015,17 @@ function bumpScorptureViews(id) {
   db.prepare('UPDATE scorpture_videos SET views = views + 1 WHERE id = ?').run(id);
 }
 
+// Metadata only (title/description/category) — the video file itself is immutable once
+// published, same as YouTube's own edit flow. Ownership is checked by the caller before this
+// runs (unlike updateScorptureComment, since the video row is also needed there to fall back to
+// its existing thumbnail_url when no new one was uploaded).
+function updateScorptureVideo(id, v) {
+  db.prepare(
+    `UPDATE scorpture_videos SET title = @title, description = @description, category = @category, thumbnail_url = @thumbnailUrl
+     WHERE id = @id`
+  ).run({ id, ...v });
+}
+
 function deleteScorptureVideo(id) {
   db.prepare('DELETE FROM scorpture_comments WHERE video_id = ?').run(id);
   db.prepare('DELETE FROM scorpture_likes WHERE video_id = ?').run(id);
@@ -1427,6 +1438,7 @@ module.exports = {
   getScorptureVideo,
   listScorptureVideos,
   bumpScorptureViews,
+  updateScorptureVideo,
   deleteScorptureVideo,
   insertScorptureComment,
   getScorptureComments,
