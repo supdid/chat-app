@@ -19,14 +19,14 @@
   <div id="menu">
     <div class="panel">
       <h1>Fighter Plane</h1>
-      <p class="tagline">Blue vs. red, 1,500 troops a side. Both sides start at peace — nobody fights until you hit the ⚔️ Order the Attack button, then it's on for good. Win by wiping out every red trooper before the reds wipe out the blues. You've got 5 lives; die with lives left and you drop into spectating the battle until you're back on your feet.</p>
+      <p class="tagline">Blue vs. red vs. orange, 1,500 troops a side — a real three-way war, red and orange fight each other too, not just blue. Blue troops also take potshots at any of your aerial bot enemies flying overhead. Everyone starts at peace — nobody fights until you hit the ⚔️ Order the Attack button, then it's on for good. Win by wiping out every red and orange trooper before they wipe out the blues. You've got 5 lives; die with lives left and you drop into spectating the battle until you're back on your feet.</p>
       <button id="start-btn" class="primary">Start Flying</button>
       <button id="spiderman-start-btn" class="primary">🕸️ Play as Spider-Man</button>
       <p class="tagline">Same web-swing physics as Web Swing — real pendulum rope, wall climbing, rooftop grapples — but you keep your gun, and the whole map (towns, cities, forest, bots) is your playground instead of a plane cockpit.</p>
       <ul class="controls-list" id="controls-list-desktop">
-        <li>Both sides start at peace, wandering near their own home &mdash; nobody shoots until you press the <strong>⚔️ Order the Attack</strong> HUD button (or the touch equivalent). Once given, it can't be undone, and blue troops go on the offensive with red fighting straight back.</li>
+        <li>All three sides start at peace, wandering near their own home &mdash; nobody shoots until you press the <strong>⚔️ Order the Attack</strong> HUD button (or the touch equivalent). Once given, it can't be undone: blue troops go on the offensive, and red and orange fight back against blue <em>and</em> each other.</li>
         <li>You start on foot near blue's home base &mdash; planes and tanks are parked out in the world, not something you spawn into. Walk up to one and press <strong>E</strong> to get in.</li>
-        <li><strong>WASD</strong> walks, <strong>left click</strong> shoots, <strong>right click (hold)</strong> aims down sights &mdash; watch for houses, barriers, and ditches, and help the blue troops hunt down the reds &mdash; troops and planes never target you, only a crash can kill you</li>
+        <li><strong>WASD</strong> walks, <strong>left click</strong> shoots, <strong>right click (hold)</strong> aims down sights &mdash; watch for houses, barriers, and ditches, and help the blue troops hunt down the reds and oranges &mdash; troops and planes never target you, only a crash can kill you</li>
         <li><strong>E</strong> &mdash; get in a nearby plane or tank while on foot; press <strong>E</strong> again to get back out</li>
         <li><strong>In a plane &mdash; Mouse</strong> look steers the nose (always flies forward), <strong>left click (hold)</strong> fires the machine gun, <strong>Q</strong> fires a guided missile (steer it with <strong>WASD</strong> mid-flight), <strong>B</strong> bails out with a parachute</li>
         <li>Diving builds speed, climbing bleeds it off &mdash; climb too hard for too long and you'll stall (nose drops until you dive to recover)</li>
@@ -38,9 +38,9 @@
         <li><strong>🕸️ Spider-Man role:</strong> <strong>E</strong> shoots/releases a web (aim near a rooftop to grapple straight up instead of swinging), <strong>W/S</strong> reel the rope in/out, <strong>A/D</strong> pump for speed while swinging, <strong>Space</strong> jumps or pushes off a wall while climbing &mdash; run at a building to grab and climb its wall. First-person, with a real sniper scope on right-click. Left/right click still shoot/aim your gun.</li>
       </ul>
       <ul class="controls-list hidden" id="controls-list-touch">
-        <li>Both sides start at peace, wandering near their own home &mdash; nobody shoots until you tap <strong>⚔️</strong>. Once given, it can't be undone, and blue troops go on the offensive with red fighting straight back.</li>
+        <li>All three sides start at peace, wandering near their own home &mdash; nobody shoots until you tap <strong>⚔️</strong>. Once given, it can't be undone: blue troops go on the offensive, and red and orange fight back against blue <em>and</em> each other.</li>
         <li>You start on foot near blue's home base &mdash; planes and tanks are parked out in the world. Walk up to one and tap 🚪 to get in.</li>
-        <li>The joystick walks, 🔫 shoots, 🎯 (hold) aims &mdash; watch for houses, barriers, and ditches, and help the blue troops hunt down the reds &mdash; troops and planes never target you, only a crash can kill you</li>
+        <li>The joystick walks, 🔫 shoots, 🎯 (hold) aims &mdash; watch for houses, barriers, and ditches, and help the blue troops hunt down the reds and oranges &mdash; troops and planes never target you, only a crash can kill you</li>
         <li><strong>🚪 button</strong> &mdash; get in a nearby plane or tank while on foot; tap it again to get back out</li>
         <li><strong>In a plane &mdash; Drag the screen</strong> to look/steer, <strong>🔫 (hold)</strong> fires the machine gun, <strong>🚀 button</strong> fires a guided missile (steer it with the joystick)</li>
         <li>Diving builds speed, climbing bleeds it off &mdash; climb too hard for too long and you'll stall (nose drops until you dive to recover)</li>
@@ -64,7 +64,7 @@
     </div>
     <div id="health-bar"></div>
     <div id="lives-status">💙 Lives: 5</div>
-    <div id="war-status">☮️ 🔵 1500 vs 🔴 1500</div>
+    <div id="war-status">☮️ 🔵 1500 vs 🔴 1500 vs 🟠 1500</div>
     <button id="attack-btn">⚔️ Order the Attack</button>
     <div id="speed-status">✈️ Speed: 100%</div>
     <div id="missile-status">🚀 Ready (Q)</div>

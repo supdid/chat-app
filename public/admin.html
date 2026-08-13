@@ -36,6 +36,16 @@
       <button class="approve" id="cleanup-btn" type="button">Run cleanup now</button>
       <span id="cleanup-result" class="meta"></span>
     </div>
+    <h2>Notifications</h2>
+    <div class="card">
+      <div class="meta">Get pushed to this device the moment a new report is filed, instead of only seeing it here.</div>
+      <button class="approve" id="enable-push-btn" type="button">Enable notifications</button>
+      <span id="push-status" class="meta"></span>
+    </div>
+    <h2>Reports (users/messages)</h2>
+    <div id="reports"></div>
+    <h2>Scorpture reports (videos)</h2>
+    <div id="scorpture-reports"></div>
     <h2>Pending patch proposals</h2>
     <div id="patches"></div>
     <h2>Recent error reports</h2>
@@ -70,12 +80,63 @@ function esc(s) {
 }
 
 async function refresh() {
-  const [patchesRes, errorsRes] = await Promise.all([
+  const [patchesRes, errorsRes, reportsRes, scorptureReportsRes] = await Promise.all([
     fetch('/admin/patches', { headers: headers() }),
     fetch('/admin/errors', { headers: headers() }),
+    fetch('/admin/reports', { headers: headers() }),
+    fetch('/admin/scorpture-reports', { headers: headers() }),
   ]);
   const { patches } = await patchesRes.json();
   const { errors } = await errorsRes.json();
+  const { reports } = await reportsRes.json();
+  const { reports: scorptureReports } = await scorptureReportsRes.json();
+
+  const scorptureReportsEl = document.getElementById('scorpture-reports');
+  const openScorptureReports = scorptureReports.filter((r) => r.status === 'new');
+  scorptureReportsEl.innerHTML = openScorptureReports.length ? '' : '<p class="empty">No open Scorpture reports.</p>';
+  for (const r of openScorptureReports) {
+    const div = document.createElement('div');
+    div.className = 'card';
+    div.innerHTML = `
+      <div class="meta">${new Date(r.created_at).toLocaleString()}</div>
+      <div><strong>${esc(r.reporter_username)}</strong> reported a video by <strong>${esc(r.uploader_username)}</strong></div>
+      ${r.reason ? `<div class="explanation">Reason: ${esc(r.reason)}</div>` : ''}
+      <button class="approve" data-id="${r.id}" data-action="resolve">Mark resolved</button>
+      <button class="reject" data-id="${r.id}" data-action="dismiss">Dismiss</button>
+    `;
+    scorptureReportsEl.appendChild(div);
+  }
+  scorptureReportsEl.querySelectorAll('button').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      await fetch(`/admin/scorpture-reports/${btn.dataset.id}/${btn.dataset.action}`, { method: 'POST', headers: headers() });
+      refresh();
+    });
+  });
+
+  const reportsEl = document.getElementById('reports');
+  const openReports = reports.filter((r) => r.status === 'new');
+  reportsEl.innerHTML = openReports.length ? '' : '<p class="empty">No open reports.</p>';
+  for (const r of openReports) {
+    const div = document.createElement('div');
+    div.className = 'card';
+    div.innerHTML = `
+      <div class="meta">Room ${esc(r.room_code)} — ${new Date(r.created_at).toLocaleString()}</div>
+      <div><strong>${esc(r.reporter_name)}</strong> reported <strong>${esc(r.target_name)}</strong></div>
+      ${r.reason ? `<div class="explanation">Reason: ${esc(r.reason)}</div>` : ''}
+      ${r.message_text ? `<pre>${esc(r.message_text)}</pre>` : ''}
+      <button class="approve" data-id="${r.id}" data-action="resolve">Mark resolved</button>
+      <button class="reject" data-id="${r.id}" data-action="dismiss">Dismiss</button>
+    `;
+    reportsEl.appendChild(div);
+  }
+  reportsEl.querySelectorAll('button').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      await fetch(`/admin/reports/${btn.dataset.id}/${btn.dataset.action}`, { method: 'POST', headers: headers() });
+      refresh();
+    });
+  });
 
   const patchesEl = document.getElementById('patches');
   patchesEl.innerHTML = patches.length ? '' : '<p class="empty">No pending proposals.</p>';
@@ -131,6 +192,38 @@ document.getElementById('cleanup-btn').addEventListener('click', async (e) => {
     resultEl.textContent = 'Failed — network error';
   }
   e.target.disabled = false;
+});
+
+function urlBase64ToUint8Array(base64) {
+  const padding = '='.repeat((4 - (base64.length % 4)) % 4);
+  const base64Safe = (base64 + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64Safe);
+  return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+}
+
+document.getElementById('enable-push-btn').addEventListener('click', async () => {
+  const statusEl = document.getElementById('push-status');
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    statusEl.textContent = 'Push not supported in this browser.';
+    return;
+  }
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') { statusEl.textContent = 'Notification permission denied.'; return; }
+    const reg = await navigator.serviceWorker.register('/sw.js');
+    await navigator.serviceWorker.ready;
+    const { publicKey } = await (await fetch('/admin/push/vapid-public-key', { headers: headers() })).json();
+    const subscription = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(publicKey),
+    });
+    await fetch('/admin/push/subscribe', {
+      method: 'POST', headers: headers(), body: JSON.stringify({ subscription: subscription.toJSON() }),
+    });
+    statusEl.textContent = 'Notifications enabled on this device.';
+  } catch (err) {
+    statusEl.textContent = `Failed: ${err.message}`;
+  }
 });
 
 if (adminKey) tryLoad().then((ok) => { if (!ok) { adminKey = ''; localStorage.removeItem(KEY_STORAGE); } });

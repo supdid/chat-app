@@ -17,6 +17,7 @@
     <a id="back-link" href="index.html" title="Back to chat">&larr;</a>
     <a id="logo-link" href="#/"><span id="logo-mark">🦂</span><span id="logo-text">Scorpture</span></a>
     <a id="live-nav-link" href="#/live" class="pill-btn">🔴 Live</a>
+    <a id="subscriptions-nav-link" href="#/subscriptions" class="pill-btn hidden">📺 Subscriptions</a>
     <form id="search-form">
       <input id="search-input" type="text" placeholder="Search Scorpture" autocomplete="off">
       <button type="submit" aria-label="Search">🔍</button>
@@ -46,6 +47,7 @@
         <a id="edit-first-link" href="videoeditor.html" class="pill-btn">🎬 Edit a video first</a>
         <input type="text" id="upload-title-input" placeholder="Title" maxlength="100">
         <textarea id="upload-description-input" placeholder="Description (optional)" maxlength="2000"></textarea>
+        <select id="upload-category-select"></select>
         <div id="upload-status"></div>
         <button id="upload-submit-btn" class="pill-btn primary" disabled>Upload</button>
       </div>
@@ -73,12 +75,58 @@
           <button id="golive-switch-camera-btn" class="pill-btn hidden">📷 Switch to camera</button>
           <button id="golive-end-btn" class="pill-btn danger">⏹️ End stream</button>
         </div>
-        <div id="golive-chat-container"></div>
+        <p class="hint">Chat is available as a floating box on screen — see the 💬 button once you're live.</p>
+      </div>
+    </div>
+  </div>
+
+  <div id="scorpture-admin-modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2>🦂 Scorpture Admin</h2>
+        <button id="scorpture-admin-close-btn" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+      <div id="scorpture-admin-body">
+        <label for="scorpture-admin-bonus-input">Bonus subscribers (added on top of your real subscriber count, everywhere it's shown)</label>
+        <input type="number" id="scorpture-admin-bonus-input" min="0" step="1">
+        <div id="scorpture-admin-status"></div>
+        <button id="scorpture-admin-save-btn" class="pill-btn primary">Save</button>
       </div>
     </div>
   </div>
 
   <div id="toast" class="hidden"></div>
+
+  <!-- Lives outside #app (which route() wipes on every navigation) so it survives browsing the
+       rest of Scorpture while you're live — see showLiveMiniWidget()/hideGoLiveModal() in
+       videos.js. Fixed to the viewport, not scoped to the Go Live dialog. -->
+  <div id="live-mini-widget" class="hidden">
+    <video id="live-mini-video" muted autoplay playsinline></video>
+    <div id="live-mini-info">
+      <span class="live-dot">🔴 LIVE</span>
+      <span id="live-mini-viewers">0 watching</span>
+    </div>
+    <button id="live-mini-expand-btn" class="icon-btn" title="Open stream controls">⤢</button>
+    <button id="live-mini-hide-btn" class="icon-btn" title="Hide preview">✕</button>
+  </div>
+
+  <!-- Same "lives outside #app, survives navigation" idea as #live-mini-widget above, but for
+       chat — a single floating chat box on screen instead of one baked into the watch-live page
+       or the Go Live dialog. Shown/enabled whenever you're broadcasting or watching a live
+       stream; toggled with #live-chat-toggle-btn. -->
+  <button id="live-chat-toggle-btn" class="hidden" title="Toggle live chat">💬</button>
+  <div id="live-chat-widget" class="hidden">
+    <div id="live-chat-widget-header">
+      <span>💬 Live chat</span>
+      <button id="live-chat-popout-btn" class="icon-btn" aria-label="Pop out chat into its own window" title="Pop out into its own window">⤢</button>
+      <button id="live-chat-widget-close-btn" class="icon-btn" aria-label="Hide chat">✕</button>
+    </div>
+    <div id="live-chat-messages"></div>
+    <form id="live-chat-form">
+      <input id="live-chat-input" type="text" placeholder="Say something…" maxlength="300" autocomplete="off">
+      <button type="submit" class="pill-btn">Send</button>
+    </form>
+  </div>
 
   <script src="error-report.js"></script>
   <script src="videos.js"></script>

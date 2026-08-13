@@ -1,0 +1,118 @@
+* { box-sizing: border-box; }
+
+:root {
+  --orange: #ff7a1a;
+  --orange-dark: #e6650a;
+  --orange-pale: #fff1e5;
+  --ink: #1c1c1c;
+  --ink-soft: #6b6b6b;
+  --border: #eee0d4;
+  --white: #ffffff;
+}
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background: var(--white);
+  color: var(--ink);
+}
+
+.hidden { display: none !important; }
+
+#header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  background: var(--orange-pale);
+  color: var(--orange-dark);
+  font-weight: 700;
+  font-size: 0.85rem;
+  padding: 0.5rem 0.7rem;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+#header span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conn-status {
+  flex: none;
+  font-size: 0.7rem;
+  font-weight: 600;
+  opacity: 0.75;
+}
+
+#state-msg {
+  flex: none;
+  padding: 0.5rem 0.7rem;
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+  border-bottom: 1px solid var(--border);
+}
+
+#messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.4rem 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.live-chat-message {
+  font-size: 0.82rem;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.live-chat-author {
+  font-weight: 700;
+  color: var(--orange-dark);
+  margin-right: 0.3rem;
+}
+
+#chat-form {
+  flex: none;
+  display: flex;
+  gap: 0.35rem;
+  padding: 0.4rem;
+  border-top: 1px solid var(--border);
+}
+
+#chat-form input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  outline: none;
+  font-size: 0.82rem;
+}
+
+#chat-form input:focus { border-color: var(--orange); }
+
+#chat-form button {
+  flex: none;
+  border: none;
+  border-radius: 999px;
+  background: var(--orange);
+  color: var(--white);
+  font-weight: 600;
+  font-size: 0.8rem;
+  padding: 0.4rem 0.75rem;
+  cursor: pointer;
+}
+
+#chat-form button:disabled { opacity: 0.5; cursor: not-allowed; }

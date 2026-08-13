@@ -267,6 +267,76 @@ db.exec(`
     PRIMARY KEY (subscriber_id, channel_id)
   );
   CREATE INDEX IF NOT EXISTS idx_scorpture_subs_channel ON scorpture_subscriptions(channel_id);
+
+  -- Abuse reports (message or user), reviewed in the admin panel alongside error_reports/patch
+  -- proposals — same "logged, nothing auto-acted-on, a human decides" shape as the self-healing
+  -- pipeline, just for people-moderation instead of code-moderation.
+  CREATE TABLE IF NOT EXISTS reports (
+    id TEXT PRIMARY KEY,
+    room_code TEXT,
+    reporter_name TEXT,
+    reporter_account_id TEXT,
+    target_name TEXT,
+    message_id TEXT,
+    message_text TEXT,
+    reason TEXT,
+    status TEXT DEFAULT 'new',
+    created_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status, created_at);
+
+  -- Persistent mute, keyed by account when the muted person is signed in so it survives a
+  -- restart and re-applies even if they rejoin the room under a different display name.
+  -- Anonymous (no-account) mutes stay purely in-memory (room.muted Set in server.js), same as
+  -- before this table existed — there's no stable identity to persist them against.
+  CREATE TABLE IF NOT EXISTS room_mutes (
+    room_code TEXT,
+    target_account_id TEXT,
+    target_name TEXT,
+    muted_by TEXT,
+    created_at INTEGER,
+    PRIMARY KEY (room_code, target_account_id)
+  );
+
+  -- Bans a person from rejoining a room outright (kick-user only disconnects them once).
+  -- Same account-vs-name split as room_mutes: an account-keyed row is real enforcement (checked
+  -- on join-room regardless of display name), a name-only row (target_account_id NULL, for an
+  -- anonymous target) is the same "weak by design" trust level as kick/host powers already are
+  -- elsewhere in this codebase — trivially dodged by picking a new name, but stops casual
+  -- re-entry. id is a real primary key (not room+account) so anonymous name-bans, which can't
+  -- rely on a unique account_id, don't collide with each other.
+  CREATE TABLE IF NOT EXISTS room_bans (
+    id TEXT PRIMARY KEY,
+    room_code TEXT,
+    target_account_id TEXT,
+    target_name TEXT,
+    banned_by TEXT,
+    created_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_room_bans_room ON room_bans(room_code);
+
+  -- Lets an admin (bearer admin-key.json, no account system of its own) opt a device into push
+  -- notifications for new reports — separate from the per-account push_subscriptions table since
+  -- there's no account to key it on, just possession of the admin key at subscribe time.
+  CREATE TABLE IF NOT EXISTS admin_push_subscriptions (
+    endpoint TEXT PRIMARY KEY,
+    subscription_json TEXT,
+    created_at INTEGER
+  );
+
+  -- Scorpture (account-based, not room-scoped — see scorpture_videos comment above) equivalent
+  -- of the chat reports table.
+  CREATE TABLE IF NOT EXISTS scorpture_reports (
+    id TEXT PRIMARY KEY,
+    video_id TEXT,
+    reporter_account_id TEXT,
+    reporter_username TEXT,
+    uploader_username TEXT,
+    reason TEXT,
+    status TEXT DEFAULT 'new',
+    created_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_scorpture_reports_status ON scorpture_reports(status, created_at);
 `);
 
 // These three ensureColumn calls (and the indexes below) reference the accounts/push_subscriptions
@@ -276,8 +346,16 @@ ensureColumn('accounts', 'email', 'TEXT');
 ensureColumn('accounts', 'google_id', 'TEXT');
 ensureColumn('accounts', 'scorpture_banner_url', 'TEXT');
 ensureColumn('accounts', 'scorpture_avatar_url', 'TEXT');
+ensureColumn('accounts', 'scorpture_bonus_subscribers', 'INTEGER DEFAULT 0');
+ensureColumn('accounts', 'scorpture_overlay_json', 'TEXT');
+ensureColumn('scorpture_comments', 'edited', 'INTEGER DEFAULT 0');
+ensureColumn('scorpture_videos', 'category', 'TEXT');
 ensureColumn('push_subscriptions', 'account_id', 'TEXT');
-db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email COLLATE NOCASE) WHERE email IS NOT NULL');
+// Was a UNIQUE index (one account per email) — relaxed to allow up to MAX_ACCOUNTS_PER_EMAIL
+// (see server.js signup handler) accounts sharing one email, so drop the old unique index
+// before recreating it as a plain lookup index; on a fresh DB the DROP is a harmless no-op.
+db.exec('DROP INDEX IF EXISTS idx_accounts_email');
+db.exec('CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email COLLATE NOCASE) WHERE email IS NOT NULL');
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_google_id ON accounts(google_id) WHERE google_id IS NOT NULL');
 db.exec('CREATE INDEX IF NOT EXISTS idx_push_account ON push_subscriptions(account_id)');
 
@@ -680,8 +758,19 @@ function getAccountByUsername(username) {
   return db.prepare('SELECT * FROM accounts WHERE username = ? COLLATE NOCASE').get(username) || null;
 }
 
+// Returns the oldest account for this email — used only where a single account must be picked
+// (Google-sign-in account linking). Prefer getAccountsByEmail/countAccountsByEmail everywhere
+// else now that one email can back multiple accounts (see MAX_ACCOUNTS_PER_EMAIL in server.js).
 function getAccountByEmail(email) {
-  return db.prepare('SELECT * FROM accounts WHERE email = ? COLLATE NOCASE').get(email) || null;
+  return db.prepare('SELECT * FROM accounts WHERE email = ? COLLATE NOCASE ORDER BY created_at ASC').get(email) || null;
+}
+
+function getAccountsByEmail(email) {
+  return db.prepare('SELECT * FROM accounts WHERE email = ? COLLATE NOCASE ORDER BY created_at ASC').all(email);
+}
+
+function countAccountsByEmail(email) {
+  return db.prepare('SELECT COUNT(*) as c FROM accounts WHERE email = ? COLLATE NOCASE').get(email).c;
 }
 
 function getAccountById(id) {
@@ -870,8 +959,8 @@ function getBlockedUsers(accountId) {
 
 function insertScorptureVideo(v) {
   db.prepare(
-    `INSERT INTO scorpture_videos (id, uploader_id, uploader_username, title, description, video_url, thumbnail_url, views, created_at)
-     VALUES (@id, @uploaderId, @uploaderUsername, @title, @description, @videoUrl, @thumbnailUrl, 0, @createdAt)`
+    `INSERT INTO scorpture_videos (id, uploader_id, uploader_username, title, description, video_url, thumbnail_url, category, views, created_at)
+     VALUES (@id, @uploaderId, @uploaderUsername, @title, @description, @videoUrl, @thumbnailUrl, @category, 0, @createdAt)`
   ).run(v);
 }
 
@@ -879,18 +968,47 @@ function getScorptureVideo(id) {
   return db.prepare('SELECT * FROM scorpture_videos WHERE id = ?').get(id) || null;
 }
 
-function listScorptureVideos({ search, uploaderId, limit = 60 } = {}) {
+function listScorptureVideos({ search, uploaderId, category, limit = 60 } = {}) {
+  const clauses = [];
+  const params = [];
   if (uploaderId) {
-    return db
-      .prepare('SELECT * FROM scorpture_videos WHERE uploader_id = ? ORDER BY created_at DESC LIMIT ?')
-      .all(uploaderId, limit);
+    clauses.push('uploader_id = ?');
+    params.push(uploaderId);
+  }
+  if (category) {
+    clauses.push('category = ?');
+    params.push(category);
   }
   if (search) {
-    return db
-      .prepare('SELECT * FROM scorpture_videos WHERE title LIKE ? ORDER BY created_at DESC LIMIT ?')
-      .all(`%${search}%`, limit);
+    clauses.push('(title LIKE ? OR description LIKE ?)');
+    params.push(`%${search}%`, `%${search}%`);
   }
-  return db.prepare('SELECT * FROM scorpture_videos ORDER BY created_at DESC LIMIT ?').all(limit);
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  params.push(limit);
+  return db.prepare(`SELECT * FROM scorpture_videos ${where} ORDER BY created_at DESC LIMIT ?`).all(...params);
+}
+
+// Every video from every channel this account subscribes to, newest first — the whole point of
+// subscribing actually mattering day-to-day (see #/subscriptions in videos.js), not just a count
+// on someone's channel page.
+function getScorptureSubscriptionFeed(subscriberId, limit = 60) {
+  return db
+    .prepare(
+      `SELECT v.* FROM scorpture_videos v
+       JOIN scorpture_subscriptions s ON s.channel_id = v.uploader_id
+       WHERE s.subscriber_id = ?
+       ORDER BY v.created_at DESC LIMIT ?`
+    )
+    .all(subscriberId, limit);
+}
+
+// accountIds of everyone subscribed to this channel — used to fan out "new video"/"went live"
+// push notifications, see server.js.
+function getScorptureSubscriberIds(channelId) {
+  return db
+    .prepare('SELECT subscriber_id FROM scorpture_subscriptions WHERE channel_id = ?')
+    .all(channelId)
+    .map((r) => r.subscriber_id);
 }
 
 function bumpScorptureViews(id) {
@@ -912,6 +1030,16 @@ function insertScorptureComment(c) {
 
 function getScorptureComments(videoId) {
   return db.prepare('SELECT * FROM scorpture_comments WHERE video_id = ? ORDER BY created_at ASC').all(videoId);
+}
+
+// The account_id match in the WHERE clause *is* the ownership check — a mismatched id just
+// updates zero rows rather than needing a separate lookup-then-compare. Returns whether it
+// actually changed anything, so the route can tell "not yours"/"doesn't exist" from a real edit.
+function updateScorptureComment(id, accountId, text) {
+  const result = db
+    .prepare('UPDATE scorpture_comments SET text = ?, edited = 1 WHERE id = ? AND account_id = ?')
+    .run(text, id, accountId);
+  return result.changes > 0;
 }
 
 // Returns the new liked state (true = just liked, false = just unliked) — one call toggles
@@ -951,8 +1079,39 @@ function toggleScorptureSubscription(subscriberId, channelId) {
   return true;
 }
 
+// The bonus is a purely cosmetic admin-set offset (see setScorptureBonusSubscribers) — added on
+// top of the real subscription count wherever it's displayed, not backed by real subscriber rows.
 function getScorptureSubscriberCount(channelId) {
-  return db.prepare('SELECT COUNT(*) as c FROM scorpture_subscriptions WHERE channel_id = ?').get(channelId).c;
+  const real = db.prepare('SELECT COUNT(*) as c FROM scorpture_subscriptions WHERE channel_id = ?').get(channelId).c;
+  const account = db.prepare('SELECT scorpture_bonus_subscribers FROM accounts WHERE id = ?').get(channelId);
+  return real + (account ? account.scorpture_bonus_subscribers || 0 : 0);
+}
+
+function setScorptureBonusSubscribers(accountId, count) {
+  db.prepare('UPDATE accounts SET scorpture_bonus_subscribers = ? WHERE id = ?').run(count, accountId);
+}
+
+function getScorptureBonusSubscribers(accountId) {
+  const account = db.prepare('SELECT scorpture_bonus_subscribers FROM accounts WHERE id = ?').get(accountId);
+  return account ? account.scorpture_bonus_subscribers || 0 : 0;
+}
+
+// Stream overlays (text/image graphics the broadcaster composites onto their own video before
+// sending) — a small per-account list, stored as one JSON blob rather than its own table since
+// it's just a handful of items at most, edited as a whole list from the overlays settings page.
+function getScorptureOverlays(accountId) {
+  const account = db.prepare('SELECT scorpture_overlay_json FROM accounts WHERE id = ?').get(accountId);
+  if (!account || !account.scorpture_overlay_json) return [];
+  try {
+    const parsed = JSON.parse(account.scorpture_overlay_json);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function setScorptureOverlays(accountId, overlays) {
+  db.prepare('UPDATE accounts SET scorpture_overlay_json = ? WHERE id = ?').run(JSON.stringify(overlays), accountId);
 }
 
 function isScorptureSubscribed(subscriberId, channelId) {
@@ -990,6 +1149,123 @@ function setErrorReportStatus(id, status) {
 
 function getRecentErrorReports(limit = 50) {
   return db.prepare('SELECT * FROM error_reports ORDER BY created_at DESC LIMIT ?').all(limit);
+}
+
+// ---- Abuse reports (message or user) ----
+
+function insertReport(entry) {
+  db.prepare(
+    `INSERT INTO reports (id, room_code, reporter_name, reporter_account_id, target_name, message_id, message_text, reason, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)`
+  ).run(
+    entry.id,
+    entry.roomCode,
+    entry.reporterName,
+    entry.reporterAccountId || null,
+    entry.targetName,
+    entry.messageId || null,
+    entry.messageText || null,
+    entry.reason || null,
+    Date.now()
+  );
+}
+
+function getRecentReports(limit = 50) {
+  return db.prepare('SELECT * FROM reports ORDER BY created_at DESC LIMIT ?').all(limit);
+}
+
+function setReportStatus(id, status) {
+  db.prepare('UPDATE reports SET status = ? WHERE id = ?').run(status, id);
+}
+
+// ---- Persistent (account-based) room mutes — see room_mutes table comment above ----
+
+function addPersistentMute(roomCode, targetAccountId, targetName, mutedBy) {
+  db.prepare(
+    `INSERT INTO room_mutes (room_code, target_account_id, target_name, muted_by, created_at) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(room_code, target_account_id) DO UPDATE SET target_name = excluded.target_name, muted_by = excluded.muted_by, created_at = excluded.created_at`
+  ).run(roomCode, targetAccountId, targetName, mutedBy, Date.now());
+}
+
+function removePersistentMute(roomCode, targetAccountId) {
+  db.prepare('DELETE FROM room_mutes WHERE room_code = ? AND target_account_id = ?').run(roomCode, targetAccountId);
+}
+
+function isPersistentlyMuted(roomCode, targetAccountId) {
+  if (!targetAccountId) return false;
+  return !!db.prepare('SELECT 1 FROM room_mutes WHERE room_code = ? AND target_account_id = ?').get(roomCode, targetAccountId);
+}
+
+// Fallback for unmuting someone who isn't currently connected (so their live ws.accountId isn't
+// available) — looks the mute row up by the display name it was recorded under instead.
+function getPersistentMuteByName(roomCode, targetName) {
+  return db.prepare('SELECT * FROM room_mutes WHERE room_code = ? AND target_name = ?').get(roomCode, targetName) || null;
+}
+
+// ---- Room bans (see room_bans table comment for the account-vs-name enforcement split) ----
+
+function banFromRoom(id, roomCode, targetAccountId, targetName, bannedBy) {
+  // One row per (room, account) for signed-in targets — re-banning just refreshes it rather
+  // than piling up duplicate rows every time a host re-bans the same account.
+  if (targetAccountId) {
+    const existing = db.prepare('SELECT id FROM room_bans WHERE room_code = ? AND target_account_id = ?').get(roomCode, targetAccountId);
+    if (existing) {
+      db.prepare('UPDATE room_bans SET target_name = ?, banned_by = ?, created_at = ? WHERE id = ?').run(targetName, bannedBy, Date.now(), existing.id);
+      return;
+    }
+  }
+  db.prepare('INSERT INTO room_bans (id, room_code, target_account_id, target_name, banned_by, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(
+    id, roomCode, targetAccountId || null, targetName, bannedBy, Date.now()
+  );
+}
+
+function unbanFromRoom(banId) {
+  db.prepare('DELETE FROM room_bans WHERE id = ?').run(banId);
+}
+
+function getRoomBans(roomCode) {
+  return db.prepare('SELECT * FROM room_bans WHERE room_code = ? ORDER BY created_at DESC').all(roomCode);
+}
+
+function isBannedFromRoom(roomCode, accountId, name) {
+  if (accountId && db.prepare('SELECT 1 FROM room_bans WHERE room_code = ? AND target_account_id = ?').get(roomCode, accountId)) return true;
+  if (db.prepare('SELECT 1 FROM room_bans WHERE room_code = ? AND target_account_id IS NULL AND target_name = ?').get(roomCode, name)) return true;
+  return false;
+}
+
+// ---- Admin push subscriptions (see admin_push_subscriptions table comment) ----
+
+function addAdminPushSubscription(endpoint, subscription) {
+  db.prepare(
+    `INSERT INTO admin_push_subscriptions (endpoint, subscription_json, created_at) VALUES (?, ?, ?)
+     ON CONFLICT(endpoint) DO UPDATE SET subscription_json = excluded.subscription_json`
+  ).run(endpoint, JSON.stringify(subscription), Date.now());
+}
+
+function removeAdminPushSubscription(endpoint) {
+  db.prepare('DELETE FROM admin_push_subscriptions WHERE endpoint = ?').run(endpoint);
+}
+
+function getAdminPushSubscriptions() {
+  return db.prepare('SELECT endpoint, subscription_json FROM admin_push_subscriptions').all()
+    .map((r) => ({ endpoint: r.endpoint, subscription: JSON.parse(r.subscription_json) }));
+}
+
+// ---- Scorpture reports (see scorpture_reports table comment) ----
+
+function insertScorptureReport(entry) {
+  db.prepare(
+    `INSERT INTO scorpture_reports (id, video_id, reporter_account_id, reporter_username, uploader_username, reason, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'new', ?)`
+  ).run(entry.id, entry.videoId, entry.reporterAccountId, entry.reporterUsername, entry.uploaderUsername, entry.reason || null, Date.now());
+}
+
+function getRecentScorptureReports(limit = 50) {
+  return db.prepare('SELECT * FROM scorpture_reports ORDER BY created_at DESC LIMIT ?').all(limit);
+}
+
+function setScorptureReportStatus(id, status) {
+  db.prepare('UPDATE scorpture_reports SET status = ? WHERE id = ?').run(status, id);
 }
 
 function insertPatchProposal(entry) {
@@ -1097,6 +1373,8 @@ module.exports = {
   createAccount,
   getAccountByUsername,
   getAccountByEmail,
+  getAccountsByEmail,
+  countAccountsByEmail,
   getAccountById,
   createAccountWithGoogle,
   getAccountByGoogleId,
@@ -1121,6 +1399,23 @@ module.exports = {
   getErrorReport,
   setErrorReportStatus,
   getRecentErrorReports,
+  insertReport,
+  getRecentReports,
+  setReportStatus,
+  addPersistentMute,
+  removePersistentMute,
+  isPersistentlyMuted,
+  getPersistentMuteByName,
+  banFromRoom,
+  unbanFromRoom,
+  getRoomBans,
+  isBannedFromRoom,
+  addAdminPushSubscription,
+  removeAdminPushSubscription,
+  getAdminPushSubscriptions,
+  insertScorptureReport,
+  getRecentScorptureReports,
+  setScorptureReportStatus,
   insertPatchProposal,
   getPatchProposal,
   setPatchProposalStatus,
@@ -1135,6 +1430,9 @@ module.exports = {
   deleteScorptureVideo,
   insertScorptureComment,
   getScorptureComments,
+  updateScorptureComment,
+  getScorptureSubscriptionFeed,
+  getScorptureSubscriberIds,
   toggleScorptureLike,
   getScorptureLikeCount,
   hasScorptureLiked,
@@ -1143,4 +1441,8 @@ module.exports = {
   isScorptureSubscribed,
   setScorptureBanner,
   setScorptureAvatar,
+  setScorptureBonusSubscribers,
+  getScorptureBonusSubscribers,
+  getScorptureOverlays,
+  setScorptureOverlays,
 };

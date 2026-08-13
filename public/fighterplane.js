@@ -116,7 +116,7 @@ const FOREST_CANOPY_COLORS = [0x1f4d1a, 0x274f22, 0x2d5a27, 0x35662f, 0x3d6e35, 
 // total (red/blue × body/head) regardless of count — with each troop's own state (position/hp/
 // AI/faction) kept as a plain object, no individual Object3D at all.
 const TROOPS_PER_FACTION = 1500;
-const GROUND_BOT_COUNT = TROOPS_PER_FACTION * 2;
+const GROUND_BOT_COUNT = TROOPS_PER_FACTION * 3;
 const GROUND_BOT_HP = 2;
 const GROUND_BOT_SPEED = 6; // units/sec while wandering toward a waypoint
 const GROUND_BOT_STRAFE_SPEED = 3.5; // units/sec sideways movement while engaging a target
@@ -618,7 +618,9 @@ function destroyBot(bot) {
   // branch just leaves them gone for good.
   if (bot.faction) {
     bot.target = null;
-    if (bot.faction === 'red') redAliveCount--; else blueAliveCount--;
+    if (bot.faction === 'red') redAliveCount--;
+    else if (bot.faction === 'blue') blueAliveCount--;
+    else orangeAliveCount--;
   }
   spawnExplosion(bot.mesh.position.clone(), 0xffa64d);
   addScore(1);
@@ -952,14 +954,21 @@ function updateFires(now) {
   }
 }
 
-// ---------- Faction war: TROOPS_PER_FACTION red vs. TROOPS_PER_FACTION blue, fighting each
-// other. Blue is the player's side (never targeted by blue fire, only ever fires at red); red
-// targets both blue troops and the player. Win by wiping out red, lose if blue is wiped out
-// first — see checkWarOutcome() (called from destroyBot). No individual meshes per troop (see
-// GROUND_BOT_COUNT's comment) — 4 shared InstancedMeshes (red/blue × body/head), 4 draw calls
-// total regardless of headcount. Troops are permadeath (no respawn) so the war can actually end.
+// ---------- Faction war: TROOPS_PER_FACTION each of red, blue, and orange — a genuine three-way
+// free-for-all, not two sides with a neutral bystander. Blue is the player's side (never targeted
+// by blue fire, only ever fires at red/orange); red and orange are both hostile to blue *and* to
+// each other. Win by wiping out every red and orange trooper, lose if blue is wiped out first —
+// see checkWarOutcome() (called from destroyBot). No individual meshes per troop (see
+// GROUND_BOT_COUNT's comment) — 6 shared InstancedMeshes (red/blue/orange × body/head), 6 draw
+// calls total regardless of headcount. Troops are permadeath (no respawn) so the war can end.
 const RED_HOME = { x: -GROUND_AREA_RADIUS * 0.8, z: 0 };
 const BLUE_HOME = { x: GROUND_AREA_RADIUS * 0.8, z: 0 };
+const ORANGE_HOME = { x: 0, z: -GROUND_AREA_RADIUS * 0.8 };
+// Triangle layout (red/blue on the x-axis, orange to the south) rather than a line, so all three
+// homes are roughly equidistant and no two factions start any closer to each other than any other
+// pair — a straight red-blue-orange line would've let orange sit safely behind whichever of the
+// other two it's nearer to.
+const FACTION_HOME = { red: RED_HOME, blue: BLUE_HOME, orange: ORANGE_HOME };
 const FACTION_SPAWN_SPREAD = GROUND_AREA_RADIUS * 0.6;
 
 const troopDummy = new THREE.Object3D();
@@ -971,16 +980,20 @@ function makeFactionInstancedMeshes(count, bodyColor) {
 }
 const redTroopMeshes = makeFactionInstancedMeshes(TROOPS_PER_FACTION, 0xc0392b);
 const blueTroopMeshes = makeFactionInstancedMeshes(TROOPS_PER_FACTION, 0x2f6fd6);
+const orangeTroopMeshes = makeFactionInstancedMeshes(TROOPS_PER_FACTION, 0xff8c1a);
+const FACTION_MESHES = { red: redTroopMeshes, blue: blueTroopMeshes, orange: orangeTroopMeshes };
 
 // groundBots is the combined view every generic system (findBotNear for the player's own gun,
-// nuke, grenade, resetGame) already expects; redTroops/blueTroops are the same objects by
-// reference, split out so findNearbyEnemy/syncTroopInstances don't have to filter 3000 entries
-// by faction on every call.
+// nuke, grenade, resetGame) already expects; redTroops/blueTroops/orangeTroops are the same
+// objects by reference, split out so findNearbyEnemy/syncTroopInstances don't have to filter
+// 4500 entries by faction on every call.
 const groundBots = [];
 const redTroops = [];
 const blueTroops = [];
+const orangeTroops = [];
 let redAliveCount = TROOPS_PER_FACTION;
 let blueAliveCount = TROOPS_PER_FACTION;
+let orangeAliveCount = TROOPS_PER_FACTION;
 // Both sides stay peaceful (wander near home, no target-seeking, no firing, no melee, no red fire
 // on the player) until the player gives the order — see the "⚔️ Attack" button/startWar(). Once
 // it flips, both factions' AI runs unconditionally the same as each other; there's no separate
@@ -992,7 +1005,7 @@ let warStarted = false;
 // bullet hit-detection, nuke/grenade radius checks) keeps working unmodified; `angle` replaces
 // the .lookAt() calls those meshless bots can't do themselves, consumed by syncTroopInstances().
 function createFactionTroop(faction, factionIndex) {
-  const home = faction === 'red' ? RED_HOME : BLUE_HOME;
+  const home = FACTION_HOME[faction];
   const spot = randomPointNear(home.x, home.z, FACTION_SPAWN_SPREAD);
   return {
     faction, factionIndex,
@@ -1006,6 +1019,10 @@ function createFactionTroop(faction, factionIndex) {
     waypoint: randomPointNear(home.x, home.z, FACTION_SPAWN_SPREAD),
     strafeDir: Math.random() < 0.5 ? 1 : -1,
     nextStrafeFlipAt: 0,
+    // Blue-only (see updateBlueAntiAir) — harmless to set on every faction, simpler than
+    // conditionally adding the fields only for blue.
+    nextAaScanAt: 0,
+    nextAaFireAt: 0,
     // A handful of blue troops (more candidates than planes, since not every candidate will be
     // near an unclaimed plane at any given moment) skip combat AI entirely in favor of making a
     // beeline for the nearest unclaimed parked plane — see the isPilotCandidate branch in
@@ -1015,9 +1032,19 @@ function createFactionTroop(faction, factionIndex) {
 }
 for (let i = 0; i < TROOPS_PER_FACTION; i++) { const t = createFactionTroop('red', i); redTroops.push(t); groundBots.push(t); }
 for (let i = 0; i < TROOPS_PER_FACTION; i++) { const t = createFactionTroop('blue', i); blueTroops.push(t); groundBots.push(t); }
+for (let i = 0; i < TROOPS_PER_FACTION; i++) { const t = createFactionTroop('orange', i); orangeTroops.push(t); groundBots.push(t); }
+
+// Each faction's enemy pool is the *other two* factions combined — built once, right after every
+// troop exists, since faction membership never changes at runtime (permadeath, no defections).
+// findNearbyEnemy just does an O(1) lookup into this instead of branching/filtering per call.
+const FACTION_ENEMIES = {
+  red: [...blueTroops, ...orangeTroops],
+  blue: [...redTroops, ...orangeTroops],
+  orange: [...redTroops, ...blueTroops],
+};
 
 function resetFactionTroop(bot) {
-  const home = bot.faction === 'red' ? RED_HOME : BLUE_HOME;
+  const home = FACTION_HOME[bot.faction];
   const spot = randomPointNear(home.x, home.z, FACTION_SPAWN_SPREAD);
   bot.mesh.position.set(spot.x, GROUND_LEVEL, spot.z);
   bot.hp = GROUND_BOT_HP;
@@ -1028,6 +1055,8 @@ function resetFactionTroop(bot) {
   bot.nextFireAt = performance.now() + 1000 + Math.random() * 2000;
   bot.waypoint = randomPointNear(home.x, home.z, FACTION_SPAWN_SPREAD);
   bot.nextStrafeFlipAt = 0;
+  bot.nextAaScanAt = 0;
+  bot.nextAaFireAt = 0;
 }
 
 // Writes every troop's current position/angle/visibility into its faction's InstancedMeshes —
@@ -1036,7 +1065,7 @@ function resetFactionTroop(bot) {
 // them (there's no per-instance visibility flag on InstancedMesh, only the shared material/count).
 function syncTroopInstances() {
   for (const bot of groundBots) {
-    const meshes = bot.faction === 'red' ? redTroopMeshes : blueTroopMeshes;
+    const meshes = FACTION_MESHES[bot.faction];
     const scale = bot.mesh.visible ? 1 : 0;
     troopDummy.position.copy(bot.mesh.position);
     troopDummy.position.y += 1.35;
@@ -1054,6 +1083,8 @@ function syncTroopInstances() {
   redTroopMeshes.headMesh.instanceMatrix.needsUpdate = true;
   blueTroopMeshes.bodyMesh.instanceMatrix.needsUpdate = true;
   blueTroopMeshes.headMesh.instanceMatrix.needsUpdate = true;
+  orangeTroopMeshes.bodyMesh.instanceMatrix.needsUpdate = true;
+  orangeTroopMeshes.headMesh.instanceMatrix.needsUpdate = true;
 }
 
 // Random-sample instead of exhaustive search — with 1500 troops per side, scanning the whole
@@ -1064,7 +1095,7 @@ function syncTroopInstances() {
 // bullet since each one only ever checks its own fixed target — see fireTroopBullet).
 const TROOP_TARGET_SCAN_SAMPLE = 10;
 function findNearbyEnemy(bot) {
-  const enemyArray = bot.faction === 'red' ? blueTroops : redTroops;
+  const enemyArray = FACTION_ENEMIES[bot.faction];
   if (enemyArray.length === 0) return null;
   let best = null, bestDist = Infinity;
   for (let i = 0; i < TROOP_TARGET_SCAN_SAMPLE; i++) {
@@ -1074,6 +1105,44 @@ function findNearbyEnemy(bot) {
     if (d < bestDist) { bestDist = d; best = candidate; }
   }
   return best;
+}
+
+// ---------- Blue anti-air: blue troops occasionally also fire on nearby aerial bots (the
+// dogfighting planes patrolling overhead), not just red/orange on the ground — reuses the exact
+// same troopBullets/fireTroopBullet/destroyBot pipeline used for troop-vs-troop combat (it
+// already works generically on anything shaped like { mesh:{position}, hp, alive }, and
+// destroyBot already skips the faction-counter branch for anything with no bot.faction), just
+// aimed with a full 3D direction instead of the ground-combat path's flattened (toTarget.y = 0)
+// one. Entirely independent of bot.target (the ground-combat target) — a blue trooper mid-firefight
+// with a red/orange trooper still takes occasional potshots upward at a passing plane; only 20
+// aerial bots exist at once (BOT_COUNT), so an exhaustive per-scan search is cheap even spread
+// across 1500 blue troops. ----------
+const AA_RANGE = 160;
+const AA_SCAN_INTERVAL_MS = 2500;
+const AA_FIRE_COOLDOWN_MS = 2000;
+
+function findNearbyAerialBot(bot) {
+  let best = null, bestDist = AA_RANGE;
+  for (const aerial of bots) {
+    if (!aerial.alive) continue;
+    const d = bot.mesh.position.distanceTo(aerial.mesh.position);
+    if (d < bestDist) { bestDist = d; best = aerial; }
+  }
+  return best;
+}
+
+function updateBlueAntiAir(now) {
+  if (!warStarted) return;
+  for (const bot of blueTroops) {
+    if (!bot.alive || now < bot.nextAaScanAt) continue;
+    bot.nextAaScanAt = now + AA_SCAN_INTERVAL_MS + Math.random() * 1000;
+    if (now < bot.nextAaFireAt) continue;
+    const target = findNearbyAerialBot(bot);
+    if (!target) continue;
+    const dir = target.mesh.position.clone().sub(bot.mesh.position).normalize();
+    fireTroopBullet(bot, dir, target);
+    bot.nextAaFireAt = now + AA_FIRE_COOLDOWN_MS + Math.random() * 800;
+  }
 }
 
 // Troop-vs-troop fire — a separate array/update loop from the player-facing `bullets` (aerial +
@@ -1206,13 +1275,13 @@ function updateGroundBots(dt) {
     const toWaypoint = new THREE.Vector3(bot.waypoint.x - bot.mesh.position.x, 0, bot.waypoint.z - bot.mesh.position.z);
     const dist = toWaypoint.length();
     if (dist < 2) {
-      // At peace: loiter near your own home. At war: push into the enemy's territory instead of
-      // picking a fresh spot near home — this only matters for the brief gap between losing a
-      // target and the next retarget scan finding a new one, since a live target always takes
-      // over movement above, but it keeps that gap from reading as "wandering home" mid-battle.
-      const dest = warStarted
-        ? (bot.faction === 'red' ? BLUE_HOME : RED_HOME)
-        : (bot.faction === 'red' ? RED_HOME : BLUE_HOME);
+      // At peace: loiter near your own home. At war: push toward the map's center — with three
+      // homes arranged in a triangle there's no single "the enemy's territory" anymore, but the
+      // center is everyone's shared middle ground, so pushing there still reads as advancing on
+      // the fight rather than "wandering home" mid-battle (this only matters for the brief gap
+      // between losing a target and the next retarget scan finding a new one, since a live
+      // target always takes over movement above).
+      const dest = warStarted ? { x: 0, z: 0 } : FACTION_HOME[bot.faction];
       bot.waypoint = randomPointNear(dest.x, dest.z, FACTION_SPAWN_SPREAD);
     } else {
       toWaypoint.normalize();
@@ -1223,15 +1292,16 @@ function updateGroundBots(dt) {
     }
     bot.mesh.position.y += (groundHeightAt(bot.mesh.position.x, bot.mesh.position.z) - bot.mesh.position.y) * Math.min(1, dt * 6);
   }
+  updateBlueAntiAir(now);
   syncTroopInstances();
 }
 
 function checkWarOutcome() {
   if (!gameStarted) return;
-  if (redAliveCount <= 0) {
+  if (redAliveCount <= 0 && orangeAliveCount <= 0) {
     gameStarted = false;
     if (document.pointerLockElement === canvas) document.exitPointerLock();
-    gameoverText.textContent = `🎉 Victory! Every red trooper is down. Final score: ${score}`;
+    gameoverText.textContent = `🎉 Victory! Every red and orange trooper is down. Final score: ${score}`;
     gameoverOverlay.classList.remove('hidden');
     playSound('gameover');
     sendScore();
@@ -1956,7 +2026,7 @@ bestLabel.textContent = `Best: ${best}`;
 
 function updateWarHud() {
   livesStatusEl.textContent = `💙 Lives: ${livesRemaining}`;
-  warStatusEl.textContent = `${warStarted ? '⚔️' : '☮️'} 🔵 ${blueAliveCount} vs 🔴 ${redAliveCount}`;
+  warStatusEl.textContent = `${warStarted ? '⚔️' : '☮️'} 🔵 ${blueAliveCount} vs 🔴 ${redAliveCount} vs 🟠 ${orangeAliveCount}`;
 }
 
 // Both sides sit peacefully near home until this fires — see warStarted's declaration. One-shot:
@@ -1965,9 +2035,10 @@ function startWar() {
   if (!gameStarted || warStarted) return;
   warStarted = true;
   const now = performance.now();
-  // Every alive trooper on both sides gets pointed at the enemy's home — the opposite side of
-  // the map — and set marching there together as one visible wave, rather than each one
-  // individually snapping onto whatever random enemy its own retarget scan happens to sample
+  // Every alive trooper on all three sides gets pointed at the map's center — with three homes in
+  // a triangle there's no single "the enemy's home" to march on, but the center is everyone's
+  // shared middle ground — and set marching there together as one visible wave, rather than each
+  // one individually snapping onto whatever random enemy its own retarget scan happens to sample
   // (which could be right next door, reading as scattered skirmishes instead of a coordinated
   // push). Target/scan timer are cleared and delayed a couple seconds so the march actually
   // reads as a march before normal engage-on-sight combat AI takes back over — troops that cross
@@ -1977,8 +2048,7 @@ function startWar() {
     if (!bot.alive || bot.isPilotCandidate) continue;
     bot.target = null;
     bot.nextTargetScanAt = now + 2000 + Math.random() * 1000;
-    const enemyHome = bot.faction === 'red' ? BLUE_HOME : RED_HOME;
-    bot.waypoint = randomPointNear(enemyHome.x, enemyHome.z, FACTION_SPAWN_SPREAD);
+    bot.waypoint = randomPointNear(0, 0, FACTION_SPAWN_SPREAD);
   }
   attackBtn.classList.add('hidden');
   touchAttackBtn.classList.add('hidden');
@@ -2058,10 +2128,14 @@ function drawMinimap() {
     ctx.fill();
   }
 
-  ctx.fillStyle = '#ffa64d';
+  // Per-faction dot color (was one blanket orange for every ground troop, back when there were
+  // only two factions and this color didn't collide with an actual team) — red/blue/orange now
+  // each get their own shade so the minimap reads as three sides, not two plus noise.
+  const MINIMAP_FACTION_COLOR = { red: '#e0473f', blue: '#4b8ee0', orange: '#ffa64d' };
   for (const bot of groundBots) {
     if (!bot.alive) continue;
     const p = worldToMinimap(bot.mesh.position.x, bot.mesh.position.z);
+    ctx.fillStyle = MINIMAP_FACTION_COLOR[bot.faction];
     ctx.beginPath();
     ctx.arc(p.x, p.y, 1.8, 0, Math.PI * 2);
     ctx.fill();
@@ -2243,6 +2317,7 @@ function resetGame() {
   for (const bot of groundBots) resetFactionTroop(bot);
   redAliveCount = TROOPS_PER_FACTION;
   blueAliveCount = TROOPS_PER_FACTION;
+  orangeAliveCount = TROOPS_PER_FACTION;
 
   // Put out every fire and restore any burnt structures — a fresh round starts with an
   // unburnt map, not last round's scorched earth. Clearing both explosions and fires here

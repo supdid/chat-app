@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Valk — Live chat</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="livechat.css">
+</head>
+<body>
+  <div id="header">
+    <span>💬 <span id="streamer-name">Live chat</span></span>
+    <span id="conn-status" class="conn-status"></span>
+  </div>
+  <div id="state-msg" class="hidden"></div>
+  <div id="messages"></div>
+  <form id="chat-form">
+    <input id="chat-input" type="text" placeholder="Say something…" maxlength="300" autocomplete="off">
+    <button type="submit">Send</button>
+  </form>
+
+  <script src="error-report.js"></script>
+  <script src="livechat.js"></script>
+</body>
+</html>

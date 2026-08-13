@@ -58,21 +58,42 @@ function pushMentionNotifications(code, entry) {
     const key = email.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
-    const account = db.getAccountByEmail(email);
-    if (!account) continue;
-    const subs = db.getPushSubscriptionsForAccount(account.id);
-    if (!subs.length) continue;
-    const payload = JSON.stringify({
-      title: `${entry.name} mentioned you`,
-      body: entry.text,
-      roomCode: code,
-      messageId: entry.id,
-    });
-    for (const sub of subs) {
-      webpush.sendNotification(sub.subscription, payload).catch((err) => {
-        if (err.statusCode === 404 || err.statusCode === 410) db.removePushSubscription(sub.endpoint);
+    // Up to MAX_ACCOUNTS_PER_EMAIL accounts can now share one email — page every one of them,
+    // not just a single account, since there's no longer a 1:1 email-to-account mapping.
+    const accounts = db.getAccountsByEmail(email);
+    for (const account of accounts) {
+      const subs = db.getPushSubscriptionsForAccount(account.id);
+      if (!subs.length) continue;
+      const payload = JSON.stringify({
+        title: `${entry.name} mentioned you`,
+        body: entry.text,
+        roomCode: code,
+        messageId: entry.id,
       });
+      for (const sub of subs) {
+        webpush.sendNotification(sub.subscription, payload).catch((err) => {
+          if (err.statusCode === 404 || err.statusCode === 410) db.removePushSubscription(sub.endpoint);
+        });
+      }
     }
+  }
+}
+
+// Pages every device an admin has opted into notifications on (admin.html's "Enable
+// notifications" button, see /admin/push/subscribe) the moment a new report is filed — without
+// this, a report just sits in /admin.html until someone happens to open the page and check.
+function pushAdminOnNewReport(roomCode, reporterName, targetName) {
+  const subs = db.getAdminPushSubscriptions();
+  if (!subs.length) return;
+  const payload = JSON.stringify({
+    title: 'New report',
+    body: `${reporterName} reported ${targetName} in room ${roomCode}`,
+    adminReport: true,
+  });
+  for (const sub of subs) {
+    webpush.sendNotification(sub.subscription, payload).catch((err) => {
+      if (err.statusCode === 404 || err.statusCode === 410) db.removeAdminPushSubscription(sub.endpoint);
+    });
   }
 }
 
@@ -170,6 +191,54 @@ app.post('/errors/report', (req, res) => {
 
 app.get('/admin/errors', requireAdmin, (req, res) => {
   res.json({ errors: db.getRecentErrorReports() });
+});
+
+app.get('/admin/reports', requireAdmin, (req, res) => {
+  res.json({ reports: db.getRecentReports() });
+});
+
+app.post('/admin/reports/:id/resolve', requireAdmin, (req, res) => {
+  db.setReportStatus(req.params.id, 'resolved');
+  res.json({ ok: true });
+});
+
+app.post('/admin/reports/:id/dismiss', requireAdmin, (req, res) => {
+  db.setReportStatus(req.params.id, 'dismissed');
+  res.json({ ok: true });
+});
+
+app.get('/admin/scorpture-reports', requireAdmin, (req, res) => {
+  res.json({ reports: db.getRecentScorptureReports() });
+});
+
+app.post('/admin/scorpture-reports/:id/resolve', requireAdmin, (req, res) => {
+  db.setScorptureReportStatus(req.params.id, 'resolved');
+  res.json({ ok: true });
+});
+
+app.post('/admin/scorpture-reports/:id/dismiss', requireAdmin, (req, res) => {
+  db.setScorptureReportStatus(req.params.id, 'dismissed');
+  res.json({ ok: true });
+});
+
+// Gated by the admin key itself (not a session/account) — anyone who can load /admin.html at
+// all can opt their device into push, which matches admin.html's existing all-or-nothing access
+// model (the key is the only credential the whole panel has).
+app.get('/admin/push/vapid-public-key', requireAdmin, (req, res) => {
+  res.json({ publicKey: vapidKeys.publicKey });
+});
+
+app.post('/admin/push/subscribe', requireAdmin, (req, res) => {
+  const subscription = req.body.subscription;
+  if (!subscription || !subscription.endpoint) return res.status(400).json({ error: 'Missing subscription' });
+  db.addAdminPushSubscription(subscription.endpoint, subscription);
+  res.json({ ok: true });
+});
+
+app.post('/admin/push/unsubscribe', requireAdmin, (req, res) => {
+  const endpoint = req.body.endpoint;
+  if (endpoint) db.removeAdminPushSubscription(endpoint);
+  res.json({ ok: true });
 });
 
 app.get('/admin/patches', requireAdmin, (req, res) => {
@@ -557,6 +626,8 @@ function verifyPassword(password, salt, hash) {
 
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,20}$/;
 const EMAIL_RE = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+// One email (e.g. one Gmail address) can back up to this many separate accounts/usernames.
+const MAX_ACCOUNTS_PER_EMAIL = 10;
 
 // scryptSync (used by both hashPassword and verifyPassword below) is synchronous and CPU-bound —
 // on Node's single thread, a burst of concurrent auth requests would serialize and stall every
@@ -590,7 +661,9 @@ app.post('/auth/signup', (req, res) => {
   if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Enter a valid email address' });
   if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
   if (db.getAccountByUsername(username)) return res.status(409).json({ error: 'That username is taken' });
-  if (db.getAccountByEmail(email)) return res.status(409).json({ error: 'That email is already registered' });
+  if (db.countAccountsByEmail(email) >= MAX_ACCOUNTS_PER_EMAIL) {
+    return res.status(409).json({ error: `This email already has the maximum of ${MAX_ACCOUNTS_PER_EMAIL} accounts` });
+  }
 
   const id = crypto.randomUUID();
   const salt = crypto.randomBytes(16).toString('hex');
@@ -793,18 +866,26 @@ app.get('/friends/presence', (req, res) => {
 // uploading/commenting/liking/subscribing all require an account, same split as Friends above.
 // Video/thumbnail files themselves go through the existing generic /upload endpoint (already
 // accepts video/* mimetypes, 300MB limit) — these routes only ever handle the metadata rows.
+const VERIFIED_SUBSCRIBER_THRESHOLD = 1000000;
+const SCORPTURE_CATEGORIES = ['Gaming', 'Music', 'Education', 'Comedy', 'Vlogs', 'Tech', 'Sports', 'Other'];
+
+app.get('/api/scorpture/categories', (req, res) => {
+  res.json({ categories: SCORPTURE_CATEGORIES });
+});
+
 app.get('/api/scorpture/videos', (req, res) => {
   const search = String(req.query.search || '').slice(0, 100).trim();
   const channel = String(req.query.channel || '').trim();
+  const category = SCORPTURE_CATEGORIES.includes(req.query.category) ? req.query.category : null;
   let uploaderId = null;
   if (channel) {
     const channelAccount = db.getAccountByUsername(channel);
     if (!channelAccount) return res.json({ videos: [] });
     uploaderId = channelAccount.id;
   }
-  const videos = db.listScorptureVideos({ search: search || null, uploaderId });
+  const videos = db.listScorptureVideos({ search: search || null, uploaderId, category });
   // Cached per-request — a channel page lists many videos from the same one uploader, no need to
-  // re-fetch their account row for every single one.
+  // re-fetch their account row/subscriber count for every single one.
   const avatarCache = new Map();
   function uploaderAvatar(id) {
     if (!avatarCache.has(id)) {
@@ -813,6 +894,13 @@ app.get('/api/scorpture/videos', (req, res) => {
     }
     return avatarCache.get(id);
   }
+  const verifiedCache = new Map();
+  function uploaderVerified(id) {
+    if (!verifiedCache.has(id)) {
+      verifiedCache.set(id, db.getScorptureSubscriberCount(id) >= VERIFIED_SUBSCRIBER_THRESHOLD);
+    }
+    return verifiedCache.get(id);
+  }
   res.json({
     videos: videos.map((v) => ({
       id: v.id,
@@ -820,6 +908,8 @@ app.get('/api/scorpture/videos', (req, res) => {
       thumbnailUrl: v.thumbnail_url,
       uploaderUsername: v.uploader_username,
       uploaderAvatarUrl: uploaderAvatar(v.uploader_id),
+      uploaderVerified: uploaderVerified(v.uploader_id),
+      category: v.category,
       views: v.views,
       createdAt: v.created_at,
       uploaderLive: liveStreams.has(v.uploader_id),
@@ -833,6 +923,7 @@ app.get('/api/scorpture/videos/:id', (req, res) => {
   if (!video) return res.status(404).json({ error: 'Video not found' });
   db.bumpScorptureViews(video.id);
   const uploaderAccount = db.getAccountById(video.uploader_id);
+  const subscriberCount = db.getScorptureSubscriberCount(video.uploader_id);
   res.json({
     id: video.id,
     title: video.title,
@@ -841,16 +932,33 @@ app.get('/api/scorpture/videos/:id', (req, res) => {
     thumbnailUrl: video.thumbnail_url,
     uploaderUsername: video.uploader_username,
     uploaderAvatarUrl: uploaderAccount ? uploaderAccount.scorpture_avatar_url || null : null,
+    uploaderVerified: subscriberCount >= VERIFIED_SUBSCRIBER_THRESHOLD,
     views: video.views + 1,
     createdAt: video.created_at,
     likeCount: db.getScorptureLikeCount(video.id),
     liked: account ? db.hasScorptureLiked(video.id, account.id) : false,
-    subscriberCount: db.getScorptureSubscriberCount(video.uploader_id),
+    subscriberCount,
     subscribed: account ? db.isScorptureSubscribed(account.id, video.uploader_id) : false,
     isOwner: account ? account.id === video.uploader_id : false,
     live: liveStreams.has(video.uploader_id),
   });
 });
+
+// Fans a push notification out to every subscriber of a channel — shared by "new video" (below)
+// and "went live" (scorpture-go-live handler). Same webpush.sendNotification + 404/410 cleanup
+// pattern as pushMentionNotifications above, just fed from getScorptureSubscriberIds instead of
+// an @mention match.
+function notifyScorptureSubscribers(channelId, payload) {
+  const subscriberIds = db.getScorptureSubscriberIds(channelId);
+  for (const subscriberId of subscriberIds) {
+    const subs = db.getPushSubscriptionsForAccount(subscriberId);
+    for (const sub of subs) {
+      webpush.sendNotification(sub.subscription, JSON.stringify(payload)).catch((err) => {
+        if (err.statusCode === 404 || err.statusCode === 410) db.removePushSubscription(sub.endpoint);
+      });
+    }
+  }
+}
 
 app.post('/api/scorpture/videos', (req, res) => {
   const account = getAccountFromReq(req);
@@ -859,6 +967,7 @@ app.post('/api/scorpture/videos', (req, res) => {
   const description = String(req.body.description || '').slice(0, 2000).trim();
   const videoUrl = typeof req.body.videoUrl === 'string' ? req.body.videoUrl.slice(0, 2000) : '';
   const thumbnailUrl = typeof req.body.thumbnailUrl === 'string' ? req.body.thumbnailUrl.slice(0, 2000) : null;
+  const category = SCORPTURE_CATEGORIES.includes(req.body.category) ? req.body.category : null;
   if (!title || !videoUrl.startsWith('/uploads/')) return res.status(400).json({ error: 'Missing title or video file' });
   const id = crypto.randomUUID();
   db.insertScorptureVideo({
@@ -869,8 +978,10 @@ app.post('/api/scorpture/videos', (req, res) => {
     description,
     videoUrl,
     thumbnailUrl,
+    category,
     createdAt: Date.now(),
   });
+  notifyScorptureSubscribers(account.id, { title: `${account.username} uploaded a new video`, body: title });
   res.json({ id });
 });
 
@@ -907,6 +1018,18 @@ app.post('/api/scorpture/videos/:id/comments', (req, res) => {
   res.json({ comment: { id: comment.id, username: comment.username, text: comment.text, created_at: comment.createdAt } });
 });
 
+app.put('/api/scorpture/comments/:id', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  const text = String(req.body.text || '').slice(0, 1000).trim();
+  if (!text) return res.status(400).json({ error: 'Empty comment' });
+  // updateScorptureComment's WHERE clause is the ownership check — a comment id that exists but
+  // belongs to someone else updates zero rows, same 403 either way as one that doesn't exist.
+  const updated = db.updateScorptureComment(req.params.id, account.id, text);
+  if (!updated) return res.status(403).json({ error: "Comment not found or not yours" });
+  res.json({ ok: true, text });
+});
+
 app.post('/api/scorpture/videos/:id/like', (req, res) => {
   const account = getAccountFromReq(req);
   if (!account) return res.status(401).json({ error: 'Not signed in' });
@@ -916,14 +1039,62 @@ app.post('/api/scorpture/videos/:id/like', (req, res) => {
   res.json({ liked, likeCount: db.getScorptureLikeCount(video.id) });
 });
 
+app.post('/api/scorpture/videos/:id/report', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  const video = db.getScorptureVideo(req.params.id);
+  if (!video) return res.status(404).json({ error: 'Video not found' });
+  db.insertScorptureReport({
+    id: crypto.randomUUID(),
+    videoId: video.id,
+    reporterAccountId: account.id,
+    reporterUsername: account.username,
+    uploaderUsername: video.uploader_username,
+    reason: String(req.body.reason || '').slice(0, 300).trim() || null,
+  });
+  res.json({ ok: true });
+});
+
+// Newest videos across every channel this account subscribes to — the actual payoff for
+// subscribing, see getScorptureSubscriptionFeed's comment in db.js.
+app.get('/api/scorpture/subscriptions/feed', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  const videos = db.getScorptureSubscriptionFeed(account.id);
+  const avatarCache = new Map();
+  function uploaderAvatar(id) {
+    if (!avatarCache.has(id)) {
+      const acc = db.getAccountById(id);
+      avatarCache.set(id, acc ? acc.scorpture_avatar_url || null : null);
+    }
+    return avatarCache.get(id);
+  }
+  res.json({
+    videos: videos.map((v) => ({
+      id: v.id,
+      title: v.title,
+      thumbnailUrl: v.thumbnail_url,
+      uploaderUsername: v.uploader_username,
+      uploaderAvatarUrl: uploaderAvatar(v.uploader_id),
+      uploaderVerified: db.getScorptureSubscriberCount(v.uploader_id) >= VERIFIED_SUBSCRIBER_THRESHOLD,
+      category: v.category,
+      views: v.views,
+      createdAt: v.created_at,
+      uploaderLive: liveStreams.has(v.uploader_id),
+    })),
+  });
+});
+
 app.get('/api/scorpture/channels/:username', (req, res) => {
   const account = getAccountFromReq(req);
   const channelAccount = db.getAccountByUsername(req.params.username);
   if (!channelAccount) return res.status(404).json({ error: 'No such channel' });
   const liveStream = liveStreams.get(channelAccount.id);
+  const subscriberCount = db.getScorptureSubscriberCount(channelAccount.id);
   res.json({
     username: channelAccount.username,
-    subscriberCount: db.getScorptureSubscriberCount(channelAccount.id),
+    subscriberCount,
+    verified: subscriberCount >= VERIFIED_SUBSCRIBER_THRESHOLD,
     subscribed: account ? db.isScorptureSubscribed(account.id, channelAccount.id) : false,
     isOwner: account ? account.id === channelAccount.id : false,
     live: !!liveStream,
@@ -964,6 +1135,66 @@ app.post('/api/scorpture/avatar', (req, res) => {
   if (!avatarUrl.startsWith('/uploads/')) return res.status(400).json({ error: 'Missing avatar image' });
   db.setScorptureAvatar(account.id, avatarUrl);
   res.json({ ok: true, avatarUrl });
+});
+
+// Cosmetic-only admin panel, hardcoded to one specific account by username *and* email (not just
+// username — a deleted/recreated account with the same name shouldn't inherit this). The
+// right-click-the-logo UI gate in videos.js is purely a discovery mechanic; this check here is
+// the actual boundary, same getAccountFromReq(req) auth every other route uses, so there is no
+// way to hit this by guessing a URL — it 403s anyone whose token doesn't resolve to this exact
+// account.
+function isScorptureAdmin(account) {
+  return !!account && account.username === 'supdid67' && account.email === 'supdid41@gmail.com';
+}
+
+app.get('/api/scorpture/admin/bonus-subscribers', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!isScorptureAdmin(account)) return res.status(403).json({ error: 'Not authorized' });
+  res.json({ bonusSubscribers: db.getScorptureBonusSubscribers(account.id) });
+});
+
+app.post('/api/scorpture/admin/bonus-subscribers', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!isScorptureAdmin(account)) return res.status(403).json({ error: 'Not authorized' });
+  const count = Math.max(0, Math.min(1000000000, Math.floor(Number(req.body.count))));
+  if (!Number.isFinite(count)) return res.status(400).json({ error: 'Invalid count' });
+  db.setScorptureBonusSubscribers(account.id, count);
+  res.json({ ok: true, bonusSubscribers: count });
+});
+
+// ---- Stream overlays — text/image graphics a broadcaster composites onto their own video
+// client-side (see startGoLive/drawOverlaysOnCanvas in videos.js) before it ever reaches a
+// viewer, so nothing server-side renders these; this is just the saved list of what to draw.
+// Always your own account only, same "own account only" shape as banner/avatar above. ----
+const OVERLAY_TYPES = ['text', 'image'];
+const OVERLAY_POSITIONS = ['top-left', 'top-right', 'bottom-left', 'bottom-right', 'center'];
+const MAX_OVERLAYS = 10;
+
+app.get('/api/scorpture/overlays', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  res.json({ overlays: db.getScorptureOverlays(account.id) });
+});
+
+app.post('/api/scorpture/overlays', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  const input = Array.isArray(req.body.overlays) ? req.body.overlays : null;
+  if (!input) return res.status(400).json({ error: 'Missing overlays list' });
+  if (input.length > MAX_OVERLAYS) return res.status(400).json({ error: `Max ${MAX_OVERLAYS} overlays` });
+  const overlays = [];
+  for (const raw of input) {
+    const type = OVERLAY_TYPES.includes(raw.type) ? raw.type : null;
+    const position = OVERLAY_POSITIONS.includes(raw.position) ? raw.position : 'top-left';
+    const content = String(raw.content || '').slice(0, type === 'text' ? 200 : 2000).trim();
+    if (!type || !content) return res.status(400).json({ error: 'Each overlay needs a type and content' });
+    if (type === 'image' && !content.startsWith('/uploads/')) {
+      return res.status(400).json({ error: 'Image overlays must reference an uploaded file' });
+    }
+    overlays.push({ id: crypto.randomUUID(), type, content, position });
+  }
+  db.setScorptureOverlays(account.id, overlays);
+  res.json({ overlays });
 });
 
 // roomCode -> { history: [], clients: Set<ws>, bc?: {...}, gw?: Map<level, {...}> }
@@ -1101,6 +1332,8 @@ const RATE_LIMIT_WINDOW_MS = 6000;
 const RATE_LIMIT_MAX_MESSAGES = 8; // generous for real typing/conversation, tight enough to stop a flood
 const ROOM_CREATE_WINDOW_MS = 60000;
 const ROOM_CREATE_MAX = 5; // one connection shouldn't need more than a handful of rooms a minute
+const REPORT_WINDOW_MS = 300000;
+const REPORT_MAX = 5; // real abuse reporting is rare enough that 5/5min is generous, not restrictive
 const AUTH_LIMIT_WINDOW_MS = 60000;
 const AUTH_LIMIT_MAX = 8; // signup/login call scryptSync (CPU-bound, synchronous) — cheap to flood without this
 const BC_DAY_CYCLE_MS = 20 * 60 * 1000; // must match DAY_CYCLE_MS on the client
@@ -1902,6 +2135,7 @@ wss.on('connection', (ws) => {
       if (!account) return;
       liveStreams.set(ws.accountId, { ws, username: account.username, title, startedAt: Date.now(), viewers: new Map() });
       send(ws, { type: 'scorpture-go-live-ack', ok: true });
+      notifyScorptureSubscribers(ws.accountId, { title: `${account.username} is live`, body: title });
       return;
     }
 
@@ -3051,6 +3285,10 @@ wss.on('connection', (ws) => {
         return;
       }
       const dbRoom = db.getRoom(code);
+      if (db.isBannedFromRoom(code, ws.accountId || null, ws.profile.name)) {
+        send(ws, { type: 'join-error', message: "You've been banned from this room" });
+        return;
+      }
       // A lightweight join gate, not real security (no accounts here to hash a PIN against) —
       // just enough to keep a room from being joined by anyone who guesses/finds the 5-char code.
       if (dbRoom && dbRoom.pin_required) {
@@ -3081,6 +3319,12 @@ wss.on('connection', (ws) => {
       // Rooms created before this feature existed have no host_name yet — the first person
       // to (re)join effectively becomes the host rather than leaving the room host-less forever.
       if (dbRoom && !dbRoom.host_name) db.setRoomHostIfUnset(code, ws.profile.name);
+      // Re-apply a persistent (account-based) mute even if they rejoined under a new display
+      // name — otherwise a signed-in target could dodge a mute just by picking a new name.
+      if (ws.accountId && db.isPersistentlyMuted(code, ws.accountId)) {
+        if (!room.muted) room.muted = new Set();
+        room.muted.add(ws.profile.name);
+      }
       send(ws, {
         type: 'joined-room',
         code,
@@ -3181,6 +3425,12 @@ wss.on('connection', (ws) => {
       if (!room) return;
       if (!room.muted) room.muted = new Set();
       room.muted.add(targetName);
+      // If the target is signed in, also persist the mute by account_id — otherwise it's only
+      // in-memory for this display name and evaporates the moment they rejoin under a new one.
+      const targetClient = [...room.clients].find((c) => c.profile && c.profile.name === targetName);
+      if (targetClient && targetClient.accountId) {
+        db.addPersistentMute(ws.room, targetClient.accountId, targetName, ws.profile.name);
+      }
       broadcastRoom(ws.room, { type: 'user-muted', name: targetName });
       return;
     }
@@ -3191,7 +3441,76 @@ wss.on('connection', (ws) => {
       const targetName = String(msg.name || '').trim();
       const room = rooms.get(ws.room);
       if (room && room.muted) room.muted.delete(targetName);
+      const targetClient = room && [...room.clients].find((c) => c.profile && c.profile.name === targetName);
+      const targetAccountId = targetClient && targetClient.accountId
+        ? targetClient.accountId
+        : (db.getPersistentMuteByName(ws.room, targetName) || {}).target_account_id;
+      if (targetAccountId) db.removePersistentMute(ws.room, targetAccountId);
       broadcastRoom(ws.room, { type: 'user-unmuted', name: targetName });
+      return;
+    }
+
+    // Anyone in a room can report a specific message or just a user, independent of host
+    // status — the host-only kick/mute above only helps if the host happens to be watching;
+    // this reaches an admin even when they're not. Logged, never auto-acted-on (same "a human
+    // reviews it" shape as the self-healing error/patch pipeline) — see /admin/reports.
+    if (msg.type === 'report' && ws.room) {
+      const now = Date.now();
+      ws.reportTimestamps = (ws.reportTimestamps || []).filter((t) => now - t < REPORT_WINDOW_MS);
+      if (ws.reportTimestamps.length >= REPORT_MAX) return;
+      ws.reportTimestamps.push(now);
+      const targetName = String(msg.targetName || '').trim().slice(0, 30);
+      if (!targetName || targetName === ws.profile.name) return;
+      const messageId = msg.messageId ? String(msg.messageId).slice(0, 100) : null;
+      const messageEntry = messageId ? db.getMessage(messageId) : null;
+      db.insertReport({
+        id: crypto.randomUUID(),
+        roomCode: ws.room,
+        reporterName: ws.profile.name,
+        reporterAccountId: ws.accountId || null,
+        targetName,
+        messageId,
+        messageText: messageEntry ? messageEntry.text : null,
+        reason: String(msg.reason || '').slice(0, 300).trim() || null,
+      });
+      pushAdminOnNewReport(ws.room, ws.profile.name, targetName);
+      send(ws, { type: 'report-received' });
+      return;
+    }
+
+    // Bans persist (room_bans, see db.js) unlike kick above, which only disconnects once —
+    // see the room_bans table comment for the account-vs-name enforcement split.
+    if (msg.type === 'ban-user' && ws.room) {
+      const dbRoom = db.getRoom(ws.room);
+      if (!dbRoom || dbRoom.host_name !== ws.profile.name) return;
+      const targetName = String(msg.name || '').trim();
+      if (!targetName || targetName === ws.profile.name) return;
+      const room = rooms.get(ws.room);
+      if (!room) return;
+      const targetClient = [...room.clients].find((c) => c.profile && c.profile.name === targetName);
+      db.banFromRoom(crypto.randomUUID(), ws.room, targetClient ? targetClient.accountId || null : null, targetName, ws.profile.name);
+      if (targetClient) {
+        send(targetClient, { type: 'kicked', by: ws.profile.name });
+        leaveRoom(targetClient);
+      }
+      broadcastRoom(ws.room, { type: 'user-banned', name: targetName });
+      return;
+    }
+
+    if (msg.type === 'unban-user' && ws.room) {
+      const dbRoom = db.getRoom(ws.room);
+      if (!dbRoom || dbRoom.host_name !== ws.profile.name) return;
+      const banId = String(msg.banId || '');
+      if (!banId) return;
+      db.unbanFromRoom(banId);
+      send(ws, { type: 'bans-result', bans: db.getRoomBans(ws.room) });
+      return;
+    }
+
+    if (msg.type === 'get-bans' && ws.room) {
+      const dbRoom = db.getRoom(ws.room);
+      if (!dbRoom || dbRoom.host_name !== ws.profile.name) return;
+      send(ws, { type: 'bans-result', bans: db.getRoomBans(ws.room) });
       return;
     }
 

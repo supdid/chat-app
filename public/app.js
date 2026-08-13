@@ -95,6 +95,9 @@ const wallpaperRow = document.getElementById('wallpaper-row');
 const wallpaperFileInput = document.getElementById('wallpaper-file-input');
 const wallpaperSetBtn = document.getElementById('wallpaper-set-btn');
 const wallpaperClearBtn = document.getElementById('wallpaper-clear-btn');
+const bansRow = document.getElementById('bans-row');
+const manageBansBtn = document.getElementById('manage-bans-btn');
+const bansListEl = document.getElementById('bans-list');
 const themeToggleSlot = document.getElementById('theme-toggle-slot');
 const fullscreenBtn = document.getElementById('fullscreen-btn');
 const searchBtn = document.getElementById('search-btn');
@@ -308,6 +311,16 @@ function toggleBlockUser(name) {
     el.classList.toggle('blocked-hidden', blockedNames.has(name));
   });
   renderOnlineList(lastRoomUsers);
+}
+
+// --- Report to admin (server-side, unlike block above) — reaches an admin even when no host
+// is watching, see the WS 'report' handler / room_mutes+reports tables in server.js/db.js.
+function reportUser(targetName, messageId, messageText) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const reason = prompt(`Report ${targetName} to the admin. Optional reason:`);
+  if (reason === null) return; // cancelled
+  ws.send(JSON.stringify({ type: 'report', targetName, messageId: messageId || undefined, reason }));
+  showAppToast(`Reported ${targetName}.`);
 }
 
 function seedActivity(list) {
@@ -586,6 +599,14 @@ function handleServerMessage(data) {
       renderSystem({ text: `🔊 ${data.name} was unmuted` });
       break;
 
+    case 'user-banned':
+      renderSystem({ text: `🚫 ${data.name} was banned` });
+      break;
+
+    case 'bans-result':
+      renderBansList(data.bans || []);
+      break;
+
     case 'media-result':
       renderGallery(data.media || []);
       break;
@@ -637,6 +658,8 @@ function handleServerMessage(data) {
       roomPinFormInput.value = '';
       wallpaperRow.classList.toggle('hidden', !isHost);
       applyWallpaper(data.wallpaperUrl || null);
+      bansRow.classList.toggle('hidden', !isHost);
+      bansListEl.classList.add('hidden');
       unreadCount = 0;
       updateUnreadBadge();
       data.messages.forEach(renderMessage);
@@ -1237,6 +1260,15 @@ function makeMessageActions(data) {
   actions.appendChild(pinBtn);
 
   const isOwn = myProfile && data.sub === myProfile.sub;
+  if (!isOwn && data.name) {
+    const reportBtn = document.createElement('button');
+    reportBtn.type = 'button';
+    reportBtn.className = 'msg-action-btn';
+    reportBtn.textContent = '🚩';
+    reportBtn.setAttribute('aria-label', `Report ${data.name}`);
+    reportBtn.addEventListener('click', () => reportUser(data.name, data.id, data.text));
+    actions.appendChild(reportBtn);
+  }
   if (isOwn && !data.mediaUrl) {
     const editBtn = document.createElement('button');
     editBtn.type = 'button';
@@ -1637,6 +1669,13 @@ function renderOnlineList(users) {
       blockBtn.title = isUserBlocked ? `Unblock ${u.name}` : `Block ${u.name} (hide their messages for just you)`;
       blockBtn.addEventListener('click', () => toggleBlockUser(u.name));
       personalActions.appendChild(blockBtn);
+      const reportBtn = document.createElement('button');
+      reportBtn.type = 'button';
+      reportBtn.className = 'mod-btn';
+      reportBtn.textContent = '🚩';
+      reportBtn.title = `Report ${u.name} to the admin`;
+      reportBtn.addEventListener('click', () => reportUser(u.name));
+      personalActions.appendChild(reportBtn);
       li.appendChild(personalActions);
     }
     if (isHost && myProfile && u.name !== myProfile.name) {
@@ -1659,7 +1698,16 @@ function renderOnlineList(users) {
         if (!confirm(`Remove ${u.name} from this room?`)) return;
         if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'kick-user', name: u.name }));
       });
-      modActions.append(muteBtn, kickBtn);
+      const banBtn = document.createElement('button');
+      banBtn.type = 'button';
+      banBtn.className = 'mod-btn';
+      banBtn.textContent = '🚫';
+      banBtn.title = `Ban ${u.name} (can't rejoin this room)`;
+      banBtn.addEventListener('click', () => {
+        if (!confirm(`Ban ${u.name} from this room? They won't be able to rejoin until unbanned.`)) return;
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ban-user', name: u.name }));
+      });
+      modActions.append(muteBtn, kickBtn, banBtn);
       li.appendChild(modActions);
     }
     menuOnlineList.appendChild(li);
@@ -2349,6 +2397,41 @@ wallpaperFileInput.addEventListener('change', async () => {
 wallpaperClearBtn.addEventListener('click', () => {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'set-wallpaper', url: null }));
 });
+
+// --- Room bans (host only) — persistent version of kick, see server.js/db.js room_bans. ---
+manageBansBtn.addEventListener('click', () => {
+  if (!bansListEl.classList.contains('hidden')) {
+    bansListEl.classList.add('hidden');
+    return;
+  }
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'get-bans' }));
+});
+
+function renderBansList(bans) {
+  bansListEl.innerHTML = '';
+  bansListEl.classList.remove('hidden');
+  if (!bans.length) {
+    const li = document.createElement('li');
+    li.textContent = 'No one is banned from this room.';
+    bansListEl.appendChild(li);
+    return;
+  }
+  bans.forEach((b) => {
+    const li = document.createElement('li');
+    const label = document.createElement('span');
+    label.textContent = `${b.target_name} — banned by ${b.banned_by}`;
+    li.appendChild(label);
+    const unbanBtn = document.createElement('button');
+    unbanBtn.type = 'button';
+    unbanBtn.className = 'mod-btn';
+    unbanBtn.textContent = 'Unban';
+    unbanBtn.addEventListener('click', () => {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'unban-user', banId: b.id }));
+    });
+    li.appendChild(unbanBtn);
+    bansListEl.appendChild(li);
+  });
+}
 
 // --- My profile: avatar + status, persisted server-side by display name ---
 function renderMyProfile() {

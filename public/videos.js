@@ -23,6 +23,7 @@ const uploadStatusEl = document.getElementById('upload-status');
 const uploadSubmitBtn = document.getElementById('upload-submit-btn');
 const accountNameEl = document.getElementById('account-name');
 const accountSigninBtn = document.getElementById('account-signin-btn');
+const subscriptionsNavLink = document.getElementById('subscriptions-nav-link');
 const toastEl = document.getElementById('toast');
 const goLiveBtn = document.getElementById('golive-btn');
 const goLiveModal = document.getElementById('golive-modal');
@@ -32,7 +33,6 @@ const goLivePreview = document.getElementById('golive-preview');
 const goLiveTitleInput = document.getElementById('golive-title-input');
 const goLiveSourceRow = document.getElementById('golive-source-row');
 const goLiveRecordCheckbox = document.getElementById('golive-record-checkbox');
-const goLiveChatContainer = document.getElementById('golive-chat-container');
 const goLiveCameraBtn = document.getElementById('golive-camera-btn');
 const goLiveScreenBtn = document.getElementById('golive-screen-btn');
 const goLiveStatusEl = document.getElementById('golive-status');
@@ -41,6 +41,18 @@ const goLiveViewerCountEl = document.getElementById('golive-viewer-count');
 const goLiveSwitchScreenBtn = document.getElementById('golive-switch-screen-btn');
 const goLiveSwitchCameraBtn = document.getElementById('golive-switch-camera-btn');
 const goLiveEndBtn = document.getElementById('golive-end-btn');
+const liveMiniWidget = document.getElementById('live-mini-widget');
+const liveMiniVideo = document.getElementById('live-mini-video');
+const liveMiniViewersEl = document.getElementById('live-mini-viewers');
+const liveMiniExpandBtn = document.getElementById('live-mini-expand-btn');
+const liveMiniHideBtn = document.getElementById('live-mini-hide-btn');
+const liveChatToggleBtn = document.getElementById('live-chat-toggle-btn');
+const liveChatWidget = document.getElementById('live-chat-widget');
+const liveChatWidgetCloseBtn = document.getElementById('live-chat-widget-close-btn');
+const liveChatPopoutBtn = document.getElementById('live-chat-popout-btn');
+const liveChatMessagesEl = document.getElementById('live-chat-messages');
+const liveChatForm = document.getElementById('live-chat-form');
+const liveChatInput = document.getElementById('live-chat-input');
 
 let currentAccount = null; // { username } | null
 let pendingUpload = null; // { file, thumbnailBlob }
@@ -98,6 +110,12 @@ function avatarHtml(avatarUrl, name, extraClass) {
   return `<span class="${cls}">${escapeHtml(initials(name))}</span>`;
 }
 
+// 1M+ subscribers (real + any admin bonus, see server's VERIFIED_SUBSCRIBER_THRESHOLD) gets a
+// checkmark next to the channel name, wherever that name is shown.
+function verifiedBadgeHtml(verified) {
+  return verified ? '<span class="verified-badge" title="1M+ subscribers">✓</span>' : '';
+}
+
 let toastTimer = null;
 function showToast(text) {
   toastEl.textContent = text;
@@ -125,9 +143,11 @@ function renderAccountArea() {
     accountNameEl.href = `#/channel?u=${encodeURIComponent(currentAccount.username)}`;
     accountNameEl.classList.remove('hidden');
     accountSigninBtn.classList.add('hidden');
+    subscriptionsNavLink.classList.remove('hidden');
   } else {
     accountNameEl.classList.add('hidden');
     accountSigninBtn.classList.remove('hidden');
+    subscriptionsNavLink.classList.add('hidden');
   }
 }
 
@@ -158,10 +178,12 @@ async function route() {
   if (name !== 'watch-live') stopWatching();
   if (name === 'watch') return renderWatch(params.get('v'));
   if (name === 'channel') return renderChannel(params.get('u'));
-  if (name === 'search') return renderHome(params.get('q') || '');
+  if (name === 'search') return renderHome(params.get('q') || '', params.get('category') || '');
   if (name === 'live') return renderLive();
   if (name === 'watch-live') return renderWatchLive(params.get('u'));
-  return renderHome('');
+  if (name === 'overlays') return renderOverlaysPage();
+  if (name === 'subscriptions') return renderSubscriptionsFeed();
+  return renderHome('', params.get('category') || '');
 }
 
 // ---------- Video card ----------
@@ -177,7 +199,7 @@ function videoCardHtml(v) {
         <div>
           <div class="video-card-title">${escapeHtml(v.title)}</div>
           <div class="video-card-meta">
-            <span class="video-card-channel">${escapeHtml(v.uploaderUsername)}</span>${v.uploaderLive ? ' <span class="live-dot">🔴 LIVE</span>' : ''}<br>
+            <span class="video-card-channel">${escapeHtml(v.uploaderUsername)}</span>${verifiedBadgeHtml(v.uploaderVerified)}${v.uploaderLive ? ' <span class="live-dot">🔴 LIVE</span>' : ''}<br>
             ${formatCount(v.views)} views &middot; ${timeAgo(v.createdAt)}
           </div>
         </div>
@@ -211,14 +233,36 @@ function wireLiveCards() {
   });
 }
 
-async function renderHome(query) {
+let categoriesCache = null;
+async function getCategories() {
+  if (!categoriesCache) {
+    try { categoriesCache = (await api('/api/scorpture/categories')).categories; } catch { categoriesCache = []; }
+  }
+  return categoriesCache;
+}
+
+function categoryPillsHtml(categories, query, activeCategory) {
+  const qs = query ? `q=${encodeURIComponent(query)}&` : '';
+  const linkFor = (cat) => (query ? `#/search?${qs}category=${encodeURIComponent(cat)}` : cat ? `#/?category=${encodeURIComponent(cat)}` : '#/');
+  const all = `<a href="${query ? `#/search?q=${encodeURIComponent(query)}` : '#/'}" class="category-pill${activeCategory ? '' : ' active'}">All</a>`;
+  const rest = categories
+    .map((cat) => `<a href="${linkFor(cat)}" class="category-pill${activeCategory === cat ? ' active' : ''}">${escapeHtml(cat)}</a>`)
+    .join('');
+  return `<div class="category-pills">${all}${rest}</div>`;
+}
+
+async function renderHome(query, category) {
   searchInput.value = query || '';
   appEl.innerHTML = `<div class="state-msg">Loading videos…</div>`;
   try {
-    const url = query ? `/api/scorpture/videos?search=${encodeURIComponent(query)}` : '/api/scorpture/videos';
-    const [data, liveData] = await Promise.all([api(url), query ? Promise.resolve({ streams: [] }) : api('/api/scorpture/live').catch(() => ({ streams: [] }))]);
+    const categories = await getCategories();
+    const params = new URLSearchParams();
+    if (query) params.set('search', query);
+    if (category) params.set('category', category);
+    const url = `/api/scorpture/videos${params.toString() ? `?${params.toString()}` : ''}`;
+    const [data, liveData] = await Promise.all([api(url), query || category ? Promise.resolve({ streams: [] }) : api('/api/scorpture/live').catch(() => ({ streams: [] }))]);
 
-    let html = '';
+    let html = categoryPillsHtml(categories, query, category);
     if (liveData.streams.length) {
       html += `<div class="live-section"><div class="live-section-heading">🔴 Live now</div><div class="video-grid">${liveData.streams.map(liveCardHtml).join('')}</div></div>`;
     }
@@ -251,6 +295,23 @@ async function renderLive() {
   }
 }
 
+// ---------- Subscriptions feed (#/subscriptions) ----------
+async function renderSubscriptionsFeed() {
+  if (!requireAccount()) { location.hash = '#/'; return; }
+  appEl.innerHTML = `<div class="state-msg">Loading your subscriptions…</div>`;
+  try {
+    const data = await api('/api/scorpture/subscriptions/feed');
+    if (!data.videos.length) {
+      appEl.innerHTML = `<div class="state-msg">No videos yet from channels you're subscribed to.</div>`;
+      return;
+    }
+    appEl.innerHTML = `<div class="video-grid">${data.videos.map(videoCardHtml).join('')}</div>`;
+    wireVideoCards();
+  } catch (err) {
+    appEl.innerHTML = `<div class="state-msg">Couldn't load your subscriptions: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
 // ---------- Watch page ----------
 async function renderWatch(id) {
   if (!id) return renderHome('');
@@ -273,13 +334,14 @@ async function renderWatch(id) {
         <div class="watch-stats">${formatCount(video.views)} views &middot; ${timeAgo(video.createdAt)}</div>
         <div class="watch-actions">
           <button id="like-btn" class="pill-btn like-btn${video.liked ? ' liked' : ''}">👍 <span id="like-count">${formatCount(video.likeCount)}</span></button>
+          ${video.isOwner ? '' : `<button id="report-video-btn" class="pill-btn">🚩 Report</button>`}
           ${video.isOwner ? `<button id="delete-video-btn" class="pill-btn danger">🗑️ Delete</button>` : ''}
         </div>
       </div>
       <div class="channel-row">
         <a class="channel-link" href="#/channel?u=${encodeURIComponent(video.uploaderUsername)}">
           ${avatarHtml(video.uploaderAvatarUrl, video.uploaderUsername)}
-          <span>${escapeHtml(video.uploaderUsername)}${video.live ? ' <span class="live-dot">🔴 LIVE</span>' : ''}<br><span class="watch-stats" id="sub-count">${formatCount(video.subscriberCount)} subscribers</span></span>
+          <span>${escapeHtml(video.uploaderUsername)}${verifiedBadgeHtml(video.uploaderVerified)}${video.live ? ' <span class="live-dot">🔴 LIVE</span>' : ''}<br><span class="watch-stats" id="sub-count">${formatCount(video.subscriberCount)} subscribers</span></span>
         </a>
         ${video.live ? `<a href="#/watch-live?u=${encodeURIComponent(video.uploaderUsername)}" class="pill-btn danger">🔴 Watch live</a>` : ''}
         ${video.isOwner ? '' : `<button id="subscribe-btn" class="pill-btn subscribe-btn${video.subscribed ? ' subscribed' : ''}">${video.subscribed ? 'Subscribed' : 'Subscribe'}</button>`}
@@ -306,6 +368,21 @@ async function renderWatch(id) {
       showToast(err.message);
     }
   });
+
+  const reportBtn = document.getElementById('report-video-btn');
+  if (reportBtn) {
+    reportBtn.addEventListener('click', async () => {
+      if (!requireAccount()) return;
+      const reason = prompt('Report this video to the admin. Optional reason:');
+      if (reason === null) return;
+      try {
+        await api(`/api/scorpture/videos/${encodeURIComponent(id)}/report`, { method: 'POST', body: JSON.stringify({ reason }) });
+        showToast('Reported.');
+      } catch (err) {
+        showToast(err.message);
+      }
+    });
+  }
 
   const subBtn = document.getElementById('subscribe-btn');
   if (subBtn) {
@@ -367,21 +444,55 @@ async function loadComments(id) {
     listEl.innerHTML = data.comments
       .slice()
       .reverse()
-      .map(
-        (c) => `
-        <div class="comment">
+      .map((c) => {
+        const isMine = currentAccount && c.username === currentAccount.username;
+        return `
+        <div class="comment" data-id="${escapeHtml(c.id)}">
           <span class="comment-avatar">${escapeHtml(initials(c.username))}</span>
           <div class="comment-body">
-            <span class="comment-author">${escapeHtml(c.username)}</span><span class="comment-time">${timeAgo(c.created_at)}</span>
+            <span class="comment-author">${escapeHtml(c.username)}</span><span class="comment-time">${timeAgo(c.created_at)}${c.edited ? ' (edited)' : ''}</span>
             <div class="comment-text">${escapeHtml(c.text)}</div>
+            ${isMine ? `<button class="comment-edit-btn">✏️ Edit</button>` : ''}
           </div>
         </div>
-      `
-      )
+      `;
+      })
       .join('');
+    wireCommentEditButtons(id);
   } catch {
     listEl.innerHTML = `<div class="state-msg">Couldn't load comments.</div>`;
   }
+}
+
+function wireCommentEditButtons(videoId) {
+  document.querySelectorAll('.comment-edit-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const row = btn.closest('.comment');
+      const body = row.querySelector('.comment-body');
+      const textEl = body.querySelector('.comment-text');
+      const originalText = textEl.textContent;
+      body.querySelectorAll('.comment-edit-btn').forEach((b) => b.remove());
+      textEl.outerHTML = `
+        <div class="comment-edit-form">
+          <input type="text" class="comment-edit-input" maxlength="1000" value="${escapeHtml(originalText)}">
+          <button class="pill-btn comment-save-btn">Save</button>
+          <button class="pill-btn comment-cancel-btn">Cancel</button>
+        </div>
+      `;
+      body.querySelector('.comment-cancel-btn').addEventListener('click', () => loadComments(videoId));
+      body.querySelector('.comment-save-btn').addEventListener('click', async () => {
+        const input = body.querySelector('.comment-edit-input');
+        const text = input.value.trim();
+        if (!text) return;
+        try {
+          await api(`/api/scorpture/comments/${encodeURIComponent(row.dataset.id)}`, { method: 'PUT', body: JSON.stringify({ text }) });
+          loadComments(videoId);
+        } catch (err) {
+          showToast(err.message);
+        }
+      });
+    });
+  });
 }
 
 // ---------- Channel page ----------
@@ -420,10 +531,10 @@ async function renderChannel(username) {
         ` : ''}
       </div>
       <div>
-        <div class="channel-header-name">${escapeHtml(channel.username)}${channel.live ? ' <span class="live-dot">🔴 LIVE</span>' : ''}</div>
+        <div class="channel-header-name">${escapeHtml(channel.username)}${verifiedBadgeHtml(channel.verified)}${channel.live ? ' <span class="live-dot">🔴 LIVE</span>' : ''}</div>
         <div class="channel-header-subs" id="channel-sub-count">${formatCount(channel.subscriberCount)} subscribers</div>
       </div>
-      ${channel.isOwner ? '' : `<button id="channel-subscribe-btn" class="pill-btn subscribe-btn${channel.subscribed ? ' subscribed' : ''}" style="margin-left:auto">${channel.subscribed ? 'Subscribed' : 'Subscribe'}</button>`}
+      ${channel.isOwner ? `<a href="#/overlays" class="pill-btn" style="margin-left:auto">⚙️ Stream overlays</a>` : `<button id="channel-subscribe-btn" class="pill-btn subscribe-btn${channel.subscribed ? ' subscribed' : ''}" style="margin-left:auto">${channel.subscribed ? 'Subscribed' : 'Subscribe'}</button>`}
     </div>
     ${
       videos.videos.length
@@ -486,6 +597,151 @@ async function renderChannel(username) {
   }
 }
 
+// ---------- Stream overlays settings page (#/overlays) — text/image graphics you draw onto your
+// own video before broadcasting (see startGoLive's canvas-compositing) so viewers literally see
+// them baked into the stream, not just something shown on this page. ----------
+const OVERLAY_POSITION_LABELS = {
+  'top-left': 'Top left',
+  'top-right': 'Top right',
+  'bottom-left': 'Bottom left',
+  'bottom-right': 'Bottom right',
+  center: 'Center',
+};
+
+function overlayRowHtml(o) {
+  const preview = o.type === 'image' ? `<img src="${escapeHtml(o.content)}" alt="">` : escapeHtml(o.content);
+  return `
+    <div class="overlay-row" data-id="${escapeHtml(o.id)}">
+      <div class="overlay-row-preview overlay-row-preview-${o.type}">${preview}</div>
+      <div class="overlay-row-info">
+        <div class="overlay-row-type">${o.type === 'image' ? '🖼️ Image' : '🔤 Text'}</div>
+        <div class="overlay-row-position">${OVERLAY_POSITION_LABELS[o.position] || o.position}</div>
+      </div>
+      <button class="icon-btn overlay-delete-btn" aria-label="Delete overlay">🗑️</button>
+    </div>
+  `;
+}
+
+async function renderOverlaysPage() {
+  if (!requireAccount()) { location.hash = '#/'; return; }
+  appEl.innerHTML = `<div class="state-msg">Loading overlays…</div>`;
+  let overlays;
+  try {
+    const data = await api('/api/scorpture/overlays');
+    overlays = data.overlays;
+  } catch (err) {
+    appEl.innerHTML = `<div class="state-msg">Couldn't load overlays: ${escapeHtml(err.message)}</div>`;
+    return;
+  }
+
+  appEl.innerHTML = `
+    <div class="overlays-page">
+      <h1 class="watch-title">⚙️ Stream overlays</h1>
+      <p class="overlays-hint">Graphics drawn onto your own video the moment you go live — anyone watching your stream sees these, same as you do in the preview. Up to 10 at a time.</p>
+      <div id="overlays-list">${overlays.length ? overlays.map(overlayRowHtml).join('') : '<div class="state-msg">No overlays yet.</div>'}</div>
+      <div class="overlay-form">
+        <div class="overlay-form-row">
+          <label><input type="radio" name="overlay-type" value="text" checked> Text</label>
+          <label><input type="radio" name="overlay-type" value="image"> Image</label>
+        </div>
+        <input type="text" id="overlay-text-input" placeholder="Overlay text" maxlength="200">
+        <label id="overlay-image-label" class="pill-btn hidden" for="overlay-image-input">🖼️ Choose an image</label>
+        <input type="file" id="overlay-image-input" accept="image/*" class="hidden">
+        <select id="overlay-position-select">
+          ${Object.entries(OVERLAY_POSITION_LABELS).map(([v, label]) => `<option value="${v}">${label}</option>`).join('')}
+        </select>
+        <div id="overlay-form-status"></div>
+        <button id="overlay-add-btn" class="pill-btn primary">Add overlay</button>
+      </div>
+    </div>
+  `;
+
+  let overlaysState = overlays;
+  let pendingImageUrl = null;
+
+  const textInput = document.getElementById('overlay-text-input');
+  const imageLabel = document.getElementById('overlay-image-label');
+  const imageInput = document.getElementById('overlay-image-input');
+  const statusEl = document.getElementById('overlay-form-status');
+  const addBtn = document.getElementById('overlay-add-btn');
+
+  for (const radio of document.querySelectorAll('input[name="overlay-type"]')) {
+    radio.addEventListener('change', () => {
+      if (!radio.checked) return;
+      textInput.classList.toggle('hidden', radio.value === 'image');
+      imageLabel.classList.toggle('hidden', radio.value === 'text');
+    });
+  }
+
+  imageInput.addEventListener('change', async () => {
+    const file = imageInput.files[0];
+    if (!file) return;
+    imageLabel.textContent = 'Uploading…';
+    try {
+      pendingImageUrl = await uploadFile(file, file.name || 'overlay.png');
+      imageLabel.textContent = '🖼️ Image ready — click Add overlay';
+    } catch (err) {
+      imageLabel.textContent = '🖼️ Choose an image';
+      showToast(err.message);
+    }
+  });
+
+  async function saveOverlays(next) {
+    const data = await api('/api/scorpture/overlays', { method: 'POST', body: JSON.stringify({ overlays: next }) });
+    overlaysState = data.overlays;
+    document.getElementById('overlays-list').innerHTML = overlaysState.length
+      ? overlaysState.map(overlayRowHtml).join('')
+      : '<div class="state-msg">No overlays yet.</div>';
+    wireOverlayDeleteButtons();
+    // If you're currently live, apply the change to the running stream immediately rather than
+    // requiring you to end and restart — the draw loop already reads broadcastState.overlays
+    // fresh every frame.
+    if (broadcastState) broadcastState.overlays = overlaysState;
+  }
+
+  function wireOverlayDeleteButtons() {
+    document.querySelectorAll('.overlay-delete-btn').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const row = btn.closest('.overlay-row');
+        const id = row.dataset.id;
+        try {
+          await saveOverlays(overlaysState.filter((o) => o.id !== id));
+        } catch (err) {
+          showToast(err.message);
+        }
+      });
+    });
+  }
+  wireOverlayDeleteButtons();
+
+  addBtn.addEventListener('click', async () => {
+    const type = document.querySelector('input[name="overlay-type"]:checked').value;
+    const position = document.getElementById('overlay-position-select').value;
+    if (overlaysState.length >= 10) { showToast('Max 10 overlays'); return; }
+    let content;
+    if (type === 'text') {
+      content = textInput.value.trim();
+      if (!content) { showToast('Enter some text first'); return; }
+    } else {
+      if (!pendingImageUrl) { showToast('Choose an image first'); return; }
+      content = pendingImageUrl;
+    }
+    addBtn.disabled = true;
+    statusEl.textContent = 'Saving…';
+    try {
+      await saveOverlays([...overlaysState, { type, content, position }]);
+      textInput.value = '';
+      pendingImageUrl = null;
+      imageLabel.textContent = '🖼️ Choose an image';
+      statusEl.textContent = '';
+    } catch (err) {
+      statusEl.textContent = `❌ ${err.message}`;
+    } finally {
+      addBtn.disabled = false;
+    }
+  });
+}
+
 // ---------- Search ----------
 searchForm.addEventListener('submit', (e) => {
   e.preventDefault();
@@ -506,9 +762,14 @@ function resetUploadModal() {
   uploadSubmitBtn.disabled = true;
 }
 
-uploadBtn.addEventListener('click', () => {
+uploadBtn.addEventListener('click', async () => {
   if (!requireAccount()) return;
   resetUploadModal();
+  const categorySelect = document.getElementById('upload-category-select');
+  if (!categorySelect.options.length) {
+    const categories = await getCategories();
+    categorySelect.innerHTML = categories.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+  }
   uploadModal.classList.remove('hidden');
 });
 
@@ -584,9 +845,10 @@ uploadSubmitBtn.addEventListener('click', async () => {
       thumbnailUrl = await uploadFile(pendingUpload.thumbnailBlob, 'thumb.jpg');
     }
     uploadStatusEl.textContent = 'Publishing…';
+    const category = document.getElementById('upload-category-select').value || null;
     const result = await api('/api/scorpture/videos', {
       method: 'POST',
-      body: JSON.stringify({ title, description: uploadDescriptionInput.value.trim(), videoUrl, thumbnailUrl }),
+      body: JSON.stringify({ title, description: uploadDescriptionInput.value.trim(), videoUrl, thumbnailUrl, category }),
     });
     uploadModal.classList.add('hidden');
     showToast('Video published!');
@@ -613,7 +875,19 @@ let watchState = null; // { pc, username }
 function connectWs() {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(`${protocol}//${location.host}`);
-  ws.addEventListener('open', () => wsSend({ type: 'scorpture-hello', accountToken: getToken() }));
+  ws.addEventListener('open', () => {
+    wsSend({ type: 'scorpture-hello', accountToken: getToken() });
+    // The server ends a live stream (liveStreams.delete) the instant its ws closes, for *any*
+    // reason — including this reconnect's own network blip, not just a real "End Stream" click.
+    // Without this, the broadcaster's own tab has no idea the server already tore the stream
+    // down and keeps showing "🔴 You are live" — anyone freshly asking the server (a viewer
+    // joining, or this page's own pop-out chat window) correctly gets told it isn't live,
+    // which is the desync a user actually hit. Re-announcing here keeps the server's live-flag
+    // honest again. This does NOT repair existing viewers' video — their RTCPeerConnections
+    // were signaling through the now-dead ws and can't be revived without a fresh negotiation
+    // per viewer, which this doesn't attempt; only the is-live status recovers automatically.
+    if (broadcastState) wsSend({ type: 'scorpture-go-live', title: broadcastState.title });
+  });
   ws.addEventListener('close', () => setTimeout(connectWs, 1500));
   ws.addEventListener('message', (event) => {
     let data;
@@ -662,21 +936,117 @@ function handleViewerLeft(viewerId) {
 function updateViewerCountUI() {
   if (!broadcastState) return;
   goLiveViewerCountEl.textContent = `${broadcastState.peers.size} watching`;
+  if (!liveMiniWidget.classList.contains('hidden')) liveMiniViewersEl.textContent = `${broadcastState.peers.size} watching`;
 }
 
 function iceToJson(c) {
   return { candidate: c.candidate, sdpMid: c.sdpMid, sdpMLineIndex: c.sdpMLineIndex };
 }
 
+// ---- Overlay compositing — the raw camera/screen stream is never sent anywhere itself. It
+// feeds a hidden <video>, which a requestAnimationFrame loop draws onto an offscreen <canvas>
+// each frame along with any overlays; canvas.captureStream() is what actually gets broadcast,
+// recorded, and shown in your own preview — so "what you see is what viewers see" for real,
+// overlays included, without needing to renegotiate anything when switching camera/screen (the
+// canvas's own video track never changes, only what gets drawn onto it does). ----
+
+const overlayImageCache = new Map(); // url -> HTMLImageElement, loaded once and reused
+function getOverlayImage(url) {
+  if (!overlayImageCache.has(url)) {
+    const img = new Image();
+    img.src = url;
+    overlayImageCache.set(url, img);
+  }
+  return overlayImageCache.get(url);
+}
+
+function overlayAnchorPoint(position, canvasWidth, canvasHeight, pad, w, h) {
+  if (position === 'top-right') return { x: canvasWidth - w - pad, y: pad };
+  if (position === 'bottom-left') return { x: pad, y: canvasHeight - h - pad };
+  if (position === 'bottom-right') return { x: canvasWidth - w - pad, y: canvasHeight - h - pad };
+  if (position === 'center') return { x: (canvasWidth - w) / 2, y: (canvasHeight - h) / 2 };
+  return { x: pad, y: pad }; // top-left, and the fallback for anything unrecognized
+}
+
+function drawOverlaysOnCanvas(ctx, canvasWidth, canvasHeight, overlays) {
+  const pad = Math.max(10, canvasWidth * 0.02);
+  for (const o of overlays) {
+    if (o.type === 'text') {
+      const fontSize = Math.max(14, Math.round(canvasWidth * 0.03));
+      ctx.font = `bold ${fontSize}px sans-serif`;
+      const textW = ctx.measureText(o.content).width;
+      const textH = fontSize * 1.4;
+      const { x, y } = overlayAnchorPoint(o.position, canvasWidth, canvasHeight, pad, textW + 16, textH);
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(x, y, textW + 16, textH);
+      ctx.fillStyle = '#fff';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(o.content, x + 8, y + textH / 2);
+    } else if (o.type === 'image') {
+      const img = getOverlayImage(o.content);
+      if (!img.complete || !img.naturalWidth) continue;
+      const w = canvasWidth * 0.18;
+      const h = w * (img.naturalHeight / img.naturalWidth);
+      const { x, y } = overlayAnchorPoint(o.position, canvasWidth, canvasHeight, pad, w, h);
+      ctx.drawImage(img, x, y, w, h);
+    }
+  }
+}
+
 async function startGoLive(useScreen) {
   const title = goLiveTitleInput.value.trim() || 'Untitled stream';
   goLiveStatusEl.textContent = 'Requesting camera/mic access…';
   try {
-    const stream = useScreen
+    const rawStream = useScreen
       ? await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
       : await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-    broadcastState = { localStream: stream, peers: new Map(), title, recorder: null, recordedChunks: [] };
-    goLivePreview.srcObject = stream;
+
+    let overlays = [];
+    try { overlays = (await api('/api/scorpture/overlays')).overlays; } catch { /* stream still works with none */ }
+
+    const sourceVideo = document.createElement('video');
+    sourceVideo.muted = true;
+    sourceVideo.playsInline = true;
+    sourceVideo.srcObject = rawStream;
+    await sourceVideo.play();
+
+    const canvas = document.createElement('canvas');
+    canvas.width = sourceVideo.videoWidth || 1280;
+    canvas.height = sourceVideo.videoHeight || 720;
+    const ctx = canvas.getContext('2d');
+    let compositing = true;
+    function drawFrame() {
+      if (!compositing) return;
+      ctx.drawImage(sourceVideo, 0, 0, canvas.width, canvas.height);
+      drawOverlaysOnCanvas(ctx, canvas.width, canvas.height, broadcastState ? broadcastState.overlays : overlays);
+      requestAnimationFrame(drawFrame);
+    }
+    requestAnimationFrame(drawFrame);
+
+    const canvasTrack = canvas.captureStream(30).getVideoTracks()[0];
+    const compositedStream = new MediaStream([canvasTrack, ...rawStream.getAudioTracks()]);
+
+    // Captured by closure directly (not read back off broadcastState) so the recorder's
+    // ondataavailable callback below still has somewhere valid to push to even after
+    // broadcastState is nulled out — MediaRecorder keeps firing a final flush of data
+    // *asynchronously* after .stop() is called, which lands after endGoLive() has already torn
+    // broadcastState down. Same array object either way, just not reached through a reference
+    // that might go stale.
+    const recordedChunks = [];
+
+    broadcastState = {
+      rawStream,
+      sourceVideo,
+      canvas,
+      overlays,
+      localStream: compositedStream, // what every peer connection, the preview, and the recorder all use
+      stopCompositing: () => { compositing = false; },
+      peers: new Map(),
+      title,
+      recorder: null,
+      recordedChunks,
+    };
+    goLivePreview.srcObject = compositedStream;
     goLivePreview.classList.remove('hidden');
     goLiveSourceRow.classList.add('hidden');
     document.getElementById('golive-record-row').classList.add('hidden');
@@ -686,22 +1056,19 @@ async function startGoLive(useScreen) {
     goLiveSwitchCameraBtn.classList.toggle('hidden', !useScreen);
     goLiveHeader.textContent = '🔴 You are live';
     goLiveStatusEl.textContent = '';
-    goLiveChatContainer.innerHTML = liveChatPanelHtml();
-    wireLiveChatPanel();
+    enableLiveChat();
     wsSend({ type: 'scorpture-go-live', title });
     // A screen-share track can be stopped by the browser's own "Stop sharing" UI, not just our
     // own End Stream button — treat that the same as pressing End Stream.
-    stream.getVideoTracks()[0].addEventListener('ended', () => { if (broadcastState) endGoLive(); });
+    rawStream.getVideoTracks()[0].addEventListener('ended', () => { if (broadcastState) endGoLive(); });
 
-    // Recording is separate from the live WebRTC path entirely — just MediaRecorder capturing
-    // your own local tracks the whole time, saved as a normal Scorpture upload once you end the
-    // stream (see endGoLive). Best-effort: a browser that can't produce webm just skips it, the
-    // live stream itself is unaffected either way.
+    // Recording is separate from the live WebRTC path entirely — MediaRecorder on the same
+    // composited stream everyone else sees, so the saved replay has the overlays baked in too.
     if (goLiveRecordCheckbox.checked && window.MediaRecorder) {
       try {
         const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus') ? 'video/webm;codecs=vp9,opus' : 'video/webm';
-        const recorder = new MediaRecorder(stream, { mimeType });
-        recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) broadcastState.recordedChunks.push(e.data); };
+        const recorder = new MediaRecorder(compositedStream, { mimeType });
+        recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) recordedChunks.push(e.data); };
         recorder.start(1000);
         broadcastState.recorder = recorder;
       } catch {
@@ -713,31 +1080,26 @@ async function startGoLive(useScreen) {
   }
 }
 
-// Swaps the outgoing video track on every active viewer connection at once (RTCRtpSender.replaceTrack)
-// instead of renegotiating each one — same technique the Voice Call screen-share feature already
-// uses elsewhere in this app (see app.js's startScreenShare), just applied to every peer here
-// instead of just one.
+// Switching source now just points the hidden sourceVideo at a new raw stream — the canvas
+// track being broadcast never changes, so there's no RTCRtpSender.replaceTrack/renegotiation
+// needed at all, unlike before overlays existed.
 async function switchGoLiveSource(useScreen) {
   if (!broadcastState) return;
   try {
-    const newStream = useScreen
+    const newRawStream = useScreen
       ? await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
       : await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-    const newVideoTrack = newStream.getVideoTracks()[0];
-    // Audio keeps coming from the original source (the mic) the whole time — only the video
-    // track ever gets swapped — so the fresh audio track this request also grabbed is unused;
-    // stop it immediately rather than leaving an extra live mic/system-audio capture open.
-    for (const track of newStream.getAudioTracks()) track.stop();
-    for (const pc of broadcastState.peers.values()) {
-      const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
-      if (sender) sender.replaceTrack(newVideoTrack);
-    }
-    for (const track of broadcastState.localStream.getVideoTracks()) track.stop();
-    broadcastState.localStream = newStream;
-    goLivePreview.srcObject = newStream;
+    // Audio keeps coming from the original source (the mic) the whole time — only the video feed
+    // powering the compositing canvas changes — so the fresh audio track this request also
+    // grabbed is unused; stop it immediately rather than leaving an extra live capture open.
+    for (const track of newRawStream.getAudioTracks()) track.stop();
+    for (const track of broadcastState.rawStream.getVideoTracks()) track.stop();
+    broadcastState.rawStream = newRawStream;
+    broadcastState.sourceVideo.srcObject = newRawStream;
+    await broadcastState.sourceVideo.play();
     goLiveSwitchScreenBtn.classList.toggle('hidden', useScreen);
     goLiveSwitchCameraBtn.classList.toggle('hidden', !useScreen);
-    newVideoTrack.addEventListener('ended', () => { if (broadcastState) endGoLive(); });
+    newRawStream.getVideoTracks()[0].addEventListener('ended', () => { if (broadcastState) endGoLive(); });
   } catch (err) {
     showToast(`Couldn't switch source: ${err.message}`);
   }
@@ -747,9 +1109,12 @@ function endGoLive() {
   if (!broadcastState) return;
   wsSend({ type: 'scorpture-end-live' });
   for (const pc of broadcastState.peers.values()) pc.close();
-  const { recorder, recordedChunks, title, localStream } = broadcastState;
+  const { recorder, recordedChunks, title, localStream, rawStream, stopCompositing, sourceVideo } = broadcastState;
   const finishStop = () => {
+    stopCompositing();
     for (const track of localStream.getTracks()) track.stop();
+    for (const track of rawStream.getTracks()) track.stop();
+    sourceVideo.srcObject = null;
     saveRecordingAsVideo(recordedChunks, title);
   };
   if (recorder && recorder.state !== 'inactive') {
@@ -761,6 +1126,8 @@ function endGoLive() {
   broadcastState = null;
   resetGoLiveModal();
   goLiveModal.classList.add('hidden');
+  hideLiveMiniWidget();
+  if (!watchState) disableLiveChat();
   showToast('Stream ended');
 }
 
@@ -785,6 +1152,34 @@ async function saveRecordingAsVideo(chunks, title) {
 function renderWatchLive(username) {
   if (!username) return renderHome('');
   stopWatching();
+
+  // Watching your own stream from the same tab/account you're broadcasting from can't cleanly
+  // go through a real WebRTC round-trip to yourself (there's only one WebSocket connection for
+  // this tab, and it can't simultaneously act as both the streamer's control channel and a
+  // distinct viewer's) — so instead of that, just play your own composited output directly.
+  // It's literally the same thing viewers are seeing, with zero extra latency. Muted, since this
+  // is the same device replaying its own live mic capture — unmuted would echo.
+  if (broadcastState && currentAccount && username === currentAccount.username) {
+    appEl.innerHTML = `
+      <div class="watch-layout">
+        <span class="watch-live-badge">🔴 LIVE — this is your stream</span>
+        <div class="watch-player-wrap">
+          <video id="live-player" autoplay playsinline controls muted></video>
+        </div>
+        <h1 class="watch-title">${escapeHtml(broadcastState.title)}</h1>
+        <div class="channel-row">
+          <a class="channel-link" href="#/channel?u=${encodeURIComponent(username)}">
+            ${avatarHtml(null, username)}
+            <span>${escapeHtml(username)}</span>
+          </a>
+        </div>
+      </div>
+    `;
+    document.getElementById('live-player').srcObject = broadcastState.localStream;
+    enableLiveChat();
+    return;
+  }
+
   appEl.innerHTML = `
     <div class="watch-layout">
       <span class="watch-live-badge">🔴 LIVE</span>
@@ -795,19 +1190,21 @@ function renderWatchLive(username) {
       <div class="channel-row">
         <a class="channel-link" href="#/channel?u=${encodeURIComponent(username)}" id="live-channel-link">
           ${avatarHtml(null, username)}
-          <span>${escapeHtml(username)}</span>
+          <span id="live-channel-name">${escapeHtml(username)}</span>
         </a>
       </div>
-      ${liveChatPanelHtml()}
     </div>
   `;
-  wireLiveChatPanel();
   // Best-effort, non-blocking — the WebRTC connection below doesn't wait on this, it just
-  // upgrades the initials fallback to a real picture once (if) it arrives.
+  // upgrades the initials fallback to a real picture (and adds the verified badge) once the
+  // channel's actual info arrives.
   api(`/api/scorpture/channels/${encodeURIComponent(username)}`)
     .then((channel) => {
       const link = document.getElementById('live-channel-link');
-      if (link && channel.avatarUrl) link.querySelector('.channel-avatar').outerHTML = avatarHtml(channel.avatarUrl, username);
+      if (!link) return;
+      if (channel.avatarUrl) link.querySelector('.channel-avatar').outerHTML = avatarHtml(channel.avatarUrl, username);
+      const nameEl = document.getElementById('live-channel-name');
+      if (nameEl) nameEl.innerHTML = `${escapeHtml(username)}${verifiedBadgeHtml(channel.verified)}`;
     })
     .catch(() => {});
 
@@ -821,47 +1218,120 @@ function renderWatchLive(username) {
     if (e.candidate) wsSend({ type: 'scorpture-signal', signal: { kind: 'ice', candidate: iceToJson(e.candidate) } });
   };
   wsSend({ type: 'scorpture-watch-live', streamerUsername: username });
+  enableLiveChat();
 }
 
-// ---- Live chat (shared markup/wiring between the viewer's watch-live page and the
-// broadcaster's Go Live modal — same panel, just mounted in two different places) ----
+// ---- Live chat — a single floating box fixed to the screen (#live-chat-widget in videos.html,
+// wired once below), not something baked into the watch-live page or the Go Live dialog. Its
+// availability tracks whichever of broadcastState/watchState is active — see enableLiveChat/
+// disableLiveChat, called from startGoLive/endGoLive and renderWatchLive/stopWatching.
 
-function liveChatPanelHtml() {
-  return `
-    <div class="live-chat-panel">
-      <div class="live-chat-heading">💬 Live chat</div>
-      <div class="live-chat-messages" id="live-chat-messages"></div>
-      <form class="live-chat-form" id="live-chat-form">
-        <input id="live-chat-input" type="text" placeholder="${currentAccount ? 'Say something…' : 'Sign in to chat'}" maxlength="300" autocomplete="off">
-        <button type="submit" class="pill-btn">Send</button>
-      </form>
-    </div>
-  `;
+function enableLiveChat() {
+  liveChatMessagesEl.innerHTML = '';
+  liveChatToggleBtn.classList.remove('hidden');
+  liveChatWidget.classList.remove('hidden');
+  liveChatInput.placeholder = currentAccount ? 'Say something…' : 'Sign in to chat';
 }
 
-function wireLiveChatPanel() {
-  const form = document.getElementById('live-chat-form');
-  if (!form) return;
-  form.addEventListener('submit', (e) => {
+function disableLiveChat() {
+  liveChatToggleBtn.classList.add('hidden');
+  liveChatWidget.classList.add('hidden');
+}
+
+liveChatToggleBtn.addEventListener('click', () => liveChatWidget.classList.toggle('hidden'));
+liveChatWidgetCloseBtn.addEventListener('click', () => liveChatWidget.classList.add('hidden'));
+
+// Whichever live chat is currently active — watching someone else's stream (watchState) takes
+// precedence since you can't watch your own stream in the same tab you're broadcasting from
+// (see the comment above ICE_SERVERS), so the two states are already mutually exclusive; this
+// just picks whichever one is actually set.
+function currentLiveChatUsername() {
+  if (watchState) return watchState.username;
+  if (broadcastState && currentAccount) return currentAccount.username;
+  return null;
+}
+
+// Opens the chat in a genuine separate OS browser window (not another in-page widget) so it can
+// be dragged/resized independently of this tab — including down to something tiny, the way
+// Twitch's "pop out chat" works. Same-origin, so it shares localStorage (account token) with
+// this tab automatically; only the streamer's username needs to cross via the URL.
+liveChatPopoutBtn.addEventListener('click', () => {
+  const username = currentLiveChatUsername();
+  if (!username) return;
+  window.open(
+    `livechat.html?u=${encodeURIComponent(username)}`,
+    `valk-livechat-${username}`,
+    'width=320,height=420,resizable=yes'
+  );
+});
+
+// Drag the chat box anywhere on screen by its header — starts pinned bottom-right (via CSS), but
+// the first drag switches it to explicit left/top positioning so it can go wherever you drop it.
+// Clamped to the viewport so it can never end up dragged fully off-screen and unreachable.
+function makeDraggable(handleEl, widgetEl) {
+  let dragging = false, offsetX = 0, offsetY = 0;
+
+  function start(clientX, clientY) {
+    dragging = true;
+    const rect = widgetEl.getBoundingClientRect();
+    offsetX = clientX - rect.left;
+    offsetY = clientY - rect.top;
+    widgetEl.style.left = `${rect.left}px`;
+    widgetEl.style.top = `${rect.top}px`;
+    widgetEl.style.right = 'auto';
+    widgetEl.style.bottom = 'auto';
+  }
+
+  function move(clientX, clientY) {
+    if (!dragging) return;
+    const rect = widgetEl.getBoundingClientRect();
+    const x = Math.max(0, Math.min(window.innerWidth - rect.width, clientX - offsetX));
+    const y = Math.max(0, Math.min(window.innerHeight - rect.height, clientY - offsetY));
+    widgetEl.style.left = `${x}px`;
+    widgetEl.style.top = `${y}px`;
+  }
+
+  function end() { dragging = false; }
+
+  handleEl.addEventListener('mousedown', (e) => {
+    if (e.target.closest('.icon-btn')) return; // don't hijack clicking the close button
     e.preventDefault();
-    if (!requireAccount()) return;
-    const input = document.getElementById('live-chat-input');
-    const text = input.value.trim();
-    if (!text) return;
-    wsSend({ type: 'scorpture-live-chat', text });
-    input.value = '';
+    start(e.clientX, e.clientY);
   });
+  window.addEventListener('mousemove', (e) => move(e.clientX, e.clientY));
+  window.addEventListener('mouseup', end);
+
+  handleEl.addEventListener('touchstart', (e) => {
+    if (e.target.closest('.icon-btn')) return;
+    const t = e.touches[0];
+    start(t.clientX, t.clientY);
+  }, { passive: true });
+  window.addEventListener('touchmove', (e) => {
+    if (!dragging) return;
+    const t = e.touches[0];
+    move(t.clientX, t.clientY);
+  }, { passive: true });
+  window.addEventListener('touchend', end);
 }
+
+makeDraggable(document.getElementById('live-chat-widget-header'), liveChatWidget);
+
+liveChatForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  if (!requireAccount()) return;
+  const text = liveChatInput.value.trim();
+  if (!text) return;
+  wsSend({ type: 'scorpture-live-chat', text });
+  liveChatInput.value = '';
+});
 
 function appendLiveChatMessage(data) {
-  const list = document.getElementById('live-chat-messages');
-  if (!list) return;
-  const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+  const atBottom = liveChatMessagesEl.scrollHeight - liveChatMessagesEl.scrollTop - liveChatMessagesEl.clientHeight < 40;
   const row = document.createElement('div');
   row.className = 'live-chat-message';
   row.innerHTML = `<span class="live-chat-author">${escapeHtml(data.username)}</span> ${escapeHtml(data.text)}`;
-  list.appendChild(row);
-  if (atBottom) list.scrollTop = list.scrollHeight;
+  liveChatMessagesEl.appendChild(row);
+  if (atBottom) liveChatMessagesEl.scrollTop = liveChatMessagesEl.scrollHeight;
 }
 
 function handleWatchAck(data) {
@@ -935,6 +1405,7 @@ function stopWatching() {
   wsSend({ type: 'scorpture-leave-live' });
   watchState.pc.close();
   watchState = null;
+  if (!broadcastState) disableLiveChat();
 }
 
 // ---- Go Live modal wiring ----
@@ -949,25 +1420,99 @@ function resetGoLiveModal() {
   goLiveControls.classList.add('hidden');
   goLiveStatusEl.textContent = '';
   goLiveHeader.textContent = 'Go live';
-  goLiveChatContainer.innerHTML = '';
+}
+
+// Once you're live, "closing" the dialog no longer ends the stream — it just tucks the preview
+// into the small floating widget (bottom-left of the viewport, see #live-mini-widget) so you can
+// keep browsing the rest of Scorpture, or any other app, while still broadcasting. The Go Live
+// button reopens the same dialog with live controls intact instead of resetting it.
+function hideGoLiveModal() {
+  goLiveModal.classList.add('hidden');
+  if (broadcastState) showLiveMiniWidget();
+}
+
+function showLiveMiniWidget() {
+  if (!broadcastState) return;
+  liveMiniVideo.srcObject = broadcastState.localStream;
+  liveMiniViewersEl.textContent = `${broadcastState.peers.size} watching`;
+  liveMiniWidget.classList.remove('hidden');
+}
+
+function hideLiveMiniWidget() {
+  liveMiniVideo.srcObject = null;
+  liveMiniWidget.classList.add('hidden');
 }
 
 goLiveBtn.addEventListener('click', () => {
   if (!requireAccount()) return;
+  if (broadcastState) {
+    // Already live — reopen the existing session's controls instead of wiping it.
+    hideLiveMiniWidget();
+    goLiveModal.classList.remove('hidden');
+    return;
+  }
   resetGoLiveModal();
   goLiveModal.classList.remove('hidden');
 });
 
-goLiveCloseBtn.addEventListener('click', () => {
-  if (broadcastState) { showToast('End your stream first'); return; }
-  goLiveModal.classList.add('hidden');
+goLiveCloseBtn.addEventListener('click', hideGoLiveModal);
+
+liveMiniExpandBtn.addEventListener('click', () => {
+  hideLiveMiniWidget();
+  goLiveModal.classList.remove('hidden');
 });
+
+// Hides the floating preview only — the stream itself keeps running untouched. Reopen it any
+// time from the 🔴 Go Live button (or just end the stream from there).
+liveMiniHideBtn.addEventListener('click', hideLiveMiniWidget);
 
 goLiveCameraBtn.addEventListener('click', () => startGoLive(false));
 goLiveScreenBtn.addEventListener('click', () => startGoLive(true));
 goLiveSwitchScreenBtn.addEventListener('click', () => switchGoLiveSource(true));
 goLiveSwitchCameraBtn.addEventListener('click', () => switchGoLiveSource(false));
 goLiveEndBtn.addEventListener('click', endGoLive);
+
+// ---------- Scorpture admin panel (right-click the logo) ----------
+// This client-side username check is only ever a UX convenience — it decides whether to bother
+// showing the panel, nothing more. The real boundary is server-side (isScorptureAdmin() in
+// server.js, checked on every request against the signed-in account's token) — someone editing
+// this file in devtools to remove the check would just get a 403 back from the API.
+const logoLink = document.getElementById('logo-link');
+const scorptureAdminModal = document.getElementById('scorpture-admin-modal');
+const scorptureAdminCloseBtn = document.getElementById('scorpture-admin-close-btn');
+const scorptureAdminBonusInput = document.getElementById('scorpture-admin-bonus-input');
+const scorptureAdminStatusEl = document.getElementById('scorpture-admin-status');
+const scorptureAdminSaveBtn = document.getElementById('scorpture-admin-save-btn');
+
+logoLink.addEventListener('contextmenu', async (e) => {
+  if (!currentAccount || currentAccount.username !== 'supdid67') return;
+  e.preventDefault();
+  scorptureAdminStatusEl.textContent = 'Loading…';
+  scorptureAdminModal.classList.remove('hidden');
+  try {
+    const data = await api('/api/scorpture/admin/bonus-subscribers');
+    scorptureAdminBonusInput.value = data.bonusSubscribers;
+    scorptureAdminStatusEl.textContent = '';
+  } catch (err) {
+    scorptureAdminStatusEl.textContent = err.message;
+  }
+});
+
+scorptureAdminCloseBtn.addEventListener('click', () => scorptureAdminModal.classList.add('hidden'));
+scorptureAdminModal.addEventListener('click', (e) => { if (e.target === scorptureAdminModal) scorptureAdminModal.classList.add('hidden'); });
+
+scorptureAdminSaveBtn.addEventListener('click', async () => {
+  const count = Math.max(0, Math.floor(Number(scorptureAdminBonusInput.value) || 0));
+  scorptureAdminSaveBtn.disabled = true;
+  try {
+    await api('/api/scorpture/admin/bonus-subscribers', { method: 'POST', body: JSON.stringify({ count }) });
+    scorptureAdminStatusEl.textContent = '✅ Saved';
+  } catch (err) {
+    scorptureAdminStatusEl.textContent = `❌ ${err.message}`;
+  } finally {
+    scorptureAdminSaveBtn.disabled = false;
+  }
+});
 
 // ---------- Boot ----------
 connectWs();
