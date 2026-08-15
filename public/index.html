@@ -456,10 +456,6 @@
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script src="stickers.js"></script>
   <script src="app.js"></script>
-  <script>
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));
-    }
-  </script>
+  <script src="update-prompt.js"></script>
 </body>
 </html>

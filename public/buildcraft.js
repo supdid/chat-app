@@ -515,6 +515,65 @@ const moonMesh = new THREE.Mesh(
 );
 scene.add(moonMesh);
 
+// ---------- Stars ----------
+// Nothing but the moon occupied the night sky before this, so the small hours read as a flat dark
+// background. Positions are plain Math.random(), not the seeded world PRNG — same rule the world
+// generator follows, where only layout-affecting randomness has to match between clients.
+const STAR_COUNT = 700;
+const STAR_SHELL = 620; // inside camera.far (700); fog is off for these
+const starPositions = new Float32Array(STAR_COUNT * 3);
+for (let i = 0; i < STAR_COUNT; i++) {
+  // Upper hemisphere only. The islands float in open air, so stars placed below the horizon would
+  // be plainly visible underfoot and read as fireflies rather than sky.
+  const theta = Math.random() * Math.PI * 2;
+  const y = 0.08 + Math.random() * 0.92;
+  const r = Math.sqrt(Math.max(0, 1 - y * y));
+  starPositions[i * 3] = Math.cos(theta) * r * STAR_SHELL;
+  starPositions[i * 3 + 1] = y * STAR_SHELL;
+  starPositions[i * 3 + 2] = Math.sin(theta) * r * STAR_SHELL;
+}
+const starGeometry = new THREE.BufferGeometry();
+starGeometry.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+// sizeAttenuation off so a star is a fixed pixel size rather than shrinking with the shell radius.
+const starMaterial = new THREE.PointsMaterial({
+  color: 0xffffff, size: 2.4, sizeAttenuation: false,
+  transparent: true, opacity: 0, depthWrite: false, fog: false,
+});
+const starField = new THREE.Points(starGeometry, starMaterial);
+starField.frustumCulled = false;
+starField.visible = false;
+scene.add(starField);
+
+// ---------- Sun / moon halo ----------
+// Both bodies are plain emissive boxes, which reads as a sticker pasted on the sky — most obvious
+// at dawn and dusk, which this world passes through every 20 minutes. Additive sprites behind them
+// give the light somewhere to fall off to.
+function makeSkyGlowTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, 'rgba(255,255,255,0.9)');
+  g.addColorStop(0.4, 'rgba(255,255,255,0.28)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+}
+const skyGlowTexture = makeSkyGlowTexture();
+
+function makeSkyGlow(color, size) {
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: skyGlowTexture, color, transparent: true, opacity: 0.7,
+    depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
+  }));
+  s.scale.set(size, size, 1);
+  scene.add(s);
+  return s;
+}
+const sunGlow = makeSkyGlow(0xffd9a0, 190);
+const moonGlow = makeSkyGlow(0xbcd0ff, 110);
+
 const DAY_CYCLE_MS = 20 * 60 * 1000; // one full day/night every 20 real minutes
 const SKY_ORBIT_RADIUS = 400;
 const DAY_SKY_COLOR = new THREE.Color(0x7ec8e3);
@@ -545,6 +604,21 @@ function updateDayNightCycle() {
   sun.intensity = dayStrength * 0.95;
   moonLight.intensity = Math.max(0, moonHeight) * 0.18;
   hemiLight.intensity = 0.35 + dayStrength * 0.65;
+
+  // Haloes ride on the bodies themselves, so they inherit the same visibility cutoff at the horizon.
+  sunGlow.position.copy(sunMesh.position);
+  sunGlow.visible = sunMesh.visible;
+  moonGlow.position.copy(moonMesh.position);
+  moonGlow.visible = moonMesh.visible;
+
+  // Stars fade in once the sun is genuinely below the horizon, and stay mostly hidden under cloud
+  // when it's raining. Recentred on the player every frame so the shell behaves as a skybox — at
+  // 620 units a fixed field would visibly parallax across a world only ~150 units wide.
+  let starAlpha = Math.max(0, Math.min(1, (0.12 - sunHeight) * 3.2));
+  if (isRaining) starAlpha *= 0.2;
+  starMaterial.opacity = starAlpha;
+  starField.visible = starAlpha > 0.01;
+  starField.position.copy(yawObject.position);
 
   skyColorScratch.copy(NIGHT_SKY_COLOR).lerp(DAY_SKY_COLOR, dayStrength);
   applyWeatherTint(skyColorScratch);

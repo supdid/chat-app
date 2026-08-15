@@ -162,8 +162,26 @@ button.primary:hover {
   color: #eaf6ff;
 }
 
-#score-label {
+/* The group owns the auto margin, not the score itself — the chain label beside it toggles between
+   display:none and visible, so hanging the layout off the score directly made the row jump. */
+#score-group {
   margin-right: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+#chain-label {
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: #0a1420;
+  background: linear-gradient(180deg, #ffe066, #ffb020);
+  padding: 0.28rem 0.6rem;
+  border-radius: 999px;
+  box-shadow: 0 0 12px rgba(255, 190, 60, 0.55);
+}
+
+#score-label {
   font-weight: 700;
   font-size: 1.1rem;
   background: rgba(6, 14, 22, 0.55);
@@ -175,6 +193,117 @@ button.primary:hover {
 #best-label {
   color: #a7bdd1;
   font-size: 0.8rem;
+}
+
+#speed-label {
+  color: #cfe4f7;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums; /* stops the row twitching as the digits change */
+  min-width: 4.2rem;
+  text-align: right;
+}
+
+/* Edge-of-frame rush at speed. Opacity is written every frame from JS, so there is deliberately no
+   transition here — a CSS transition would fight the per-frame value and lag behind the actual speed. */
+#speed-fx {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(255, 255, 255, 0) 40%,
+    rgba(186, 219, 255, 0.28) 76%,
+    rgba(120, 170, 230, 0.6) 100%
+  );
+}
+
+/* Pump charge meter — only on screen while attached to a web. Sits below centre so it's readable
+   without pulling the eye off the crosshair, which is where you're actually aiming. */
+#pump-meter {
+  position: fixed;
+  left: 50%;
+  bottom: 14%;
+  transform: translateX(-50%);
+  width: min(38vw, 260px);
+  height: 10px;
+  z-index: 11;
+  pointer-events: none;
+  background: rgba(6, 14, 22, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  overflow: visible;
+}
+
+#pump-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #3b6dff, #7fb2ff);
+  /* No transition: the width is written every frame from the live momentum value, and a transition
+     would lag the bar behind the input the player is timing against. */
+}
+
+#pump-hint {
+  position: absolute;
+  left: 50%;
+  top: -1.35rem;
+  transform: translateX(-50%);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #a7bdd1;
+  text-shadow: 0 0 6px rgba(0, 0, 0, 0.8);
+  white-space: nowrap;
+}
+
+/* Charged, but not yet in the window — amber says "you have it, don't spend it here". */
+#pump-meter.hot #pump-fill {
+  background: linear-gradient(90deg, #ffb020, #ffe066);
+}
+
+#pump-meter.hot {
+  border-color: rgba(255, 190, 60, 0.7);
+  box-shadow: 0 0 14px rgba(255, 190, 60, 0.45);
+}
+
+/* Charged AND rising — this is exactly when isPerfectRelease() pays out, so the pulse is the cue
+   to let go. It's the one moment the whole pump mechanic is built around. */
+#pump-meter.ready #pump-fill {
+  background: linear-gradient(90deg, #35d07f, #9dffc9);
+}
+
+#pump-meter.ready {
+  border-color: rgba(90, 240, 160, 0.85);
+  box-shadow: 0 0 20px rgba(90, 240, 160, 0.7);
+  animation: pump-ready-pulse 0.42s ease-in-out infinite alternate;
+}
+
+/* The label text itself is set from JS alongside the state class — `content` does nothing on a
+   real element, only on ::before/::after. */
+#pump-meter.ready #pump-hint {
+  color: #9dffc9;
+  font-weight: 700;
+}
+
+@keyframes pump-ready-pulse {
+  from { transform: translateX(-50%) scaleY(1); }
+  to { transform: translateX(-50%) scaleY(1.55); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #pump-meter.ready { animation: none; }
+  /* The toast fires on every pickup and every near miss — several a second during a good run. Under
+     reduced motion it fades in place rather than flying up the screen. The base rule's centring
+     transform is inherited, since these keyframes don't touch transform at all. */
+  #pickup-toast { animation: pickup-fade 0.7s ease-out forwards; }
+}
+
+@keyframes pickup-fade {
+  0% { opacity: 0; }
+  25% { opacity: 1; }
+  100% { opacity: 0; }
 }
 
 .icon-btn {

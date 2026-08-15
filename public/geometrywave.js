@@ -316,6 +316,7 @@ if (typeof document !== 'undefined') {
     const progressFill = document.getElementById('progress-fill');
     const progressLabel = document.getElementById('progress-label');
     const attemptsLabel = document.getElementById('attempts-label');
+    const progressBestEl = document.getElementById('progress-best');
     const completeEl = document.getElementById('complete-overlay');
     const completeLevelName = document.getElementById('complete-level-name');
 
@@ -347,6 +348,47 @@ if (typeof document !== 'undefined') {
     let bestThisSession = 0;
     let trail = [];
     let flashUntil = 0;
+
+    // Parallax star layer. Fixed set, wrapped modulo the canvas width at each depth, so it costs no
+    // allocation per frame and never runs out however long a level is. The flat background gave the
+    // scroll nothing to read against except the faint grid.
+    const BG_STARS = [];
+    for (let i = 0; i < 70; i++) {
+      BG_STARS.push({
+        x: Math.random() * CANVAS_W,
+        y: Math.random() * CANVAS_H,
+        r: 0.6 + Math.random() * 1.6,
+        depth: 0.08 + Math.random() * 0.30,
+        alpha: 0.15 + Math.random() * 0.45,
+      });
+    }
+    let bgGradient = null; // built lazily on the first draw, once ctx is known good
+
+    // Death burst. Plain array with in-place removal — a run can die hundreds of times, so this
+    // deliberately reuses nothing and allocates only for the ~26 particles of one burst.
+    const deathParticles = [];
+    function spawnDeathParticles(x, y, color) {
+      for (let i = 0; i < 26; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const sp = 60 + Math.random() * 220;
+        deathParticles.push({
+          x, y, color,
+          vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+          life: 0.55 + Math.random() * 0.35, max: 0.9,
+        });
+      }
+    }
+    function updateDeathParticles(dt) {
+      for (let i = deathParticles.length - 1; i >= 0; i--) {
+        const p = deathParticles[i];
+        p.life -= dt;
+        if (p.life <= 0) { deathParticles.splice(i, 1); continue; }
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.vy += 420 * dt; // falls away rather than drifting, so a death reads as debris
+        p.vx *= 0.99;
+      }
+    }
 
     // --- Multiplayer: same room code as chat (from the menu link) + same level = same ghosts.
     // Levels are hand-built (not random), so everyone's x/y already share one coordinate space —
@@ -507,6 +549,19 @@ if (typeof document !== 'undefined') {
       updateMusicBtnLabel();
     });
 
+    // Personal-best marker on the run bar. The best % was only ever shown as text on level select,
+    // so mid-run you had no idea whether you were about to beat it — which is the whole tension of
+    // a game you replay this many times.
+    function updateBestMarker() {
+      const best = (currentLevelKey && progress[currentLevelKey]) || 0;
+      if (best <= 0 || best >= 100) {
+        progressBestEl.classList.add('hidden');
+        return;
+      }
+      progressBestEl.style.left = `${best}%`;
+      progressBestEl.classList.remove('hidden');
+    }
+
     function startLevel(key) {
       currentLevelKey = key;
       level = LEVELS[key];
@@ -529,6 +584,9 @@ if (typeof document !== 'undefined') {
       trail = [];
       attempts += 1;
       attemptsLabel.textContent = `Attempt ${attempts}`;
+      // Refreshed here rather than as the best is being set, so the marker stays put for the attempt
+      // that beats it (where it's the thing you're racing) and moves for the next one.
+      updateBestMarker();
       dying = false;
     }
 
@@ -545,6 +603,7 @@ if (typeof document !== 'undefined') {
     function onDeath() {
       if (dying) return; // already handling this death — ignore repeat triggers before reset
       dying = true;
+      spawnDeathParticles(state.x, state.y, level ? level.color : '#ff4d4d');
       flashUntil = performance.now() + 180;
       setTimeout(() => { if (currentLevelKey) resetAttempt(); }, 260);
     }
@@ -625,11 +684,28 @@ if (typeof document !== 'undefined') {
     });
 
     function draw() {
-      ctx.fillStyle = '#0a1420';
+      if (!bgGradient) {
+        bgGradient = ctx.createLinearGradient(0, 0, 0, CANVAS_H);
+        bgGradient.addColorStop(0, '#0c1e36');
+        bgGradient.addColorStop(0.5, '#0a1420');
+        bgGradient.addColorStop(1, '#0d1729');
+      }
+      ctx.fillStyle = bgGradient;
       ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
       if (!level) return;
       const camX = state.x - CANVAS_W * 0.25;
+
+      // parallax stars, behind the grid
+      ctx.fillStyle = '#ffffff';
+      for (const st of BG_STARS) {
+        const sx = ((st.x - camX * st.depth) % CANVAS_W + CANVAS_W) % CANVAS_W;
+        ctx.globalAlpha = st.alpha;
+        ctx.beginPath();
+        ctx.arc(sx, st.y, st.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
 
       // background grid (parallax)
       ctx.strokeStyle = 'rgba(255,255,255,0.05)';
@@ -694,19 +770,33 @@ if (typeof document !== 'undefined') {
       }
       ctx.shadowBlur = 0;
 
-      // trail
+      // Trail, drawn per-segment so it can taper toward the tail. It's the main read on where you
+      // just came from and how fast you're climbing; one constant-width line at flat alpha gave no
+      // sense of direction. No shadowBlur here on purpose — 50 blurred strokes a frame is the one
+      // canvas2d cost that would actually show up.
       if (trail.length > 1) {
         ctx.strokeStyle = level.color;
-        ctx.lineWidth = 2;
-        ctx.globalAlpha = 0.6;
-        ctx.beginPath();
-        trail.forEach((p, i) => {
-          const sx = p.x - camX, sy = p.y;
-          if (i === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
-        });
-        ctx.stroke();
+        ctx.lineCap = 'round';
+        for (let i = 1; i < trail.length; i++) {
+          const t = i / (trail.length - 1); // 0 at the oldest point, 1 at the newest
+          ctx.globalAlpha = 0.08 + t * 0.72;
+          ctx.lineWidth = 1 + t * 3.2;
+          ctx.beginPath();
+          ctx.moveTo(trail[i - 1].x - camX, trail[i - 1].y);
+          ctx.lineTo(trail[i].x - camX, trail[i].y);
+          ctx.stroke();
+        }
         ctx.globalAlpha = 1;
+        ctx.lineCap = 'butt';
       }
+
+      // death debris
+      for (const p of deathParticles) {
+        ctx.globalAlpha = Math.max(0, p.life / p.max);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(p.x - camX - 1.5, p.y - 1.5, 3, 3);
+      }
+      ctx.globalAlpha = 1;
 
       // other players (multiplayer ghosts)
       ctx.globalAlpha = 0.45;
@@ -748,6 +838,9 @@ if (typeof document !== 'undefined') {
       const now = performance.now();
       const dt = Math.min((now - lastTime) / 1000, 0.05);
       lastTime = now;
+      // Outside the running/!dying gate below on purpose — the burst has to keep animating through
+      // the death pause, which is the only time it's ever on screen.
+      updateDeathParticles(dt);
 
       if (running && level && !dying) {
         stepPlayer(state, dt, holding, level.speedMult);

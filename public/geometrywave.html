@@ -51,7 +51,7 @@
   </div>
 
   <div id="hud" class="hidden">
-    <div id="progress-bar"><div id="progress-fill"></div></div>
+    <div id="progress-bar"><div id="progress-fill"></div><div id="progress-best" class="hidden"></div></div>
     <div id="hud-row">
       <span id="progress-label">0%</span>
       <span id="attempts-label">Attempt 1</span>
@@ -84,10 +84,6 @@
 
   <script src="error-report.js"></script>
   <script src="geometrywave.js"></script>
-  <script>
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));
-    }
-  </script>
+  <script src="update-prompt.js"></script>
 </body>
 </html>

@@ -26,25 +26,39 @@
         <li><strong>Mouse</strong> &mdash; click the city to look around / aim</li>
         <li><strong>E</strong> (or Left Click) &mdash; shoot a web at the crosshair / let go. Aim near a rooftop to grapple straight up onto it; aim lower to swing from it</li>
         <li><strong>Scroll wheel</strong> &mdash; zoom the camera in and out</li>
-        <li><strong>Space</strong> &mdash; jump (or push off a wall while climbing)</li>
+        <li><strong>Space</strong> &mdash; jump (or push off a wall while climbing). <strong>Hold it while swinging</strong> to climb up the web toward the anchor</li>
         <li>Move into a building's wall to grab on and crawl it &mdash; works while running straight at it or strafing past it</li>
+        <li><strong>Shift</strong> (in the air) &mdash; dive. Tuck and drive downward to trade height for speed, steered by where you aim</li>
         <li>Pump A/D while swinging to build momentum &mdash; let go at the right moment for a huge boosted jump</li>
+        <li>Orbs grabbed <strong>without touching the ground</strong> stack an air chain, worth up to +5 each &mdash; landing resets it</li>
+        <li>Watch the <strong>charge bar</strong> while swinging. It turns amber when you're charged and <strong>pulses green the instant you're charged and rising</strong> &mdash; let go then for a perfect release, worth bonus points and a bigger launch</li>
+        <li><strong>Near misses</strong> &mdash; skim a building at speed to score. String them together for a rising multiplier</li>
+        <li><strong>Don't hit the ground hard.</strong> Slamming in at speed wipes you out: you lose the air chain and control for a moment</li>
       </ul>
       <ul class="controls-list hidden" id="controls-list-touch">
         <li><strong>Joystick</strong> (bottom-left) &mdash; run, reel/pump while swinging, or climb/shuffle while on a wall</li>
         <li><strong>Drag the screen</strong> &mdash; look around / aim</li>
         <li><strong>Pinch with two fingers</strong> &mdash; zoom the camera in and out</li>
         <li><strong>🕸️ button</strong> &mdash; shoot a web at the crosshair / let go. Aim near a rooftop to grapple up onto it; aim lower to swing from it</li>
-        <li><strong>⤒ button</strong> &mdash; jump (or push off a wall while climbing)</li>
+        <li><strong>⤒ button</strong> &mdash; jump (or push off a wall while climbing). <strong>Hold it while swinging</strong> to climb up the web toward the anchor</li>
         <li>Move into a building's wall to grab on and crawl it &mdash; works while running straight at it or strafing past it</li>
+        <li><strong>⤓ button</strong> (in the air) &mdash; dive. Tuck and drive downward to trade height for speed, steered by where you aim</li>
         <li>Pump the joystick side to side while swinging to build momentum &mdash; let go at the right moment for a huge boosted jump</li>
+        <li>Orbs grabbed <strong>without touching the ground</strong> stack an air chain, worth up to +5 each &mdash; landing resets it</li>
+        <li>Watch the <strong>charge bar</strong> while swinging. It turns amber when you're charged and <strong>pulses green the instant you're charged and rising</strong> &mdash; let go then for a perfect release, worth bonus points and a bigger launch</li>
+        <li><strong>Near misses</strong> &mdash; skim a building at speed to score. String them together for a rising multiplier</li>
+        <li><strong>Don't hit the ground hard.</strong> Slamming in at speed wipes you out: you lose the air chain and control for a moment</li>
       </ul>
     </div>
   </div>
 
   <div id="hud" class="hidden">
     <div id="hud-row">
-      <span id="score-label">🕸️ 0</span>
+      <span id="score-group">
+        <span id="score-label">🕸️ 0</span>
+        <span id="chain-label" class="hidden">×2 air</span>
+      </span>
+      <span id="speed-label">0 m/s</span>
       <span id="best-label">Best: 0</span>
       <button id="sound-toggle-btn" class="icon-btn" aria-label="Toggle sound">🔊</button>
       <button id="leaderboard-btn" class="icon-btn" aria-label="Leaderboard">🏆</button>
@@ -61,6 +75,12 @@
     </div>
   </div>
 
+  <div id="pump-meter" class="hidden">
+    <div id="pump-fill"></div>
+    <span id="pump-hint">Pump</span>
+  </div>
+
+  <div id="speed-fx"></div>
   <div id="crosshair" class="hidden"></div>
   <div id="pickup-toast" class="hidden">+1</div>
 
@@ -70,6 +90,7 @@
     <div id="touch-joystick"><div id="touch-joystick-knob"></div></div>
     <div id="touch-buttons">
       <button id="touch-jump" class="touch-btn" aria-label="Jump">⤒</button>
+      <button id="touch-dive" class="touch-btn" aria-label="Dive">⤓</button>
       <button id="touch-web" class="touch-btn" aria-label="Shoot web / let go">🕸️</button>
     </div>
   </div>
@@ -77,10 +98,6 @@
   <script src="error-report.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="webswing.js"></script>
-  <script>
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));
-    }
-  </script>
+  <script src="update-prompt.js"></script>
 </body>
 </html>
