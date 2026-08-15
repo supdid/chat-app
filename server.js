@@ -2291,6 +2291,12 @@ wss.on('connection', (ws) => {
         ? liveStreams.get(ws.scorptureStreamerAccountId)
         : liveStreams.get(ws.accountId);
       if (!stream) return;
+      // Same flood gate as regular chat/DM messages — was missing here, letting an unthrottled
+      // viewer spam every other viewer + the streamer at unlimited speed.
+      const nowLc = Date.now();
+      ws.msgTimestamps = (ws.msgTimestamps || []).filter((t) => nowLc - t < RATE_LIMIT_WINDOW_MS);
+      if (ws.msgTimestamps.length >= RATE_LIMIT_MAX_MESSAGES) return;
+      ws.msgTimestamps.push(nowLc);
       const chatMsg = { type: 'scorpture-live-chat', username: account.username, text, at: Date.now() };
       send(stream.ws, chatMsg);
       for (const viewerWs of stream.viewers.values()) send(viewerWs, chatMsg);
@@ -3441,7 +3447,16 @@ wss.on('connection', (ws) => {
         send(ws, { type: 'error', message: 'Not a member of that group DM' });
         return;
       }
+      // Same flood gate as regular chat/DM messages (see the 'dm' handler) — this was missing
+      // here, and group DMs fan out a push notification to every other member on every send, so
+      // an unthrottled sender could spam real push notifications to everyone in the group.
       const now = Date.now();
+      ws.msgTimestamps = (ws.msgTimestamps || []).filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+      if (ws.msgTimestamps.length >= RATE_LIMIT_MAX_MESSAGES) {
+        send(ws, { type: 'error', message: 'You are sending messages too fast — slow down a bit.' });
+        return;
+      }
+      ws.msgTimestamps.push(now);
       const entry = { id: crypto.randomUUID(), groupId, fromAccountId: ws.accountId, fromName: ws.profile.name, text, at: now };
       db.insertGroupDmMessage(entry);
       sendGroupDm(groupId, ws.accountId, ws.profile.name, text, ws);
