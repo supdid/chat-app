@@ -3969,7 +3969,14 @@ searchForm.addEventListener('submit', async (e) => {
   if (!q || !currentRoomCode) return;
   searchResultsEl.innerHTML = '<li class="search-status">Searching…</li>';
   try {
-    const res = await fetch(`/search?code=${encodeURIComponent(currentRoomCode)}&q=${encodeURIComponent(q)}&pin=${encodeURIComponent(currentRoomPin)}`);
+    // POST, not a query string — a room PIN in the URL would end up in browser history and any
+    // Referer header sent by the page (the /post-image /post-media routes already made this same
+    // call via POST body for the same reason; this brings /search in line with that pattern).
+    const res = await fetch('/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: currentRoomCode, q, pin: currentRoomPin }),
+    });
     const data = await res.json();
     renderSearchResults(data.results || []);
   } catch {

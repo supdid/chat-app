@@ -394,13 +394,14 @@ app.post('/post-media', (req, res) => {
 // Full-history search (unlike the 50-message in-memory window) — this is why SQLite
 // persistence was built first, since search over just the last 50 messages wouldn't
 // be very useful.
-app.get('/search', (req, res) => {
-  const code = String(req.query.code || '').toUpperCase().trim();
-  const q = String(req.query.q || '').trim();
+app.post('/search', (req, res) => {
+  const body = req.body || {};
+  const code = String(body.code || '').toUpperCase().trim();
+  const q = String(body.q || '').trim();
   if (!code || !q) return res.json({ results: [] });
   const dbRoom = db.getRoom(code);
   if (!rooms.has(code) && !dbRoom) return res.status(404).json({ error: 'Room not found' });
-  if (!roomPinOk(dbRoom, req.query.pin)) return res.status(403).json({ error: 'Incorrect or missing room PIN' });
+  if (!roomPinOk(dbRoom, body.pin)) return res.status(403).json({ error: 'Incorrect or missing room PIN' });
   res.json({ results: db.searchMessages(code, q, 50) });
 });
 
