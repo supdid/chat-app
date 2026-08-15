@@ -1325,6 +1325,15 @@ function getPersistentMuteByName(roomCode, targetName) {
   return db.prepare('SELECT * FROM room_mutes WHERE room_code = ? AND target_name = ?').get(roomCode, targetName) || null;
 }
 
+// Keeps a muted account's row findable by the by-name fallback above after they rename — without
+// this, renaming while muted (even once, at any point before an offline unmute is attempted)
+// permanently orphans the row: getPersistentMuteByName looks up by whatever name the host
+// currently sees, which no longer matches what's stored, so removePersistentMute never fires.
+function renamePersistentMuteName(roomCode, targetAccountId, newName) {
+  if (!targetAccountId) return;
+  db.prepare('UPDATE room_mutes SET target_name = ? WHERE room_code = ? AND target_account_id = ?').run(newName, roomCode, targetAccountId);
+}
+
 // ---- Room bans (see room_bans table comment for the account-vs-name enforcement split) ----
 
 function banFromRoom(id, roomCode, targetAccountId, targetName, bannedBy) {
@@ -1539,6 +1548,7 @@ module.exports = {
   removePersistentMute,
   isPersistentlyMuted,
   getPersistentMuteByName,
+  renamePersistentMuteName,
   banFromRoom,
   unbanFromRoom,
   getRoomBans,

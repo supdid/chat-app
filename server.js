@@ -1440,6 +1440,22 @@ function getOrCreateRoom(code) {
   return room;
 }
 
+// Remembers the last signed-in account seen under a given display name in this room, so
+// ban-user/mute-user can still persist a proper account-linked (rejoin-proof) ban/mute even if
+// the target already disconnected by the time the host acts — e.g. kick-then-ban in one go, or
+// the target closing the tab during the client's confirm() prompt. Without this, those very
+// common flows silently fall back to a name-only ban that a signed-in target can trivially evade
+// by reconnecting under a new display name. Bounded (oldest evicted first) since it's just a
+// best-effort recent-departures cache, not meant to be a durable identity record.
+const RECENT_ACCOUNT_BY_NAME_CAP = 200;
+function rememberRecentAccountForName(room, name, accountId) {
+  if (!room.recentAccountsByName) room.recentAccountsByName = new Map();
+  const map = room.recentAccountsByName;
+  map.delete(name); // re-insert at the end so it counts as freshest for eviction purposes
+  map.set(name, accountId);
+  if (map.size > RECENT_ACCOUNT_BY_NAME_CAP) map.delete(map.keys().next().value);
+}
+
 function generateRoomCode() {
   let code;
   do {
@@ -1515,6 +1531,7 @@ function leaveRoom(ws, announce = true) {
   leaveVoice(ws);
   const room = rooms.get(code);
   if (room) {
+    if (ws.accountId && ws.profile) rememberRecentAccountForName(room, ws.profile.name, ws.accountId);
     room.clients.delete(ws);
     if (announce) {
       broadcastRoom(code, { type: 'system', text: `${ws.profile.name} left the room`, at: Date.now() });
@@ -3581,6 +3598,7 @@ wss.on('connection', (ws) => {
       if (ws.room) {
         const room = rooms.get(ws.room);
         db.renameRoomHostIfMatches(ws.room, oldName, newName);
+        if (ws.accountId) db.renamePersistentMuteName(ws.room, ws.accountId, newName);
         if (room && room.muted && room.muted.has(oldName)) {
           room.muted.delete(oldName);
           room.muted.add(newName);
@@ -3658,9 +3676,16 @@ wss.on('connection', (ws) => {
       room.muted.add(targetName);
       // If the target is signed in, also persist the mute by account_id — otherwise it's only
       // in-memory for this display name and evaporates the moment they rejoin under a new one.
+      // Falls back to recentAccountsByName (populated on disconnect) if the target already left
+      // by the time this runs — e.g. kick-then-ban, or the target closing the tab during the
+      // client's confirm() prompt — so those common flows still produce a real account-linked,
+      // rejoin-proof mute instead of a silently bypassable name-only one.
       const targetClient = [...room.clients].find((c) => c.profile && c.profile.name === targetName);
-      if (targetClient && targetClient.accountId) {
-        db.addPersistentMute(ws.room, targetClient.accountId, targetName, ws.profile.name);
+      const targetAccountId = (targetClient && targetClient.accountId)
+        || (room.recentAccountsByName && room.recentAccountsByName.get(targetName))
+        || null;
+      if (targetAccountId) {
+        db.addPersistentMute(ws.room, targetAccountId, targetName, ws.profile.name);
       }
       broadcastRoom(ws.room, { type: 'user-muted', name: targetName });
       return;
@@ -3693,7 +3718,10 @@ wss.on('connection', (ws) => {
       const targetName = String(msg.targetName || '').trim().slice(0, 30);
       if (!targetName || targetName === ws.profile.name) return;
       const messageId = msg.messageId ? String(msg.messageId).slice(0, 100) : null;
-      const messageEntry = messageId ? db.getMessage(messageId) : null;
+      let messageEntry = messageId ? db.getMessage(messageId) : null;
+      // A client could supply any messageId, from any room — only trust it as this report's
+      // quoted text if it actually belongs to the room being reported from.
+      if (messageEntry && messageEntry.room_code !== ws.room) messageEntry = null;
       db.insertReport({
         id: crypto.randomUUID(),
         roomCode: ws.room,
@@ -3719,7 +3747,14 @@ wss.on('connection', (ws) => {
       const room = rooms.get(ws.room);
       if (!room) return;
       const targetClient = [...room.clients].find((c) => c.profile && c.profile.name === targetName);
-      db.banFromRoom(crypto.randomUUID(), ws.room, targetClient ? targetClient.accountId || null : null, targetName, ws.profile.name);
+      // Same recentAccountsByName fallback as mute-user above, for the same reason: the target
+      // is very often already disconnected by the time a ban is issued (kick-then-ban, or they
+      // left mid-confirm()-prompt), and without this a signed-in target could trivially evade a
+      // ban by rejoining under a new display name.
+      const targetAccountId = (targetClient && targetClient.accountId)
+        || (room.recentAccountsByName && room.recentAccountsByName.get(targetName))
+        || null;
+      db.banFromRoom(crypto.randomUUID(), ws.room, targetAccountId, targetName, ws.profile.name);
       if (targetClient) {
         send(targetClient, { type: 'kicked', by: ws.profile.name });
         leaveRoom(targetClient);
