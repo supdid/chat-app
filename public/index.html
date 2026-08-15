@@ -57,6 +57,12 @@
           <p>Signed in as <strong id="account-signed-in-name"></strong></p>
           <button type="button" id="friends-open-btn" class="link-btn">👥 Friends</button>
           <button type="button" id="groups-open-btn" class="link-btn">💬 Groups</button>
+          <button type="button" id="account-username-toggle-btn" class="link-btn">✏️ Change username</button>
+          <form id="account-username-form" class="rename-room-form hidden">
+            <input id="account-username-form-input" type="text" placeholder="New username" maxlength="20" autocomplete="off">
+            <button type="submit" class="icon-btn" aria-label="Save new username">✓</button>
+          </form>
+          <p id="account-username-error" class="error hidden"></p>
           <button type="button" id="account-signout-btn" class="link-btn">Sign out</button>
         </div>
       </div>
@@ -171,7 +177,11 @@
       <div class="my-profile">
         <button id="my-avatar-btn" class="my-avatar-btn" aria-label="Change your profile picture" type="button"></button>
         <input type="file" id="avatar-file-input" accept="image/*" class="hidden">
-        <input id="my-status-input" type="text" placeholder="Set a status (optional)" maxlength="60" autocomplete="off">
+        <div class="my-profile-fields">
+          <input id="my-name-input" type="text" placeholder="Your display name" maxlength="30" autocomplete="off">
+          <input id="my-status-input" type="text" placeholder="Set a status (optional)" maxlength="60" autocomplete="off">
+          <p id="my-name-error" class="error hidden"></p>
+        </div>
       </div>
       <div class="notify-sound-row">
         <label for="notify-sound-select">🔔 Notification sound</label>

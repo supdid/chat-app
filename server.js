@@ -778,6 +778,24 @@ app.post('/account/recent-rooms', (req, res) => {
   res.json({ ok: true });
 });
 
+// Changing an account's login username. Friends/friend-DMs/push are all account-id based (see
+// db.js friendships/group_dm_members) so nothing there needs migrating — this only affects future
+// lookups by username (sign-in, friend requests, @mentions of the new name). Past content that
+// denormalized the old username at write time (chat messages, Scorpture uploads/comments) keeps
+// showing it, same as a room display-name rename leaves old messages alone.
+app.post('/account/username', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  const username = String(req.body.username || '').trim();
+  if (!USERNAME_RE.test(username)) {
+    return res.status(400).json({ error: 'Username must be 3-20 letters, numbers, or underscores' });
+  }
+  const existing = db.getAccountByUsername(username);
+  if (existing && existing.id !== account.id) return res.status(409).json({ error: 'That username is taken' });
+  db.updateAccountUsername(account.id, username);
+  res.json({ username });
+});
+
 // ---- Friends (account-only — an anonymous per-room display name isn't a stable enough
 // identity to hang a friends list off of) ----
 
@@ -3516,6 +3534,51 @@ wss.on('connection', (ws) => {
       const payload = { type: 'profile-updated', name: ws.profile.name, avatarUrl: ws.profile.avatarUrl, status };
       send(ws, payload);
       if (ws.room) broadcastRoom(ws.room, payload, ws);
+      return;
+    }
+
+    // Renaming your own display name — works identically whether you're a guest or signed in,
+    // since both use ws.profile.name as their in-room identity (an account's login username,
+    // changed separately via POST /account/username, is a different thing entirely). ws.profile
+    // is mutated in place rather than replaced so every closure that already captured it (room
+    // membership matching, kick/mute target lookups) keeps working with no other changes needed.
+    if (msg.type === 'set-name') {
+      const newName = String(msg.name || '').slice(0, 30).trim();
+      if (!newName) {
+        send(ws, { type: 'error', message: 'Name cannot be empty' });
+        return;
+      }
+      if (newName === ws.profile.name) {
+        send(ws, { type: 'name-updated', name: newName });
+        return;
+      }
+      if (ws.room) {
+        const room = rooms.get(ws.room);
+        if (room) {
+          for (const c of room.clients) {
+            if (c !== ws && c.profile && c.profile.name === newName) {
+              send(ws, { type: 'error', message: 'Someone else in this room already has that name' });
+              return;
+            }
+          }
+        }
+      }
+      const oldName = ws.profile.name;
+      ws.profile.name = newName;
+      db.upsertProfile(newName, { avatarUrl: ws.profile.avatarUrl, status: ws.profile.status });
+      if (ws.room) {
+        const room = rooms.get(ws.room);
+        db.renameRoomHostIfMatches(ws.room, oldName, newName);
+        if (room && room.muted && room.muted.has(oldName)) {
+          room.muted.delete(oldName);
+          room.muted.add(newName);
+        }
+      }
+      send(ws, { type: 'name-updated', oldName, name: newName });
+      if (ws.room) {
+        broadcastRoom(ws.room, { type: 'system', text: `${oldName} is now known as ${newName}`, at: Date.now() }, ws);
+        broadcastRoom(ws.room, { type: 'presence', users: roomUsers(ws.room) });
+      }
       return;
     }
 

@@ -28,7 +28,13 @@ const renameRoomForm = document.getElementById('rename-room-form');
 const renameRoomInput = document.getElementById('rename-room-input');
 const myAvatarBtn = document.getElementById('my-avatar-btn');
 const avatarFileInput = document.getElementById('avatar-file-input');
+const myNameInput = document.getElementById('my-name-input');
+const myNameError = document.getElementById('my-name-error');
 const myStatusInput = document.getElementById('my-status-input');
+const accountUsernameToggleBtn = document.getElementById('account-username-toggle-btn');
+const accountUsernameForm = document.getElementById('account-username-form');
+const accountUsernameFormInput = document.getElementById('account-username-form-input');
+const accountUsernameError = document.getElementById('account-username-error');
 const recentRoomsSection = document.getElementById('recent-rooms-section');
 const recentRoomsList = document.getElementById('recent-rooms-list');
 const leaveRoomBtn = document.getElementById('leave-room-btn');
@@ -872,6 +878,17 @@ function handleServerMessage(data) {
       renderAnnouncementBanner();
       if (isHost) announcementInput.value = currentAnnouncement || '';
       break;
+
+    case 'name-updated': {
+      const previousName = myProfile ? myProfile.name : null;
+      if (myProfile) myProfile.name = data.name;
+      myUsername = data.name;
+      if (previousName && previousName !== data.name) {
+        roomProfiles.set(data.name, roomProfiles.get(previousName) || { avatarUrl: myProfile && myProfile.avatarUrl, status: myProfile && myProfile.status });
+      }
+      renderMyProfile();
+      break;
+    }
 
     case 'profile-updated':
       roomProfiles.set(data.name, { avatarUrl: data.avatarUrl, status: data.status });
@@ -2676,6 +2693,7 @@ function renderMyProfile() {
     myAvatarBtn.textContent = initials(myProfile.name);
     myAvatarBtn.style.background = avatarColor(myProfile.name);
   }
+  myNameInput.value = myProfile.name;
   myStatusInput.value = myProfile.status || '';
 }
 
@@ -2704,6 +2722,58 @@ function sendStatusUpdate() {
 myStatusInput.addEventListener('blur', sendStatusUpdate);
 myStatusInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') { e.preventDefault(); myStatusInput.blur(); }
+});
+
+// Display-name rename — works for guests and signed-in accounts alike, since both use
+// ws.profile.name as their in-room identity (see 'set-name' in server.js). A signed-in
+// account's separate login username is changed via the account-username-form below instead.
+function sendNameUpdate() {
+  myNameError.classList.add('hidden');
+  if (!myProfile || !ws || ws.readyState !== WebSocket.OPEN) return;
+  const newName = myNameInput.value.trim();
+  if (!newName) {
+    myNameInput.value = myProfile.name;
+    return;
+  }
+  if (newName === myProfile.name) return;
+  ws.send(JSON.stringify({ type: 'set-name', name: newName }));
+}
+myNameInput.addEventListener('blur', sendNameUpdate);
+myNameInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); myNameInput.blur(); }
+});
+
+accountUsernameToggleBtn.addEventListener('click', () => {
+  accountUsernameError.classList.add('hidden');
+  accountUsernameForm.classList.toggle('hidden');
+  if (!accountUsernameForm.classList.contains('hidden')) {
+    accountUsernameFormInput.value = accountUsername || '';
+    accountUsernameFormInput.focus();
+  }
+});
+
+accountUsernameForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  accountUsernameError.classList.add('hidden');
+  const username = accountUsernameFormInput.value.trim();
+  if (!username || !accountToken) return;
+  try {
+    const res = await fetch('/account/username', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accountToken}` },
+      body: JSON.stringify({ username }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Something went wrong');
+    accountUsername = data.username;
+    localStorage.setItem(ACCOUNT_USERNAME_KEY, accountUsername);
+    accountSignedInName.textContent = accountUsername;
+    accountUsernameForm.classList.add('hidden');
+    showAppToast(`✏️ Username changed to ${accountUsername}`);
+  } catch (err) {
+    accountUsernameError.textContent = err.message;
+    accountUsernameError.classList.remove('hidden');
+  }
 });
 
 // --- Voice call ---

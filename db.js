@@ -435,6 +435,13 @@ function setRoomHostIfUnset(code, name) {
   db.prepare("UPDATE rooms SET host_name = ? WHERE code = ? AND (host_name IS NULL OR host_name = '')").run(name, code);
 }
 
+// Keeps host privileges attached to whoever the host actually is across a display-name rename
+// (see 'set-name' in server.js) — a no-op if this room's host isn't oldName, so it's safe to call
+// unconditionally for every room a renaming user happens to be in.
+function renameRoomHostIfMatches(code, oldName, newName) {
+  db.prepare('UPDATE rooms SET host_name = ? WHERE code = ? AND host_name = ?').run(newName, code, oldName);
+}
+
 function setAnnouncement(code, text) {
   db.prepare('UPDATE rooms SET announcement = ? WHERE code = ?').run(text || null, code);
 }
@@ -803,6 +810,12 @@ function countAccountsByEmail(email) {
 
 function getAccountById(id) {
   return db.prepare('SELECT * FROM accounts WHERE id = ?').get(id) || null;
+}
+
+// Caller checks getAccountByUsername for a collision first (see /account/username in server.js),
+// but the UNIQUE COLLATE NOCASE constraint is the real backstop against a same-instant race.
+function updateAccountUsername(accountId, newUsername) {
+  db.prepare('UPDATE accounts SET username = ? WHERE id = ?').run(newUsername, accountId);
 }
 
 // ---- Google sign-in (optional, alongside username/password) — an account created this way has
@@ -1466,6 +1479,7 @@ module.exports = {
   getBlueprints,
   getBlueprint,
   setRoomHostIfUnset,
+  renameRoomHostIfMatches,
   setAnnouncement,
   setRoomPin,
   setWallpaper,
@@ -1486,6 +1500,7 @@ module.exports = {
   getAccountsByEmail,
   countAccountsByEmail,
   getAccountById,
+  updateAccountUsername,
   createAccountWithGoogle,
   getAccountByGoogleId,
   linkGoogleId,
