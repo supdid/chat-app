@@ -71,6 +71,20 @@ db.exec(`
     PRIMARY KEY (room_code, cell_key)
   );
 
+  -- Land claims (see server.js's BC_MAX_CLAIMS_PER_PLAYER) -- previously in-memory only
+  -- (room.bc.claims), which silently vanished the moment a Build Craft room emptied out (unlike
+  -- world overrides, which persist here) since a fresh bc-join always rehydrates from bc_worlds/
+  -- bc_overrides but had nothing to load claims back from. No unclaim exists (claims are purely
+  -- additive, capped per player), so no id/removal machinery is needed here.
+  CREATE TABLE IF NOT EXISTS bc_claims (
+    room_code TEXT,
+    x INTEGER,
+    z INTEGER,
+    radius INTEGER,
+    owner TEXT,
+    created_at INTEGER
+  );
+
   CREATE TABLE IF NOT EXISTS profiles (
     name TEXT PRIMARY KEY,
     avatar_url TEXT,
@@ -650,6 +664,15 @@ function getBcOverrides(code) {
     .prepare('SELECT cell_key, type FROM bc_overrides WHERE room_code = ?')
     .all(code)
     .map((r) => [r.cell_key, r.type]);
+}
+
+function addBcClaim(code, x, z, radius, owner) {
+  db.prepare('INSERT INTO bc_claims (room_code, x, z, radius, owner, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(code, x, z, radius, owner, Date.now());
+}
+
+function getBcClaims(code) {
+  return db.prepare('SELECT x, z, radius, owner FROM bc_claims WHERE room_code = ?').all(code);
 }
 
 // ---- Profiles (avatar + status, keyed by display name like rooms are keyed by code — this
@@ -1448,6 +1471,7 @@ const deleteRoomCascade = db.transaction((code) => {
   db.prepare('DELETE FROM whiteboard_strokes WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM bc_worlds WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM bc_overrides WHERE room_code = ?').run(code);
+  db.prepare('DELETE FROM bc_claims WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM leaderboard WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM bc_blueprints WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM dms WHERE room_code = ?').run(code);
@@ -1480,6 +1504,8 @@ module.exports = {
   createBcWorld,
   setBcOverrides,
   getBcOverrides,
+  addBcClaim,
+  getBcClaims,
   getProfile,
   upsertProfile,
   bumpLeaderboard,

@@ -1733,10 +1733,10 @@ function leaveBc(ws) {
     if (room.bc.sleeping) room.bc.sleeping.delete(ws);
     broadcastBc(code, { type: 'bc-player-left', id: ws.bcId });
     if (player) clearRoomActivity(code, player.name);
-    // World overrides are already persisted to SQLite (db.setBcOverrides) and rehydrated on the
-    // next bc-join (see that handler, which reloads via db.getBcOverrides), so it's safe to drop
-    // this in-memory session once nobody's left playing — otherwise it (claims, voice map, and
-    // all) stays resident forever, same pattern leaveTv/leaveDg already use below.
+    // World overrides and claims are both persisted to SQLite (db.setBcOverrides / db.addBcClaim)
+    // and rehydrated on the next bc-join (via db.getBcOverrides / db.getBcClaims), so it's safe to
+    // drop this in-memory session once nobody's left playing — otherwise it (voice map and all)
+    // stays resident forever, same pattern leaveTv/leaveDg already use below.
     if (room.bc.players.size === 0) delete room.bc;
   }
   ws.bcRoom = null;
@@ -2407,7 +2407,10 @@ wss.on('connection', (ws) => {
           db.createBcWorld(code, seed);
           world = { seed };
         }
-        room.bc = { seed: world.seed, overrides: new Map(db.getBcOverrides(code)), players: new Map(), dayNightOffsetMs: 0, sleeping: new Set(), claims: [] };
+        // Claims are now persisted (see db.js's bc_claims table comment) -- previously always
+        // started as [] here, so any claim made in a session silently vanished once the room's
+        // last player left and this branch ran again on the next join.
+        room.bc = { seed: world.seed, overrides: new Map(db.getBcOverrides(code)), players: new Map(), dayNightOffsetMs: 0, sleeping: new Set(), claims: db.getBcClaims(code) };
       }
       if (room.bc.players.size >= MAX_GAME_PLAYERS) {
         send(ws, { type: 'bc-full' });
@@ -2444,10 +2447,17 @@ wss.on('connection', (ws) => {
       for (const c of rawChanges) {
         const type = (c.t === null || c.t === undefined) ? null : (c.t | 0);
         if (type !== null && (type < 0 || type > BC_MAX_BLOCK_TYPE)) continue;
-        const key = `${c.x | 0},${c.y | 0},${c.z | 0}`;
+        // Block type already had this bound (BC_MAX_BLOCK_TYPE) but the coordinates themselves
+        // didn't, unlike every other position field in this game (bc-pos, gw-pos, sw-pos all
+        // clamp to BC_MAX_COORD) -- an out-of-range override persists to SQLite forever and grows
+        // every future joiner's bc-init payload, so reject rather than clamp (a clamp would still
+        // let someone pile up thousands of garbage entries at the boundary).
+        const bx = c.x | 0, by = c.y | 0, bz = c.z | 0;
+        if (Math.abs(bx) > BC_MAX_COORD || Math.abs(by) > BC_MAX_COORD || Math.abs(bz) > BC_MAX_COORD) continue;
+        const key = `${bx},${by},${bz}`;
         room.bc.overrides.set(key, type);
         persistEntries.push([key, type]);
-        validChanges.push({ x: c.x | 0, y: c.y | 0, z: c.z | 0, t: type });
+        validChanges.push({ x: bx, y: by, z: bz, t: type });
       }
       if (persistEntries.length) db.setBcOverrides(ws.bcRoom, persistEntries);
       if (validChanges.length) broadcastBc(ws.bcRoom, { type: 'bc-block', changes: validChanges }, ws);
@@ -2541,8 +2551,11 @@ wss.on('connection', (ws) => {
         send(ws, { type: 'bc-claim-denied' });
         return;
       }
-      const claim = { x: Math.floor(+msg.x || 0), z: Math.floor(+msg.z || 0), radius: BC_CLAIM_RADIUS, owner: me.name };
+      const claimX = Math.max(-BC_MAX_COORD, Math.min(BC_MAX_COORD, Math.floor(+msg.x || 0)));
+      const claimZ = Math.max(-BC_MAX_COORD, Math.min(BC_MAX_COORD, Math.floor(+msg.z || 0)));
+      const claim = { x: claimX, z: claimZ, radius: BC_CLAIM_RADIUS, owner: me.name };
       dg.claims.push(claim);
+      db.addBcClaim(ws.bcRoom, claim.x, claim.z, claim.radius, claim.owner);
       broadcastBc(ws.bcRoom, { type: 'bc-claim-added', ...claim });
       return;
     }
