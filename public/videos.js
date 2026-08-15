@@ -922,6 +922,12 @@ const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 
 let ws = null;
 let broadcastState = null; // { localStream, screenStream, peers: Map<viewerId, RTCPeerConnection>, title }
+// True only during the async window between clicking "Go live" and broadcastState being set —
+// guards against a double-click (or clicking camera then screen before the first permission
+// prompt resolves) racing two concurrent startGoLive() calls, which would otherwise leak the
+// loser's camera/mic stream and requestAnimationFrame loop forever (nothing else ever references
+// them once broadcastState is overwritten by whichever call finishes last).
+let goLiveStarting = false;
 let watchState = null; // { pc, username }
 
 function connectWs() {
@@ -1046,6 +1052,8 @@ function drawOverlaysOnCanvas(ctx, canvasWidth, canvasHeight, overlays) {
 }
 
 async function startGoLive(useScreen) {
+  if (broadcastState || goLiveStarting) return;
+  goLiveStarting = true;
   const title = goLiveTitleInput.value.trim() || 'Untitled stream';
   goLiveStatusEl.textContent = 'Requesting camera/mic access…';
   try {
@@ -1129,6 +1137,8 @@ async function startGoLive(useScreen) {
     }
   } catch (err) {
     goLiveStatusEl.textContent = `Couldn't start: ${err.message}`;
+  } finally {
+    goLiveStarting = false;
   }
 }
 

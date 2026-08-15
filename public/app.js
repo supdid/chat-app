@@ -2476,7 +2476,9 @@ function renderGroupThreads(threads) {
     const li = document.createElement('li');
     li.className = 'friend-row';
     li.dataset.groupId = thread.id;
-    const preview = thread.lastMessage ? `${escapeHtml(thread.lastMessage.from_name)}: ${escapeHtml(thread.lastMessage.text)}` : 'No messages yet';
+    // .title is a plain DOM property (not parsed as HTML), so it takes the raw text —
+    // unlike the innerHTML below, which needs the escaped version.
+    const preview = thread.lastMessage ? `${thread.lastMessage.from_name}: ${thread.lastMessage.text}` : 'No messages yet';
     li.innerHTML = `<span class="friend-name">${escapeHtml(groupThreadLabel(thread))}</span><span class="friend-actions"><button type="button" class="friend-action-btn" data-group-id="${thread.id}">Open</button></span>`;
     li.title = preview;
     groupsListEl.appendChild(li);

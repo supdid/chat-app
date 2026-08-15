@@ -1371,6 +1371,7 @@ function sendGroupDm(groupId, fromAccountId, fromName, text, excludeWs) {
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I
 const HISTORY_LIMIT = 50;
 const MAX_GAME_PLAYERS = 20;
+const MAX_SCORPTURE_VIEWERS = 500;
 const BC_MAX_HEALTH = 10;
 const BC_ARMOR_TIERS = ['Wooden', 'Stone', 'Iron', 'Gold', 'Diamond']; // must match ARMOR_REDUCTION's keys on the client
 const BC_PUNCH_RANGE = 4.5; // a little slack beyond the client's own reach check, not authoritative geometry
@@ -2215,6 +2216,17 @@ wss.on('connection', (ws) => {
       const streamerAccount = db.getAccountByUsername(String(msg.streamerUsername || '').trim());
       const stream = streamerAccount ? liveStreams.get(streamerAccount.id) : null;
       if (!stream) {
+        send(ws, { type: 'scorpture-watch-ack', live: false });
+        return;
+      }
+      // A connection can only ever watch one stream at a time (ws.scorptureViewerId is a single
+      // scalar field) — clear out any prior viewer registration first, whether it's for this same
+      // stream or a different one. Without this, repeated watch-live calls from the same socket
+      // (same streamer or switching streamers) leak an orphaned entry into stream.viewers on every
+      // call — never removed since ws.scorptureViewerId just gets overwritten — and force the
+      // streamer's browser to open a brand-new RTCPeerConnection each time.
+      if (ws.scorptureStreamerAccountId) leaveScorptureLive(ws);
+      if (stream.viewers.size >= MAX_SCORPTURE_VIEWERS) {
         send(ws, { type: 'scorpture-watch-ack', live: false });
         return;
       }
