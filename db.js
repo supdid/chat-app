@@ -203,6 +203,34 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_account_recent_rooms ON account_recent_rooms(account_id, at);
 
+  -- Group DMs are account-id based (unlike the room-scoped 'dms' table above, which is keyed
+  -- by ephemeral display names) so membership and history stay valid across renames and survive
+  -- independent of anyone being currently connected to a room.
+  CREATE TABLE IF NOT EXISTS group_dms (
+    id TEXT PRIMARY KEY,
+    name TEXT,
+    created_by TEXT,
+    created_at INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS group_dm_members (
+    group_id TEXT,
+    account_id TEXT,
+    joined_at INTEGER,
+    PRIMARY KEY (group_id, account_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_group_dm_members_account ON group_dm_members(account_id);
+
+  CREATE TABLE IF NOT EXISTS group_dm_messages (
+    id TEXT PRIMARY KEY,
+    group_id TEXT,
+    from_account_id TEXT,
+    from_name TEXT,
+    text TEXT,
+    at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_group_dm_messages_group ON group_dm_messages(group_id, at);
+
   CREATE TABLE IF NOT EXISTS error_reports (
     id TEXT PRIMARY KEY,
     source TEXT,
@@ -955,6 +983,77 @@ function getBlockedUsers(accountId) {
     .all(accountId);
 }
 
+// ---- Group DMs ----
+
+function createGroupDm(id, name, createdBy, memberAccountIds) {
+  const now = Date.now();
+  const insertGroup = db.prepare(`INSERT INTO group_dms (id, name, created_by, created_at) VALUES (?, ?, ?, ?)`);
+  const insertMember = db.prepare(
+    `INSERT INTO group_dm_members (group_id, account_id, joined_at) VALUES (?, ?, ?)`
+  );
+  const tx = db.transaction(() => {
+    insertGroup.run(id, name || null, createdBy, now);
+    for (const accountId of memberAccountIds) insertMember.run(id, accountId, now);
+  });
+  tx();
+}
+
+function getGroupDm(id) {
+  return db.prepare('SELECT * FROM group_dms WHERE id = ?').get(id) || null;
+}
+
+function getGroupDmMemberIds(groupId) {
+  return db.prepare('SELECT account_id FROM group_dm_members WHERE group_id = ?').all(groupId).map((r) => r.account_id);
+}
+
+function isGroupDmMember(groupId, accountId) {
+  return !!db.prepare('SELECT 1 FROM group_dm_members WHERE group_id = ? AND account_id = ?').get(groupId, accountId);
+}
+
+// Every group DM this account belongs to, with its member usernames and last message preview —
+// the thread-list view, so one query per field instead of N+1 per thread.
+function getGroupDmsForAccount(accountId) {
+  const groups = db
+    .prepare(
+      `SELECT g.* FROM group_dms g
+       JOIN group_dm_members m ON m.group_id = g.id
+       WHERE m.account_id = ?
+       ORDER BY g.created_at DESC`
+    )
+    .all(accountId);
+  const membersStmt = db.prepare(
+    `SELECT a.id, a.username FROM group_dm_members m JOIN accounts a ON a.id = m.account_id WHERE m.group_id = ?`
+  );
+  const lastMessageStmt = db.prepare(
+    `SELECT from_name, text, at FROM group_dm_messages WHERE group_id = ? ORDER BY at DESC LIMIT 1`
+  );
+  return groups.map((g) => ({
+    id: g.id,
+    name: g.name,
+    createdBy: g.created_by,
+    createdAt: g.created_at,
+    members: membersStmt.all(g.id),
+    lastMessage: lastMessageStmt.get(g.id) || null,
+  }));
+}
+
+function insertGroupDmMessage(entry) {
+  db.prepare(
+    `INSERT INTO group_dm_messages (id, group_id, from_account_id, from_name, text, at) VALUES (@id, @groupId, @fromAccountId, @fromName, @text, @at)`
+  ).run(entry);
+}
+
+function getGroupDmMessages(groupId, limit = 200) {
+  return db
+    .prepare(`SELECT * FROM group_dm_messages WHERE group_id = ? ORDER BY at ASC LIMIT ?`)
+    .all(groupId, limit)
+    .map((r) => ({ id: r.id, groupId: r.group_id, fromAccountId: r.from_account_id, fromName: r.from_name, text: r.text, at: r.at }));
+}
+
+function removeGroupDmMember(groupId, accountId) {
+  db.prepare('DELETE FROM group_dm_members WHERE group_id = ? AND account_id = ?').run(groupId, accountId);
+}
+
 // ---- Scorpture (video sharing) ----
 
 function insertScorptureVideo(v) {
@@ -1406,6 +1505,14 @@ module.exports = {
   getIncomingFriendRequests,
   getOutgoingFriendRequests,
   getBlockedUsers,
+  createGroupDm,
+  getGroupDm,
+  getGroupDmMemberIds,
+  isGroupDmMember,
+  getGroupDmsForAccount,
+  insertGroupDmMessage,
+  getGroupDmMessages,
+  removeGroupDmMember,
   insertErrorReport,
   getErrorReport,
   setErrorReportStatus,

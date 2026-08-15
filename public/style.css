@@ -1279,6 +1279,28 @@ button.danger:hover {
   flex: 1;
 }
 
+#group-new-btn {
+  margin-bottom: 0.6rem;
+}
+
+#group-new-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 0.9rem;
+  padding: 0.6rem;
+  background: var(--bubble-bg);
+  border: 1px solid var(--bubble-border);
+  border-radius: 8px;
+}
+
+#group-friend-picker .friend-name {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+}
+
 .friends-list {
   list-style: none;
   margin: 0 0 0.75rem;

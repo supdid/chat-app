@@ -56,6 +56,7 @@
         <div id="account-signed-in-view" class="hidden">
           <p>Signed in as <strong id="account-signed-in-name"></strong></p>
           <button type="button" id="friends-open-btn" class="link-btn">👥 Friends</button>
+          <button type="button" id="groups-open-btn" class="link-btn">💬 Groups</button>
           <button type="button" id="account-signout-btn" class="link-btn">Sign out</button>
         </div>
       </div>
@@ -244,6 +245,7 @@
       <button id="qr-btn" class="menu-link" type="button">📱 Room QR code</button>
       <a id="export-link" href="#" class="menu-link">📥 Export chat history</a>
       <button id="friends-menu-btn" class="menu-link" type="button">👥 Friends</button>
+      <button id="groups-menu-btn" class="menu-link" type="button">💬 Group DMs</button>
       <button id="account-signout-menu-btn" class="menu-link hidden" type="button">🚪 Sign out (<span id="account-signout-menu-name"></span>)</button>
       <button id="leave-room-btn" class="danger">Leave room</button>
     </div>
@@ -328,6 +330,45 @@
       <form id="friend-dm-form" class="rename-room-form">
         <input id="friend-dm-input" type="text" placeholder="Type a message…" maxlength="500" autocomplete="off">
         <button type="submit">Send private DM</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Group DMs: thread list + inline "new group" composer -->
+  <div id="groups-overlay" class="menu-overlay hidden">
+    <div class="menu-panel">
+      <div class="menu-header">
+        <h2>Group DMs</h2>
+        <button id="groups-close-btn" class="icon-btn" aria-label="Close group DMs">✕</button>
+      </div>
+      <p id="groups-signed-out-msg" class="search-status hidden">Sign in to use group DMs.</p>
+      <div id="groups-signed-in-content" class="hidden">
+        <button type="button" id="group-new-btn">+ New group</button>
+        <div id="group-new-form" class="hidden">
+          <input id="group-name-input" type="text" placeholder="Group name (optional)" maxlength="60" autocomplete="off">
+          <p class="search-status">Pick at least 2 friends:</p>
+          <ul id="group-friend-picker" class="friends-list"></ul>
+          <p id="group-new-error" class="error hidden"></p>
+          <button type="button" id="group-create-btn" class="primary">Create group</button>
+        </div>
+        <ul id="groups-list" class="friends-list"></ul>
+        <p id="groups-empty-msg" class="search-status hidden">No group DMs yet.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Group DM thread: messages + composer -->
+  <div id="group-dm-overlay" class="menu-overlay hidden">
+    <div class="menu-panel">
+      <div class="menu-header">
+        <h2 id="group-dm-title">Group</h2>
+        <button id="group-dm-close-btn" class="icon-btn" aria-label="Close group DM">✕</button>
+      </div>
+      <p id="group-dm-members" class="search-status"></p>
+      <div id="group-dm-messages" class="dm-messages"></div>
+      <form id="group-dm-form">
+        <input id="group-dm-input" type="text" placeholder="Message…" maxlength="500" autocomplete="off">
+        <button type="submit">Send</button>
       </form>
     </div>
   </div>

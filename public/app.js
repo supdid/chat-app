@@ -136,6 +136,27 @@ const friendDmCloseBtn = document.getElementById('friend-dm-close-btn');
 const friendDmTargetName = document.getElementById('friend-dm-target-name');
 const friendDmForm = document.getElementById('friend-dm-form');
 const friendDmInput = document.getElementById('friend-dm-input');
+const groupsOpenBtn = document.getElementById('groups-open-btn');
+const groupsMenuBtn = document.getElementById('groups-menu-btn');
+const groupsOverlay = document.getElementById('groups-overlay');
+const groupsCloseBtn = document.getElementById('groups-close-btn');
+const groupsSignedOutMsg = document.getElementById('groups-signed-out-msg');
+const groupsSignedInContent = document.getElementById('groups-signed-in-content');
+const groupNewBtn = document.getElementById('group-new-btn');
+const groupNewForm = document.getElementById('group-new-form');
+const groupNameInput = document.getElementById('group-name-input');
+const groupFriendPicker = document.getElementById('group-friend-picker');
+const groupNewError = document.getElementById('group-new-error');
+const groupCreateBtn = document.getElementById('group-create-btn');
+const groupsListEl = document.getElementById('groups-list');
+const groupsEmptyMsg = document.getElementById('groups-empty-msg');
+const groupDmOverlay = document.getElementById('group-dm-overlay');
+const groupDmCloseBtn = document.getElementById('group-dm-close-btn');
+const groupDmTitleEl = document.getElementById('group-dm-title');
+const groupDmMembersEl = document.getElementById('group-dm-members');
+const groupDmMessagesEl = document.getElementById('group-dm-messages');
+const groupDmForm = document.getElementById('group-dm-form');
+const groupDmInput = document.getElementById('group-dm-input');
 const exportLink = document.getElementById('export-link');
 const savedBtn = document.getElementById('saved-btn');
 const savedOverlay = document.getElementById('saved-overlay');
@@ -799,6 +820,51 @@ function handleServerMessage(data) {
 
     case 'friend-dm-sent':
       showAppToast(`💬 DM sent to ${data.toUsername}`);
+      break;
+
+    case 'group-dm-threads':
+      lastLoadedThreads = data.threads;
+      renderGroupThreads(data.threads);
+      break;
+
+    case 'group-dm-created':
+      showAppToast(`💬 Group DM ${data.thread.name ? `"${data.thread.name}"` : 'started'}`);
+      if (groupsOverlay && !groupsOverlay.classList.contains('hidden')) loadGroupThreads();
+      break;
+
+    case 'group-dm-messages':
+      if (currentGroupDmId === data.groupId) {
+        groupDmMessagesEl.innerHTML = '';
+        if (!data.messages.length) {
+          groupDmMessagesEl.innerHTML = '<p class="search-status">No messages yet — say hi!</p>';
+        } else {
+          data.messages.forEach(renderGroupDmMessage);
+          groupDmMessagesEl.scrollTop = groupDmMessagesEl.scrollHeight;
+        }
+      }
+      break;
+
+    case 'group-dm-sent':
+      if (currentGroupDmId === data.message.groupId) {
+        const empty = groupDmMessagesEl.querySelector('.search-status');
+        if (empty) groupDmMessagesEl.innerHTML = '';
+        renderGroupDmMessage(data.message);
+        groupDmMessagesEl.scrollTop = groupDmMessagesEl.scrollHeight;
+      }
+      break;
+
+    // A group DM landing live from someone else — same "live if connected, push if not" delivery
+    // as friend-dm above, just fanned out to every member instead of one recipient.
+    case 'group-dm':
+      if (currentGroupDmId === data.groupId && groupDmOverlay && !groupDmOverlay.classList.contains('hidden')) {
+        const empty = groupDmMessagesEl.querySelector('.search-status');
+        if (empty) groupDmMessagesEl.innerHTML = '';
+        renderGroupDmMessage(data);
+        groupDmMessagesEl.scrollTop = groupDmMessagesEl.scrollHeight;
+      } else {
+        showAppToast(`💬 ${data.fromName} (group): ${data.text}`);
+        playNotifySound();
+      }
       break;
 
     case 'announcement-updated':
@@ -2359,6 +2425,147 @@ friendDmForm.addEventListener('submit', (e) => {
   ws.send(JSON.stringify({ type: 'friend-dm', toUsername, text }));
   friendDmOverlay.classList.add('hidden');
   friendDmInput.value = '';
+});
+
+// --- Group DMs: persisted multi-person threads among friends, account-based (works across
+// rooms/devices, unlike the room-scoped 1:1 dm-overlay above). ---
+let currentGroupDmId = null;
+let lastLoadedFriends = [];
+let lastLoadedThreads = [];
+
+function renderGroupDmMessage(data) {
+  const el = document.createElement('div');
+  el.className = 'thread-message' + (myProfile && data.fromName === myProfile.name ? ' own' : '');
+  const meta = document.createElement('span');
+  meta.className = 'meta';
+  const time = new Date(data.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  meta.textContent = `${data.fromName} · ${time}`;
+  el.appendChild(meta);
+  const text = document.createElement('div');
+  text.appendChild(renderTextWithMentions(data.text));
+  el.appendChild(text);
+  groupDmMessagesEl.appendChild(el);
+}
+
+function groupThreadLabel(thread) {
+  if (thread.name) return thread.name;
+  return thread.members.map((m) => m.username).filter((u) => u !== accountUsername).join(', ') || 'Group DM';
+}
+
+function renderGroupThreads(threads) {
+  groupsListEl.innerHTML = '';
+  groupsEmptyMsg.classList.toggle('hidden', threads.length !== 0);
+  threads.forEach((thread) => {
+    const li = document.createElement('li');
+    li.className = 'friend-row';
+    li.dataset.groupId = thread.id;
+    const preview = thread.lastMessage ? `${escapeHtml(thread.lastMessage.from_name)}: ${escapeHtml(thread.lastMessage.text)}` : 'No messages yet';
+    li.innerHTML = `<span class="friend-name">${escapeHtml(groupThreadLabel(thread))}</span><span class="friend-actions"><button type="button" class="friend-action-btn" data-group-id="${thread.id}">Open</button></span>`;
+    li.title = preview;
+    groupsListEl.appendChild(li);
+  });
+}
+
+function loadGroupThreads() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'get-group-dm-threads' }));
+}
+
+function openGroupDm(groupId, thread) {
+  currentGroupDmId = groupId;
+  groupDmTitleEl.textContent = thread ? groupThreadLabel(thread) : 'Group';
+  groupDmMembersEl.textContent = thread ? `With ${thread.members.map((m) => m.username).join(', ')}` : '';
+  groupDmMessagesEl.innerHTML = '<p class="search-status">Loading…</p>';
+  groupsOverlay.classList.add('hidden');
+  groupDmOverlay.classList.remove('hidden');
+  ws.send(JSON.stringify({ type: 'get-group-dm-messages', groupId }));
+  groupDmInput.focus();
+}
+
+function renderGroupFriendPicker() {
+  groupFriendPicker.innerHTML = '';
+  lastLoadedFriends.forEach((f) => {
+    const li = document.createElement('li');
+    li.className = 'friend-row';
+    li.innerHTML = `<label class="friend-name"><input type="checkbox" value="${escapeHtml(f.username)}"> ${escapeHtml(f.username)}</label>`;
+    groupFriendPicker.appendChild(li);
+  });
+}
+
+function openGroupsPanel() {
+  const signedIn = !!accountToken;
+  groupsSignedOutMsg.classList.toggle('hidden', signedIn);
+  groupsSignedInContent.classList.toggle('hidden', !signedIn);
+  groupNewForm.classList.add('hidden');
+  groupsOverlay.classList.remove('hidden');
+  if (signedIn) loadGroupThreads();
+}
+
+function closeGroupsPanel() {
+  groupsOverlay.classList.add('hidden');
+}
+
+groupsOpenBtn.addEventListener('click', openGroupsPanel);
+groupsMenuBtn.addEventListener('click', () => {
+  closeMenu();
+  openGroupsPanel();
+});
+groupsCloseBtn.addEventListener('click', closeGroupsPanel);
+groupsOverlay.addEventListener('click', (e) => {
+  if (e.target === groupsOverlay) closeGroupsPanel();
+});
+
+groupsListEl.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-group-id]');
+  if (!btn) return;
+  const groupId = btn.dataset.groupId;
+  const thread = lastLoadedThreads.find((t) => t.id === groupId) || null;
+  openGroupDm(groupId, thread);
+});
+
+groupNewBtn.addEventListener('click', async () => {
+  groupNewError.classList.add('hidden');
+  groupNewForm.classList.toggle('hidden');
+  if (!groupNewForm.classList.contains('hidden')) {
+    // Friends list is fetched fresh each time the composer opens rather than trusting whatever
+    // was last rendered into the friends overlay (which may never have been opened this session).
+    try {
+      const res = await fetch('/friends', { headers: { Authorization: `Bearer ${accountToken}` } });
+      const data = await res.json();
+      lastLoadedFriends = data.friends || [];
+      renderGroupFriendPicker();
+    } catch {
+      groupNewError.textContent = 'Could not load your friends list';
+      groupNewError.classList.remove('hidden');
+    }
+  }
+});
+
+groupCreateBtn.addEventListener('click', () => {
+  groupNewError.classList.add('hidden');
+  const memberUsernames = [...groupFriendPicker.querySelectorAll('input[type="checkbox"]:checked')].map((c) => c.value);
+  if (memberUsernames.length < 2) {
+    groupNewError.textContent = 'Pick at least 2 friends';
+    groupNewError.classList.remove('hidden');
+    return;
+  }
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'create-group-dm', name: groupNameInput.value.trim(), memberUsernames }));
+  groupNewForm.classList.add('hidden');
+  groupNameInput.value = '';
+});
+
+groupDmCloseBtn.addEventListener('click', () => { groupDmOverlay.classList.add('hidden'); currentGroupDmId = null; });
+groupDmOverlay.addEventListener('click', (e) => {
+  if (e.target === groupDmOverlay) { groupDmOverlay.classList.add('hidden'); currentGroupDmId = null; }
+});
+
+groupDmForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const text = groupDmInput.value.trim();
+  if (!text || !currentGroupDmId || !ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'send-group-dm', groupId: currentGroupDmId, text }));
+  groupDmInput.value = '';
 });
 
 renameRoomForm.addEventListener('submit', (e) => {

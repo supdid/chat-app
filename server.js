@@ -1326,6 +1326,30 @@ function sendFriendDm(fromName, targetAccountId, text) {
     });
   }
 }
+
+// Group DMs are persisted (unlike friend-dm above) since membership needs to survive everyone
+// being offline. Delivery still reuses the same two-part pattern: live push over accountConnections
+// for anyone currently connected, plus unconditional real push so offline members get notified too.
+function sendGroupDm(groupId, fromAccountId, fromName, text, excludeWs) {
+  const memberIds = db.getGroupDmMemberIds(groupId);
+  const livePayload = JSON.stringify({ type: 'group-dm', groupId, fromAccountId, fromName, text, at: Date.now() });
+  for (const accountId of memberIds) {
+    const liveConnections = accountConnections.get(accountId);
+    if (liveConnections) {
+      for (const c of liveConnections) {
+        if (c !== excludeWs && c.readyState === c.OPEN) c.send(livePayload);
+      }
+    }
+    if (accountId === fromAccountId) continue;
+    const subs = db.getPushSubscriptionsForAccount(accountId);
+    const pushPayload = JSON.stringify({ title: `${fromName} (group)`, body: text, groupDm: true, groupId });
+    for (const sub of subs) {
+      webpush.sendNotification(sub.subscription, pushPayload).catch((err) => {
+        if (err.statusCode === 404 || err.statusCode === 410) db.removePushSubscription(sub.endpoint);
+      });
+    }
+  }
+}
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I
 const HISTORY_LIMIT = 50;
 const MAX_GAME_PLAYERS = 20;
@@ -3283,6 +3307,112 @@ wss.on('connection', (ws) => {
       }
       sendFriendDm(ws.profile.name, targetAccount.id, text);
       send(ws, { type: 'friend-dm-sent', toUsername });
+      return;
+    }
+
+    if (msg.type === 'create-group-dm') {
+      if (!ws.accountId) {
+        send(ws, { type: 'error', message: 'Sign in to start a group DM' });
+        return;
+      }
+      const memberUsernames = Array.isArray(msg.memberUsernames) ? msg.memberUsernames.slice(0, 20) : [];
+      const name = msg.name ? String(msg.name).slice(0, 60).trim() : null;
+      const memberIds = new Set([ws.accountId]);
+      for (const raw of memberUsernames) {
+        const username = String(raw || '').trim();
+        if (!username) continue;
+        const account = db.getAccountByUsername(username);
+        if (!account) {
+          send(ws, { type: 'error', message: `No account with username "${username}"` });
+          return;
+        }
+        const friendship = db.getFriendshipBetween(ws.accountId, account.id);
+        if (!friendship || friendship.status !== 'accepted') {
+          send(ws, { type: 'error', message: `You can only add friends to a group DM (${username} isn't one)` });
+          return;
+        }
+        memberIds.add(account.id);
+      }
+      if (memberIds.size < 3) {
+        send(ws, { type: 'error', message: 'Pick at least 2 friends to start a group DM' });
+        return;
+      }
+      const groupId = crypto.randomUUID();
+      db.createGroupDm(groupId, name, ws.accountId, [...memberIds]);
+      const threads = db.getGroupDmsForAccount(ws.accountId);
+      const thread = threads.find((t) => t.id === groupId);
+      for (const accountId of memberIds) {
+        if (accountId === ws.accountId) continue;
+        const liveConnections = accountConnections.get(accountId);
+        if (!liveConnections) continue;
+        const theirThreads = db.getGroupDmsForAccount(accountId);
+        const theirThread = theirThreads.find((t) => t.id === groupId);
+        for (const c of liveConnections) {
+          if (c.readyState === c.OPEN) send(c, { type: 'group-dm-created', thread: theirThread });
+        }
+      }
+      send(ws, { type: 'group-dm-created', thread });
+      return;
+    }
+
+    if (msg.type === 'get-group-dm-threads') {
+      if (!ws.accountId) {
+        send(ws, { type: 'error', message: 'Sign in to view group DMs' });
+        return;
+      }
+      send(ws, { type: 'group-dm-threads', threads: db.getGroupDmsForAccount(ws.accountId) });
+      return;
+    }
+
+    if (msg.type === 'get-group-dm-messages') {
+      if (!ws.accountId) {
+        send(ws, { type: 'error', message: 'Sign in to view group DMs' });
+        return;
+      }
+      const groupId = String(msg.groupId || '');
+      if (!db.isGroupDmMember(groupId, ws.accountId)) {
+        send(ws, { type: 'error', message: 'Not a member of that group DM' });
+        return;
+      }
+      send(ws, { type: 'group-dm-messages', groupId, messages: db.getGroupDmMessages(groupId) });
+      return;
+    }
+
+    if (msg.type === 'send-group-dm') {
+      if (!ws.accountId) {
+        send(ws, { type: 'error', message: 'Sign in to send group DMs' });
+        return;
+      }
+      const groupId = String(msg.groupId || '');
+      const text = String(msg.text || '').slice(0, 500).trim();
+      if (!text) {
+        send(ws, { type: 'error', message: 'Empty message' });
+        return;
+      }
+      if (!db.isGroupDmMember(groupId, ws.accountId)) {
+        send(ws, { type: 'error', message: 'Not a member of that group DM' });
+        return;
+      }
+      const now = Date.now();
+      const entry = { id: crypto.randomUUID(), groupId, fromAccountId: ws.accountId, fromName: ws.profile.name, text, at: now };
+      db.insertGroupDmMessage(entry);
+      sendGroupDm(groupId, ws.accountId, ws.profile.name, text, ws);
+      send(ws, { type: 'group-dm-sent', message: entry });
+      return;
+    }
+
+    if (msg.type === 'leave-group-dm') {
+      if (!ws.accountId) {
+        send(ws, { type: 'error', message: 'Sign in required' });
+        return;
+      }
+      const groupId = String(msg.groupId || '');
+      if (!db.isGroupDmMember(groupId, ws.accountId)) {
+        send(ws, { type: 'error', message: 'Not a member of that group DM' });
+        return;
+      }
+      db.removeGroupDmMember(groupId, ws.accountId);
+      send(ws, { type: 'group-dm-left', groupId });
       return;
     }
 
