@@ -104,6 +104,7 @@
 
     <div id="announcement-banner" class="announcement-banner hidden"></div>
     <div id="pinned-banner" class="pinned-banner hidden"></div>
+    <button type="button" id="voice-call-banner" class="voice-call-banner hidden">📞 <span id="voice-call-banner-text">Voice call in progress</span> — tap to join</button>
 
     <div id="messages"></div>
 
@@ -150,8 +151,11 @@
         <button id="call-record-btn" class="call-action" type="button" aria-label="Start recording">⏺️<span class="call-action-label"> Record</span></button>
         <button id="call-expand-btn" class="call-action" type="button" aria-label="Expand fullscreen">⛶<span class="call-action-label"> Fullscreen</span></button>
         <button id="call-share-btn" class="call-action" type="button">🖥️<span class="call-action-label"> Share screen</span></button>
-        <button id="call-hangup-btn" class="call-action danger" type="button">📵<span class="call-action-label"> Hang up</span></button>
       </div>
+      <!-- Deliberately outside .call-bar-actions (which scrolls when the docked pill
+           runs out of vertical room on short/landscape phone screens) so Hang Up is
+           always reachable no matter how many other controls have piled up above it. -->
+      <button id="call-hangup-btn" class="call-action danger" type="button">📵<span class="call-action-label"> Hang up</span></button>
     </div>
     <div id="call-grid" class="call-grid"></div>
   </div>

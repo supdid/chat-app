@@ -70,6 +70,8 @@ const worldwideCountEl = document.getElementById('worldwide-count');
 const headerWorldwideEl = document.getElementById('header-worldwide');
 const worldwideCountChatEl = document.getElementById('worldwide-count-chat');
 const voicecallBtn = document.getElementById('voicecall-btn');
+const voiceCallBanner = document.getElementById('voice-call-banner');
+const voiceCallBannerText = document.getElementById('voice-call-banner-text');
 const voiceErrorEl = document.getElementById('voice-error');
 const callOverlay = document.getElementById('call-overlay');
 const callRoomCodeEl = document.getElementById('call-room-code');
@@ -652,6 +654,12 @@ function handleServerMessage(data) {
       renderPinnedBanner();
       currentAnnouncement = data.announcement || null;
       renderAnnouncementBanner();
+      if (data.voiceCallActive && !voiceActive) {
+        voiceCallBannerText.textContent = 'Voice call in progress';
+        voiceCallBanner.classList.remove('hidden');
+      } else {
+        voiceCallBanner.classList.add('hidden');
+      }
       announcementForm.classList.toggle('hidden', !isHost);
       announcementInput.value = currentAnnouncement || '';
       roomPinForm.classList.toggle('hidden', !isHost);
@@ -704,6 +712,7 @@ function handleServerMessage(data) {
       messagesEl.innerHTML = '';
       closeMenu();
       hangUpVoiceCall();
+      voiceCallBanner.classList.add('hidden');
       unreadCount = 0;
       updateUnreadBadge();
       showScreen(roomSelectScreen);
@@ -890,6 +899,19 @@ function handleServerMessage(data) {
 
     case 'voice-peer-left':
       removeVoicePeer(data.sub);
+      break;
+
+    case 'voice-call-started':
+      // Someone else started a call in this room — surface a tap-to-join banner
+      // instead of making everyone open the menu to discover a call is live.
+      if (!voiceActive) {
+        voiceCallBannerText.textContent = `${data.name} started a voice call`;
+        voiceCallBanner.classList.remove('hidden');
+      }
+      break;
+
+    case 'voice-call-ended':
+      voiceCallBanner.classList.add('hidden');
       break;
 
     case 'voice-share':
@@ -2506,6 +2528,7 @@ async function startVoiceCall() {
   // Set before the getUserMedia await below, not after — otherwise a double-click/double-tap
   // before the prompt resolves passes this guard twice and creates a duplicate call join.
   voiceActive = true;
+  voiceCallBanner.classList.add('hidden');
   voiceErrorEl.classList.add('hidden');
   micRetryBtn.classList.add('hidden');
 
@@ -3755,6 +3778,10 @@ callDragHandle.addEventListener('pointerup', (e) => {
 });
 
 voicecallBtn.addEventListener('click', startVoiceCall);
+voiceCallBanner.addEventListener('click', () => {
+  voiceCallBanner.classList.add('hidden');
+  startVoiceCall();
+});
 callHangupBtn.addEventListener('click', hangUpVoiceCall);
 micRetryBtn.addEventListener('click', retryEnableMicrophone);
 micMuteBtn.addEventListener('click', toggleMic);

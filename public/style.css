@@ -802,6 +802,31 @@ body {
   white-space: nowrap;
 }
 
+.voice-call-banner {
+  display: block;
+  width: 100%;
+  padding: 0.5rem 1.5rem;
+  background: #2ecc71;
+  color: #04210f;
+  font-size: 0.85rem;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  animation: voice-call-banner-pulse 2s ease-in-out infinite;
+}
+
+.voice-call-banner:hover {
+  background: #27ae60;
+}
+
+@keyframes voice-call-banner-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.82; }
+}
+
 .pinned-banner span {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1383,6 +1408,12 @@ button.danger:hover {
   padding: 0.6rem 0.4rem;
   gap: 0.4rem;
   overflow: hidden;
+  /* `vh` is measured against the browser's largest possible viewport, but on
+     mobile the address bar can eat into the *actual* visible area — capping
+     against `dvh` too (ignored by browsers that don't support it) keeps this
+     fixed-position pill from rendering partly behind that chrome, which was
+     making the bottom-most control (Hang Up) untappable on some phones. */
+  max-height: 80dvh;
 }
 
 .call-overlay.expanded {
@@ -1501,6 +1532,21 @@ button.danger:hover {
 
 .call-overlay:not(.expanded) .call-bar-actions {
   flex-direction: column;
+  /* This list has grown to ~10 buttons — on a short/landscape phone viewport it can
+     be taller than the whole docked pill's own max-height, which used to push
+     Hang Up (the last button) past the container's overflow:hidden edge with no way
+     to scroll to it. Scoping the scroll to just this list keeps Hang Up itself
+     (now a sibling outside this div, see index.html) always on screen. */
+  max-height: 42vh;
+  max-height: 42dvh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-right: 2px;
+}
+
+.call-overlay:not(.expanded) #call-hangup-btn {
+  flex-shrink: 0;
+  margin-top: 0.2rem;
 }
 
 .call-action {

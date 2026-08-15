@@ -1502,6 +1502,7 @@ function leaveVoice(ws) {
   if (voice.size === 0) {
     const room = rooms.get(code);
     if (room) delete room.voice;
+    broadcastRoom(code, { type: 'voice-call-ended' });
   }
 }
 
@@ -3361,6 +3362,7 @@ wss.on('connection', (ws) => {
         isHost: (db.getRoom(code) || {}).host_name === ws.profile.name,
         announcement: dbRoom ? dbRoom.announcement : null,
         wallpaperUrl: dbRoom ? dbRoom.wallpaper_url : null,
+        voiceCallActive: !!(room.voice && room.voice.size > 0),
       });
       broadcastRoom(code, { type: 'system', text: `${ws.profile.name} joined the room`, at: Date.now() }, ws);
       broadcastRoom(code, { type: 'presence', users: roomUsers(code) });
@@ -3579,6 +3581,7 @@ wss.on('connection', (ws) => {
       const voice = voiceRoom(code, true);
       const sub = ws.profile.sub;
       const name = ws.profile.name;
+      const wasEmpty = voice.size === 0;
       const existing = [...voice.entries()]
         .filter(([s]) => s !== sub)
         .map(([s, p]) => ({ sub: s, name: p.name }));
@@ -3587,6 +3590,10 @@ wss.on('connection', (ws) => {
       for (const [s, p] of voice) {
         if (s !== sub) send(p.ws, { type: 'voice-peer-joined', sub, name });
       }
+      // Let everyone else in the room (not just people already on the call) know a
+      // call just started, so they see a one-tap "join" prompt instead of having to
+      // open the menu and guess whether anyone's actually on a call right now.
+      if (wasEmpty) broadcastRoom(code, { type: 'voice-call-started', name }, ws);
       return;
     }
 
