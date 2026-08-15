@@ -331,6 +331,7 @@ function roomPinOk(dbRoom, suppliedPin) {
 // flow — which would spuriously fire "X joined the room" for a tab that isn't really
 // sitting in the room.
 app.post('/post-image', (req, res) => {
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many posts too quickly — slow down a bit.' });
   const code = String(req.body.code || '').toUpperCase().trim();
   const name = String(req.body.name || 'Someone').slice(0, 30).trim() || 'Someone';
   const mediaUrl = typeof req.body.mediaUrl === 'string' ? req.body.mediaUrl.slice(0, 2000) : null;
@@ -362,6 +363,7 @@ app.post('/post-image', (req, res) => {
 // Same "own tab, no live WebSocket session" case as /post-image, but generic over
 // mediaType so the Video Editor can drop a finished render into the room's chat.
 app.post('/post-media', (req, res) => {
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many posts too quickly — slow down a bit.' });
   const code = String(req.body.code || '').toUpperCase().trim();
   const name = String(req.body.name || 'Someone').slice(0, 30).trim() || 'Someone';
   const mediaUrl = typeof req.body.mediaUrl === 'string' ? req.body.mediaUrl.slice(0, 2000) : null;
@@ -568,6 +570,11 @@ app.get('/link-preview', async (req, res) => {
 });
 
 app.post('/upload', (req, res) => {
+  // Unlike every other HTTP room-content route, this had zero throttling and needs no auth/room
+  // membership — a scripted burst (up to the existing 300MB-per-file cap, no login required)
+  // could fill disk fast. Checked before multer touches the request so a rate-limited call never
+  // even gets as far as writing a file to disk.
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many uploads too quickly — slow down a bit.' });
   upload.single('file')(req, res, (err) => {
     if (err) return res.status(400).json({ error: err.message });
     if (!req.file) return res.status(400).json({ error: 'No file' });
@@ -652,6 +659,28 @@ function isAuthRateLimited(req) {
   timestamps.push(now);
   authRateLimits.set(ip, timestamps);
   if (authRateLimits.size > 10000) authRateLimits.clear(); // crude bound on worst-case memory
+  return false;
+}
+
+// /post-image and /post-media are the only two ways to create a chat message that don't go
+// through a WebSocket connection (AI Studio / Video Editor posting from their own tab), so they
+// never hit the ws.msgTimestamps flood gate every other message-creation path shares (see
+// RATE_LIMIT_WINDOW_MS/RATE_LIMIT_MAX_MESSAGES below, and the 'send-group-dm'/'scorpture-live-chat'
+// fixes earlier tonight that closed the same gap elsewhere) — each call is a synchronous DB write
+// plus a room-wide broadcast plus a push notification to every offline subscriber, all
+// unthrottled otherwise. Same per-IP Map pattern as isAuthRateLimited above.
+const postMediaRateLimits = new Map();
+function isPostMediaRateLimited(req) {
+  const ip = req.ip || 'unknown';
+  const now = Date.now();
+  const timestamps = (postMediaRateLimits.get(ip) || []).filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+  if (timestamps.length >= RATE_LIMIT_MAX_MESSAGES) {
+    postMediaRateLimits.set(ip, timestamps);
+    return true;
+  }
+  timestamps.push(now);
+  postMediaRateLimits.set(ip, timestamps);
+  if (postMediaRateLimits.size > 10000) postMediaRateLimits.clear();
   return false;
 }
 
@@ -990,7 +1019,13 @@ app.post('/api/scorpture/videos', (req, res) => {
   const title = String(req.body.title || '').slice(0, 100).trim();
   const description = String(req.body.description || '').slice(0, 2000).trim();
   const videoUrl = typeof req.body.videoUrl === 'string' ? req.body.videoUrl.slice(0, 2000) : '';
-  const thumbnailUrl = typeof req.body.thumbnailUrl === 'string' ? req.body.thumbnailUrl.slice(0, 2000) : null;
+  // Same /uploads/ prefix requirement the PUT (edit) route already enforces below and every
+  // other "store this URL" route in the app (banner, avatar) enforces — this create route was
+  // the one place a thumbnail could be set to an arbitrary external URL, letting an uploaded
+  // video silently act as a tracking pixel against everyone who ever sees it listed.
+  const thumbnailUrl = typeof req.body.thumbnailUrl === 'string' && req.body.thumbnailUrl.startsWith('/uploads/')
+    ? req.body.thumbnailUrl.slice(0, 2000)
+    : null;
   const category = SCORPTURE_CATEGORIES.includes(req.body.category) ? req.body.category : null;
   if (!title || !videoUrl.startsWith('/uploads/')) return res.status(400).json({ error: 'Missing title or video file' });
   const id = crypto.randomUUID();
@@ -1035,6 +1070,11 @@ app.delete('/api/scorpture/videos/:id', (req, res) => {
   if (!video) return res.status(404).json({ error: 'Video not found' });
   if (video.uploader_id !== account.id) return res.status(403).json({ error: 'Not your video' });
   db.deleteScorptureVideo(video.id);
+  // deleteScorptureVideo only removes the DB rows — without this, the actual video/thumbnail
+  // files stay in public/uploads/ forever (an easy unbounded disk-fill: upload near the 300MB
+  // cap, delete, repeat). Same deleteUploadFile() helper the room-retention cleanup job uses.
+  deleteUploadFile(video.video_url);
+  deleteUploadFile(video.thumbnail_url);
   res.json({ ok: true });
 });
 
@@ -1045,6 +1085,10 @@ app.get('/api/scorpture/videos/:id/comments', (req, res) => {
 app.post('/api/scorpture/videos/:id/comments', (req, res) => {
   const account = getAccountFromReq(req);
   if (!account) return res.status(401).json({ error: 'Not signed in' });
+  // Same missing-flood-gate class of bug as /post-image /post-media above — a plain HTTP route
+  // with no WebSocket, so it never hit the ws.msgTimestamps limiter every other message-creation
+  // path shares.
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many comments too quickly — slow down a bit.' });
   const video = db.getScorptureVideo(req.params.id);
   if (!video) return res.status(404).json({ error: 'Video not found' });
   const text = String(req.body.text || '').slice(0, 1000).trim();
@@ -1394,6 +1438,25 @@ function sanitizeStrokePoints(rawPoints) {
     out.push({ x, y });
   }
   return out;
+}
+
+// A poll message's `text` is JSON `{question, options}` (see the pollCreateForm handler in
+// app.js) — nothing server-side ever checked it parses that way. A crafted `message` with
+// mediaType:'poll' and arbitrary text (trivial via devtools/raw WS, no UI needed) reached
+// renderPoll() client-side unguarded and threw, and since room history is rendered in one
+// forEach with no per-item try/catch, that one bad poll permanently broke rendering of every
+// message *after* it in that room's history for every future joiner.
+const POLL_MAX_OPTIONS = 20;
+function isValidPollText(text) {
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return false;
+  }
+  if (!parsed || typeof parsed.question !== 'string' || !parsed.question.trim()) return false;
+  if (!Array.isArray(parsed.options) || parsed.options.length < 2 || parsed.options.length > POLL_MAX_OPTIONS) return false;
+  return parsed.options.every((o) => typeof o === 'string' && o.trim());
 }
 const BC_MAX_HEALTH = 10;
 const BC_ARMOR_TIERS = ['Wooden', 'Stone', 'Iron', 'Gold', 'Diamond']; // must match ARMOR_REDUCTION's keys on the client
@@ -3981,9 +4044,17 @@ wss.on('connection', (ws) => {
       }
       ws.msgTimestamps.push(now);
       const text = String(msg.text || '').slice(0, 2000).trim();
-      const mediaUrl = typeof msg.mediaUrl === 'string' ? msg.mediaUrl : null;
       const mediaType = ['video', 'image', 'audio', 'poll'].includes(msg.mediaType) ? msg.mediaType : null;
+      // Every other "attach media" path in this app (post-image, post-media, scorpture uploads)
+      // requires a real /uploads/ URL — this was the one place that didn't, letting any user post
+      // an arbitrary external URL that auto-loads (mediaType 'video'/'image'/'audio') in every
+      // room member's browser as a classic IP/UA-grabbing tracker link. Polls use the literal
+      // sentinel 'poll' here instead of a real URL, so they're exempted from the prefix check.
+      const mediaUrl = typeof msg.mediaUrl === 'string' && (mediaType === 'poll' ? msg.mediaUrl === 'poll' : msg.mediaUrl.startsWith('/uploads/'))
+        ? msg.mediaUrl
+        : null;
       if (!text && !(mediaUrl && mediaType)) return;
+      if (mediaType === 'poll' && !isValidPollText(text)) return;
 
       let replyToId = null;
       let replyPreview = null;
@@ -4021,7 +4092,11 @@ wss.on('connection', (ws) => {
       const text = String(msg.text || '').slice(0, 2000).trim();
       if (!messageId || !text) return;
       const target = db.getMessage(messageId);
-      if (!target || target.room_code !== ws.room || target.name !== ws.profile.name || target.deleted) return;
+      // Polls store structured JSON in `text` (see isValidPollText) — editing was never a
+      // supported poll feature and this generic free-text path has no shape validation, so
+      // allowing it here would let a user corrupt their own poll the same way the message
+      // handler above now guards against on creation.
+      if (!target || target.room_code !== ws.room || target.name !== ws.profile.name || target.deleted || target.media_type === 'poll') return;
       db.updateMessageText(messageId, text);
       const room = rooms.get(ws.room);
       const entry = room && room.history.find((m) => m.id === messageId);
@@ -4055,6 +4130,19 @@ wss.on('connection', (ws) => {
       const raw = typeof msg.emoji === 'string' ? msg.emoji.trim() : '';
       const emoji = raw && raw.length <= 8 ? raw : null;
       if (!messageId || !emoji) return;
+      // Every sibling handler (edit/delete/pin/vote/get-thread) verifies the target message
+      // belongs to the reactor's own room before acting — this one didn't, so a reaction on a
+      // message ID from a different room (ids are unguessable UUIDs, so low practical risk, but
+      // a real gap in an otherwise-consistent room-isolation pattern) would surface in that other
+      // room's reaction list via db.getReactionsForRoom's join on room_code.
+      const reactTarget = db.getMessage(messageId);
+      if (!reactTarget || reactTarget.room_code !== ws.room) return;
+      // Same flood gate as regular messages — each toggle is a DB write plus a room-wide
+      // broadcast, previously unthrottled.
+      const nowReact = Date.now();
+      ws.msgTimestamps = (ws.msgTimestamps || []).filter((t) => nowReact - t < RATE_LIMIT_WINDOW_MS);
+      if (ws.msgTimestamps.length >= RATE_LIMIT_MAX_MESSAGES) return;
+      ws.msgTimestamps.push(nowReact);
       const added = db.toggleReaction(messageId, emoji, ws.profile.name);
       broadcastRoom(ws.room, { type: 'reaction', messageId, emoji, name: ws.profile.name, added });
       return;
