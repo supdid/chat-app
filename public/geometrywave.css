@@ -171,11 +171,24 @@ html, body {
 }
 
 #progress-bar {
+  position: relative; /* anchors the personal-best marker */
   width: 100%;
   height: 8px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.12);
   overflow: hidden;
+}
+
+/* Kept inside the bar's own height rather than overhanging it — the bar clips its children. */
+#progress-best {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: #ffd166;
+  box-shadow: 0 0 6px rgba(255, 209, 102, 0.9);
+  pointer-events: none;
 }
 
 #progress-fill {

@@ -1,4 +1,6 @@
-const CACHE_NAME = 'valk-cache-v87';
+// Bump this on every deploy. Changing it is what makes the browser see sw.js as a new file, which
+// is what puts a worker into the "waiting" state and raises the update screen (see update-prompt.js).
+const CACHE_NAME = 'valk-cache-v99';
 const APP_SHELL = [
   '/',
   '/index.html',
@@ -14,7 +16,15 @@ const APP_SHELL = [
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)));
-  self.skipWaiting();
+  // Deliberately NOT calling skipWaiting() here. A new worker has to sit in the "waiting" state so
+  // update-prompt.js can detect it and offer the update screen — skipping straight to active would
+  // apply updates silently mid-session and leave the button nothing to do.
+});
+
+// Sent by the green Update button. This is the only thing that promotes a waiting worker; the page
+// then reloads on controllerchange, and the activate handler below clears the old caches.
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {

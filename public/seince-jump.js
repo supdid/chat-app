@@ -259,6 +259,75 @@
   let lastTime = 0;
   let stateTimer = 0;
   let bgOffset = 0;
+  let prevGrounded = true; // tracked separately so the landing test doesn't have to reach into the jump branch
+  let bgGrad = null;
+  let bgGradKey = '';
+
+  // ---------------------------------------------------------------
+  // Particles — death fragments and landing dust
+  // ---------------------------------------------------------------
+  // Stored in WORLD x (screen y), because the level scrolls under a player pinned at
+  // PLAYER_SCREEN_X — screen-space particles would slide along with the camera instead of staying
+  // where the impact happened. Drawn at `p.x - camX`, the same transform every solid uses.
+  const particles = [];
+
+  function burst(worldX, screenY, count, opts) {
+    for (let i = 0; i < count; i++) {
+      const a = opts.angle === undefined
+        ? Math.random() * Math.PI * 2
+        : opts.angle + (Math.random() - 0.5) * opts.spread;
+      const sp = opts.speedMin + Math.random() * (opts.speedMax - opts.speedMin);
+      const life = opts.life * (0.7 + Math.random() * 0.6);
+      particles.push({
+        x: worldX, y: screenY,
+        vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+        size: opts.sizeMin + Math.random() * (opts.sizeMax - opts.sizeMin),
+        color: opts.color,
+        gravity: opts.gravity,
+        life, max: life,
+        rot: Math.random() * Math.PI,
+        spin: (Math.random() - 0.5) * 14,
+      });
+    }
+  }
+
+  function updateParticles(dt) {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.life -= dt;
+      if (p.life <= 0) { particles.splice(i, 1); continue; }
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vy += p.gravity * dt;
+      p.rot += p.spin * dt;
+    }
+  }
+
+  function drawParticles(camX) {
+    for (const p of particles) {
+      const sx = p.x - camX;
+      if (sx < -40 || sx > CANVAS_W + 40) continue;
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, Math.min(1, p.life / p.max));
+      ctx.translate(sx, p.y);
+      ctx.rotate(p.rot);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size);
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // Ghost trail behind the cube — the only thing on screen that shows the arc you just travelled,
+  // which is what makes a missed jump readable after the fact.
+  const TRAIL_MAX = 10;
+  const trail = [];
+
+  function resetEffects() {
+    particles.length = 0;
+    trail.length = 0;
+    prevGrounded = true;
+  }
 
   function freshWorld() {
     return {
@@ -275,6 +344,7 @@
     level = { ...LEVELS[i], ...LEVELS[i].build() };
     attempts = 1;
     world = freshWorld();
+    resetEffects();
     state = 'playing';
     menuScreen.classList.add('hidden');
     gameScreen.classList.remove('hidden');
@@ -286,6 +356,7 @@
 
   function restartLevel() {
     world = freshWorld();
+    resetEffects();
     state = 'playing';
     overlayEl.classList.add('hidden');
     attemptCountEl.textContent = `Attempt ${attempts}`;
@@ -303,6 +374,16 @@
     if (state !== 'playing') return;
     state = 'dead';
     stateTimer = 0;
+    // The cube comes apart. Fragments are level-coloured with a few white ones so the burst reads
+    // against both the dark blocks and the bright ground band.
+    burst(world.x + SIZE / 2, world.y + SIZE / 2, 22, {
+      speedMin: 60, speedMax: 300, sizeMin: 3, sizeMax: 9,
+      color: level.color, gravity: 900, life: 0.75,
+    });
+    burst(world.x + SIZE / 2, world.y + SIZE / 2, 8, {
+      speedMin: 40, speedMax: 220, sizeMin: 2, sizeMax: 5,
+      color: '#eef1f7', gravity: 900, life: 0.6,
+    });
     flashEl.classList.remove('win');
     flashEl.classList.remove('hit');
     void flashEl.offsetWidth; // restart animation
@@ -404,6 +485,20 @@
     world.grounded = landed;
     if (landed) world.rotation = Math.round(world.rotation / (Math.PI / 2)) * (Math.PI / 2);
 
+    if (world.grounded && !prevGrounded) {
+      // Kicked up and outward from the contact point rather than radially — that's what reads as an
+      // impact instead of an explosion.
+      burst(world.x + SIZE / 2, world.y + SIZE, 9, {
+        angle: -Math.PI / 2, spread: Math.PI * 1.25,
+        speedMin: 30, speedMax: 130, sizeMin: 2, sizeMax: 5,
+        color: 'rgba(255,255,255,0.75)', gravity: 620, life: 0.35,
+      });
+    }
+    prevGrounded = world.grounded;
+
+    trail.push({ x: world.x, y: world.y, rot: world.rotation });
+    if (trail.length > TRAIL_MAX) trail.shift();
+
     // Hazards
     const py1 = world.y, py2 = world.y + SIZE;
     for (const h of level.hazards) {
@@ -432,11 +527,15 @@
   function draw() {
     if (state === 'menu' || !level) return;
 
-    // Background gradient
-    const grad = ctx.createLinearGradient(0, 0, 0, CANVAS_H);
-    grad.addColorStop(0, level.bgTop);
-    grad.addColorStop(1, level.bgBot);
-    ctx.fillStyle = grad;
+    // Background gradient, rebuilt only when the level's colours actually change rather than on
+    // every one of 60 frames a second.
+    if (bgGradKey !== level.bgTop + level.bgBot) {
+      bgGradKey = level.bgTop + level.bgBot;
+      bgGrad = ctx.createLinearGradient(0, 0, 0, CANVAS_H);
+      bgGrad.addColorStop(0, level.bgTop);
+      bgGrad.addColorStop(1, level.bgBot);
+    }
+    ctx.fillStyle = bgGrad;
     ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
     // Parallax grid squares
@@ -481,8 +580,25 @@
       }
     }
 
-    // Player
-    drawPlayer(PLAYER_SCREEN_X, world.y, world.rotation);
+    drawParticles(camX);
+
+    // Ghost trail, oldest first so the freshest ghosts sit on top of the older ones.
+    for (let i = 0; i < trail.length; i++) {
+      const t = trail[i];
+      const k = (i + 1) / trail.length;
+      ctx.save();
+      ctx.globalAlpha = k * 0.22;
+      ctx.translate(t.x - camX + SIZE / 2, t.y + SIZE / 2);
+      ctx.rotate(t.rot);
+      ctx.fillStyle = level.color;
+      const gs = SIZE * (0.55 + k * 0.4);
+      ctx.fillRect(-gs / 2, -gs / 2, gs, gs);
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+
+    // Player — drawn last so nothing overlaps it. Hidden while dead: the burst has replaced it.
+    if (state !== 'dead') drawPlayer(PLAYER_SCREEN_X, world.y, world.rotation);
   }
 
   function drawBlock(x, y, w, h, color) {
@@ -557,6 +673,11 @@
     const dt = Math.min((now - lastTime) / (1000 / 60), 3);
     lastTime = now;
     update(dt);
+    // `dt` above is in FRAMES (normalised to 60fps) — that's the unit GRAVITY/JUMP_VEL are written
+    // in. The particle system works in seconds, with speeds in px/s and lifetimes in s, so the
+    // conversion lives here and nowhere else. Run outside update()'s state gate so the death burst
+    // keeps animating through the dead-state pause, which is the only time it's on screen.
+    updateParticles(dt / 60);
     draw();
     requestAnimationFrame(loop);
   }
