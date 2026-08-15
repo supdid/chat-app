@@ -1,4 +1,4 @@
-const CACHE_NAME = 'valk-cache-v90';
+const CACHE_NAME = 'valk-cache-v91';
 const APP_SHELL = [
   '/',
   '/index.html',
