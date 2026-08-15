@@ -1878,6 +1878,29 @@ async function subscribeToPush() {
   }
 }
 
+// Called on sign-out so this device's push subscription (an app.js:711 joined-room, still
+// tied to the account they just signed out of, doesn't silently keep receiving that account's
+// friend-DM/@mention pushes. Deliberately narrower than subscribeToPush(): only re-links an
+// *existing* subscription as anonymous (server-side account_id -> null, same UPSERT either
+// path already goes through) — never creates a fresh subscription or prompts for permission,
+// since sign-out isn't the moment to ask someone who never opted into push to opt in.
+async function unlinkPushFromAccount() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+  if (Notification.permission !== 'granted') return;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const subscription = await reg.pushManager.getSubscription();
+    if (!subscription || !myProfile) return;
+    await fetch('/push/subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ roomCode: currentRoomCode || '', name: myProfile.name, subscription }),
+    });
+  } catch (err) {
+    console.error('Push unlink failed:', err);
+  }
+}
+
 function notify(name, text, options = {}) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   // Only interrupt with an OS notification when the tab isn't already being looked at — the
@@ -2159,6 +2182,7 @@ function signOutAccount() {
   if (accountToken) {
     fetch('/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${accountToken}` } }).catch(() => {});
   }
+  unlinkPushFromAccount();
   accountToken = null;
   accountUsername = null;
   localStorage.removeItem(ACCOUNT_TOKEN_KEY);

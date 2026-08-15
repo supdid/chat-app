@@ -1373,6 +1373,28 @@ const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I
 const HISTORY_LIMIT = 50;
 const MAX_GAME_PLAYERS = 20;
 const MAX_SCORPTURE_VIEWERS = 500;
+
+// Whiteboard/Pictionary points are only ever meant to be small {x, y} pixel coordinates on a
+// 900x600 canvas (see BOARD_W/BOARD_H in whiteboard.js) — the existing .slice(0, 500) only
+// capped the *count* of points, not their shape/size, so a client could send up to 500 points
+// each an arbitrarily large string/object, broadcast verbatim to every room member and (for
+// whiteboard specifically) persisted to SQLite forever. This keeps only well-formed, small,
+// in-range numeric pairs.
+const STROKE_COORD_MIN = -2000;
+const STROKE_COORD_MAX = 2000;
+function sanitizeStrokePoints(rawPoints) {
+  if (!Array.isArray(rawPoints)) return [];
+  const out = [];
+  for (const p of rawPoints.slice(0, 500)) {
+    if (!p || typeof p !== 'object') continue;
+    const x = +p.x;
+    const y = +p.y;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    if (x < STROKE_COORD_MIN || x > STROKE_COORD_MAX || y < STROKE_COORD_MIN || y > STROKE_COORD_MAX) continue;
+    out.push({ x, y });
+  }
+  return out;
+}
 const BC_MAX_HEALTH = 10;
 const BC_ARMOR_TIERS = ['Wooden', 'Stone', 'Iron', 'Gold', 'Diamond']; // must match ARMOR_REDUCTION's keys on the client
 const BC_PUNCH_RANGE = 4.5; // a little slack beyond the client's own reach check, not authoritative geometry
@@ -3217,7 +3239,7 @@ wss.on('connection', (ws) => {
       if (!dg || !dg.roundEndAt) return;
       const me = dg.players.get(ws);
       if (!me || me.id !== dg.drawerId) return;
-      const points = Array.isArray(msg.points) ? msg.points.slice(0, 500) : [];
+      const points = sanitizeStrokePoints(msg.points);
       if (!points.length) return;
       const stroke = {
         points,
@@ -3304,7 +3326,7 @@ wss.on('connection', (ws) => {
     if (msg.type === 'wb-stroke' && ws.wbRoom) {
       const room = rooms.get(ws.wbRoom);
       if (!room || !room.wb) return;
-      const points = Array.isArray(msg.points) ? msg.points.slice(0, 500) : [];
+      const points = sanitizeStrokePoints(msg.points);
       if (!points.length) return;
       const stroke = {
         id: crypto.randomUUID(),

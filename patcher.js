@@ -14,7 +14,12 @@ const ROOT = __dirname;
 // chat-app-dev sandbox copy on 3005).
 const PROJECT_DIR_NAME = path.basename(ROOT);
 const SERVER_PATH_RE = new RegExp(`/${PROJECT_DIR_NAME}/((?:server|db|patcher)\\.js|public/[\\w./-]+)`);
-const CLIENT_URL_RE = /localhost:\d+\/([\w./-]+\.js)/;
+// Was hardcoded to `localhost:\d+` — real user traffic reaches this app through a reverse
+// proxy/cloudflared tunnel (see the trust-proxy comment in server.js), so location.href (and
+// therefore every client-side error report's stack/URL) from that traffic never contains
+// "localhost", silently making self-healing a no-op for exactly the users it's meant to help.
+// Matches any origin's path instead of a specific host: "://" + host(:port), then the path.
+const CLIENT_URL_RE = /:\/\/[^/]+\/([\w./-]+\.js)/;
 
 function resolveSourceFile(errorReport) {
   const stack = errorReport.stack || '';
