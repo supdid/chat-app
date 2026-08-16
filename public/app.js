@@ -723,7 +723,6 @@ function handleServerMessage(data) {
       renameRoomInput.value = currentRoomName || '';
       renderOnlineList(data.users);
       updateGameLinks();
-      exportLink.href = `/export?code=${encodeURIComponent(data.code)}&pin=${encodeURIComponent(currentRoomPin)}`;
       saveRecentRoom(data.code, currentRoomName);
       showScreen(chatScreen);
       messageInput.focus();
@@ -2668,10 +2667,10 @@ roomPinForm.addEventListener('submit', (e) => {
   const newPin = roomPinFormInput.value.trim();
   ws.send(JSON.stringify({ type: 'set-room-pin', pin: newPin }));
   // Optimistic — the host is the one setting it, so there's no real risk of this being wrong;
-  // keeps /search, /export, and the game-page links (see updateGameLinks) working with the new
-  // PIN immediately rather than only after some other event happens to refresh them.
+  // keeps /search, the export button (reads currentRoomPin live at click time), and the
+  // game-page links (see updateGameLinks) working with the new PIN immediately rather than
+  // only after some other event happens to refresh them.
   currentRoomPin = newPin;
-  exportLink.href = `/export?code=${encodeURIComponent(currentRoomCode)}&pin=${encodeURIComponent(currentRoomPin)}`;
   updateGameLinks();
 });
 
@@ -3862,6 +3861,35 @@ qrBtn.addEventListener('click', () => {
 qrCloseBtn.addEventListener('click', () => qrOverlay.classList.add('hidden'));
 qrOverlay.addEventListener('click', (e) => {
   if (e.target === qrOverlay) qrOverlay.classList.add('hidden');
+});
+
+// POST + blob download rather than a plain <a href> navigation — the room PIN has to travel in
+// the request somehow, and a GET query string leaks it into browser history/Referer headers
+// (same concern already fixed for /search). Same fetch-then-synthetic-click pattern AI Studio's
+// own download button already uses.
+exportLink.addEventListener('click', async () => {
+  if (!currentRoomCode) return;
+  const original = exportLink.textContent;
+  exportLink.disabled = true;
+  try {
+    const res = await fetch('/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: currentRoomCode, pin: currentRoomPin }),
+    });
+    if (!res.ok) throw new Error();
+    const blob = await res.blob();
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `valk-${currentRoomCode}.txt`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  } catch {
+    exportLink.textContent = '❌ Export failed';
+    setTimeout(() => { exportLink.textContent = original; }, 2000);
+  } finally {
+    exportLink.disabled = false;
+  }
 });
 
 function renderGallery(media) {

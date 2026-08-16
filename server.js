@@ -460,11 +460,15 @@ app.post('/search', (req, res) => {
 
 // Plain-text transcript download — reuses the same room-existence check as /search,
 // and reads full history from SQLite rather than the in-memory 50-message window.
-app.get('/export', (req, res) => {
-  const code = String(req.query.code || '').toUpperCase().trim();
+// POST, not GET — a room PIN traveling in a query string (the old /export?code=&pin= shape)
+// leaks into browser history and any Referer header, same concern already fixed for /search.
+// Kept as a real download (Content-Disposition), just reached via fetch()+blob from the client
+// now instead of a plain <a href> navigation, since a GET-only <a> can't carry a POST body.
+app.post('/export', (req, res) => {
+  const code = String(req.body.code || '').toUpperCase().trim();
   const dbRoom = db.getRoom(code);
   if (!code || (!rooms.has(code) && !dbRoom)) return res.status(404).json({ error: 'Room not found' });
-  if (!roomPinOk(dbRoom, req.query.pin)) return res.status(403).json({ error: 'Incorrect or missing room PIN' });
+  if (!roomPinOk(dbRoom, req.body.pin)) return res.status(403).json({ error: 'Incorrect or missing room PIN' });
   const messages = db.getAllMessagesForExport(code);
   const roomLabel = dbRoom && dbRoom.name ? `${dbRoom.name} (${code})` : code;
   const lines = [`Valk chat export — ${roomLabel}`, `Exported ${new Date().toISOString()}`, ''];
