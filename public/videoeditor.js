@@ -94,6 +94,13 @@ let selected = { type: null, id: null }; // type: 'clip' | 'title' | 'music'
 let playheadTime = 0;
 let isPlaying = false;
 let loadedClipId = null;
+// Tracks the one-shot 'loadedmetadata' listener seekTo() attaches below, so a fresh seek that
+// reassigns previewVideo.src before the previous load finished (rapid scrubbing across clip
+// boundaries) removes the stale listener instead of leaving it attached forever — an aborted
+// load never fires 'loadedmetadata', so the self-removing `once` pattern alone doesn't clean it
+// up, and it can occasionally still fire late (e.g. a cached load) and snap the preview to a
+// stale time after the user has already moved on.
+let pendingSeekListener = null;
 let dragCtx = null;
 
 const PX_PER_SEC = 55;
@@ -1230,10 +1237,13 @@ function seekTo(t, opts = {}) {
     previewVideo.src = found.clip.url;
     previewVideo.playbackRate = found.clip.speed;
     previewVideo.volume = clamp01(found.clip.volume / 100);
-    previewVideo.addEventListener('loadedmetadata', function onReady() {
+    if (pendingSeekListener) previewVideo.removeEventListener('loadedmetadata', pendingSeekListener);
+    pendingSeekListener = function onReady() {
       previewVideo.currentTime = localTime;
       previewVideo.removeEventListener('loadedmetadata', onReady);
-    });
+      pendingSeekListener = null;
+    };
+    previewVideo.addEventListener('loadedmetadata', pendingSeekListener);
   } else {
     previewVideo.currentTime = localTime;
     previewVideo.playbackRate = found.clip.speed;
@@ -1278,13 +1288,19 @@ function advanceToNextClip() {
   const next = clips[idx + 1];
   loadedClipId = next.id;
   previewVideo.src = next.url;
-  previewVideo.addEventListener('loadedmetadata', function onReady() {
+  // Same stale-listener risk as seekTo() above (this fires on every clip-to-clip transition
+  // during normal playback, so it's the more likely everyday trigger of the two) — reuses the
+  // same tracking variable since both mutate previewVideo.src the same way.
+  if (pendingSeekListener) previewVideo.removeEventListener('loadedmetadata', pendingSeekListener);
+  pendingSeekListener = function onReady() {
     previewVideo.currentTime = next.trimStart;
     previewVideo.playbackRate = next.speed;
     previewVideo.volume = clamp01(next.volume / 100);
     previewVideo.play().catch(() => {});
     previewVideo.removeEventListener('loadedmetadata', onReady);
-  });
+    pendingSeekListener = null;
+  };
+  previewVideo.addEventListener('loadedmetadata', pendingSeekListener);
 }
 
 previewVideo.addEventListener('timeupdate', () => {
@@ -1392,6 +1408,18 @@ let stepIndex = 0;
 let totalSteps = 1;
 let probingAudio = false;
 
+// A stalled connection (accepted but never completing — plausible on a flaky connection or an
+// unpkg hiccup) leaves both toBlobURL's fetch and ffmpeg.load()'s own internal setup with no
+// error to catch, so without a hard ceiling the loading banner and disabled workspace would sit
+// there indefinitely with no way out short of reloading the page.
+const FFMPEG_LOAD_TIMEOUT_MS = 45000;
+function withTimeout(promise, ms, message) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms)),
+  ]);
+}
+
 async function initFfmpeg() {
   try {
     const { FFmpeg } = FFmpegWASM;
@@ -1404,10 +1432,13 @@ async function initFfmpeg() {
       renderProgressFill.style.width = `${Math.round(overall * 100)}%`;
     });
     const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
-    await ffmpeg.load({
-      coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-      wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-    });
+    await withTimeout((async () => {
+      const [coreURL, wasmURL] = await Promise.all([
+        toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+        toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+      ]);
+      await ffmpeg.load({ coreURL, wasmURL });
+    })(), FFMPEG_LOAD_TIMEOUT_MS, 'Timed out loading the video engine — check your internet connection and reload the page.');
     ffmpegReady = true;
     loadBanner.classList.add('hidden');
     workspace.classList.remove('hidden');

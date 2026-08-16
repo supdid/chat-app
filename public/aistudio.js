@@ -248,24 +248,33 @@ function drawCaption(ctx, text, canvasW, canvasH, position) {
 // response or the load fails outright — only worth that risk when we actually need
 // to read the pixels back out (canvas, for meme captions). A plain picture should
 // never be held to that stricter standard.
+// Pollinations is a free, unauthenticated third-party API with no uptime guarantee — a stalled
+// connection (accepted but never completed) would otherwise leave onload/onerror both silent
+// forever, hanging the loading screen and the disabled Generate button with no way out short of
+// reloading the page.
+const IMAGE_LOAD_TIMEOUT_MS = 25000;
 function loadImage(url, needsCors) {
   return new Promise((resolve, reject) => {
     const img = new Image();
+    const timer = setTimeout(() => reject(new Error('Timed out waiting for the image')), IMAGE_LOAD_TIMEOUT_MS);
     if (needsCors) img.crossOrigin = 'anonymous';
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('image failed to load'));
+    img.onload = () => { clearTimeout(timer); resolve(img); };
+    img.onerror = () => { clearTimeout(timer); reject(new Error('image failed to load')); };
     img.src = url;
   });
 }
 
 // Loads the generated background; if it's a meme with caption text, composites the
 // text onto a canvas and uploads the result (via the existing /upload endpoint) so it
-// gets a real, shareable URL instead of a giant data: URL.
+// gets a real, shareable URL instead of a giant data: URL. Returns { url, captioned } rather
+// than a bare url — every fallback path below still shows *a* picture rather than failing the
+// whole generation, but the caller needs to know when captions were silently dropped so it can
+// tell the user instead of claiming full success on a picture their typed captions never reached.
 async function loadAndMaybeComposite(bgUrl, topText, bottomText) {
   const needsComposite = !!(topText || bottomText);
   if (!needsComposite) {
     await loadImage(bgUrl, false);
-    return bgUrl;
+    return { url: bgUrl, captioned: false };
   }
 
   let img;
@@ -276,7 +285,7 @@ async function loadAndMaybeComposite(bgUrl, topText, bottomText) {
     // time) — fall back to a plain load without captions rather than failing the whole
     // generation over a picture that would otherwise have displayed just fine.
     await loadImage(bgUrl, false);
-    return bgUrl;
+    return { url: bgUrl, captioned: false };
   }
 
   try {
@@ -288,18 +297,25 @@ async function loadAndMaybeComposite(bgUrl, topText, bottomText) {
     if (topText) drawCaption(ctx, topText, canvas.width, canvas.height, 'top');
     if (bottomText) drawCaption(ctx, bottomText, canvas.width, canvas.height, 'bottom');
     const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92));
-    if (!blob) return bgUrl;
+    if (!blob) return { url: bgUrl, captioned: false };
     const formData = new FormData();
     formData.append('file', blob, 'meme.jpg');
     const res = await fetch('/upload', { method: 'POST', body: formData });
     const data = await res.json();
-    return res.ok && data.url ? data.url : bgUrl;
+    return res.ok && data.url ? { url: data.url, captioned: true } : { url: bgUrl, captioned: false };
   } catch {
-    return bgUrl; // canvas blocked, or the upload failed — fall back to the plain picture
+    return { url: bgUrl, captioned: false }; // canvas blocked, or the upload failed — fall back to the plain picture
   }
 }
 
+// Bumped on every generate() call *and* every gallery click (see addToGallery's click handler)
+// so a still-in-flight generate() can tell, once it finally resolves, whether the user has since
+// navigated to a different view (a gallery item) — without this, a slow Pollinations response
+// would silently overwrite whatever the user is currently looking at moments later.
+let viewToken = 0;
+
 async function generate(prompt, seed, topText, bottomText) {
+  const myToken = ++viewToken;
   errorEl.classList.add('hidden');
   resultCard.classList.remove('hidden');
   resultLoading.classList.remove('hidden');
@@ -312,7 +328,11 @@ async function generate(prompt, seed, topText, bottomText) {
   const bgUrl = buildImageUrl(styledPrompt, seed);
 
   try {
-    const finalUrl = await loadAndMaybeComposite(bgUrl, topText, bottomText);
+    const { url: finalUrl, captioned } = await loadAndMaybeComposite(bgUrl, topText, bottomText);
+    addToGallery(finalUrl, prompt);
+    generateBtn.disabled = false;
+    regenerateBtn.disabled = false;
+    if (myToken !== viewToken) return; // user has since browsed to a different view — result still saved above, just don't yank the display out from under them
     currentPrompt = prompt;
     currentUrl = finalUrl;
     resultImg.src = finalUrl;
@@ -323,10 +343,18 @@ async function generate(prompt, seed, topText, bottomText) {
       resultLoading.classList.add('hidden');
       resultImg.classList.remove('hidden');
     }, 200);
+    if (topText || bottomText) {
+      if (captioned) {
+        errorEl.classList.add('hidden');
+      } else {
+        errorEl.textContent = "Picture generated, but the captions couldn't be added this time — here's the plain picture instead.";
+        errorEl.classList.remove('hidden');
+      }
+    }
+  } catch {
     generateBtn.disabled = false;
     regenerateBtn.disabled = false;
-    addToGallery(finalUrl, prompt);
-  } catch {
+    if (myToken !== viewToken) return;
     stopLoadingAnimation(false);
     resultLoading.classList.add('hidden');
     // If a previous generation is still showing (this was a Regenerate attempt), keep it
@@ -337,8 +365,6 @@ async function generate(prompt, seed, topText, bottomText) {
     } else {
       resultCard.classList.add('hidden');
     }
-    generateBtn.disabled = false;
-    regenerateBtn.disabled = false;
     errorEl.textContent = 'Could not generate a picture — the free service may be busy. Try again in a moment.';
     errorEl.classList.remove('hidden');
   }
@@ -449,6 +475,7 @@ function renderGallery() {
     img.alt = item.prompt;
     img.loading = 'lazy';
     img.addEventListener('click', () => {
+      viewToken++; // invalidate any still-in-flight generate() so it can't overwrite this view later
       currentPrompt = item.prompt;
       currentUrl = item.url;
       promptInput.value = item.prompt;

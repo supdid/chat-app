@@ -318,6 +318,15 @@ const upload = multer({
   },
 });
 
+// Defense-in-depth for /uploads: the upload filter already derives the saved extension from a
+// fixed mimetype map rather than trusting the client (see SAFE_UPLOAD_EXT above), so this isn't
+// closing a live hole through the UI itself — but nosniff stops a browser from ever second-
+// guessing a served file's declared Content-Type based on its bytes, which is the standard
+// defense against a crafted direct request landing a mismatched file in /uploads/.
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  next();
+});
 app.use(express.static(path.join(__dirname, 'public')));
 
 // The WS join-room handler is the only place that used to check a room's PIN — these four plain
