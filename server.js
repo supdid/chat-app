@@ -746,6 +746,28 @@ function isErrorReportRateLimited(req) {
   return false;
 }
 
+// /friends/* actions require a signed-in account but were otherwise unthrottled — unlike
+// /auth/signup itself, accounts are cheap and self-service, so this was still reachable at full
+// speed. Each 404-vs-non-404 response is also a fast username-enumeration oracle; this doesn't
+// close that (would need a uniform response either way, a bigger behavior change), just stops it
+// from being queried at unlimited speed. Same per-IP Map pattern as the limiters above.
+const friendsActionRateLimits = new Map();
+const FRIENDS_ACTION_WINDOW_MS = 60000;
+const FRIENDS_ACTION_MAX = 20;
+function isFriendsActionRateLimited(req) {
+  const ip = req.ip || 'unknown';
+  const now = Date.now();
+  const timestamps = (friendsActionRateLimits.get(ip) || []).filter((t) => now - t < FRIENDS_ACTION_WINDOW_MS);
+  if (timestamps.length >= FRIENDS_ACTION_MAX) {
+    friendsActionRateLimits.set(ip, timestamps);
+    return true;
+  }
+  timestamps.push(now);
+  friendsActionRateLimits.set(ip, timestamps);
+  if (friendsActionRateLimits.size > 10000) friendsActionRateLimits.clear();
+  return false;
+}
+
 app.post('/auth/signup', (req, res) => {
   if (isAuthRateLimited(req)) return res.status(429).json({ error: 'Too many attempts — try again in a minute' });
   const username = String(req.body.username || '').trim();
@@ -903,6 +925,7 @@ app.get('/friends', (req, res) => {
 });
 
 app.post('/friends/request', (req, res) => {
+  if (isFriendsActionRateLimited(req)) return res.status(429).json({ error: 'Too many attempts — try again in a minute' });
   const account = getAccountFromReq(req);
   if (!account) return res.status(401).json({ error: 'Not signed in' });
   const target = db.getAccountByUsername(String(req.body.username || '').trim());
@@ -923,6 +946,7 @@ app.post('/friends/request', (req, res) => {
 });
 
 app.post('/friends/accept', (req, res) => {
+  if (isFriendsActionRateLimited(req)) return res.status(429).json({ error: 'Too many attempts — try again in a minute' });
   const account = getAccountFromReq(req);
   if (!account) return res.status(401).json({ error: 'Not signed in' });
   const target = db.getAccountByUsername(String(req.body.username || '').trim());
@@ -938,6 +962,7 @@ app.post('/friends/accept', (req, res) => {
 // Also used to decline an incoming request and to cancel one you sent — same "remove whatever
 // relationship exists" operation either way.
 app.post('/friends/remove', (req, res) => {
+  if (isFriendsActionRateLimited(req)) return res.status(429).json({ error: 'Too many attempts — try again in a minute' });
   const account = getAccountFromReq(req);
   if (!account) return res.status(401).json({ error: 'Not signed in' });
   const target = db.getAccountByUsername(String(req.body.username || '').trim());
@@ -947,6 +972,7 @@ app.post('/friends/remove', (req, res) => {
 });
 
 app.post('/friends/block', (req, res) => {
+  if (isFriendsActionRateLimited(req)) return res.status(429).json({ error: 'Too many attempts — try again in a minute' });
   const account = getAccountFromReq(req);
   if (!account) return res.status(401).json({ error: 'Not signed in' });
   const target = db.getAccountByUsername(String(req.body.username || '').trim());
@@ -957,6 +983,7 @@ app.post('/friends/block', (req, res) => {
 });
 
 app.post('/friends/unblock', (req, res) => {
+  if (isFriendsActionRateLimited(req)) return res.status(429).json({ error: 'Too many attempts — try again in a minute' });
   const account = getAccountFromReq(req);
   if (!account) return res.status(401).json({ error: 'Not signed in' });
   const target = db.getAccountByUsername(String(req.body.username || '').trim());
