@@ -84,7 +84,16 @@ if (localStorage.getItem('valk-account-token')) sendScorptureBtn.classList.remov
 
 // --- State ---
 let clips = [];       // { id, file, name, url, duration, width, height, trimStart, trimEnd, speed, volume, thumb }
-let overlays = [];    // { id, text, start, end, pos, color }  -- times are in project (global) seconds
+// { id, text, start, end, pos, color, clipId, localStart, localEnd } -- start/end are in project
+// (global) seconds, but those are *derived*: they shift whenever a clip before this overlay is
+// reordered, trimmed, split, or deleted, since every clip's global start position depends on
+// every earlier clip's current length. clipId/localStart/localEnd (offsets from that clip's own
+// global start, at the time the overlay was last placed/edited — see reanchorOverlay) are the
+// actual source of truth for "where this caption belongs relative to the footage"; start/end get
+// recomputed from them via syncOverlaysToClips() after any clip-structure change, so a caption
+// stays over the same footage instead of silently drifting onto whatever now occupies its old
+// absolute-time slot.
+let overlays = [];
 let music = null;     // { file, name, volume, url }
 let musicAudioEl = null;
 let resultBlob = null;
@@ -228,6 +237,7 @@ addTitleBtn.addEventListener('click', () => {
   const start = Math.min(playheadTime, Math.max(0, total - 2));
   const end = Math.min(total, start + 2);
   const ov = { id: uid(), text: 'Title', start, end, pos: 'bottom', color: '#ffffff' };
+  reanchorOverlay(ov);
   overlays.push(ov);
   renderTimeline();
   selectItem('title', ov.id);
@@ -610,6 +620,7 @@ deleteSelectedBtn.addEventListener('click', () => {
       // already-loaded clip never self-heals).
       const stillReferenced = clips.some((c) => c.url === clip.url);
       if (!stillReferenced) URL.revokeObjectURL(clip.url);
+      syncOverlaysToClips();
     }
   } else if (selected.type === 'title') {
     overlays = overlays.filter((o) => o.id !== selected.id);
@@ -661,6 +672,7 @@ function renderInspector() {
       let v = parseFloat(startInput.value) || 0;
       v = Math.max(0, Math.min(v, clip.trimEnd - 0.1));
       clip.trimStart = v;
+      syncOverlaysToClips();
       renderTimeline();
       refreshPreviewForEdits();
     });
@@ -678,6 +690,7 @@ function renderInspector() {
       let v = parseFloat(endInput.value) || 0;
       v = Math.max(clip.trimStart + 0.1, Math.min(v, clip.duration));
       clip.trimEnd = v;
+      syncOverlaysToClips();
       renderTimeline();
       refreshPreviewForEdits();
     });
@@ -753,6 +766,7 @@ function renderInspector() {
       let v = parseFloat(startInput.value) || 0;
       v = Math.max(0, Math.min(v, ov.end - 0.2));
       ov.start = v;
+      reanchorOverlay(ov);
       renderTimeline();
       updateCaptions(playheadTime);
     });
@@ -769,6 +783,7 @@ function renderInspector() {
       let v = parseFloat(endInput.value) || 0;
       v = Math.max(ov.start + 0.2, Math.min(v, totalDuration()));
       ov.end = v;
+      reanchorOverlay(ov);
       renderTimeline();
       updateCaptions(playheadTime);
     });
@@ -980,6 +995,7 @@ function onClipDragMove(e) {
   if (targetIdx !== idx) {
     const [moved] = clips.splice(idx, 1);
     clips.splice(targetIdx, 0, moved);
+    syncOverlaysToClips();
     renderTimeline();
   }
   const block = trackVideo.querySelector(`[data-clip-id="${dragCtx.clipId}"]`);
@@ -1017,6 +1033,7 @@ function onTrimMove(e) {
     v = Math.max(clip.trimStart + 0.1, Math.min(v, clip.duration));
     clip.trimEnd = v;
   }
+  syncOverlaysToClips();
   renderTimeline();
 }
 
@@ -1064,6 +1081,8 @@ function onTitleDragMove(e) {
 function onTitleDragEnd() {
   window.removeEventListener('pointermove', onTitleDragMove);
   window.removeEventListener('pointerup', onTitleDragEnd);
+  const ov = dragCtx && dragCtx.type === 'title' ? overlays.find((o) => o.id === dragCtx.titleId) : null;
+  if (ov) reanchorOverlay(ov);
   dragCtx = null;
   renderInspector();
   updateCaptions(playheadTime);
@@ -1113,6 +1132,33 @@ function findClipAt(t) {
     if (t >= starts[i] - 1e-6) return { index: i, clip: clips[i], clipStart: starts[i] };
   }
   return { index: 0, clip: clips[0], clipStart: 0 };
+}
+
+// Re-establishes an overlay's clip anchor from its current absolute start — called whenever the
+// user directly places/moves/resizes a title (creation, drag, or the inspector's start/end
+// fields), so the *next* clip-structure change has a fresh, correct anchor to recompute from.
+function reanchorOverlay(ov) {
+  const found = findClipAt(ov.start);
+  if (!found) return;
+  ov.clipId = found.clip.id;
+  ov.localStart = ov.start - found.clipStart;
+  ov.localEnd = ov.end - found.clipStart;
+}
+
+// Recomputes every overlay's absolute start/end from its clip anchor — call after any edit that
+// changes clip order, trim, or count (reorder, trim, split, delete), since those all shift where
+// "this clip's global start" actually is. An overlay whose anchor clip no longer exists (that
+// clip was deleted) is dropped rather than left pointing at whatever footage now occupies its
+// stale absolute-time slot.
+function syncOverlaysToClips() {
+  const starts = clipGlobalStarts();
+  overlays = overlays.filter((ov) => {
+    const idx = clips.findIndex((c) => c.id === ov.clipId);
+    if (idx === -1) return false;
+    ov.start = starts[idx] + ov.localStart;
+    ov.end = starts[idx] + ov.localEnd;
+    return true;
+  });
 }
 
 function updateTimeReadout() {
@@ -1196,6 +1242,7 @@ function splitAtPlayhead() {
   const firstPart = { ...clip, trimEnd: localSplitTime };
   const secondPart = { ...clip, id: uid(), trimStart: localSplitTime };
   clips.splice(idx, 1, firstPart, secondPart);
+  syncOverlaysToClips();
 
   renderTimeline();
   selectItem('clip', secondPart.id);
