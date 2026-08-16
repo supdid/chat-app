@@ -1385,6 +1385,7 @@ function endScorptureLive(accountId) {
     send(viewerWs, { type: 'scorpture-stream-ended' });
     viewerWs.scorptureStreamerAccountId = null;
     viewerWs.scorptureViewerId = null;
+    viewerWs._scorptureViewerIp = null;
   }
 }
 
@@ -1395,8 +1396,14 @@ function leaveScorptureLive(ws) {
   const stream = liveStreams.get(ws.scorptureStreamerAccountId);
   if (stream && ws.scorptureViewerId) {
     stream.viewers.delete(ws.scorptureViewerId);
+    if (stream.viewerIps && ws._scorptureViewerIp) {
+      const n = (stream.viewerIps.get(ws._scorptureViewerIp) || 1) - 1;
+      if (n <= 0) stream.viewerIps.delete(ws._scorptureViewerIp);
+      else stream.viewerIps.set(ws._scorptureViewerIp, n);
+    }
     send(stream.ws, { type: 'scorpture-viewer-left', viewerId: ws.scorptureViewerId });
   }
+  ws._scorptureViewerIp = null;
   ws.scorptureStreamerAccountId = null;
   ws.scorptureViewerId = null;
 }
@@ -1460,6 +1467,7 @@ const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I
 const HISTORY_LIMIT = 50;
 const MAX_GAME_PLAYERS = 20;
 const MAX_SCORPTURE_VIEWERS = 500;
+const MAX_SCORPTURE_VIEWERS_PER_IP = 8;
 
 // Whiteboard/Pictionary points are only ever meant to be small {x, y} pixel coordinates on a
 // 900x600 canvas (see BOARD_W/BOARD_H in whiteboard.js) — the existing .slice(0, 500) only
@@ -2313,7 +2321,13 @@ function leaveWb(ws) {
   ws.wbRoom = null;
 }
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
+  // Only used to defend against a single IP claiming an outsized share of one stream's
+  // viewer slots (see MAX_SCORPTURE_VIEWERS_PER_IP below) — 'trust proxy' above only affects
+  // req.ip on HTTP routes, not this raw upgrade request, so the X-Forwarded-For header (set by
+  // the same local reverse proxy) is read directly here.
+  const xff = req.headers['x-forwarded-for'];
+  ws._ip = (xff ? xff.split(',')[0].trim() : null) || req.socket.remoteAddress || 'unknown';
   ws.on('message', (raw) => {
     let msg;
     try {
@@ -2360,14 +2374,26 @@ wss.on('connection', (ws) => {
       const title = String(msg.title || 'Untitled stream').slice(0, 100).trim() || 'Untitled stream';
       const account = db.getAccountById(ws.accountId);
       if (!account) return;
-      liveStreams.set(ws.accountId, { ws, username: account.username, title, startedAt: Date.now(), viewers: new Map() });
+      // A stale tab still registered as this account's live stream (e.g. a second tab, or this
+      // same tab calling go-live again after a reconnect) must be properly torn down — its
+      // viewers notified via endScorptureLive — before this one takes over. Without this, the
+      // stale tab's later close/end-live would blow away *this* stream's viewers instead of its
+      // own, since both were only ever keyed by accountId with no way to tell tabs apart.
+      if (liveStreams.has(ws.accountId)) endScorptureLive(ws.accountId);
+      liveStreams.set(ws.accountId, { ws, username: account.username, title, startedAt: Date.now(), viewers: new Map(), viewerIps: new Map() });
       send(ws, { type: 'scorpture-go-live-ack', ok: true });
       notifyScorptureSubscribers(ws.accountId, { title: `${account.username} is live`, body: title });
       return;
     }
 
     if (msg.type === 'scorpture-end-live') {
-      if (ws.accountId) endScorptureLive(ws.accountId);
+      // Only end the stream if this connection is the one actually on file — a stale/superseded
+      // tab (see scorpture-go-live above) explicitly ending "its" stream must not tear down a
+      // newer one that already replaced it.
+      if (ws.accountId) {
+        const stream = liveStreams.get(ws.accountId);
+        if (stream && stream.ws === ws) endScorptureLive(ws.accountId);
+      }
       return;
     }
 
@@ -2389,6 +2415,18 @@ wss.on('connection', (ws) => {
         send(ws, { type: 'scorpture-watch-ack', live: false });
         return;
       }
+      // No sign-in is required to watch (by design — anonymous spectating), so there's nothing
+      // to rate-limit auth attempts against; instead cap concurrent viewer slots per IP so one
+      // machine can't force the streamer's browser to open hundreds of RTCPeerConnections or eat
+      // a large share of the global MAX_SCORPTURE_VIEWERS budget.
+      const viewerIp = ws._ip || 'unknown';
+      const ipCount = stream.viewerIps.get(viewerIp) || 0;
+      if (ipCount >= MAX_SCORPTURE_VIEWERS_PER_IP) {
+        send(ws, { type: 'scorpture-watch-ack', live: false });
+        return;
+      }
+      stream.viewerIps.set(viewerIp, ipCount + 1);
+      ws._scorptureViewerIp = viewerIp;
       const viewerId = crypto.randomUUID();
       stream.viewers.set(viewerId, ws);
       ws.scorptureStreamerAccountId = streamerAccount.id;
@@ -4279,7 +4317,14 @@ wss.on('connection', (ws) => {
     if (ws.chRoom) leaveCh(ws);
     if (ws.hmRoom) leaveHm(ws);
     if (ws.arcadeRoom && ws.arcadeName) clearRoomActivity(ws.arcadeRoom, ws.arcadeName);
-    if (ws.accountId && liveStreams.has(ws.accountId)) endScorptureLive(ws.accountId);
+    // Only end the stream if this closing socket is the one actually on file — see the identity
+    // guard added to scorpture-go-live/scorpture-end-live above; without it, a stale tab that had
+    // already been superseded by a newer "go live" from the same account would kill the newer,
+    // actually-live stream's real viewers the moment it finally closed.
+    if (ws.accountId) {
+      const liveStream = liveStreams.get(ws.accountId);
+      if (liveStream && liveStream.ws === ws) endScorptureLive(ws.accountId);
+    }
     leaveScorptureLive(ws);
   });
 });

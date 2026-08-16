@@ -978,10 +978,17 @@ async function handleViewerJoined(viewerId) {
     if (!e.candidate) return;
     wsSend({ type: 'scorpture-signal', viewerId, signal: { kind: 'ice', candidate: iceToJson(e.candidate) } });
   };
+  await renegotiatePeer(pc, viewerId);
+  updateViewerCountUI();
+}
+
+// Shared by the initial join above and switchGoLiveSource's mid-stream audio-track add below —
+// the viewer side already handles an incoming 'offer' the same way whether it's the first one or
+// a renegotiation (see handleSignal), so no separate protocol path is needed for this.
+async function renegotiatePeer(pc, viewerId) {
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
   wsSend({ type: 'scorpture-signal', viewerId, signal: { kind: 'offer', sdp: pc.localDescription.sdp } });
-  updateViewerCountUI();
 }
 
 function handleViewerLeft(viewerId) {
@@ -1128,7 +1135,22 @@ async function startGoLive(useScreen) {
       try {
         const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus') ? 'video/webm;codecs=vp9,opus' : 'video/webm';
         const recorder = new MediaRecorder(compositedStream, { mimeType });
-        recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) recordedChunks.push(e.data); };
+        // A recording that grows past the shared /upload endpoint's size cap doesn't get
+        // truncated — it fails to upload *at all* when the stream finally ends, silently losing
+        // the entire recording (see saveRecordingAsVideo's own fallback below for when that
+        // still happens some other way). Stop recording proactively before that point instead;
+        // the live stream itself is unaffected, only further footage stops being captured.
+        const MAX_RECORDING_BYTES = 280 * 1024 * 1024; // stay safely under the shared 300MB cap
+        let recordedBytes = 0;
+        recorder.ondataavailable = (e) => {
+          if (!e.data || e.data.size === 0) return;
+          recordedChunks.push(e.data);
+          recordedBytes += e.data.size;
+          if (recordedBytes >= MAX_RECORDING_BYTES && recorder.state !== 'inactive') {
+            recorder.stop();
+            showToast("Recording stopped automatically (max size reached) — you're still live, but further footage won't be saved.");
+          }
+        };
         recorder.start(1000);
         broadcastState.recorder = recorder;
       } catch {
@@ -1151,10 +1173,25 @@ async function switchGoLiveSource(useScreen) {
     const newRawStream = useScreen
       ? await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
       : await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-    // Audio keeps coming from the original source (the mic) the whole time — only the video feed
-    // powering the compositing canvas changes — so the fresh audio track this request also
-    // grabbed is unused; stop it immediately rather than leaving an extra live capture open.
-    for (const track of newRawStream.getAudioTracks()) track.stop();
+    // Audio normally keeps coming from the original source (the mic) the whole time — only the
+    // video feed powering the compositing canvas changes — so the fresh audio track this request
+    // also grabbed is usually unused. *Except*: if the session went live with no audio track at
+    // all (e.g. started via "Share screen" without opting into "share system audio", the common
+    // case since that's an extra checkbox in the OS/browser picker), there's nothing to keep
+    // coming from, and the broadcast would otherwise stay silent for its entire remaining
+    // duration even after switching to a source — like the camera — that does provide audio.
+    const newAudioTracks = newRawStream.getAudioTracks();
+    if (broadcastState.localStream.getAudioTracks().length === 0 && newAudioTracks.length > 0) {
+      const [audioTrack, ...extraAudioTracks] = newAudioTracks;
+      broadcastState.localStream.addTrack(audioTrack);
+      for (const [viewerId, pc] of broadcastState.peers) {
+        pc.addTrack(audioTrack, broadcastState.localStream);
+        await renegotiatePeer(pc, viewerId);
+      }
+      for (const track of extraAudioTracks) track.stop();
+    } else {
+      for (const track of newAudioTracks) track.stop();
+    }
     for (const track of broadcastState.rawStream.getVideoTracks()) track.stop();
     broadcastState.rawStream = newRawStream;
     broadcastState.sourceVideo.srcObject = newRawStream;
@@ -1205,8 +1242,23 @@ async function saveRecordingAsVideo(chunks, title) {
     });
     showToast('Your stream was saved to your channel as a video!');
   } catch (err) {
-    showToast(`Couldn't save the recording: ${err.message}`);
+    // The recording only ever existed in this tab's memory — if saving it to the server failed
+    // for any reason (hit the shared /upload size cap, a network hiccup, whatever), that's the
+    // only copy anywhere. Offer a local download instead of silently losing it outright.
+    offerRecordingDownload(blob, title);
+    showToast("Couldn't save to your channel — downloading it to this device instead.");
   }
+}
+
+function offerRecordingDownload(blob, title) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${(title || 'stream').replace(/[^a-z0-9-_]+/gi, '_').slice(0, 60) || 'stream'}.webm`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 // ---- Viewer side ----
