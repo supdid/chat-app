@@ -2606,6 +2606,15 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'bc-block' && ws.bcRoom) {
       const room = rooms.get(ws.bcRoom);
       if (!room || !room.bc) return;
+      // Land-claim protection was previously enforced client-side only (buildcraft.js's own
+      // isCellClaimedByOther checks before ever sending bc-block) — a raw WS client bypassing
+      // that JS entirely (or a modified build) could ignore claims completely, since this handler
+      // never checked them itself. me.name may be undefined for a connection that reconnected
+      // mid-session without a fresh bc-join; in that case fall back to rejecting any claimed cell
+      // outright rather than risking a false "it's mine" match on an empty owner string.
+      const me = room.bc.players.get(ws);
+      const claims = room.bc.claims || [];
+      const isClaimedByOther = (x, z) => claims.some((c) => (!me || c.owner !== me.name) && Math.hypot(x - c.x, z - c.z) <= c.radius);
       const rawChanges = Array.isArray(msg.changes) ? msg.changes.slice(0, 2000) : [];
       const validChanges = [];
       const persistEntries = [];
@@ -2619,6 +2628,7 @@ wss.on('connection', (ws, req) => {
         // let someone pile up thousands of garbage entries at the boundary).
         const bx = c.x | 0, by = c.y | 0, bz = c.z | 0;
         if (Math.abs(bx) > BC_MAX_COORD || Math.abs(by) > BC_MAX_COORD || Math.abs(bz) > BC_MAX_COORD) continue;
+        if (isClaimedByOther(bx, bz)) continue;
         const key = `${bx},${by},${bz}`;
         room.bc.overrides.set(key, type);
         persistEntries.push([key, type]);
