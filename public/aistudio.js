@@ -474,7 +474,12 @@ function renderGallery() {
     img.src = item.url;
     img.alt = item.prompt;
     img.loading = 'lazy';
-    img.addEventListener('click', () => {
+    // tabindex + role + Enter/Space handler — a plain <img> with only a click listener is
+    // invisible to keyboard navigation; a keyboard-only user could Tab to the "Remove" button
+    // next to it but never open the image itself.
+    img.tabIndex = 0;
+    img.setAttribute('role', 'button');
+    const openGalleryItem = () => {
       viewToken++; // invalidate any still-in-flight generate() so it can't overwrite this view later
       currentPrompt = item.prompt;
       currentUrl = item.url;
@@ -486,6 +491,10 @@ function renderGallery() {
       resultImg.alt = item.prompt;
       resultPrompt.textContent = `"${item.prompt}"`;
       resultCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    };
+    img.addEventListener('click', openGalleryItem);
+    img.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openGalleryItem(); }
     });
 
     const removeBtn = document.createElement('button');

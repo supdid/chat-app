@@ -1847,6 +1847,14 @@ scorpturePublishSubmit.addEventListener('click', async () => {
   }
 });
 
+// --- Escape closes whichever overlay is open --- (same fix already applied to the main chat
+// page's overlays this session — this page had none of its own until now)
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (!musicPickerOverlay.classList.contains('hidden')) musicPickerCloseBtn.click();
+  if (!scorptureOverlay.classList.contains('hidden')) scorptureCloseBtn.click();
+});
+
 // --- Initial render ---
 renderTimeline();
 renderInspector();

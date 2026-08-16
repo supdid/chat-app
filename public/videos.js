@@ -1641,6 +1641,20 @@ scorptureAdminSaveBtn.addEventListener('click', async () => {
   }
 });
 
+// --- Escape closes whichever modal/panel is open --- (same fix already applied to the main chat
+// page's overlays this session — this page had none of its own until now). goLiveModal goes
+// through hideGoLiveModal() specifically, not a plain classList toggle — that function is what
+// makes "closing" safe once you're actually live (tucks into the mini widget instead of ending
+// the stream), so Escape gets that same safe behavior rather than a raw hide.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (!uploadModal.classList.contains('hidden')) uploadCloseBtn.click();
+  if (!editVideoModal.classList.contains('hidden')) editCloseBtn.click();
+  if (!goLiveModal.classList.contains('hidden')) goLiveCloseBtn.click();
+  if (!scorptureAdminModal.classList.contains('hidden')) scorptureAdminCloseBtn.click();
+  if (!liveChatWidget.classList.contains('hidden')) liveChatWidgetCloseBtn.click();
+});
+
 // ---------- Boot ----------
 connectWs();
 refreshAccount();
