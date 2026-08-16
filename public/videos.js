@@ -1459,13 +1459,16 @@ function appendLiveChatMessage(data) {
 }
 
 function handleWatchAck(data) {
-  const titleEl = document.getElementById('live-title');
-  if (!titleEl) return;
-  titleEl.textContent = data.live ? data.title : `${watchState ? watchState.username : 'This channel'} isn't live right now.`;
+  // Peer-connection cleanup must not depend on this DOM lookup succeeding — decoupled so a
+  // future refactor of the watch page's markup can't silently reintroduce a leaked RTCPeerConnection.
+  const offlineUsername = watchState ? watchState.username : 'This channel';
   if (!data.live && watchState) {
     watchState.pc.close();
     watchState = null;
   }
+  const titleEl = document.getElementById('live-title');
+  if (!titleEl) return;
+  titleEl.textContent = data.live ? data.title : `${offlineUsername} isn't live right now.`;
 }
 
 // Offer/answer and ICE candidates travel over the same ordered WebSocket, but that doesn't

@@ -3155,6 +3155,7 @@ function hitMob(mob) {
   setTimeout(() => mob.group.scale.setScalar(1), 80);
   if (mob.health <= 0) {
     scene.remove(mob.group);
+    bcDisposeAvatarGroup(mob.group);
     const idx = mobs.indexOf(mob);
     if (idx !== -1) mobs.splice(idx, 1);
     playMobDeathSfx();

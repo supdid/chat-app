@@ -21,6 +21,11 @@
   const GRAVITY = 0.5;
   const JUMP_VEL = -9.5;
   const FALL_DEATH_Y = CANVAS_H + 80;
+  // Without a cap, vy accumulates unbounded across frames — a tab hitch/GC pause (loop()'s dt
+  // clamp allows up to 3 frame-units per tick) could in principle build enough fall speed to skip
+  // past a thin platform or spike hitbox in one frame, since collision here is a discrete
+  // end-of-frame check, not a swept one.
+  const TERMINAL_VY = 20;
 
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
@@ -459,7 +464,7 @@
     wantJump = false;
 
     const prevBottom = world.y + SIZE;
-    world.vy += GRAVITY * dt;
+    world.vy = Math.min(world.vy + GRAVITY * dt, TERMINAL_VY);
     world.y += world.vy * dt;
 
     // Rotation while airborne

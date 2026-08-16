@@ -2218,6 +2218,14 @@ function signOutAccount() {
   accountUsername = null;
   localStorage.removeItem(ACCOUNT_TOKEN_KEY);
   localStorage.removeItem(ACCOUNT_USERNAME_KEY);
+  // Account-scoped overlays (friends/DMs/group DMs) were otherwise left open showing the
+  // signed-out-out account's data — if a different account then signed in in the same tab,
+  // stale friend/DM state could persist on screen until the next explicit fetch.
+  friendsOverlay.classList.add('hidden');
+  dmOverlay.classList.add('hidden');
+  currentDmWithName = null;
+  groupDmOverlay.classList.add('hidden');
+  currentGroupDmId = null;
   renderAccountState();
 }
 accountSignoutBtn.addEventListener('click', signOutAccount);

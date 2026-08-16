@@ -168,6 +168,26 @@ function loadClipMeta(file) {
       resolve({ url, duration: v.duration, width: v.videoWidth, height: v.videoHeight, thumb });
     };
     v.addEventListener('loadedmetadata', () => {
+      // Some containers (older/malformed webm, some screen recordings) report duration ===
+      // Infinity until an explicit seek resolves it. Left unguarded, that Infinity flowed into
+      // trimEnd/totalDuration()/timeToPx(), producing a `width: Infinitypx` timeline and a ruler
+      // loop that never terminates. Seeking near the end forces Chromium/Firefox to compute and
+      // fix the real duration on `durationchange` — fall back to that before proceeding.
+      if (!Number.isFinite(v.duration)) {
+        const onDurationFixed = () => {
+          v.removeEventListener('durationchange', onDurationFixed);
+          if (!Number.isFinite(v.duration)) { finish(null); return; }
+          seekAndCapture();
+        };
+        v.addEventListener('durationchange', onDurationFixed);
+        v.currentTime = 1e7; // seek far past any real video's end to force a duration fix
+        setTimeout(() => { v.removeEventListener('durationchange', onDurationFixed); if (!settled) finish(null); }, 3000);
+        return;
+      }
+      seekAndCapture();
+    }, { once: true });
+
+    function seekAndCapture() {
       try {
         v.currentTime = Math.min(0.15, Math.max(0, v.duration - 0.05));
       } catch {
@@ -192,7 +212,7 @@ function loadClipMeta(file) {
         }));
       }, { once: true });
       setTimeout(() => finish(null), 3000);
-    }, { once: true });
+    }
     v.addEventListener('error', () => reject(new Error('Could not read that video file')));
   });
 }
@@ -1460,6 +1480,12 @@ let probingAudio = false;
 // error to catch, so without a hard ceiling the loading banner and disabled workspace would sit
 // there indefinitely with no way out short of reloading the page.
 const FFMPEG_LOAD_TIMEOUT_MS = 45000;
+// ffmpeg.wasm's single-threaded core is known to occasionally hang (not throw) on malformed or
+// unusual inputs — without a ceiling on each exec() call too, a hang left renderStatus frozen and
+// exportBtn disabled forever, with no recovery short of reloading the page and losing every edit
+// (render state is in-memory only). Generous since real encodes of multi-clip/high-res timelines
+// can legitimately take a while.
+const FFMPEG_STEP_TIMEOUT_MS = 120000;
 function withTimeout(promise, ms, message) {
   return Promise.race([
     promise,
@@ -1537,7 +1563,7 @@ async function clipHasAudio(inputName) {
   ffmpeg.on('log', logListener);
   probingAudio = true;
   try {
-    await ffmpeg.exec(['-i', inputName, '-t', '0.1', '-f', 'null', '-']);
+    await withTimeout(ffmpeg.exec(['-i', inputName, '-t', '0.1', '-f', 'null', '-']), FFMPEG_STEP_TIMEOUT_MS, 'Timed out probing the clip.');
   } catch {
     // ffmpeg exits nonzero here if there's no video stream either, but we
     // only care whether the audio-stream line showed up in the log.
@@ -1598,7 +1624,7 @@ async function renderVideo() {
         '-c:a', 'aac', '-b:a', '160k',
         outputName,
       );
-      await ffmpeg.exec(args);
+      await withTimeout(ffmpeg.exec(args), FFMPEG_STEP_TIMEOUT_MS, 'Timed out preparing a clip.');
       await ffmpeg.deleteFile(inputName);
       clipOutputs.push(track(outputName));
       stepIndex++;
@@ -1611,7 +1637,7 @@ async function renderVideo() {
       const listText = clipOutputs.map((f) => `file '${f}'`).join('\n');
       await ffmpeg.writeFile('list.txt', new TextEncoder().encode(listText));
       combined = 'combined.mp4';
-      await ffmpeg.exec(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', combined]);
+      await withTimeout(ffmpeg.exec(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', combined]), FFMPEG_STEP_TIMEOUT_MS, 'Timed out combining clips.');
       track(combined);
       for (const f of clipOutputs) await ffmpeg.deleteFile(f);
       await ffmpeg.deleteFile('list.txt');
@@ -1642,14 +1668,14 @@ async function renderVideo() {
       });
       filter = filter.slice(0, -1);
       withText = 'withtext.mp4';
-      await ffmpeg.exec([
+      await withTimeout(ffmpeg.exec([
         ...args,
         '-filter_complex', filter,
         '-map', '[outv]', '-map', '0:a?',
         '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
         '-c:a', 'copy',
         withText,
-      ]);
+      ]), FFMPEG_STEP_TIMEOUT_MS, 'Timed out adding text overlays.');
       track(withText);
       await ffmpeg.deleteFile(combined);
       for (const n of overlayNames) await ffmpeg.deleteFile(n);
@@ -1665,7 +1691,7 @@ async function renderVideo() {
       const total = totalDuration();
       finalName = 'final.mp4';
       const musicVol = (music.volume / 100).toFixed(2);
-      await ffmpeg.exec([
+      await withTimeout(ffmpeg.exec([
         '-i', withText,
         '-stream_loop', '-1', '-i', musicName,
         '-filter_complex',
@@ -1673,7 +1699,7 @@ async function renderVideo() {
         '-map', '0:v', '-map', '[aout]',
         '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k',
         finalName,
-      ]);
+      ]), FFMPEG_STEP_TIMEOUT_MS, 'Timed out mixing music.');
       track(finalName);
       await ffmpeg.deleteFile(withText);
       await ffmpeg.deleteFile(musicName);
