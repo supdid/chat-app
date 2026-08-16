@@ -29,6 +29,19 @@ app.use(express.json());
 const vapidKeys = require('./vapid-keys.json');
 webpush.setVapidDetails('mailto:admin@example.com', vapidKeys.publicKey, vapidKeys.privateKey);
 
+// The webpush.sendNotification(...).catch(404/410 cleanup) pattern was copy-pasted verbatim at
+// every call site that needed it over many sessions — extracted once. onGone defaults to the
+// regular per-device subscription table; the admin-notifications path is the one caller that
+// passes a different one (db.removeAdminPushSubscription).
+function sendPushToSubs(subs, payload, onGone = (endpoint) => db.removePushSubscription(endpoint)) {
+  const body = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  for (const sub of subs) {
+    webpush.sendNotification(sub.subscription, body).catch((err) => {
+      if (err.statusCode === 404 || err.statusCode === 410) onGone(sub.endpoint);
+    });
+  }
+}
+
 // Sends a push to everyone subscribed in a room except the sender. Only bothers with
 // subscribers who aren't currently an open WS client in that room — if they're connected,
 // they already got the message live plus the in-tab Notification, so a system push on top
@@ -39,12 +52,7 @@ function pushNewMessage(code, entry) {
   const subs = db.getPushSubscriptionsForRoom(code);
   const body = entry.text || (entry.mediaType ? `sent a${entry.mediaType === 'image' ? 'n' : ''} ${entry.mediaType}` : '');
   const payload = JSON.stringify({ title: entry.name, body, roomCode: code, messageId: entry.id });
-  for (const sub of subs) {
-    if (sub.name === entry.name || connectedNames.has(sub.name)) continue;
-    webpush.sendNotification(sub.subscription, payload).catch((err) => {
-      if (err.statusCode === 404 || err.statusCode === 410) db.removePushSubscription(sub.endpoint);
-    });
-  }
+  sendPushToSubs(subs.filter((sub) => sub.name !== entry.name && !connectedNames.has(sub.name)), payload);
 }
 
 // Matches an email address typed inline in a chat message, e.g. "jondoe@gmail.com" — used to
@@ -68,17 +76,12 @@ function pushMentionNotifications(code, entry) {
     for (const account of accounts) {
       const subs = db.getPushSubscriptionsForAccount(account.id);
       if (!subs.length) continue;
-      const payload = JSON.stringify({
+      sendPushToSubs(subs, {
         title: `${entry.name} mentioned you`,
         body: entry.text,
         roomCode: code,
         messageId: entry.id,
       });
-      for (const sub of subs) {
-        webpush.sendNotification(sub.subscription, payload).catch((err) => {
-          if (err.statusCode === 404 || err.statusCode === 410) db.removePushSubscription(sub.endpoint);
-        });
-      }
     }
   }
 }
@@ -89,16 +92,11 @@ function pushMentionNotifications(code, entry) {
 function pushAdminOnNewReport(roomCode, reporterName, targetName) {
   const subs = db.getAdminPushSubscriptions();
   if (!subs.length) return;
-  const payload = JSON.stringify({
+  sendPushToSubs(subs, {
     title: 'New report',
     body: `${reporterName} reported ${targetName} in room ${roomCode}`,
     adminReport: true,
-  });
-  for (const sub of subs) {
-    webpush.sendNotification(sub.subscription, payload).catch((err) => {
-      if (err.statusCode === 404 || err.statusCode === 410) db.removeAdminPushSubscription(sub.endpoint);
-    });
-  }
+  }, (endpoint) => db.removeAdminPushSubscription(endpoint));
 }
 
 // ---- Self-healing: error capture + AI-drafted patch proposals (see patcher.js) ----
@@ -940,12 +938,32 @@ app.get('/friends', (req, res) => {
   });
 });
 
-app.post('/friends/request', (req, res) => {
-  if (isFriendsActionRateLimited(req)) return res.status(429).json({ error: 'Too many attempts — try again in a minute' });
+// Rate-limit + auth + target-lookup preamble shared by every /friends/* action below (request,
+// accept, remove, block, unblock) — was copy-pasted verbatim at all five call sites. Sends the
+// appropriate error response itself and returns null when any check fails, so callers just do
+// `const r = resolveFriendsAction(req, res); if (!r) return;`.
+function resolveFriendsAction(req, res) {
+  if (isFriendsActionRateLimited(req)) {
+    res.status(429).json({ error: 'Too many attempts — try again in a minute' });
+    return null;
+  }
   const account = getAccountFromReq(req);
-  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  if (!account) {
+    res.status(401).json({ error: 'Not signed in' });
+    return null;
+  }
   const target = db.getAccountByUsername(String(req.body.username || '').trim());
-  if (!target) return res.status(404).json({ error: 'No account with that username' });
+  if (!target) {
+    res.status(404).json({ error: 'No account with that username' });
+    return null;
+  }
+  return { account, target };
+}
+
+app.post('/friends/request', (req, res) => {
+  const r = resolveFriendsAction(req, res);
+  if (!r) return;
+  const { account, target } = r;
   if (target.id === account.id) return res.status(400).json({ error: "You can't add yourself" });
   if (db.isBlockedBetween(account.id, target.id)) {
     return res.status(403).json({ error: 'Unable to send a friend request to this user' });
@@ -962,11 +980,9 @@ app.post('/friends/request', (req, res) => {
 });
 
 app.post('/friends/accept', (req, res) => {
-  if (isFriendsActionRateLimited(req)) return res.status(429).json({ error: 'Too many attempts — try again in a minute' });
-  const account = getAccountFromReq(req);
-  if (!account) return res.status(401).json({ error: 'Not signed in' });
-  const target = db.getAccountByUsername(String(req.body.username || '').trim());
-  if (!target) return res.status(404).json({ error: 'No account with that username' });
+  const r = resolveFriendsAction(req, res);
+  if (!r) return;
+  const { account, target } = r;
   const existing = db.getFriendshipBetween(account.id, target.id);
   if (!existing || existing.status !== 'pending' || existing.requester_id !== target.id) {
     return res.status(400).json({ error: 'No pending request from that user' });
@@ -978,32 +994,26 @@ app.post('/friends/accept', (req, res) => {
 // Also used to decline an incoming request and to cancel one you sent — same "remove whatever
 // relationship exists" operation either way.
 app.post('/friends/remove', (req, res) => {
-  if (isFriendsActionRateLimited(req)) return res.status(429).json({ error: 'Too many attempts — try again in a minute' });
-  const account = getAccountFromReq(req);
-  if (!account) return res.status(401).json({ error: 'Not signed in' });
-  const target = db.getAccountByUsername(String(req.body.username || '').trim());
-  if (!target) return res.status(404).json({ error: 'No account with that username' });
+  const r = resolveFriendsAction(req, res);
+  if (!r) return;
+  const { account, target } = r;
   db.removeFriendship(account.id, target.id);
   res.json({ ok: true });
 });
 
 app.post('/friends/block', (req, res) => {
-  if (isFriendsActionRateLimited(req)) return res.status(429).json({ error: 'Too many attempts — try again in a minute' });
-  const account = getAccountFromReq(req);
-  if (!account) return res.status(401).json({ error: 'Not signed in' });
-  const target = db.getAccountByUsername(String(req.body.username || '').trim());
-  if (!target) return res.status(404).json({ error: 'No account with that username' });
+  const r = resolveFriendsAction(req, res);
+  if (!r) return;
+  const { account, target } = r;
   if (target.id === account.id) return res.status(400).json({ error: "You can't block yourself" });
   db.setBlocked(account.id, target.id);
   res.json({ ok: true });
 });
 
 app.post('/friends/unblock', (req, res) => {
-  if (isFriendsActionRateLimited(req)) return res.status(429).json({ error: 'Too many attempts — try again in a minute' });
-  const account = getAccountFromReq(req);
-  if (!account) return res.status(401).json({ error: 'Not signed in' });
-  const target = db.getAccountByUsername(String(req.body.username || '').trim());
-  if (!target) return res.status(404).json({ error: 'No account with that username' });
+  const r = resolveFriendsAction(req, res);
+  if (!r) return;
+  const { account, target } = r;
   db.unblock(account.id, target.id);
   res.json({ ok: true });
 });
@@ -1109,12 +1119,7 @@ app.get('/api/scorpture/videos/:id', (req, res) => {
 function notifyScorptureSubscribers(channelId, payload) {
   const subscriberIds = db.getScorptureSubscriberIds(channelId);
   for (const subscriberId of subscriberIds) {
-    const subs = db.getPushSubscriptionsForAccount(subscriberId);
-    for (const sub of subs) {
-      webpush.sendNotification(sub.subscription, JSON.stringify(payload)).catch((err) => {
-        if (err.statusCode === 404 || err.statusCode === 410) db.removePushSubscription(sub.endpoint);
-      });
-    }
+    sendPushToSubs(db.getPushSubscriptionsForAccount(subscriberId), payload);
   }
 }
 
@@ -1493,13 +1498,7 @@ function sendFriendDm(fromName, targetAccountId, text) {
       if (c.readyState === c.OPEN) c.send(livePayload);
     }
   }
-  const subs = db.getPushSubscriptionsForAccount(targetAccountId);
-  const pushPayload = JSON.stringify({ title: `${fromName} sent you a DM`, body: text, friendDm: true, fromUsername: fromName });
-  for (const sub of subs) {
-    webpush.sendNotification(sub.subscription, pushPayload).catch((err) => {
-      if (err.statusCode === 404 || err.statusCode === 410) db.removePushSubscription(sub.endpoint);
-    });
-  }
+  sendPushToSubs(db.getPushSubscriptionsForAccount(targetAccountId), { title: `${fromName} sent you a DM`, body: text, friendDm: true, fromUsername: fromName });
 }
 
 // Group DMs are persisted (unlike friend-dm above) since membership needs to survive everyone
@@ -1516,13 +1515,7 @@ function sendGroupDm(groupId, fromAccountId, fromName, text, excludeWs) {
       }
     }
     if (accountId === fromAccountId) continue;
-    const subs = db.getPushSubscriptionsForAccount(accountId);
-    const pushPayload = JSON.stringify({ title: `${fromName} (group)`, body: text, groupDm: true, groupId });
-    for (const sub of subs) {
-      webpush.sendNotification(sub.subscription, pushPayload).catch((err) => {
-        if (err.statusCode === 404 || err.statusCode === 410) db.removePushSubscription(sub.endpoint);
-      });
-    }
+    sendPushToSubs(db.getPushSubscriptionsForAccount(accountId), { title: `${fromName} (group)`, body: text, groupDm: true, groupId });
   }
 }
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I
@@ -1632,6 +1625,16 @@ const ARCADE_SUBMIT_COOLDOWN_MS = 2000;
 const ARCADE_SUBMIT_MIN_SESSION_MS = 3000;
 const RATE_LIMIT_WINDOW_MS = 6000;
 const RATE_LIMIT_MAX_MESSAGES = 8; // generous for real typing/conversation, tight enough to stop a flood
+// The ws.msgTimestamps flood-gate check (filter/compare/push) was copy-pasted verbatim at every
+// call site that adopted it over many sessions — extracted once, same pattern isStrokeRateLimited
+// below already uses for its own per-connection limiter.
+function isWsMsgRateLimited(ws) {
+  const now = Date.now();
+  ws.msgTimestamps = (ws.msgTimestamps || []).filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+  if (ws.msgTimestamps.length >= RATE_LIMIT_MAX_MESSAGES) return true;
+  ws.msgTimestamps.push(now);
+  return false;
+}
 // Whiteboard/Pictionary strokes are far more frequent than chat messages by nature (the client
 // already throttles its own sends to one per STROKE_FLUSH_MS=80ms, ~12.5/sec) and each one does
 // a synchronous better-sqlite3 write — unlike RATE_LIMIT_MAX_MESSAGES above, this cap only needs
@@ -2419,6 +2422,20 @@ function leaveWb(ws) {
   ws.wbRoom = null;
 }
 
+// Shared by kick-user/mute-user/ban-user (host check + target-name parsing + in-memory room
+// lookup) — was copy-pasted verbatim at all three call sites. unmute-user isn't included: its
+// shape genuinely differs (no empty/self-name guard, doesn't bail if the room is already gone),
+// so folding it in here would risk a subtle behavior change rather than a pure extraction.
+function resolveModerationTarget(ws, msg) {
+  const dbRoom = db.getRoom(ws.room);
+  if (!dbRoom || dbRoom.host_name !== ws.profile.name) return null;
+  const targetName = String(msg.name || '').trim();
+  if (!targetName || targetName === ws.profile.name) return null;
+  const room = rooms.get(ws.room);
+  if (!room) return null;
+  return { dbRoom, room, targetName };
+}
+
 wss.on('connection', (ws, req) => {
   // Only used to defend against a single IP claiming an outsized share of one stream's
   // viewer slots (see MAX_SCORPTURE_VIEWERS_PER_IP below) — 'trust proxy' above only affects
@@ -2579,10 +2596,7 @@ wss.on('connection', (ws, req) => {
       if (!stream) return;
       // Same flood gate as regular chat/DM messages — was missing here, letting an unthrottled
       // viewer spam every other viewer + the streamer at unlimited speed.
-      const nowLc = Date.now();
-      ws.msgTimestamps = (ws.msgTimestamps || []).filter((t) => nowLc - t < RATE_LIMIT_WINDOW_MS);
-      if (ws.msgTimestamps.length >= RATE_LIMIT_MAX_MESSAGES) return;
-      ws.msgTimestamps.push(nowLc);
+      if (isWsMsgRateLimited(ws)) return;
       const chatMsg = { type: 'scorpture-live-chat', username: account.username, text, at: Date.now() };
       send(stream.ws, chatMsg);
       for (const viewerWs of stream.viewers.values()) send(viewerWs, chatMsg);
@@ -2692,16 +2706,16 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'bc-punch' && ws.bcRoom) {
       const room = rooms.get(ws.bcRoom);
-      const dg = room && room.bc;
-      if (!dg) return;
-      const attacker = dg.players.get(ws);
+      const bc = room && room.bc;
+      if (!bc) return;
+      const attacker = bc.players.get(ws);
       if (!attacker || attacker.health <= 0) return;
       const now = Date.now();
       if (now - (attacker.lastPunchAt || 0) < BC_PUNCH_COOLDOWN_MS) return;
 
       let targetWs = null;
       let target = null;
-      for (const [w, p] of dg.players) {
+      for (const [w, p] of bc.players) {
         if (p.id === msg.targetId) { targetWs = w; target = p; break; }
       }
       if (!target || target.health <= 0) return;
@@ -2718,8 +2732,8 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'bc-fall-damage' && ws.bcRoom) {
       const room = rooms.get(ws.bcRoom);
-      const dg = room && room.bc;
-      const me = dg && dg.players.get(ws);
+      const bc = room && room.bc;
+      const me = bc && bc.players.get(ws);
       if (!me || me.health <= 0) return;
       const amount = Math.max(0, Math.min(BC_MAX_HEALTH, Math.floor(+msg.amount || 0)));
       if (amount <= 0) return;
@@ -2758,11 +2772,11 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'bc-claim' && ws.bcRoom) {
       const room = rooms.get(ws.bcRoom);
-      const dg = room && room.bc;
-      const me = dg && dg.players.get(ws);
-      if (!dg || !me) return;
-      if (!dg.claims) dg.claims = [];
-      const ownedCount = dg.claims.filter((c) => bcClaimOwnedBy(c, me)).length;
+      const bc = room && room.bc;
+      const me = bc && bc.players.get(ws);
+      if (!bc || !me) return;
+      if (!bc.claims) bc.claims = [];
+      const ownedCount = bc.claims.filter((c) => bcClaimOwnedBy(c, me)).length;
       if (ownedCount >= BC_MAX_CLAIMS_PER_PLAYER) {
         send(ws, { type: 'bc-claim-denied' });
         return;
@@ -2770,7 +2784,7 @@ wss.on('connection', (ws, req) => {
       const claimX = Math.max(-BC_MAX_COORD, Math.min(BC_MAX_COORD, Math.floor(+msg.x || 0)));
       const claimZ = Math.max(-BC_MAX_COORD, Math.min(BC_MAX_COORD, Math.floor(+msg.z || 0)));
       const claim = { x: claimX, z: claimZ, radius: BC_CLAIM_RADIUS, owner: me.name, ownerId: me.stableId || null };
-      dg.claims.push(claim);
+      bc.claims.push(claim);
       db.addBcClaim(ws.bcRoom, claim.x, claim.z, claim.radius, claim.owner, claim.ownerId);
       broadcastBc(ws.bcRoom, { type: 'bc-claim-added', ...claim });
       return;
@@ -2778,37 +2792,37 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'bc-sleep' && ws.bcRoom) {
       const room = rooms.get(ws.bcRoom);
-      const dg = room && room.bc;
-      const me = dg && dg.players.get(ws);
-      if (!dg || !me) return;
-      if (!dg.sleeping) dg.sleeping = new Set();
-      dg.sleeping.add(ws);
-      broadcastBc(ws.bcRoom, { type: 'bc-sleep-count', sleeping: dg.sleeping.size, total: dg.players.size });
-      if (dg.sleeping.size >= dg.players.size && dg.players.size > 0) {
+      const bc = room && room.bc;
+      const me = bc && bc.players.get(ws);
+      if (!bc || !me) return;
+      if (!bc.sleeping) bc.sleeping = new Set();
+      bc.sleeping.add(ws);
+      broadcastBc(ws.bcRoom, { type: 'bc-sleep-count', sleeping: bc.sleeping.size, total: bc.players.size });
+      if (bc.sleeping.size >= bc.players.size && bc.players.size > 0) {
         const now = Date.now();
-        const offset = dg.dayNightOffsetMs || 0;
+        const offset = bc.dayNightOffsetMs || 0;
         const phase = ((now + offset) % BC_DAY_CYCLE_MS) / BC_DAY_CYCLE_MS;
         const targetPhase = phase > 0.8 ? 1 + BC_SLEEP_PHASE_TARGET : BC_SLEEP_PHASE_TARGET;
-        dg.dayNightOffsetMs = offset + (targetPhase - phase) * BC_DAY_CYCLE_MS;
-        dg.sleeping.clear();
-        broadcastBc(ws.bcRoom, { type: 'bc-skip-night', offsetMs: dg.dayNightOffsetMs });
+        bc.dayNightOffsetMs = offset + (targetPhase - phase) * BC_DAY_CYCLE_MS;
+        bc.sleeping.clear();
+        broadcastBc(ws.bcRoom, { type: 'bc-skip-night', offsetMs: bc.dayNightOffsetMs });
       }
       return;
     }
 
     if (msg.type === 'bc-wake' && ws.bcRoom) {
       const room = rooms.get(ws.bcRoom);
-      const dg = room && room.bc;
-      if (!dg || !dg.sleeping) return;
-      dg.sleeping.delete(ws);
-      broadcastBc(ws.bcRoom, { type: 'bc-sleep-count', sleeping: dg.sleeping.size, total: dg.players.size });
+      const bc = room && room.bc;
+      if (!bc || !bc.sleeping) return;
+      bc.sleeping.delete(ws);
+      broadcastBc(ws.bcRoom, { type: 'bc-sleep-count', sleeping: bc.sleeping.size, total: bc.players.size });
       return;
     }
 
     if (msg.type === 'bc-eat' && ws.bcRoom) {
       const room = rooms.get(ws.bcRoom);
-      const dg = room && room.bc;
-      const me = dg && dg.players.get(ws);
+      const bc = room && room.bc;
+      const me = bc && bc.players.get(ws);
       if (!me || me.health <= 0) return;
       const amount = Math.max(0, Math.min(BC_MAX_HEALTH, Math.floor(+msg.amount || 0)));
       if (amount <= 0) return;
@@ -2824,14 +2838,14 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'bc-voice-join' && ws.bcRoom) {
       const room = rooms.get(ws.bcRoom);
-      const dg = room && room.bc;
-      const me = dg && dg.players.get(ws);
-      if (!dg || !me) return;
-      if (!dg.voice) dg.voice = new Map();
-      const existing = [...dg.voice.entries()].map(([id, p]) => ({ id, name: p.name }));
-      dg.voice.set(ws.bcId, { ws, name: me.name });
+      const bc = room && room.bc;
+      const me = bc && bc.players.get(ws);
+      if (!bc || !me) return;
+      if (!bc.voice) bc.voice = new Map();
+      const existing = [...bc.voice.entries()].map(([id, p]) => ({ id, name: p.name }));
+      bc.voice.set(ws.bcId, { ws, name: me.name });
       send(ws, { type: 'bc-voice-peers', peers: existing });
-      for (const [id, p] of dg.voice) {
+      for (const [id, p] of bc.voice) {
         if (id !== ws.bcId) send(p.ws, { type: 'bc-voice-peer-joined', id: ws.bcId, name: me.name });
       }
       return;
@@ -2859,10 +2873,7 @@ wss.on('connection', (ws, req) => {
       if (!text) return;
       // Same flood gate every other chat-creation path in this app shares (room chat, DMs,
       // group DMs, Scorpture live chat) — Build Craft's in-game chat was missing it.
-      const nowBc = Date.now();
-      ws.msgTimestamps = (ws.msgTimestamps || []).filter((t) => nowBc - t < RATE_LIMIT_WINDOW_MS);
-      if (ws.msgTimestamps.length >= RATE_LIMIT_MAX_MESSAGES) return;
-      ws.msgTimestamps.push(nowBc);
+      if (isWsMsgRateLimited(ws)) return;
       broadcastBc(ws.bcRoom, { type: 'bc-chat', name: me.name, text });
       return;
     }
@@ -3612,10 +3623,7 @@ wss.on('connection', (ws, req) => {
       if (!me || me.id === dg.drawerId || me.isSpectator) return;
       // Same flood gate every other chat-creation path in this app shares — unlike its sibling
       // dg-stroke (rate-limited just above), guesses/post-guess chat had no throttle at all.
-      const nowDg = Date.now();
-      ws.msgTimestamps = (ws.msgTimestamps || []).filter((t) => nowDg - t < RATE_LIMIT_WINDOW_MS);
-      if (ws.msgTimestamps.length >= RATE_LIMIT_MAX_MESSAGES) return;
-      ws.msgTimestamps.push(nowDg);
+      if (isWsMsgRateLimited(ws)) return;
       const text = String(msg.text || '').slice(0, 100).trim();
       if (!text) return;
       if (dg.guessedThisRound.has(me.id)) {
@@ -3732,13 +3740,10 @@ wss.on('connection', (ws, req) => {
       // Same flood gate every other message-creation path shares (see 'message'/'send-dm'/
       // 'send-group-dm'/'scorpture-live-chat') — this one fires a real push notification per
       // call, so an unthrottled loop is both spam and a push-bombing vector against a friend.
-      const nowFdm = Date.now();
-      ws.msgTimestamps = (ws.msgTimestamps || []).filter((t) => nowFdm - t < RATE_LIMIT_WINDOW_MS);
-      if (ws.msgTimestamps.length >= RATE_LIMIT_MAX_MESSAGES) {
+      if (isWsMsgRateLimited(ws)) {
         send(ws, { type: 'error', message: 'You are sending messages too fast — slow down a bit.' });
         return;
       }
-      ws.msgTimestamps.push(nowFdm);
       sendFriendDm(ws.profile.name, targetAccount.id, text);
       send(ws, { type: 'friend-dm-sent', toUsername });
       return;
@@ -3830,13 +3835,11 @@ wss.on('connection', (ws, req) => {
       // Same flood gate as regular chat/DM messages (see the 'dm' handler) — this was missing
       // here, and group DMs fan out a push notification to every other member on every send, so
       // an unthrottled sender could spam real push notifications to everyone in the group.
-      const now = Date.now();
-      ws.msgTimestamps = (ws.msgTimestamps || []).filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
-      if (ws.msgTimestamps.length >= RATE_LIMIT_MAX_MESSAGES) {
+      if (isWsMsgRateLimited(ws)) {
         send(ws, { type: 'error', message: 'You are sending messages too fast — slow down a bit.' });
         return;
       }
-      ws.msgTimestamps.push(now);
+      const now = Date.now();
       const entry = { id: crypto.randomUUID(), groupId, fromAccountId: ws.accountId, fromName: ws.profile.name, text, at: now };
       db.insertGroupDmMessage(entry);
       sendGroupDm(groupId, ws.accountId, ws.profile.name, text, ws);
@@ -4048,12 +4051,9 @@ wss.on('connection', (ws, req) => {
     // Weak by design, same trust model as everything else here (no accounts to actually verify
     // identity) — this stops accidental/casual disruption, not a determined impersonator. ----
     if (msg.type === 'kick-user' && ws.room) {
-      const dbRoom = db.getRoom(ws.room);
-      if (!dbRoom || dbRoom.host_name !== ws.profile.name) return;
-      const targetName = String(msg.name || '').trim();
-      if (!targetName || targetName === ws.profile.name) return;
-      const room = rooms.get(ws.room);
-      if (!room) return;
+      const modTarget = resolveModerationTarget(ws, msg);
+      if (!modTarget) return;
+      const { room, targetName } = modTarget;
       for (const client of [...room.clients]) {
         if (client.profile && client.profile.name === targetName) {
           send(client, { type: 'kicked', by: ws.profile.name });
@@ -4064,12 +4064,9 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'mute-user' && ws.room) {
-      const dbRoom = db.getRoom(ws.room);
-      if (!dbRoom || dbRoom.host_name !== ws.profile.name) return;
-      const targetName = String(msg.name || '').trim();
-      if (!targetName || targetName === ws.profile.name) return;
-      const room = rooms.get(ws.room);
-      if (!room) return;
+      const modTarget = resolveModerationTarget(ws, msg);
+      if (!modTarget) return;
+      const { room, targetName } = modTarget;
       if (!room.muted) room.muted = new Set();
       room.muted.add(targetName);
       // If the target is signed in, also persist the mute by account_id — otherwise it's only
@@ -4138,12 +4135,9 @@ wss.on('connection', (ws, req) => {
     // Bans persist (room_bans, see db.js) unlike kick above, which only disconnects once —
     // see the room_bans table comment for the account-vs-name enforcement split.
     if (msg.type === 'ban-user' && ws.room) {
-      const dbRoom = db.getRoom(ws.room);
-      if (!dbRoom || dbRoom.host_name !== ws.profile.name) return;
-      const targetName = String(msg.name || '').trim();
-      if (!targetName || targetName === ws.profile.name) return;
-      const room = rooms.get(ws.room);
-      if (!room) return;
+      const modTarget = resolveModerationTarget(ws, msg);
+      if (!modTarget) return;
+      const { room, targetName } = modTarget;
       const targetClient = [...room.clients].find((c) => c.profile && c.profile.name === targetName);
       // Same recentAccountsByName fallback as mute-user above, for the same reason: the target
       // is very often already disconnected by the time a ban is issued (kick-then-ban, or they
@@ -4293,13 +4287,11 @@ wss.on('connection', (ws, req) => {
         return;
       }
       // Shares the same flood gate as regular chat messages so DMs can't be used to dodge it.
-      const now = Date.now();
-      ws.msgTimestamps = (ws.msgTimestamps || []).filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
-      if (ws.msgTimestamps.length >= RATE_LIMIT_MAX_MESSAGES) {
+      if (isWsMsgRateLimited(ws)) {
         send(ws, { type: 'error', message: 'You are sending messages too fast — slow down a bit.' });
         return;
       }
-      ws.msgTimestamps.push(now);
+      const now = Date.now();
       // Recorded alongside the name pair (see getDmThread's comment on insertMessage's
       // account_id) so a signed-in participant's side of the thread stays theirs even if someone
       // else later reconnects under the same now-vacated display name.
@@ -4340,13 +4332,10 @@ wss.on('connection', (ws, req) => {
         send(ws, { type: 'error', message: 'You have been muted in this room' });
         return;
       }
-      const now = Date.now();
-      ws.msgTimestamps = (ws.msgTimestamps || []).filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
-      if (ws.msgTimestamps.length >= RATE_LIMIT_MAX_MESSAGES) {
+      if (isWsMsgRateLimited(ws)) {
         send(ws, { type: 'error', message: 'You are sending messages too fast — slow down a bit.' });
         return;
       }
-      ws.msgTimestamps.push(now);
       const text = String(msg.text || '').slice(0, 2000).trim();
       const mediaType = ['video', 'image', 'audio', 'poll'].includes(msg.mediaType) ? msg.mediaType : null;
       // Every other "attach media" path in this app (post-image, post-media, scorpture uploads)
@@ -4443,10 +4432,7 @@ wss.on('connection', (ws, req) => {
       if (!reactTarget || reactTarget.room_code !== ws.room) return;
       // Same flood gate as regular messages — each toggle is a DB write plus a room-wide
       // broadcast, previously unthrottled.
-      const nowReact = Date.now();
-      ws.msgTimestamps = (ws.msgTimestamps || []).filter((t) => nowReact - t < RATE_LIMIT_WINDOW_MS);
-      if (ws.msgTimestamps.length >= RATE_LIMIT_MAX_MESSAGES) return;
-      ws.msgTimestamps.push(nowReact);
+      if (isWsMsgRateLimited(ws)) return;
       const added = db.toggleReaction(messageId, emoji, ws.profile.name);
       broadcastRoom(ws.room, { type: 'reaction', messageId, emoji, name: ws.profile.name, added });
       return;
