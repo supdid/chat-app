@@ -3929,7 +3929,7 @@ wss.on('connection', (ws, req) => {
         messages: attachPollVotes(room.history),
         users: roomUsers(code),
         name: dbRoom ? dbRoom.name : null,
-        reactions: db.getReactionsForRoom(code),
+        reactions: db.getReactionsForRoom(code, HISTORY_LIMIT),
         pins: db.getPins(code),
         activity: roomActivityList(room),
         isHost: (db.getRoom(code) || {}).host_name === ws.profile.name,

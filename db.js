@@ -595,14 +595,17 @@ function toggleReaction(messageId, emoji, name) {
   return true;
 }
 
-function getReactionsForRoom(code) {
+// Capped to the same window as getRecentMessages (the only messages actually ever rendered
+// client-side on join) — this used to join against the room's entire all-time message history
+// with no limit, so a long-running room's join cost (and payload size) grew forever even though
+// reactions on messages outside the visible window are never shown anyway.
+function getReactionsForRoom(code, limit) {
   return db
     .prepare(
       `SELECT r.message_id as messageId, r.emoji, r.name FROM reactions r
-       JOIN messages m ON m.id = r.message_id
-       WHERE m.room_code = ?`
+       WHERE r.message_id IN (SELECT id FROM messages WHERE room_code = ? ORDER BY at DESC LIMIT ?)`
     )
-    .all(code);
+    .all(code, limit);
 }
 
 // ---- pins ----
