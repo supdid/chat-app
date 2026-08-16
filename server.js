@@ -178,6 +178,7 @@ function requireAdmin(req, res, next) {
 
 // Public — clients report their own uncaught errors here (window.onerror / unhandledrejection).
 app.post('/errors/report', (req, res) => {
+  if (isErrorReportRateLimited(req)) return res.status(429).json({ error: 'Too many reports too quickly' });
   // req.body can be undefined if the request didn't carry a JSON content-type (e.g. a stale
   // service-worker-cached client), which used to throw here and get logged as a server error
   // by the very endpoint meant to capture errors — guard against that instead of assuming.
@@ -339,6 +340,16 @@ app.post('/post-image', (req, res) => {
   if (!code || !mediaUrl) return res.status(400).json({ error: 'Missing room code or image' });
   const room = rooms.get(code);
   if (!room) return res.status(404).json({ error: 'Room not found' });
+  // Unlike the WS 'message'/'join-room' paths, this route has no live session to gate on — a
+  // banned/muted user could otherwise keep posting images into a room forever just by hitting
+  // this endpoint directly, bypassing moderation entirely.
+  const postImageAccount = getAccountFromReq(req);
+  if (db.isBannedFromRoom(code, postImageAccount ? postImageAccount.id : null, name)) {
+    return res.status(403).json({ error: "You've been banned from this room" });
+  }
+  if (room.muted && room.muted.has(name)) {
+    return res.status(403).json({ error: 'You have been muted in this room' });
+  }
   if (!roomPinOk(db.getRoom(code), req.body.pin)) return res.status(403).json({ error: 'Incorrect or missing room PIN' });
 
   const entry = {
@@ -372,6 +383,15 @@ app.post('/post-media', (req, res) => {
   if (!code || !mediaUrl || !mediaType) return res.status(400).json({ error: 'Missing room code or media' });
   const room = rooms.get(code);
   if (!room) return res.status(404).json({ error: 'Room not found' });
+  // Same moderation-bypass concern as /post-image above — this route also has no live WS
+  // session to check ban/mute status on otherwise.
+  const postMediaAccount = getAccountFromReq(req);
+  if (db.isBannedFromRoom(code, postMediaAccount ? postMediaAccount.id : null, name)) {
+    return res.status(403).json({ error: "You've been banned from this room" });
+  }
+  if (room.muted && room.muted.has(name)) {
+    return res.status(403).json({ error: 'You have been muted in this room' });
+  }
   if (!roomPinOk(db.getRoom(code), req.body.pin)) return res.status(403).json({ error: 'Incorrect or missing room PIN' });
 
   const entry = {
@@ -681,6 +701,29 @@ function isPostMediaRateLimited(req) {
   timestamps.push(now);
   postMediaRateLimits.set(ip, timestamps);
   if (postMediaRateLimits.size > 10000) postMediaRateLimits.clear();
+  return false;
+}
+
+// /errors/report is public/unauthenticated by necessity (anonymous clients need to report their
+// own errors) — unlike every other public route, though, it had no rate limit at all, and a
+// message/stack/url that resolves to a real source file triggers a real (billed) Anthropic API
+// call in patcher.js. Without this, a scripted loop could both run up real API cost and spam
+// attacker-authored text into the self-healing pipeline's prompt at unlimited speed. Same
+// per-IP Map pattern as the limiters above, just its own bucket/window.
+const errorReportRateLimits = new Map();
+const ERROR_REPORT_WINDOW_MS = 60000;
+const ERROR_REPORT_MAX = 10; // generous for a real client hitting several distinct bugs in a minute
+function isErrorReportRateLimited(req) {
+  const ip = req.ip || 'unknown';
+  const now = Date.now();
+  const timestamps = (errorReportRateLimits.get(ip) || []).filter((t) => now - t < ERROR_REPORT_WINDOW_MS);
+  if (timestamps.length >= ERROR_REPORT_MAX) {
+    errorReportRateLimits.set(ip, timestamps);
+    return true;
+  }
+  timestamps.push(now);
+  errorReportRateLimits.set(ip, timestamps);
+  if (errorReportRateLimits.size > 10000) errorReportRateLimits.clear();
   return false;
 }
 
@@ -1483,6 +1526,19 @@ const ARCADE_LEADERBOARD_KEY = { snake: 'snake', '2048': 'g2048', fighterplane: 
 const ARCADE_ACTIVITY_CODE = { snake: 'sk', '2048': 'tf', fighterplane: 'fp' };
 const RATE_LIMIT_WINDOW_MS = 6000;
 const RATE_LIMIT_MAX_MESSAGES = 8; // generous for real typing/conversation, tight enough to stop a flood
+// Whiteboard/Pictionary strokes are far more frequent than chat messages by nature (the client
+// already throttles its own sends to one per STROKE_FLUSH_MS=80ms, ~12.5/sec) and each one does
+// a synchronous better-sqlite3 write — unlike RATE_LIMIT_MAX_MESSAGES above, this cap only needs
+// to catch a raw-WS flood well past normal drawing speed, not slow down real use.
+const STROKE_LIMIT_WINDOW_MS = 2000;
+const STROKE_LIMIT_MAX = 40;
+function isStrokeRateLimited(ws) {
+  const now = Date.now();
+  ws.strokeTimestamps = (ws.strokeTimestamps || []).filter((t) => now - t < STROKE_LIMIT_WINDOW_MS);
+  if (ws.strokeTimestamps.length >= STROKE_LIMIT_MAX) return true;
+  ws.strokeTimestamps.push(now);
+  return false;
+}
 const ROOM_CREATE_WINDOW_MS = 60000;
 const ROOM_CREATE_MAX = 5; // one connection shouldn't need more than a handful of rooms a minute
 const REPORT_WINDOW_MS = 300000;
@@ -3125,7 +3181,10 @@ wss.on('connection', (ws) => {
     if (msg.type === 'tt-set-mode' && ws.ttRoom) {
       const room = rooms.get(ws.ttRoom);
       const tt = room && room.tt;
-      if (!tt || !TT_MODES[msg.mode] || tt.board.some((c) => c)) return; // only before the first move
+      const meTt = tt && tt.players.get(ws);
+      // A spectator (3rd+ joiner, no seat) could otherwise reset the board on a loop and stop
+      // the two seated players from ever getting a mode choice that sticks.
+      if (!tt || !meTt || !meTt.symbol || !TT_MODES[msg.mode] || tt.board.some((c) => c)) return; // only before the first move
       tt.mode = msg.mode;
       const cfg = TT_MODES[tt.mode];
       tt.board = new Array(cfg.width * cfg.height).fill(null);
@@ -3315,6 +3374,7 @@ wss.on('connection', (ws) => {
       if (!dg || !dg.roundEndAt) return;
       const me = dg.players.get(ws);
       if (!me || me.id !== dg.drawerId) return;
+      if (isStrokeRateLimited(ws)) return;
       const points = sanitizeStrokePoints(msg.points);
       if (!points.length) return;
       const stroke = {
@@ -3402,6 +3462,7 @@ wss.on('connection', (ws) => {
     if (msg.type === 'wb-stroke' && ws.wbRoom) {
       const room = rooms.get(ws.wbRoom);
       if (!room || !room.wb) return;
+      if (isStrokeRateLimited(ws)) return;
       const points = sanitizeStrokePoints(msg.points);
       if (!points.length) return;
       const stroke = {
@@ -3457,6 +3518,16 @@ wss.on('connection', (ws) => {
         send(ws, { type: 'error', message: 'You can only send private DMs to friends' });
         return;
       }
+      // Same flood gate every other message-creation path shares (see 'message'/'send-dm'/
+      // 'send-group-dm'/'scorpture-live-chat') — this one fires a real push notification per
+      // call, so an unthrottled loop is both spam and a push-bombing vector against a friend.
+      const nowFdm = Date.now();
+      ws.msgTimestamps = (ws.msgTimestamps || []).filter((t) => nowFdm - t < RATE_LIMIT_WINDOW_MS);
+      if (ws.msgTimestamps.length >= RATE_LIMIT_MAX_MESSAGES) {
+        send(ws, { type: 'error', message: 'You are sending messages too fast — slow down a bit.' });
+        return;
+      }
+      ws.msgTimestamps.push(nowFdm);
       sendFriendDm(ws.profile.name, targetAccount.id, text);
       send(ws, { type: 'friend-dm-sent', toUsername });
       return;
@@ -4290,6 +4361,14 @@ function isRoomFullyEmpty(room) {
   if (room.sw && room.sw.players && room.sw.players.size > 0) return false;
   if (room.tv && room.tv.players && room.tv.players.size > 0) return false;
   if (room.dg && room.dg.players && room.dg.players.size > 0) return false;
+  // wb/tt/ch/hm were missing here — a room with players only in whiteboard, tic-tac-toe/
+  // connect4, chess, or hangman (no one in main chat/voice/other games) looked "fully empty"
+  // and got swept by the 10-minute interval below even with live connections still playing,
+  // silently dropping their moves/strokes from that point on.
+  if (room.wb && room.wb.players && room.wb.players.size > 0) return false;
+  if (room.tt && room.tt.players && room.tt.players.size > 0) return false;
+  if (room.ch && room.ch.players && room.ch.players.size > 0) return false;
+  if (room.hm && room.hm.players && room.hm.players.size > 0) return false;
   return true;
 }
 setInterval(() => {

@@ -617,6 +617,11 @@ function getReadReceipts(code) {
 
 // ---- whiteboard ----
 
+// Matches the in-memory room.wb.strokes cap in server.js (3000) — that cap only ever trimmed
+// the in-memory copy, so a long-lived active room's DB rows grew unbounded (the 90-day-inactivity
+// purge never reaches a room still in regular use) and a fresh rehydration (server restart, or a
+// room reload after being evicted by the activity sweep) re-sent the *entire* unbounded history.
+const WB_STROKE_DB_CAP = 3000;
 function insertStroke(code, stroke) {
   db.prepare('INSERT INTO whiteboard_strokes (id, room_code, stroke_json, at) VALUES (?, ?, ?, ?)').run(
     stroke.id,
@@ -624,11 +629,19 @@ function insertStroke(code, stroke) {
     JSON.stringify(stroke),
     Date.now()
   );
+  const { n } = db.prepare('SELECT COUNT(*) AS n FROM whiteboard_strokes WHERE room_code = ?').get(code);
+  if (n > WB_STROKE_DB_CAP) {
+    db.prepare(
+      `DELETE FROM whiteboard_strokes WHERE room_code = ? AND id IN (
+         SELECT id FROM whiteboard_strokes WHERE room_code = ? ORDER BY at ASC LIMIT ?
+       )`
+    ).run(code, code, n - WB_STROKE_DB_CAP);
+  }
 }
 
 function getWhiteboardStrokes(code) {
-  const rows = db.prepare('SELECT stroke_json FROM whiteboard_strokes WHERE room_code = ? ORDER BY at ASC').all(code);
-  return rows.map((r) => JSON.parse(r.stroke_json));
+  const rows = db.prepare('SELECT stroke_json FROM whiteboard_strokes WHERE room_code = ? ORDER BY at DESC LIMIT ?').all(code, WB_STROKE_DB_CAP);
+  return rows.map((r) => JSON.parse(r.stroke_json)).reverse();
 }
 
 function clearStrokes(code) {

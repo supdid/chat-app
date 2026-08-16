@@ -387,9 +387,12 @@ sendChatBtn.addEventListener('click', async () => {
   sendChatBtn.disabled = true;
   const original = sendChatBtn.textContent;
   try {
+    const accountToken = localStorage.getItem('valk-account-token');
+    const headers = { 'Content-Type': 'application/json' };
+    if (accountToken) headers.Authorization = `Bearer ${accountToken}`;
     const res = await fetch('/post-image', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ code: roomCode, name: myName, pin: roomPin, mediaUrl: currentUrl, prompt: currentPrompt }),
     });
     if (!res.ok) throw new Error();

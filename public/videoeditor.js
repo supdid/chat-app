@@ -1648,9 +1648,12 @@ sendChatBtn.addEventListener('click', async () => {
     const uploadRes = await fetch('/upload', { method: 'POST', body: formData });
     const uploadData = await uploadRes.json();
     if (!uploadRes.ok || !uploadData.url) throw new Error();
+    const accountToken = localStorage.getItem('valk-account-token');
+    const postHeaders = { 'Content-Type': 'application/json' };
+    if (accountToken) postHeaders.Authorization = `Bearer ${accountToken}`;
     const postRes = await fetch('/post-media', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: postHeaders,
       body: JSON.stringify({ code: roomCode, name: myName, pin: roomPin, mediaUrl: uploadData.url, mediaType: 'video', caption: '🎬 Edited video' }),
     });
     if (!postRes.ok) throw new Error();
