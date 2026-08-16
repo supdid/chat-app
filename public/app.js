@@ -298,6 +298,7 @@ function renderSavedList() {
       media.src = m.mediaUrl;
       media.className = 'saved-media';
       if (m.mediaType === 'video') media.controls = true;
+      else media.alt = 'shared image';
       li.appendChild(media);
     }
     if (m.text) {
@@ -2998,6 +2999,28 @@ document.addEventListener('keyup', (e) => {
   if (e.code === 'Space' && pttMode) pttStop();
 });
 
+// --- Escape closes whichever slide-out overlay is open ---
+// Every overlay already supports click-outside-to-close, but none had a keyboard equivalent —
+// a keyboard/screen-reader user had to Tab all the way to the ✕ button to get out. Clicking each
+// overlay's own close button (rather than just toggling .hidden here) reuses whatever extra
+// cleanup it already does — e.g. thread/dm/group-dm close buttons also null out the
+// currentThreadRootId/currentDmWithName/currentGroupDmId tracking variables, the same state a
+// stale room-switch bug (fixed earlier this session) showed is easy to forget. callOverlay is
+// deliberately excluded: Escape hanging up an active voice/video call would be surprising and
+// hard to undo.
+const ESCAPE_CLOSABLE = [
+  [menuOverlay, menuCloseBtn], [searchOverlay, searchCloseBtn], [galleryOverlay, galleryCloseBtn],
+  [friendsOverlay, friendsCloseBtn], [friendDmOverlay, friendDmCloseBtn], [groupsOverlay, groupsCloseBtn],
+  [groupDmOverlay, groupDmCloseBtn], [savedOverlay, savedCloseBtn], [qrOverlay, qrCloseBtn],
+  [threadOverlay, threadCloseBtn], [dmOverlay, dmCloseBtn], [pollOverlay, pollCloseBtn],
+];
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  for (const [overlay, closeBtn] of ESCAPE_CLOSABLE) {
+    if (overlay && closeBtn && !overlay.classList.contains('hidden')) closeBtn.click();
+  }
+});
+
 // --- Raise hand / "ask everyone to mute" ---
 // Both are *requests*, not server-enforced — this app has no roles/auth, so nothing
 // should ever force-mute someone else's mic against their will.
@@ -3904,6 +3927,7 @@ function renderGallery(media) {
     const el = m.mediaType === 'video' ? document.createElement('video') : document.createElement('img');
     el.src = m.mediaUrl;
     if (m.mediaType === 'video') el.muted = true;
+    else el.alt = 'shared image';
     item.appendChild(el);
     item.addEventListener('click', () => {
       if (document.getElementById(`msg-${m.id}`)) {
