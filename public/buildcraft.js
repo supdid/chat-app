@@ -144,11 +144,22 @@ let bcClaims = [];
 // name on bc-join; claims made before this existed have no ownerId and fall back to the old
 // name-based check server-side (see bcClaimOwnedBy in server.js) and here on the client.
 const BC_PLAYER_ID_KEY = 'valk-bc-player-id';
-let bcPlayerId = localStorage.getItem(BC_PLAYER_ID_KEY);
-if (!bcPlayerId) {
-  bcPlayerId = Math.random().toString(36).slice(2) + Date.now().toString(36);
-  localStorage.setItem(BC_PLAYER_ID_KEY, bcPlayerId);
-}
+// Some browsers/modes (Safari private browsing historically, storage-blocking extensions) throw
+// on localStorage access rather than just returning null — this runs at top-level module scope,
+// so an uncaught throw here would abort the rest of buildcraft.js and break the whole game for
+// that user. Same try/catch convention every other localStorage access in this file already uses
+// (see ACHIEVEMENTS_KEY below). Degrades to a fresh in-memory-only id for this session rather than
+// a hard crash — claims still work for the duration of the session, they just won't be recognized
+// as "mine" after a reload.
+let bcPlayerId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+try {
+  const stored = localStorage.getItem(BC_PLAYER_ID_KEY);
+  if (stored) {
+    bcPlayerId = stored;
+  } else {
+    localStorage.setItem(BC_PLAYER_ID_KEY, bcPlayerId);
+  }
+} catch { /* no-op — fall back to the fresh in-memory id generated above */ }
 
 function isCellClaimedByOther(x, z) {
   return bcClaims.some((c) => {

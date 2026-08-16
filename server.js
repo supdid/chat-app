@@ -1607,6 +1607,16 @@ const SW_STRIKE_COOLDOWN_MS = 700;
 // is trust-the-client in this app.
 const SW_STRIKE_RANGE = 30;
 const SW_KILL_SCORE_BONUS = 20;
+// Brief invulnerability after death/respawn. Fixes two related races found on independent review:
+// (1) a freshly-respawned player's x/y/z aren't reset server-side (spawnPlatform is deterministic
+// client-side, so the server has no coordinate to reset to) — they hold the death-location
+// coordinates until their next ~100ms-throttled sw-pos update, so a second nearby attacker could
+// land a "hit" using stale position data in that window; (2) two attackers' sw-strike messages
+// landing back-to-back on a 1-health target both connect — the first kills (health resets to
+// max), the second then lands a real hit on the "freshly alive" player, producing a spurious
+// post-death damage flash/hurt sound right after the elimination toast. Both close once any
+// strike attempt against a just-died target is rejected outright for a short window.
+const SW_RESPAWN_GRACE_MS = 500;
 // ---- Single-player arcade games (Snake, 2048) — no shared room state to speak of, just a
 // per-room best-score leaderboard reusing the same generic `leaderboard` table every other
 // game already uses. One handler pair covers both instead of duplicating near-identical code.
@@ -2961,7 +2971,7 @@ wss.on('connection', (ws, req) => {
       ws.swRoom = code;
       ws.swId = id;
       const players = [...room.sw.players.values()].map((p) => ({ id: p.id, name: p.name, x: p.x, y: p.y, z: p.z, yaw: p.yaw }));
-      room.sw.players.set(ws, { id, name, x: 0, y: 0, z: 0, yaw: 0, health: SW_MAX_HEALTH, lastStrikeAt: 0 });
+      room.sw.players.set(ws, { id, name, x: 0, y: 0, z: 0, yaw: 0, health: SW_MAX_HEALTH, lastStrikeAt: 0, respawnedAt: 0 });
       send(ws, { type: 'sw-init', id, players, health: SW_MAX_HEALTH });
       broadcastSw(code, { type: 'sw-player-joined', id, name }, ws);
       setRoomActivity(code, name, 'sw');
@@ -2993,11 +3003,13 @@ wss.on('connection', (ws, req) => {
       const now = Date.now();
       if (now - (attacker.lastStrikeAt || 0) < SW_STRIKE_COOLDOWN_MS) return;
 
+      if (msg.targetId === attacker.id) return;
       let target = null;
       for (const p of session.players.values()) {
         if (p.id === msg.targetId) { target = p; break; }
       }
       if (!target || target.health <= 0) return;
+      if (now - (target.respawnedAt || 0) < SW_RESPAWN_GRACE_MS) return;
       const dx = attacker.x - target.x, dy = attacker.y - target.y, dz = attacker.z - target.z;
       if (Math.sqrt(dx * dx + dy * dy + dz * dz) > SW_STRIKE_RANGE) return;
 
@@ -3008,6 +3020,7 @@ wss.on('connection', (ws, req) => {
         return;
       }
       target.health = SW_MAX_HEALTH;
+      target.respawnedAt = now;
       broadcastSw(ws.swRoom, { type: 'sw-death', id: target.id, killedBy: attacker.id, health: SW_MAX_HEALTH });
       return;
     }
