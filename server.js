@@ -1579,6 +1579,13 @@ const BC_REGEN_INTERVAL_MS = 4000; // +1 heart every 4s once eligible
 const BC_REGEN_DAMAGE_COOLDOWN_MS = 5000; // must go this long without taking damage before regen starts
 const BC_CLAIM_RADIUS = 8; // must match CLAIM_RADIUS on the client
 const BC_MAX_CLAIMS_PER_PLAYER = 3;
+// A claim is "owned by" a player if their stable per-browser id matches (see bc-join) — falls
+// back to comparing display name for claims placed before that id existed (owner_id is NULL) or
+// if a connection somehow has no stableId of its own, so nothing already placed loses protection.
+function bcClaimOwnedBy(claim, player) {
+  if (claim.ownerId) return !!player.stableId && claim.ownerId === player.stableId;
+  return claim.owner === player.name;
+}
 // Sanity bound on a block-change's type index — BLOCK_TYPES (public/buildcraft.js) is currently
 // ~180 entries; comfortably above that with room to grow, bump if that catalog ever exceeds it.
 // Without this, a client sending an out-of-range type (e.g. via raw WebSocket, no UI needed)
@@ -2595,11 +2602,16 @@ wss.on('connection', (ws, req) => {
       const id = crypto.randomUUID();
       ws.bcRoom = code;
       ws.bcId = id;
+      // A stable per-browser id (localStorage-generated, see buildcraft.js) used for land-claim
+      // ownership instead of display name — two players sharing a name (plausible with the
+      // default "Player") used to treat each other's claims as their own. Optional: an older
+      // client that hasn't picked this up yet just falls back to the legacy name-based check.
+      const stableId = typeof msg.playerId === 'string' ? msg.playerId.slice(0, 64) : null;
       const players = [...room.bc.players.values()].map((p) => ({ id: p.id, name: p.name, x: p.x, y: p.y, z: p.z, yaw: p.yaw, health: p.health, color: p.color, armorTier: p.armorTier || null }));
       // gameMode starts unset (treated as survival by applyBcDamage) — bc-join fires the instant
       // the socket opens, before the player has actually picked Creative/Survival on the start
       // screen; the real value arrives moments later via bc-set-mode once they click a mode.
-      room.bc.players.set(ws, { id, name, x: 0, y: 2.4, z: 0, yaw: 0, health: BC_MAX_HEALTH, lastPunchAt: 0, lastDamageAt: 0, armorReduction: 0, armorTier: null, color, gameMode: null });
+      room.bc.players.set(ws, { id, name, stableId, x: 0, y: 2.4, z: 0, yaw: 0, health: BC_MAX_HEALTH, lastPunchAt: 0, lastDamageAt: 0, armorReduction: 0, armorTier: null, color, gameMode: null });
       send(ws, {
         type: 'bc-init',
         id,
@@ -2620,12 +2632,12 @@ wss.on('connection', (ws, req) => {
       // Land-claim protection was previously enforced client-side only (buildcraft.js's own
       // isCellClaimedByOther checks before ever sending bc-block) — a raw WS client bypassing
       // that JS entirely (or a modified build) could ignore claims completely, since this handler
-      // never checked them itself. me.name may be undefined for a connection that reconnected
+      // never checked them itself. `me` may be undefined for a connection that reconnected
       // mid-session without a fresh bc-join; in that case fall back to rejecting any claimed cell
-      // outright rather than risking a false "it's mine" match on an empty owner string.
+      // outright rather than risking a false "it's mine" match via bcClaimOwnedBy.
       const me = room.bc.players.get(ws);
       const claims = room.bc.claims || [];
-      const isClaimedByOther = (x, z) => claims.some((c) => (!me || c.owner !== me.name) && Math.hypot(x - c.x, z - c.z) <= c.radius);
+      const isClaimedByOther = (x, z) => claims.some((c) => (!me || !bcClaimOwnedBy(c, me)) && Math.hypot(x - c.x, z - c.z) <= c.radius);
       const rawChanges = Array.isArray(msg.changes) ? msg.changes.slice(0, 2000) : [];
       const validChanges = [];
       const persistEntries = [];
@@ -2732,16 +2744,16 @@ wss.on('connection', (ws, req) => {
       const me = dg && dg.players.get(ws);
       if (!dg || !me) return;
       if (!dg.claims) dg.claims = [];
-      const ownedCount = dg.claims.filter((c) => c.owner === me.name).length;
+      const ownedCount = dg.claims.filter((c) => bcClaimOwnedBy(c, me)).length;
       if (ownedCount >= BC_MAX_CLAIMS_PER_PLAYER) {
         send(ws, { type: 'bc-claim-denied' });
         return;
       }
       const claimX = Math.max(-BC_MAX_COORD, Math.min(BC_MAX_COORD, Math.floor(+msg.x || 0)));
       const claimZ = Math.max(-BC_MAX_COORD, Math.min(BC_MAX_COORD, Math.floor(+msg.z || 0)));
-      const claim = { x: claimX, z: claimZ, radius: BC_CLAIM_RADIUS, owner: me.name };
+      const claim = { x: claimX, z: claimZ, radius: BC_CLAIM_RADIUS, owner: me.name, ownerId: me.stableId || null };
       dg.claims.push(claim);
-      db.addBcClaim(ws.bcRoom, claim.x, claim.z, claim.radius, claim.owner);
+      db.addBcClaim(ws.bcRoom, claim.x, claim.z, claim.radius, claim.owner, claim.ownerId);
       broadcastBc(ws.bcRoom, { type: 'bc-claim-added', ...claim });
       return;
     }

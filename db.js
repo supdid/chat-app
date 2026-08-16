@@ -130,6 +130,12 @@ ensureColumn('rooms', 'host_name', 'TEXT');
 ensureColumn('rooms', 'announcement', 'TEXT');
 ensureColumn('rooms', 'pin_required', 'TEXT');
 ensureColumn('rooms', 'wallpaper_url', 'TEXT');
+// Land claims were keyed purely by display name (owner) — two players sharing a name (plausible
+// with the default "Player" or common names) treated each other's claims as their own. New claims
+// also get a stable per-browser owner_id; existing pre-migration rows keep owner_id NULL and fall
+// back to the old name-based check (see isClaimedByOther in server.js), so nothing already placed
+// silently loses its protection.
+ensureColumn('bc_claims', 'owner_id', 'TEXT');
 
 // One-time migration: pins used to be single-pin-per-room (PK: room_code) — multi-pin needs a
 // composite PK (room_code, message_id) instead, which ALTER TABLE can't change in place.
@@ -702,13 +708,13 @@ function getBcOverrides(code) {
     .map((r) => [r.cell_key, r.type]);
 }
 
-function addBcClaim(code, x, z, radius, owner) {
-  db.prepare('INSERT INTO bc_claims (room_code, x, z, radius, owner, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(code, x, z, radius, owner, Date.now());
+function addBcClaim(code, x, z, radius, owner, ownerId) {
+  db.prepare('INSERT INTO bc_claims (room_code, x, z, radius, owner, owner_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(code, x, z, radius, owner, ownerId || null, Date.now());
 }
 
 function getBcClaims(code) {
-  return db.prepare('SELECT x, z, radius, owner FROM bc_claims WHERE room_code = ?').all(code);
+  return db.prepare('SELECT x, z, radius, owner, owner_id AS ownerId FROM bc_claims WHERE room_code = ?').all(code);
 }
 
 // ---- Profiles (avatar + status, keyed by display name like rooms are keyed by code — this

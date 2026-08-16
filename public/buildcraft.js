@@ -139,8 +139,22 @@ const CLAIM_RADIUS = 8;
 // blocks generally, just gated on a shared fact instead of purely local state.
 let bcClaims = [];
 
+// A stable per-browser id, independent of display name, so two players sharing a name (plausible
+// with the default "Player") no longer treat each other's claims as their own. Sent alongside
+// name on bc-join; claims made before this existed have no ownerId and fall back to the old
+// name-based check server-side (see bcClaimOwnedBy in server.js) and here on the client.
+const BC_PLAYER_ID_KEY = 'valk-bc-player-id';
+let bcPlayerId = localStorage.getItem(BC_PLAYER_ID_KEY);
+if (!bcPlayerId) {
+  bcPlayerId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  localStorage.setItem(BC_PLAYER_ID_KEY, bcPlayerId);
+}
+
 function isCellClaimedByOther(x, z) {
-  return bcClaims.some((c) => c.owner !== mpPlayerName && Math.hypot(x - c.x, z - c.z) <= c.radius);
+  return bcClaims.some((c) => {
+    const mine = c.ownerId ? c.ownerId === bcPlayerId : c.owner === mpPlayerName;
+    return !mine && Math.hypot(x - c.x, z - c.z) <= c.radius;
+  });
 }
 
 function blockColor(typeIndex) {
@@ -1254,7 +1268,7 @@ function connectBc(code, name) {
   bcSocket = new WebSocket(`${protocol}//${location.host}`);
 
   bcSocket.addEventListener('open', () => {
-    bcSocket.send(JSON.stringify({ type: 'bc-join', code, name, color: myShirtColor }));
+    bcSocket.send(JSON.stringify({ type: 'bc-join', code, name, color: myShirtColor, playerId: bcPlayerId }));
   });
 
   bcSocket.addEventListener('message', (event) => {
@@ -1283,8 +1297,9 @@ function connectBc(code, name) {
     } else if (data.type === 'bc-block') {
       data.changes.forEach((c) => bcApplyChange(c.x, c.y, c.z, c.t));
     } else if (data.type === 'bc-claim-added') {
-      bcClaims.push({ x: data.x, z: data.z, radius: data.radius, owner: data.owner });
-      if (data.owner !== mpPlayerName) showToast(`🚩 ${data.owner} claimed some land nearby`);
+      bcClaims.push({ x: data.x, z: data.z, radius: data.radius, owner: data.owner, ownerId: data.ownerId || null });
+      const claimIsMine = data.ownerId ? data.ownerId === bcPlayerId : data.owner === mpPlayerName;
+      if (!claimIsMine) showToast(`🚩 ${data.owner} claimed some land nearby`);
     } else if (data.type === 'bc-claim-denied') {
       showToast('🚩 You already have the maximum number of claims');
     } else if (data.type === 'bc-player-joined') {
