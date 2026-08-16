@@ -3077,6 +3077,10 @@ leaderboardCloseBtn.addEventListener('click', () => leaderboardOverlay.classList
 leaderboardOverlay.addEventListener('click', (e) => {
   if (e.target === leaderboardOverlay) leaderboardOverlay.classList.add('hidden');
 });
+// Same Escape-to-close fix already applied to every other overlay in this app this session.
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !leaderboardOverlay.classList.contains('hidden')) leaderboardCloseBtn.click();
+});
 
 // ---------- WebSocket ----------
 let ws;

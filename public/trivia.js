@@ -77,6 +77,10 @@ playersCloseBtn.addEventListener('click', () => playersOverlay.classList.add('hi
 playersOverlay.addEventListener('click', (e) => {
   if (e.target === playersOverlay) playersOverlay.classList.add('hidden');
 });
+// Same Escape-to-close fix already applied to every other overlay in this app this session.
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !playersOverlay.classList.contains('hidden')) playersCloseBtn.click();
+});
 
 // ---------- Round state ----------
 let roundActive = false;

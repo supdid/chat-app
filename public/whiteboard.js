@@ -26,6 +26,9 @@ ctx.lineCap = 'round';
 ctx.lineJoin = 'round';
 
 const COLORS = ['#111111', '#e74c3c', '#3b9dff', '#34e89e', '#f1c40f', '#e67e22', '#9b59b6', '#ffffff'];
+// Swatches are pure background-color buttons with no text — without an aria-label a screen
+// reader gets "button" with no indication of which color it picks.
+const COLOR_NAMES = ['Black', 'Red', 'Blue', 'Green', 'Yellow', 'Orange', 'Purple', 'White'];
 let currentColor = COLORS[0];
 let currentSize = +brushSizeInput.value;
 
@@ -34,6 +37,7 @@ COLORS.forEach((c, i) => {
   btn.type = 'button';
   btn.className = 'color-swatch' + (i === 0 ? ' active' : '');
   btn.style.background = c;
+  btn.setAttribute('aria-label', COLOR_NAMES[i] || c);
   btn.addEventListener('click', () => {
     currentColor = c;
     colorSwatchesEl.querySelectorAll('.color-swatch').forEach((el) => el.classList.remove('active'));
