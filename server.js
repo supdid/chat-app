@@ -1589,6 +1589,17 @@ const BC_MAX_BLOCK_TYPE = 300;
 // client-reported position by design, see comments elsewhere), just enough to stop a client from
 // broadcasting coordinates so large they break other players' rendering/camera math.
 const BC_MAX_COORD = 10000;
+// ---- Web Swing PvP (web strikes) — small integer health scale, same convention as
+// BC_MAX_HEALTH, since a strike (like a punch) is always worth exactly 1 point.
+const SW_MAX_HEALTH = 3;
+const SW_STRIKE_COOLDOWN_MS = 700;
+// Positions here are broadcast at ~10/sec (see sendPosBroadcast's 100ms throttle) while players
+// can move at up to MAX_SPEED=55 units/sec — up to ~5.5 units of staleness between updates on
+// top of normal network latency, so this needs more slack than BC_PUNCH_RANGE's tight building-
+// scale check. Loose sanity check, not authoritative geometry, same as everywhere else position
+// is trust-the-client in this app.
+const SW_STRIKE_RANGE = 30;
+const SW_KILL_SCORE_BONUS = 20;
 // ---- Single-player arcade games (Snake, 2048) — no shared room state to speak of, just a
 // per-room best-score leaderboard reusing the same generic `leaderboard` table every other
 // game already uses. One handler pair covers both instead of duplicating near-identical code.
@@ -2938,8 +2949,8 @@ wss.on('connection', (ws, req) => {
       ws.swRoom = code;
       ws.swId = id;
       const players = [...room.sw.players.values()].map((p) => ({ id: p.id, name: p.name, x: p.x, y: p.y, z: p.z, yaw: p.yaw }));
-      room.sw.players.set(ws, { id, name, x: 0, y: 0, z: 0, yaw: 0 });
-      send(ws, { type: 'sw-init', id, players });
+      room.sw.players.set(ws, { id, name, x: 0, y: 0, z: 0, yaw: 0, health: SW_MAX_HEALTH, lastStrikeAt: 0 });
+      send(ws, { type: 'sw-init', id, players, health: SW_MAX_HEALTH });
       broadcastSw(code, { type: 'sw-player-joined', id, name }, ws);
       setRoomActivity(code, name, 'sw');
       return;
@@ -2955,6 +2966,37 @@ wss.on('connection', (ws, req) => {
         type: 'sw-pos', id: ws.swId, x: p.x, y: p.y, z: p.z, yaw: p.yaw,
         swinging: !!msg.swinging, ax: swClamp(msg.ax), ay: swClamp(msg.ay), az: swClamp(msg.az),
       }, ws);
+      return;
+    }
+
+    // Web strike — PvP combat. Same shape as bc-punch: a cooldown, a loose position-based range
+    // check (not authoritative geometry, matching this game's existing trust-the-client position
+    // model), then a direct health decrement with a broadcast death/respawn on elimination.
+    if (msg.type === 'sw-strike' && ws.swRoom) {
+      const room = rooms.get(ws.swRoom);
+      const session = room && room.sw;
+      if (!session) return;
+      const attacker = session.players.get(ws);
+      if (!attacker || attacker.health <= 0) return;
+      const now = Date.now();
+      if (now - (attacker.lastStrikeAt || 0) < SW_STRIKE_COOLDOWN_MS) return;
+
+      let target = null;
+      for (const p of session.players.values()) {
+        if (p.id === msg.targetId) { target = p; break; }
+      }
+      if (!target || target.health <= 0) return;
+      const dx = attacker.x - target.x, dy = attacker.y - target.y, dz = attacker.z - target.z;
+      if (Math.sqrt(dx * dx + dy * dy + dz * dz) > SW_STRIKE_RANGE) return;
+
+      attacker.lastStrikeAt = now;
+      target.health -= 1;
+      if (target.health > 0) {
+        broadcastSw(ws.swRoom, { type: 'sw-hit', targetId: target.id, health: target.health, byId: attacker.id });
+        return;
+      }
+      target.health = SW_MAX_HEALTH;
+      broadcastSw(ws.swRoom, { type: 'sw-death', id: target.id, killedBy: attacker.id, health: SW_MAX_HEALTH });
       return;
     }
 

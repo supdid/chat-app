@@ -25,6 +25,7 @@
         <li><strong>WASD</strong> &mdash; run (reel in/out &amp; pump the swing while airborne, or climb/shuffle while on a wall)</li>
         <li><strong>Mouse</strong> &mdash; click the city to look around / aim</li>
         <li><strong>E</strong> (or Left Click) &mdash; shoot a web at the crosshair / let go. Aim near a rooftop to grapple straight up onto it; aim lower to swing from it</li>
+        <li><strong>F</strong> (or Right Click) &mdash; web strike. Aim at another player up close to hit them &mdash; three hits eliminates them (they respawn at the tower; you get bonus points)</li>
         <li><strong>Scroll wheel</strong> &mdash; zoom the camera in and out</li>
         <li><strong>Space</strong> &mdash; jump (or push off a wall while climbing). <strong>Hold it while swinging</strong> to climb up the web toward the anchor</li>
         <li>Move into a building's wall to grab on and crawl it &mdash; works while running straight at it or strafing past it</li>
@@ -40,6 +41,7 @@
         <li><strong>Drag the screen</strong> &mdash; look around / aim</li>
         <li><strong>Pinch with two fingers</strong> &mdash; zoom the camera in and out</li>
         <li><strong>🕸️ button</strong> &mdash; shoot a web at the crosshair / let go. Aim near a rooftop to grapple up onto it; aim lower to swing from it</li>
+        <li><strong>👊 button</strong> &mdash; web strike. Aim at another player up close to hit them &mdash; three hits eliminates them (they respawn at the tower; you get bonus points)</li>
         <li><strong>⤒ button</strong> &mdash; jump (or push off a wall while climbing). <strong>Hold it while swinging</strong> to climb up the web toward the anchor</li>
         <li>Move into a building's wall to grab on and crawl it &mdash; works while running straight at it or strafing past it</li>
         <li><strong>⤓ button</strong> (in the air) &mdash; dive. Tuck and drive downward to trade height for speed, steered by where you aim</li>
@@ -64,6 +66,11 @@
       <button id="leaderboard-btn" class="icon-btn" aria-label="Leaderboard">🏆</button>
     </div>
   </div>
+
+  <!-- Only shown once in a multiplayer room (health has no meaning solo, since there's no one
+       to strike you) — same "only your own hearts render" convention as Build Craft. -->
+  <div id="health-bar" class="hidden"></div>
+  <div id="damage-flash"></div>
 
   <div id="leaderboard-overlay" class="hidden">
     <div class="panel">
@@ -92,6 +99,7 @@
       <button id="touch-jump" class="touch-btn" aria-label="Jump">⤒</button>
       <button id="touch-dive" class="touch-btn" aria-label="Dive">⤓</button>
       <button id="touch-web" class="touch-btn" aria-label="Shoot web / let go">🕸️</button>
+      <button id="touch-strike" class="touch-btn" aria-label="Web strike">👊</button>
     </div>
   </div>
 
