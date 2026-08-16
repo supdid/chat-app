@@ -2381,6 +2381,15 @@ wss.on('connection', (ws, req) => {
     } catch {
       return;
     }
+    // JSON.parse("null") succeeds and returns null (not caught above) — every dispatch check
+    // below assumes msg is an object and reads msg.type unconditionally, which throws on null
+    // (and would throw the same way on a bare number/string/boolean, though only null is valid
+    // JSON that isn't also a plain object/array). That throw used to escape uncaught (the catch
+    // block further down reads msg.type on the same null a second time while building its error
+    // context, throwing again with nothing left to catch it) straight into the process-level
+    // uncaughtException handler, which calls process.exit(1) — a single `ws.send("null")` from
+    // any connected client killed the entire server for every room/user, not just that connection.
+    if (!msg || typeof msg !== 'object') return;
 
     // The entire dispatch below is one big try/catch: a bug in any single message handler
     // must not kill this connection's message loop (or, since all clients share one process,
@@ -4352,7 +4361,7 @@ wss.on('connection', (ws, req) => {
       return;
     }
     } catch (err) {
-      reportError('server', err, { wsMessageType: msg.type, room: ws.room || null });
+      reportError('server', err, { wsMessageType: msg && msg.type, room: ws.room || null });
     }
   });
 
