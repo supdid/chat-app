@@ -1622,6 +1622,14 @@ const SW_RESPAWN_GRACE_MS = 500;
 // game already uses. One handler pair covers both instead of duplicating near-identical code.
 const ARCADE_LEADERBOARD_KEY = { snake: 'snake', '2048': 'g2048', fighterplane: 'fighterplane' };
 const ARCADE_ACTIVITY_CODE = { snake: 'sk', '2048': 'tf', fighterplane: 'fp' };
+// arcade-submit-score is fully client-computed (flagged in review as a known, accepted, low-
+// severity gap — a real fix needs server-side gameplay simulation, out of scope) but had no
+// throttle at all, unlike every score/message-creation path elsewhere in this app. These two
+// checks don't make cheating impossible, just cheaper to deter: a submission cooldown (matching
+// the flood-gate convention everywhere else) and a minimum time since arcade-join (blocks the
+// trivial "join then immediately submit 100000" case without needing real anti-cheat).
+const ARCADE_SUBMIT_COOLDOWN_MS = 2000;
+const ARCADE_SUBMIT_MIN_SESSION_MS = 3000;
 const RATE_LIMIT_WINDOW_MS = 6000;
 const RATE_LIMIT_MAX_MESSAGES = 8; // generous for real typing/conversation, tight enough to stop a flood
 // Whiteboard/Pictionary strokes are far more frequent than chat messages by nature (the client
@@ -3133,12 +3141,17 @@ wss.on('connection', (ws, req) => {
       ws.arcadeRoom = code;
       ws.arcadeGame = game;
       ws.arcadeName = name;
+      ws.arcadeJoinedAt = Date.now();
       setRoomActivity(code, name, ARCADE_ACTIVITY_CODE[game]);
       send(ws, { type: 'arcade-leaderboard', scores: db.getLeaderboard(code, ARCADE_LEADERBOARD_KEY[game], 10) });
       return;
     }
 
     if (msg.type === 'arcade-submit-score' && ws.arcadeRoom) {
+      const nowArcade = Date.now();
+      if (nowArcade - (ws.arcadeJoinedAt || 0) < ARCADE_SUBMIT_MIN_SESSION_MS) return;
+      if (nowArcade - (ws.lastArcadeSubmitAt || 0) < ARCADE_SUBMIT_COOLDOWN_MS) return;
+      ws.lastArcadeSubmitAt = nowArcade;
       const score = Math.max(0, Math.min(100000, Math.floor(+msg.score || 0)));
       db.bumpLeaderboard(ws.arcadeRoom, ARCADE_LEADERBOARD_KEY[ws.arcadeGame], ws.arcadeName, score);
       send(ws, { type: 'arcade-leaderboard', scores: db.getLeaderboard(ws.arcadeRoom, ARCADE_LEADERBOARD_KEY[ws.arcadeGame], 10) });
