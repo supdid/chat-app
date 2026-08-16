@@ -354,7 +354,15 @@ app.post('/post-image', (req, res) => {
   if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many posts too quickly — slow down a bit.' });
   const code = String(req.body.code || '').toUpperCase().trim();
   const name = String(req.body.name || 'Someone').slice(0, 30).trim() || 'Someone';
-  const mediaUrl = typeof req.body.mediaUrl === 'string' ? req.body.mediaUrl.slice(0, 2000) : null;
+  // Every other "attach media" path in this app (the WS 'message' handler, /post-media below,
+  // scorpture uploads) requires a real /uploads/ URL, closing off arbitrary external URLs that'd
+  // auto-load in every room member's browser as a classic IP/UA-grabbing tracker link. AI Studio's
+  // own uncaptioned-image flow legitimately posts a direct image.pollinations.ai URL (only
+  // captioned memes get uploaded first) — that's the one external host allowed here.
+  const rawMediaUrl = typeof req.body.mediaUrl === 'string' ? req.body.mediaUrl.slice(0, 2000) : null;
+  const mediaUrl = rawMediaUrl && (rawMediaUrl.startsWith('/uploads/') || rawMediaUrl.startsWith('https://image.pollinations.ai/'))
+    ? rawMediaUrl
+    : null;
   const prompt = String(req.body.prompt || '').slice(0, 500).trim();
   if (!code || !mediaUrl) return res.status(400).json({ error: 'Missing room code or image' });
   const room = rooms.get(code);
@@ -396,7 +404,11 @@ app.post('/post-media', (req, res) => {
   if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many posts too quickly — slow down a bit.' });
   const code = String(req.body.code || '').toUpperCase().trim();
   const name = String(req.body.name || 'Someone').slice(0, 30).trim() || 'Someone';
-  const mediaUrl = typeof req.body.mediaUrl === 'string' ? req.body.mediaUrl.slice(0, 2000) : null;
+  // Same tracker-link concern as /post-image above — this route's only real client (Video
+  // Editor's "Send to chat") always uploads first and passes a real /uploads/ URL, so no
+  // external-host exception is needed here.
+  const rawMediaUrl = typeof req.body.mediaUrl === 'string' ? req.body.mediaUrl.slice(0, 2000) : null;
+  const mediaUrl = rawMediaUrl && rawMediaUrl.startsWith('/uploads/') ? rawMediaUrl : null;
   const mediaType = ['video', 'image', 'audio'].includes(req.body.mediaType) ? req.body.mediaType : null;
   const caption = String(req.body.caption || '').slice(0, 500).trim();
   if (!code || !mediaUrl || !mediaType) return res.status(400).json({ error: 'Missing room code or media' });
@@ -2790,6 +2802,12 @@ wss.on('connection', (ws, req) => {
       if (!me) return;
       const text = String(msg.text || '').slice(0, 300).trim();
       if (!text) return;
+      // Same flood gate every other chat-creation path in this app shares (room chat, DMs,
+      // group DMs, Scorpture live chat) — Build Craft's in-game chat was missing it.
+      const nowBc = Date.now();
+      ws.msgTimestamps = (ws.msgTimestamps || []).filter((t) => nowBc - t < RATE_LIMIT_WINDOW_MS);
+      if (ws.msgTimestamps.length >= RATE_LIMIT_MAX_MESSAGES) return;
+      ws.msgTimestamps.push(nowBc);
       broadcastBc(ws.bcRoom, { type: 'bc-chat', name: me.name, text });
       return;
     }
@@ -3891,6 +3909,8 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'rename-room' && ws.room) {
+      const dbRoom = db.getRoom(ws.room);
+      if (!dbRoom || dbRoom.host_name !== ws.profile.name) return;
       const name = String(msg.name || '').slice(0, 50).trim() || null;
       db.upsertRoom(ws.room, name);
       broadcastRoom(ws.room, { type: 'room-renamed', name });

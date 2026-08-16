@@ -2048,7 +2048,7 @@ function toggleBoat() {
     showToast('🚤 Boarded the boat (G to exit)');
   } else {
     ridingBoat = false;
-    if (boatMesh) { yawObject.remove(boatMesh); boatMesh = null; }
+    if (boatMesh) { yawObject.remove(boatMesh); bcDisposeAvatarGroup(boatMesh); boatMesh = null; }
     if (gameMode === 'survival') collectItem(BOAT_ITEM, 1); // pick the boat back up, Minecraft-style
     showToast('🚤 Left the boat');
   }
@@ -2103,7 +2103,7 @@ function toggleMinecart() {
     showToast('🛒 Boarded the minecart (G to exit)');
   } else {
     ridingMinecart = false;
-    if (minecartMesh) { yawObject.remove(minecartMesh); minecartMesh = null; }
+    if (minecartMesh) { yawObject.remove(minecartMesh); bcDisposeAvatarGroup(minecartMesh); minecartMesh = null; }
     if (gameMode === 'survival') collectItem(MINECART_ITEM, 1);
     showToast('🛒 Left the minecart');
   }
@@ -2138,11 +2138,18 @@ function carveCave(cx, cy, cz) {
   const R = 7;
   const changes = new Map();
   const record = (x, y, z, t) => changes.set(`${x},${y},${z}`, { x, y, z, t });
+  // Unlike every direct break/place action, this fires from a dig-streak RNG roll with no
+  // per-cell UI to gate on — without this check a cave-in could delete a 7-radius sphere of
+  // someone else's claimed build just by a third party mining nearby.
+  const claimGuard = bcMultiplayerActive
+    ? (x, z) => isCellClaimedByOther(x, z)
+    : () => false;
   for (let dx = -R; dx <= R; dx++) {
     for (let dy = -R; dy <= R; dy++) {
       for (let dz = -R; dz <= R; dz++) {
         if (dx * dx + dy * dy + dz * dz <= R * R) {
           const x = cx + dx, y = cy + dy, z = cz + dz;
+          if (claimGuard(x, z)) continue;
           if (removeBlockAt(x, y, z) !== null) record(x, y, z, null);
         }
       }
@@ -2157,6 +2164,7 @@ function carveCave(cx, cy, cz) {
         const distSq = dx * dx + dy * dy + dz * dz;
         if (distSq <= shellMinSq || distSq > shellMaxSq) continue;
         const x = cx + dx, y = cy + dy, z = cz + dz;
+        if (claimGuard(x, z)) continue;
         if (!world.has(keyOf(x, y, z))) continue;
         const ore = rollCaveOre();
         if (ore === null) continue;
@@ -2166,10 +2174,12 @@ function carveCave(cx, cy, cz) {
       }
     }
   }
-  removeBlockAt(cx, cy + R - 2, cz);
-  const lantern = indexOf('Sea Lantern');
-  addBlock(cx, cy + R - 2, cz, lantern);
-  record(cx, cy + R - 2, cz, lantern);
+  if (!claimGuard(cx, cz)) {
+    removeBlockAt(cx, cy + R - 2, cz);
+    const lantern = indexOf('Sea Lantern');
+    addBlock(cx, cy + R - 2, cz, lantern);
+    record(cx, cy + R - 2, cz, lantern);
+  }
   bcSendChanges(changes);
   showToast('⛏️ You found a wide cave, glittering with ore!');
 }
@@ -2270,7 +2280,11 @@ function doPlace() {
   if (!hit) return;
   const gx = hit.x + hit.normal.x, gy = hit.y + hit.normal.y, gz = hit.z + hit.normal.z;
 
-  if (bcMultiplayerActive && isCellClaimedByOther(hit.x, hit.z)) {
+  // Claim check must use the cell the new block actually lands in (gx/gz), not the cell being
+  // looked at (hit.x/hit.z) — those differ by one cell along the face normal, which let a player
+  // standing just outside a claim place a block one cell inside it by aiming at their own
+  // unclaimed block's face.
+  if (bcMultiplayerActive && isCellClaimedByOther(gx, gz)) {
     showToast('🚧 This area is claimed by someone else');
     return;
   }
@@ -3388,7 +3402,7 @@ function mountHorse(horse) {
 
 function dismountHorse() {
   ridingHorse = false;
-  if (horseMesh) { yawObject.remove(horseMesh); horseMesh = null; }
+  if (horseMesh) { yawObject.remove(horseMesh); bcDisposeAvatarGroup(horseMesh); horseMesh = null; }
   if (mountedHorse) {
     mountedHorse.group.position.copy(yawObject.position);
     mountedHorse.group.position.y -= EYE_HEIGHT;

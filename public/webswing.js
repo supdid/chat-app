@@ -2014,8 +2014,10 @@ function updateRemoteAvatars(dt) {
   }
 }
 
+let swRoomFull = false; // set on 'sw-full' so the close handler below doesn't reconnect-loop into a full room
 function connectSw() {
   if (!mpRoomCode) return;
+  swRoomFull = false;
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   swSocket = new WebSocket(`${protocol}//${location.host}`);
   swSocket.addEventListener('open', () => {
@@ -2046,11 +2048,22 @@ function connectSw() {
     } else if (data.type === 'sw-player-left') {
       removeRemotePlayer(data.id);
     } else if (data.type === 'sw-full') {
+      swRoomFull = true;
       if (swSocket) swSocket.close();
       swSocket = null;
     } else if (data.type === 'sw-leaderboard-result') {
       renderLeaderboard(data.scores || []);
     }
+  });
+  // Without this, a dropped connection (server restart, brief network blip) left every remote
+  // ghost frozen in its last position forever with no indication anything broke and no way to
+  // recover short of reloading the page — same reconnect pattern fighterplane.js's leaderboard
+  // socket already uses. Existing ghosts are cleared since their positions are now stale; a fresh
+  // sw-init snapshot repopulates them once reconnected.
+  swSocket.addEventListener('close', () => {
+    for (const id of [...remotePlayers.keys()]) removeRemotePlayer(id);
+    swSocket = null;
+    if (!swRoomFull) setTimeout(connectSw, 1500);
   });
 }
 

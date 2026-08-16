@@ -2765,6 +2765,20 @@ window.addEventListener('keydown', (e) => {
 });
 window.addEventListener('keyup', (e) => { keys[e.code] = false; });
 
+// A key released while the window doesn't have focus never delivers a keyup, so it stays latched
+// (same bug already fixed in webswing.js's clearHeldInput) — without this, alt-tabbing mid-throttle
+// or mid-turn left the plane/tank/on-foot character moving or turning forever after refocus.
+function clearHeldInput() {
+  for (const code in keys) keys[code] = false;
+  firingBullets = false;
+  aiming = false;
+  touchFiringBullets = false;
+  touchMissileX = 0;
+  touchMissileY = 0;
+}
+window.addEventListener('blur', clearHeldInput);
+document.addEventListener('visibilitychange', () => { if (document.hidden) clearHeldInput(); });
+
 canvas.addEventListener('click', () => {
   if (!gameStarted || isTouchDevice || pointerLocked) return;
   requestPointerLockSafe();

@@ -1167,8 +1167,16 @@ async function startGoLive(useScreen) {
 // Switching source now just points the hidden sourceVideo at a new raw stream — the canvas
 // track being broadcast never changes, so there's no RTCRtpSender.replaceTrack/renegotiation
 // needed at all, unlike before overlays existed.
+// Same reentrancy concern startGoLive() already guards against with goLiveStarting — without
+// this, two rapid clicks on the switch-source buttons raced two concurrent getDisplayMedia/
+// getUserMedia calls: whichever finished last overwrote broadcastState.rawStream, leaking the
+// other's captured stream (webcam light / "sharing your screen" indicator stuck on with nothing
+// left to stop it), and both could call pc.createOffer()/setLocalDescription() on the same
+// RTCPeerConnection concurrently, throwing signaling-state glare for that viewer.
+let switchingGoLiveSource = false;
 async function switchGoLiveSource(useScreen) {
-  if (!broadcastState) return;
+  if (!broadcastState || switchingGoLiveSource) return;
+  switchingGoLiveSource = true;
   try {
     const newRawStream = useScreen
       ? await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
@@ -1201,6 +1209,8 @@ async function switchGoLiveSource(useScreen) {
     newRawStream.getVideoTracks()[0].addEventListener('ended', () => { if (broadcastState) endGoLive(); });
   } catch (err) {
     showToast(`Couldn't switch source: ${err.message}`);
+  } finally {
+    switchingGoLiveSource = false;
   }
 }
 

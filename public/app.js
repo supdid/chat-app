@@ -245,7 +245,11 @@ let lastRoomUsers = [];
 // an id) so a saved message still shows something even if the original is later deleted or the
 // room it came from isn't the one currently open. ---
 const SAVED_KEY = 'valk-saved-messages';
-let savedMessages = JSON.parse(localStorage.getItem(SAVED_KEY) || '[]');
+let savedMessages = [];
+try {
+  const parsed = JSON.parse(localStorage.getItem(SAVED_KEY) || '[]');
+  if (Array.isArray(parsed)) savedMessages = parsed;
+} catch {}
 
 function isSaved(id) {
   return savedMessages.some((m) => m.id === id);
@@ -332,7 +336,12 @@ function renderSavedList() {
 // --- Personal block/mute — purely client-side (localStorage), no server involvement at all,
 // since this only affects what *you* see, unlike host moderation (kick/mute) which is shared. ---
 const BLOCKED_KEY = 'valk-blocked-users';
-const blockedNames = new Set(JSON.parse(localStorage.getItem(BLOCKED_KEY) || '[]'));
+let blockedNamesInit = [];
+try {
+  const parsed = JSON.parse(localStorage.getItem(BLOCKED_KEY) || '[]');
+  if (Array.isArray(parsed)) blockedNamesInit = parsed;
+} catch {}
+const blockedNames = new Set(blockedNamesInit);
 function toggleBlockUser(name) {
   if (blockedNames.has(name)) blockedNames.delete(name); else blockedNames.add(name);
   localStorage.setItem(BLOCKED_KEY, JSON.stringify([...blockedNames]));
@@ -680,6 +689,11 @@ function handleServerMessage(data) {
       typingTimers.clear();
       renderTypingIndicator();
       clearReplyingTo();
+      // A thread left open while switching rooms kept pointing at the old room's root message —
+      // the server silently drops the reply link for a cross-room id (room_code mismatch), so a
+      // reply typed there posted as an ordinary top-level message with no error shown.
+      threadOverlay.classList.add('hidden');
+      currentThreadRootId = null;
       seedReactions(data.reactions);
       seedActivity(data.activity);
       pinnedMessages = data.pins || [];
@@ -3065,13 +3079,23 @@ callRecordBtn.addEventListener('click', () => {
 // block (or plugged in a mic) start being heard mid-call instead of rejoining.
 async function retryEnableMicrophone() {
   if (!voiceActive || localStream) return;
+  // Same stale-attempt guard as startVoiceCall() — if the call ends while this permission
+  // prompt is still up, resurrecting it here would leak a hot mic track + speaking-detector
+  // loop with no UI left to stop them.
+  const myCallGeneration = voiceCallGeneration;
+  let newStream;
   try {
-    localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    newStream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (err) {
     voiceErrorEl.textContent = micErrorMessage(err);
     voiceErrorEl.classList.remove('hidden');
     return;
   }
+  if (myCallGeneration !== voiceCallGeneration) {
+    newStream.getTracks().forEach((t) => t.stop());
+    return;
+  }
+  localStream = newStream;
   voiceErrorEl.classList.add('hidden');
   micRetryBtn.classList.add('hidden');
   localVoiceStop = attachSpeakingDetector(localStream, (speaking) => setTileSpeaking('me', speaking));
@@ -3121,12 +3145,20 @@ async function populateMicDevices() {
 // needed, so switching mid-call doesn't cause a reconnect blip for anyone listening.
 async function switchMicrophone(deviceId) {
   if (!voiceActive || !deviceId) return;
+  // Same stale-attempt guard as startVoiceCall()/retryEnableMicrophone() — picking a device
+  // right as the call ends would otherwise leave a hot mic track + speaking-detector loop
+  // leaked with no UI left to stop them.
+  const myCallGeneration = voiceCallGeneration;
   let newStream;
   try {
     newStream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: deviceId } } });
   } catch (err) {
     voiceErrorEl.textContent = micErrorMessage(err);
     voiceErrorEl.classList.remove('hidden');
+    return;
+  }
+  if (myCallGeneration !== voiceCallGeneration) {
+    newStream.getTracks().forEach((t) => t.stop());
     return;
   }
   const newTrack = newStream.getAudioTracks()[0];
