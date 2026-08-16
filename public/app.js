@@ -365,11 +365,16 @@ let unreadCount = 0;
 
 // --- Voice call state ---
 let voiceActive = false;
+// Bumped by hangUpVoiceCall so a startVoiceCall() still awaiting the mic permission prompt can
+// tell, once it resolves, whether the call was torn down in the meantime (e.g. a WS drop/
+// reconnect while the browser's native permission dialog was still up — see startVoiceCall).
+let voiceCallGeneration = 0;
 let callAutoHangupTimer = null;
 const CALL_MAX_DURATION_MS = 32 * 60 * 60 * 1000; // 32 hours
 let localStream = null;
 let localVoiceStop = null; // stop function for the local speaking-ring detector
 let screenStream = null; // local outgoing screen-share stream, null when not sharing
+let screenShareStarting = false; // guards against a second getDisplayMedia() call racing the first while its OS picker is still up
 const voicePeers = new Map(); // sub -> { name, pc, audioEl, stopDetector }
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 let pttMode = false;
@@ -910,6 +915,7 @@ function handleServerMessage(data) {
       if (textEl) {
         const fresh = document.createElement('span');
         fresh.className = 'text';
+        fresh.dataset.rawText = data.text;
         fresh.appendChild(renderTextWithMentions(data.text));
         textEl.replaceWith(fresh);
       }
@@ -1174,6 +1180,11 @@ function renderMessage(data, opts = {}) {
   if (data.text && data.mediaType !== 'poll') {
     const text = document.createElement('span');
     text.className = 'text';
+    // renderTextWithMentions turns **bold**/*italic*/`code` into real elements, so .textContent
+    // on this span never contains the original markdown delimiters — startEditingMessage needs
+    // the actual raw source text (not the rendered/stripped version) to edit without silently
+    // destroying the formatting the moment Save or Cancel is clicked.
+    text.dataset.rawText = data.text;
     text.appendChild(renderTextWithMentions(data.text));
     bubble.appendChild(text);
     if (!data.mediaUrl) {
@@ -1403,7 +1414,12 @@ function startEditingMessage(messageId) {
   const bubble = document.querySelector(`#msg-${messageId} .bubble`);
   const textEl = bubble && bubble.querySelector('.text');
   if (!bubble || !textEl) return;
-  const originalText = textEl.textContent;
+  // .textContent would give the *rendered* text with markdown delimiters already stripped by
+  // renderTextWithMentions (e.g. "important" instead of "**important**") — dataset.rawText (set
+  // in renderMessage/message-edited) holds the actual source. Fall back to textContent only for
+  // a message rendered before this fix shipped and never re-rendered since (page reload picks up
+  // the fix on every message going forward).
+  const originalText = textEl.dataset.rawText ?? textEl.textContent;
 
   const editForm = document.createElement('form');
   editForm.className = 'edit-message-form';
@@ -1427,7 +1443,8 @@ function startEditingMessage(messageId) {
   const restore = () => {
     const freshText = document.createElement('span');
     freshText.className = 'text';
-    freshText.textContent = originalText;
+    freshText.dataset.rawText = originalText;
+    freshText.appendChild(renderTextWithMentions(originalText));
     editForm.replaceWith(freshText);
   };
   cancelBtn.addEventListener('click', restore);
@@ -2831,6 +2848,7 @@ async function startVoiceCall() {
   // Set before the getUserMedia await below, not after — otherwise a double-click/double-tap
   // before the prompt resolves passes this guard twice and creates a duplicate call join.
   voiceActive = true;
+  const myCallGeneration = voiceCallGeneration;
   voiceCallBanner.classList.add('hidden');
   voiceErrorEl.classList.add('hidden');
   micRetryBtn.classList.add('hidden');
@@ -2852,6 +2870,16 @@ async function startVoiceCall() {
     voiceErrorEl.textContent = 'Joined without a microphone — this browser can’t access one here (voice calls need HTTPS or localhost).';
     voiceErrorEl.classList.remove('hidden');
     setCallExpanded(true);
+  }
+
+  // hangUpVoiceCall() ran while the mic permission prompt was still up (voiceActive is already
+  // reset to false in that case, e.g. a WS drop-and-reconnect happening mid-prompt) — resurrecting
+  // the call here would leave voiceActive/the Hang Up button permanently out of sync with a live
+  // mic capture and no way to stop it. Abandon this stale attempt instead.
+  if (myCallGeneration !== voiceCallGeneration) {
+    if (localStream) localStream.getTracks().forEach((t) => t.stop());
+    localStream = null;
+    return;
   }
 
   voicecallBtn.textContent = '📞 In call';
@@ -3128,6 +3156,7 @@ if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
 function hangUpVoiceCall() {
   if (!voiceActive) return;
   voiceActive = false;
+  voiceCallGeneration++;
   clearTimeout(callAutoHangupTimer);
   callAutoHangupTimer = null;
   voicecallBtn.textContent = '📞 Start Voice Call';
@@ -3281,9 +3310,18 @@ function addVoicePeer(sub, name) {
 async function makeVoiceOffer(sub) {
   const peer = voicePeers.get(sub);
   if (!peer) return;
-  const offer = await peer.pc.createOffer();
-  await peer.pc.setLocalDescription(offer);
-  ws.send(JSON.stringify({ type: 'voice-signal', to: sub, signal: { type: 'offer', sdp: peer.pc.localDescription } }));
+  try {
+    const offer = await peer.pc.createOffer();
+    await peer.pc.setLocalDescription(offer);
+    ws.send(JSON.stringify({ type: 'voice-signal', to: sub, signal: { type: 'offer', sdp: peer.pc.localDescription } }));
+  } catch (err) {
+    // Every call site either fires this without awaiting (voice-peers) or awaits it inside a
+    // for-loop over multiple peers (startScreenShare/toggleMicMute-equivalent re-offer paths) —
+    // letting one peer's failure (e.g. its connection was already torn down by a fast leave/
+    // rejoin) throw uncaught would silently leave that peer's tile with no audio/screen-share
+    // forever, and in the loop cases would abort processing every peer after it too.
+    reportClientError('makeVoiceOffer failed for ' + sub + ': ' + err.message, err.stack);
+  }
 }
 
 async function handleVoiceSignal(from, signal) {
@@ -3346,16 +3384,24 @@ async function toggleScreenShare() {
 }
 
 async function startScreenShare() {
+  // Without this, clicking twice before the OS share picker even appears (nothing disables the
+  // button in the meantime) fires two independent getDisplayMedia() calls; whichever resolves
+  // second silently overwrites `screenStream`, leaking the first capture — its track is never
+  // stopped, so the browser's native "sharing this tab/screen" indicator for it never clears.
+  if (screenShareStarting || screenStream) return;
   if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
     voiceErrorEl.textContent = 'This browser can’t share your screen.';
     voiceErrorEl.classList.remove('hidden');
     return;
   }
+  screenShareStarting = true;
 
   try {
     screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
   } catch (err) {
     return; // user cancelled the share picker
+  } finally {
+    screenShareStarting = false;
   }
 
   const track = screenStream.getVideoTracks()[0];
@@ -3449,6 +3495,20 @@ function setLoginPending(pending) {
   loginSubmitBtn.textContent = pending ? 'Connecting…' : loginSubmitLabel;
 }
 
+// Shared by the manual submit handler below and the two auto-continue paths (rejoin-from-
+// minigame-link, auto-signed-in-account) further down this file — those two used to call
+// setLoginPending(true) with no timeout armed at all, so an outage during either of them left
+// the submit button stuck reading "Connecting…"/"Rejoining…" indefinitely with zero feedback,
+// unlike a manual submit which already told the user something was wrong after 8 seconds.
+function armLoginTimeout() {
+  clearTimeout(loginTimeoutId);
+  loginTimeoutId = setTimeout(() => {
+    setLoginPending(false);
+    loginErrorEl.textContent = "Couldn't connect. Check your connection and try again.";
+    loginErrorEl.classList.remove('hidden');
+  }, 8000);
+}
+
 loginForm.addEventListener('submit', (e) => {
   e.preventDefault();
   const name = usernameInput.value.trim();
@@ -3459,12 +3519,7 @@ loginForm.addEventListener('submit', (e) => {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'join-server', username: myUsername, accountToken: accountToken || undefined }));
   }
-  clearTimeout(loginTimeoutId);
-  loginTimeoutId = setTimeout(() => {
-    setLoginPending(false);
-    loginErrorEl.textContent = "Couldn't connect. Check your connection and try again.";
-    loginErrorEl.classList.remove('hidden');
-  }, 8000);
+  armLoginTimeout();
 });
 
 // --- Room select ---
@@ -4114,6 +4169,7 @@ if (rejoinRoom) {
     usernameInput.value = myUsername;
     document.querySelector('#login-screen .subtitle').textContent = 'Rejoining your room…';
     setLoginPending(true);
+    armLoginTimeout();
   } else {
     // A room code with no name means someone scanned a room's QR code — they still need to
     // type their own name and submit normally, but land straight in that room afterward.
@@ -4134,6 +4190,7 @@ if (!myUsername && accountToken && accountUsername) {
     document.querySelector('#login-screen .subtitle').textContent = `Signing in as ${myUsername}…`;
   }
   setLoginPending(true);
+  armLoginTimeout();
 }
 
 connect();
