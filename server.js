@@ -3516,6 +3516,12 @@ wss.on('connection', (ws, req) => {
       if (!dg || !dg.roundEndAt) return;
       const me = dg.players.get(ws);
       if (!me || me.id === dg.drawerId || me.isSpectator) return;
+      // Same flood gate every other chat-creation path in this app shares — unlike its sibling
+      // dg-stroke (rate-limited just above), guesses/post-guess chat had no throttle at all.
+      const nowDg = Date.now();
+      ws.msgTimestamps = (ws.msgTimestamps || []).filter((t) => nowDg - t < RATE_LIMIT_WINDOW_MS);
+      if (ws.msgTimestamps.length >= RATE_LIMIT_MAX_MESSAGES) return;
+      ws.msgTimestamps.push(nowDg);
       const text = String(msg.text || '').slice(0, 100).trim();
       if (!text) return;
       if (dg.guessedThisRound.has(me.id)) {
