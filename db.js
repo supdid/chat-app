@@ -124,6 +124,8 @@ function ensureColumn(table, column, definition) {
 }
 ensureColumn('messages', 'edited', 'INTEGER DEFAULT 0');
 ensureColumn('messages', 'deleted', 'INTEGER DEFAULT 0');
+// See insertMessage's comment — a signed-in poster's account_id, not just their display name.
+ensureColumn('messages', 'account_id', 'TEXT');
 ensureColumn('rooms', 'host_name', 'TEXT');
 ensureColumn('rooms', 'announcement', 'TEXT');
 ensureColumn('rooms', 'pin_required', 'TEXT');
@@ -391,6 +393,8 @@ ensureColumn('accounts', 'scorpture_avatar_url', 'TEXT');
 ensureColumn('accounts', 'scorpture_bonus_subscribers', 'INTEGER DEFAULT 0');
 ensureColumn('accounts', 'scorpture_overlay_json', 'TEXT');
 ensureColumn('scorpture_comments', 'edited', 'INTEGER DEFAULT 0');
+ensureColumn('dms', 'from_account_id', 'TEXT');
+ensureColumn('dms', 'to_account_id', 'TEXT');
 ensureColumn('scorpture_videos', 'category', 'TEXT');
 ensureColumn('push_subscriptions', 'account_id', 'TEXT');
 // Was a UNIQUE index (one account per email) — relaxed to allow up to MAX_ACCOUNTS_PER_EMAIL
@@ -405,17 +409,30 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_push_account ON push_subscriptions(accou
 
 function insertDm(entry) {
   db.prepare(
-    `INSERT INTO dms (id, room_code, from_name, to_name, text, at) VALUES (@id, @roomCode, @fromName, @toName, @text, @at)`
-  ).run(entry);
+    `INSERT INTO dms (id, room_code, from_name, to_name, text, at, from_account_id, to_account_id)
+     VALUES (@id, @roomCode, @fromName, @toName, @text, @at, @fromAccountId, @toAccountId)`
+  ).run({ ...entry, fromAccountId: entry.fromAccountId || null, toAccountId: entry.toAccountId || null });
 }
 
-function getDmThread(code, nameA, nameB, limit = 200) {
+// nameA is always "the requester" here (see get-dm-thread) — requesterAccountId is whoever is
+// actually asking right now. Display names have no persistent identity (see insertMessage's
+// account_id comment for the same issue), so someone who reconnects under a name a signed-in
+// account previously used in this thread must not be able to read that account's side of it
+// just by matching the name. A row is only excluded when its "requester side" was posted by a
+// *different* signed-in account than the one asking now — anonymous-only threads (both sides
+// never signed in) are untouched, exactly as name-based as they always were.
+function getDmThread(code, nameA, nameB, requesterAccountId, limit = 200) {
   const rows = db
     .prepare(
       `SELECT * FROM dms WHERE room_code = ? AND ((from_name = ? AND to_name = ?) OR (from_name = ? AND to_name = ?)) ORDER BY at ASC LIMIT ?`
     )
     .all(code, nameA, nameB, nameB, nameA, limit);
-  return rows.map((r) => ({ id: r.id, fromName: r.from_name, toName: r.to_name, text: r.text, at: r.at }));
+  return rows
+    .filter((r) => {
+      const requesterSideAccountId = r.from_name === nameA ? r.from_account_id : r.to_account_id;
+      return !requesterSideAccountId || requesterSideAccountId === requesterAccountId;
+    })
+    .map((r) => ({ id: r.id, fromName: r.from_name, toName: r.to_name, text: r.text, at: r.at }));
 }
 
 // ---- rooms ----
@@ -472,8 +489,8 @@ function setWallpaper(code, url) {
 
 function insertMessage(entry) {
   db.prepare(
-    `INSERT INTO messages (id, room_code, name, text, media_url, media_type, reply_to_id, at)
-     VALUES (@id, @roomCode, @name, @text, @mediaUrl, @mediaType, @replyToId, @at)`
+    `INSERT INTO messages (id, room_code, name, text, media_url, media_type, reply_to_id, at, account_id)
+     VALUES (@id, @roomCode, @name, @text, @mediaUrl, @mediaType, @replyToId, @at, @accountId)`
   ).run({
     id: entry.id,
     roomCode: entry.roomCode,
@@ -483,6 +500,12 @@ function insertMessage(entry) {
     mediaType: entry.mediaType || null,
     replyToId: entry.replyToId || null,
     at: entry.at,
+    // Display names are just a self-reported string with no persistent identity — a signed-in
+    // poster's own account_id is a much sturdier "who actually owns this" check than name alone,
+    // since a name can be picked up by someone else the moment the original holder disconnects
+    // (see edit-message/delete-message's use of this column). Null for anonymous posters, who
+    // have no such identity to bind to — unchanged, name-only behavior for them.
+    accountId: entry.accountId || null,
   });
 }
 

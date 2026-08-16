@@ -327,6 +327,16 @@ function roomPinOk(dbRoom, suppliedPin) {
   return !dbRoom || !dbRoom.pin_required || String(suppliedPin || '').trim() === dbRoom.pin_required;
 }
 
+// A message row's account_id (see insertMessage) is a much sturdier ownership check than its
+// display name when it's set — names have no persistent identity, so someone who reconnects
+// under a name a signed-in account previously posted under could otherwise edit/delete that
+// account's messages just by matching the name. Anonymous messages (account_id null) fall back
+// to the original name-only check, unchanged.
+function ownsMessage(target, ws) {
+  if (target.account_id) return target.account_id === ws.accountId;
+  return target.name === ws.profile.name;
+}
+
 // Lets the AI Studio page (its own tab, no live WebSocket/presence session) drop a
 // generated image into a room's chat without going through the join-server/join-room
 // flow — which would spuriously fire "X joined the room" for a tab that isn't really
@@ -364,7 +374,7 @@ app.post('/post-image', (req, res) => {
   };
   room.history.push(entry);
   if (room.history.length > HISTORY_LIMIT) room.history.shift();
-  db.insertMessage({ id: entry.id, roomCode: code, name: entry.name, text: entry.text, mediaUrl: entry.mediaUrl, mediaType: entry.mediaType, at: entry.at });
+  db.insertMessage({ id: entry.id, roomCode: code, name: entry.name, text: entry.text, mediaUrl: entry.mediaUrl, mediaType: entry.mediaType, at: entry.at, accountId: postImageAccount ? postImageAccount.id : null });
   db.upsertRoom(code);
   broadcastRoom(code, entry);
   pushNewMessage(code, entry);
@@ -406,7 +416,7 @@ app.post('/post-media', (req, res) => {
   };
   room.history.push(entry);
   if (room.history.length > HISTORY_LIMIT) room.history.shift();
-  db.insertMessage({ id: entry.id, roomCode: code, name: entry.name, text: entry.text, mediaUrl: entry.mediaUrl, mediaType: entry.mediaType, at: entry.at });
+  db.insertMessage({ id: entry.id, roomCode: code, name: entry.name, text: entry.text, mediaUrl: entry.mediaUrl, mediaType: entry.mediaType, at: entry.at, accountId: postMediaAccount ? postMediaAccount.id : null });
   db.upsertRoom(code);
   broadcastRoom(code, entry);
   pushNewMessage(code, entry);
@@ -4125,7 +4135,14 @@ wss.on('connection', (ws, req) => {
         return;
       }
       ws.msgTimestamps.push(now);
-      const entry = { id: crypto.randomUUID(), roomCode: ws.room, fromName: ws.profile.name, toName, text, at: now };
+      // Recorded alongside the name pair (see getDmThread's comment on insertMessage's
+      // account_id) so a signed-in participant's side of the thread stays theirs even if someone
+      // else later reconnects under the same now-vacated display name.
+      const entry = {
+        id: crypto.randomUUID(), roomCode: ws.room, fromName: ws.profile.name, toName, text, at: now,
+        fromAccountId: ws.accountId || null,
+        toAccountId: targetClient.accountId || null,
+      };
       db.insertDm(entry);
       const payload = { type: 'dm', id: entry.id, fromName: entry.fromName, toName: entry.toName, text: entry.text, at: entry.at };
       send(ws, payload);
@@ -4136,7 +4153,7 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'get-dm-thread' && ws.room) {
       const withName = String(msg.withName || '').trim();
       if (!withName) return;
-      send(ws, { type: 'dm-thread', withName, messages: db.getDmThread(ws.room, ws.profile.name, withName) });
+      send(ws, { type: 'dm-thread', withName, messages: db.getDmThread(ws.room, ws.profile.name, withName, ws.accountId || null) });
       return;
     }
 
@@ -4201,7 +4218,7 @@ wss.on('connection', (ws, req) => {
       };
       room.history.push(entry);
       if (room.history.length > HISTORY_LIMIT) room.history.shift();
-      db.insertMessage({ id: entry.id, roomCode: ws.room, name: entry.name, text: entry.text, mediaUrl: entry.mediaUrl, mediaType: entry.mediaType, replyToId, at: entry.at });
+      db.insertMessage({ id: entry.id, roomCode: ws.room, name: entry.name, text: entry.text, mediaUrl: entry.mediaUrl, mediaType: entry.mediaType, replyToId, at: entry.at, accountId: ws.accountId || null });
       db.upsertRoom(ws.room);
       broadcastRoom(ws.room, entry);
       pushNewMessage(ws.room, entry);
@@ -4218,7 +4235,7 @@ wss.on('connection', (ws, req) => {
       // supported poll feature and this generic free-text path has no shape validation, so
       // allowing it here would let a user corrupt their own poll the same way the message
       // handler above now guards against on creation.
-      if (!target || target.room_code !== ws.room || target.name !== ws.profile.name || target.deleted || target.media_type === 'poll') return;
+      if (!target || target.room_code !== ws.room || !ownsMessage(target, ws) || target.deleted || target.media_type === 'poll') return;
       db.updateMessageText(messageId, text);
       const room = rooms.get(ws.room);
       const entry = room && room.history.find((m) => m.id === messageId);
@@ -4234,7 +4251,7 @@ wss.on('connection', (ws, req) => {
       if (!target || target.room_code !== ws.room || target.deleted) return;
       const dbRoom = db.getRoom(ws.room);
       const isHost = dbRoom && dbRoom.host_name === ws.profile.name;
-      if (target.name !== ws.profile.name && !isHost) return;
+      if (!ownsMessage(target, ws) && !isHost) return;
       db.deleteMessageRow(messageId);
       const room = rooms.get(ws.room);
       const entry = room && room.history.find((m) => m.id === messageId);
