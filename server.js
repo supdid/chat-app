@@ -2605,15 +2605,26 @@ wss.on('connection', (ws, req) => {
       // setup), so this is cheap insurance rather than a load-bearing limit — but it was missing
       // entirely, unlike every other WS path that relays content to another connection.
       if (isWsMsgRateLimited(ws)) return;
-      if (ws.scorptureStreamerAccountId) {
-        const stream = liveStreams.get(ws.scorptureStreamerAccountId);
-        if (stream) send(stream.ws, { type: 'scorpture-signal', viewerId: ws.scorptureViewerId, signal: msg.signal });
-        return;
-      }
+      // A single connection can be simultaneously live (broadcasting) AND watching someone else's
+      // stream (the mini-widget lets you keep your own stream running while browsing elsewhere) —
+      // ws.scorptureStreamerAccountId being set doesn't mean every scorpture-signal this connection
+      // sends is viewer-to-broadcaster traffic. msg.viewerId is only ever set by a broadcaster
+      // addressing one specific viewer of its own (see the comment above), so check that first and
+      // only fall back to "I'm a viewer, forward to the streamer I'm watching" when it's absent.
+      // Previously the viewer branch fired unconditionally whenever scorptureStreamerAccountId was
+      // set, silently rerouting a simultaneous broadcaster's own outbound signaling to whichever
+      // OTHER stream they were watching instead of to their real viewers — any viewer joining
+      // during that window never received an SDP offer/ICE candidate and was stuck on an eternal
+      // "connecting" spinner, with no error anywhere.
       if (ws.accountId && msg.viewerId) {
         const stream = liveStreams.get(ws.accountId);
         const viewerWs = stream && stream.viewers.get(msg.viewerId);
         if (viewerWs) send(viewerWs, { type: 'scorpture-signal', signal: msg.signal });
+        return;
+      }
+      if (ws.scorptureStreamerAccountId) {
+        const stream = liveStreams.get(ws.scorptureStreamerAccountId);
+        if (stream) send(stream.ws, { type: 'scorpture-signal', viewerId: ws.scorptureViewerId, signal: msg.signal });
       }
       return;
     }

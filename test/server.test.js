@@ -944,14 +944,26 @@ describe('thread replies', () => {
 });
 
 describe('Scorpture watch-live and signal-relay rate limits', () => {
-  test('rapid watch-live/leave-live cycling and signal bursts are both rate-limited', async () => {
-    const streamerSignup = await fetch(`${BASE_URL}/auth/signup`, {
+  // Both tests below share one pair of accounts, signed up once here — the whole test file's
+  // various /auth/signup calls all come from the same IP within one short run, and each one of
+  // those separately used to eat into the shared AUTH_LIMIT_MAX=8/60s cap; consolidating into a
+  // single before() (matching the "friend DMs and group DMs" describe block's own pattern above)
+  // keeps this suite comfortably under that limit instead of flaking when the tests run in an
+  // order where the budget's already spent.
+  let streamerAToken, streamerBToken;
+  before(async () => {
+    const signup = async (username) => fetch(`${BASE_URL}/auth/signup`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: 'ScorptureStreamer', password: 'pass1234', email: 'scorpturestreamer@test.com' }),
+      body: JSON.stringify({ username, password: 'pass1234', email: `${username.toLowerCase()}@test.com` }),
     }).then((r) => r.json());
+    const [a, b] = await Promise.all([signup('ScorptureStreamer'), signup('ScorptureStreamerB')]);
+    streamerAToken = a.token;
+    streamerBToken = b.token;
+  });
 
+  test('rapid watch-live/leave-live cycling and signal bursts are both rate-limited', async () => {
     const streamer = await connectWs();
-    send(streamer, { type: 'scorpture-hello', accountToken: streamerSignup.token });
+    send(streamer, { type: 'scorpture-hello', accountToken: streamerAToken });
     await waitFor(streamer, (m) => m.type === 'scorpture-hello-ack');
     send(streamer, { type: 'scorpture-go-live', title: 'Test Stream' });
     await waitFor(streamer, (m) => m.type === 'scorpture-go-live-ack');
@@ -980,6 +992,47 @@ describe('Scorpture watch-live and signal-relay rate limits', () => {
     await sleep(500);
     streamer.off('message', h2);
     assert.ok(signalsReceived > 0 && signalsReceived <= 8, `expected 1-8 of 15 signals relayed, got ${signalsReceived}`);
+  });
+
+  // A single connection can be simultaneously live (broadcasting its own stream) and watching
+  // someone else's — the mini-widget lets a broadcaster keep streaming while browsing elsewhere.
+  // Before this fix, scorpture-signal always treated such a connection as "just a viewer" and
+  // rerouted its own outbound signaling (meant for one of ITS viewers) to whichever stream it was
+  // watching instead — silently stranding that real viewer's connection.
+  test('a broadcaster who is also watching another stream still reaches its own viewer, not the stream it is watching', async () => {
+    const streamerA = await connectWs();
+    send(streamerA, { type: 'scorpture-hello', accountToken: streamerAToken });
+    await waitFor(streamerA, (m) => m.type === 'scorpture-hello-ack');
+    send(streamerA, { type: 'scorpture-go-live', title: 'Stream A' });
+    await waitFor(streamerA, (m) => m.type === 'scorpture-go-live-ack');
+
+    const streamerB = await connectWs();
+    send(streamerB, { type: 'scorpture-hello', accountToken: streamerBToken });
+    await waitFor(streamerB, (m) => m.type === 'scorpture-hello-ack');
+    send(streamerB, { type: 'scorpture-go-live', title: 'Stream B' });
+    await waitFor(streamerB, (m) => m.type === 'scorpture-go-live-ack');
+
+    const viewerOfA = await connectWs();
+    const viewerJoinedPromise = waitFor(streamerA, (m) => m.type === 'scorpture-viewer-joined');
+    send(viewerOfA, { type: 'scorpture-watch-live', streamerUsername: 'ScorptureStreamer' });
+    await waitFor(viewerOfA, (m) => m.type === 'scorpture-watch-ack' && m.live);
+    const { viewerId } = await viewerJoinedPromise;
+
+    // Now A also starts watching B — this is the state that previously hijacked A's outbound
+    // signaling.
+    send(streamerA, { type: 'scorpture-watch-live', streamerUsername: 'ScorptureStreamerB' });
+    await waitFor(streamerA, (m) => m.type === 'scorpture-watch-ack' && m.live);
+
+    let bGotIt = false;
+    const bHandler = (data) => { const m = JSON.parse(data); if (m.type === 'scorpture-signal' && m.signal && m.signal.marker === 'to-real-viewer') bGotIt = true; };
+    streamerB.on('message', bHandler);
+    const viewerPromise = waitFor(viewerOfA, (m) => m.type === 'scorpture-signal' && m.signal && m.signal.marker === 'to-real-viewer');
+    send(streamerA, { type: 'scorpture-signal', viewerId, signal: { marker: 'to-real-viewer' } });
+    const receivedByViewer = await viewerPromise;
+    await sleep(200);
+    streamerB.off('message', bHandler);
+    assert.equal(receivedByViewer.signal.marker, 'to-real-viewer', "A's real viewer must receive A's own outbound signal");
+    assert.equal(bGotIt, false, 'the stream A is merely watching must not receive signaling meant for A\'s own viewer');
   });
 });
 
