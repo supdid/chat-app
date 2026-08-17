@@ -712,6 +712,13 @@ app.post('/upload', (req, res) => {
       : 'image';
     const url = `/uploads/${req.file.filename}`;
     pendingUploads.set(url, Date.now());
+    // Same crude bound every other in-memory rate-limit Map in this file already has — normal
+    // use never comes close (each upload is itself rate-limited, and every entry is removed
+    // within a grace+sweep-interval window at most), but a large-scale sustained attack from many
+    // distinct IPs could otherwise grow this unboundedly between sweeps. Clearing wholesale rather
+    // than partially evicting "fails open" (some currently-pending uploads lose tracking and
+    // become un-sweepable, i.e. safe by accident) rather than risking a more complex eviction bug.
+    if (pendingUploads.size > 10000) pendingUploads.clear();
     res.json({ url, mediaType });
   });
 });
