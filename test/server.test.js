@@ -746,3 +746,118 @@ describe('Geometry Wave leaderboard submission cooldown', () => {
     assert.equal(result3.scores.find((s) => s.name === 'GwCooldownSolo').score, 100, 'a submission after the cooldown elapses should succeed');
   });
 });
+
+describe('edit and delete message', () => {
+  test('a message owner can edit it; another room member cannot', async () => {
+    const { ws: owner, code } = await joinRoom('EditOwner');
+    const other = await joinExistingRoom('EditOther', code);
+    await sleep(150);
+
+    send(owner, { type: 'message', text: 'original text' });
+    const posted = await waitFor(owner, (m) => m.type === 'message' && m.text === 'original text');
+
+    let otherEditWorked = false;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'message-edited') otherEditWorked = true; };
+    other.on('message', h);
+    send(other, { type: 'edit-message', messageId: posted.id, text: 'hijacked!' });
+    await sleep(300);
+    other.off('message', h);
+    assert.equal(otherEditWorked, false, 'a non-owner must not be able to edit someone else\'s message');
+
+    send(owner, { type: 'edit-message', messageId: posted.id, text: 'edited text' });
+    const edited = await waitFor(owner, (m) => m.type === 'message-edited');
+    assert.equal(edited.text, 'edited text');
+  });
+
+  test('the message owner OR the room host can delete; anyone else cannot', async () => {
+    const { ws: host, code } = await joinRoom('DelHost');
+    const author = await joinExistingRoom('DelAuthor', code);
+    const bystander = await joinExistingRoom('DelBystander', code);
+    await sleep(150);
+
+    send(author, { type: 'message', text: 'delete me' });
+    const posted = await waitFor(author, (m) => m.type === 'message' && m.text === 'delete me');
+
+    let bystanderDeleteWorked = false;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'message-deleted') bystanderDeleteWorked = true; };
+    bystander.on('message', h);
+    send(bystander, { type: 'delete-message', messageId: posted.id });
+    await sleep(300);
+    bystander.off('message', h);
+    assert.equal(bystanderDeleteWorked, false, 'a bystander (not the author, not the host) must not be able to delete');
+
+    // The host — not the author — deletes it, exercising the "OR is host" half of the check.
+    send(host, { type: 'delete-message', messageId: posted.id });
+    const deleted = await waitFor(host, (m) => m.type === 'message-deleted');
+    assert.equal(deleted.messageId, posted.id);
+  });
+});
+
+describe('polls', () => {
+  test('a poll can be created and voted on', async () => {
+    const { ws: creator, code } = await joinRoom('PollCreator');
+    const voter = await joinExistingRoom('PollVoter', code);
+    await sleep(150);
+
+    send(creator, {
+      type: 'message',
+      mediaType: 'poll',
+      mediaUrl: 'poll',
+      text: JSON.stringify({ question: 'Best minigame?', options: ['Build Craft', 'Web Swing', 'Chess'] }),
+    });
+    const posted = await waitFor(creator, (m) => m.type === 'message' && m.mediaType === 'poll');
+
+    send(voter, { type: 'vote-poll', messageId: posted.id, optionIndex: 1 });
+    const voteUpdate = await waitFor(creator, (m) => m.type === 'poll-voted' && m.messageId === posted.id);
+    assert.ok(voteUpdate.votes.some((v) => v.name === 'PollVoter' && v.optionIndex === 1));
+
+    // A fresh join resends history via attachPollVotes(), which should carry the same vote.
+    const joiner = await connectWs();
+    send(joiner, { type: 'join-server', username: 'PollJoiner' });
+    await waitFor(joiner, (m) => m.type === 'joined-server');
+    send(joiner, { type: 'join-room', code });
+    const joined = await waitFor(joiner, (m) => m.type === 'joined-room');
+    const pollMsg = joined.messages.find((m) => m.id === posted.id);
+    assert.ok(pollMsg, 'the poll message should be in the room history');
+    assert.ok(pollMsg.votes.some((v) => v.name === 'PollVoter' && v.optionIndex === 1), 'the recorded vote should survive a fresh join');
+  });
+});
+
+describe('pin and unpin', () => {
+  test('pinning and unpinning a message updates the room\'s pin list for everyone', async () => {
+    const { ws: host, code } = await joinRoom('PinHost');
+    const guest = await joinExistingRoom('PinGuest', code);
+    await sleep(150);
+
+    send(host, { type: 'message', text: 'pin this' });
+    const posted = await waitFor(host, (m) => m.type === 'message' && m.text === 'pin this');
+
+    send(host, { type: 'pin-message', messageId: posted.id });
+    const pinnedUpdate = await waitFor(guest, (m) => m.type === 'pins-updated');
+    assert.ok(pinnedUpdate.pins.some((p) => p.message.id === posted.id));
+
+    send(host, { type: 'unpin-message', messageId: posted.id });
+    const unpinnedUpdate = await waitFor(guest, (m) => m.type === 'pins-updated');
+    assert.ok(!unpinnedUpdate.pins.some((p) => p.message.id === posted.id));
+  });
+});
+
+describe('thread replies', () => {
+  test('get-thread returns the root message and its replies, scoped to the requester\'s own room', async () => {
+    const { ws: root, code } = await joinRoom('ThreadRoot');
+    const replier = await joinExistingRoom('ThreadReplier', code);
+    await sleep(150);
+
+    send(root, { type: 'message', text: 'root message' });
+    const rootMsg = await waitFor(root, (m) => m.type === 'message' && m.text === 'root message');
+
+    send(replier, { type: 'message', text: 'a reply', replyTo: rootMsg.id });
+    await waitFor(replier, (m) => m.type === 'message' && m.text === 'a reply');
+    await sleep(150);
+
+    send(root, { type: 'get-thread', messageId: rootMsg.id });
+    const thread = await waitFor(root, (m) => m.type === 'thread-result');
+    assert.equal(thread.root.id, rootMsg.id);
+    assert.ok(thread.replies.some((r) => r.text === 'a reply'));
+  });
+});
