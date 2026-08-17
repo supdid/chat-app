@@ -28,6 +28,19 @@ async function joinExistingRoom(username, code) {
   await waitFor(ws, (m) => m.type === 'joined-room');
   return ws;
 }
+// Same as joinExistingRoom, but authenticated — needed for anything gated on ws.accountId
+// (friend-dm, create-group-dm), which is only set if join-server's accountToken resolves to a
+// real session (see registerAccountConnection in server.js).
+async function joinAsAccount(username, accountToken, code) {
+  const ws = await connectWs();
+  send(ws, { type: 'join-server', username, accountToken });
+  await waitFor(ws, (m) => m.type === 'joined-server');
+  if (code) {
+    send(ws, { type: 'join-room', code });
+    await waitFor(ws, (m) => m.type === 'joined-room');
+  }
+  return ws;
+}
 
 describe('room chat', () => {
   test('a message round-trips to the sender', async () => {
@@ -424,5 +437,155 @@ describe('arcade leaderboard submission throttle', () => {
     send(ws, { type: 'arcade-submit-score', score: 42 });
     const result = await waitFor(ws, (m) => m.type === 'arcade-leaderboard');
     assert.ok(result.scores.some((s) => s.score === 42));
+  });
+});
+
+describe('room DMs', () => {
+  test('a DM only reaches the intended recipient, not the rest of the room', async () => {
+    const { ws: host, code } = await joinRoom('DmHost');
+    const guest = await joinExistingRoom('DmGuest', code);
+    const bystander = await joinExistingRoom('DmBystander', code);
+    await sleep(150);
+
+    let bystanderSawIt = false;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'dm') bystanderSawIt = true; };
+    bystander.on('message', h);
+
+    send(host, { type: 'send-dm', toName: 'DmGuest', text: 'psst' });
+    const received = await waitFor(guest, (m) => m.type === 'dm' && m.text === 'psst');
+    assert.equal(received.fromName, 'DmHost');
+    await sleep(200);
+    bystander.off('message', h);
+    assert.equal(bystanderSawIt, false, 'a third party in the room should never see a DM');
+  });
+
+  test('cannot DM yourself or someone not currently in the room', async () => {
+    const { ws: host } = await joinRoom('DmSelfHost');
+    let sawDm = false;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'dm') sawDm = true; };
+    host.on('message', h);
+    send(host, { type: 'send-dm', toName: 'DmSelfHost', text: 'to myself' });
+    await sleep(200);
+    send(host, { type: 'send-dm', toName: 'NobodyHere', text: 'to a ghost' });
+    await sleep(200);
+    host.off('message', h);
+    assert.equal(sawDm, false);
+  });
+});
+
+describe('friend DMs and group DMs (account-gated)', () => {
+  let aliceToken, bobToken, carolToken;
+  before(async () => {
+    const signup = async (username, email) => fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password: 'pass1234', email }),
+    }).then((r) => r.json());
+    const [a, b, c] = await Promise.all([
+      signup('FdmAlice', 'fdmalice@test.com'),
+      signup('FdmBob', 'fdmbob@test.com'),
+      signup('FdmCarol', 'fdmcarol@test.com'),
+      // A real account that intentionally stays friendless with the other three — needed to
+      // test the "target exists but isn't a friend" rejection path specifically, as opposed to
+      // the earlier "no such account at all" check the handler runs first.
+      signup('FdmDave', 'fdmdave@test.com'),
+    ]);
+    aliceToken = a.token; bobToken = b.token; carolToken = c.token;
+    // Make them all mutual friends via the HTTP routes already covered above.
+    for (const [fromToken, toUsername] of [[aliceToken, 'FdmBob'], [aliceToken, 'FdmCarol'], [bobToken, 'FdmCarol']]) {
+      await fetch(`${BASE_URL}/friends/request`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${fromToken}` },
+        body: JSON.stringify({ username: toUsername }),
+      });
+    }
+    for (const [fromToken, toUsername] of [[bobToken, 'FdmAlice'], [carolToken, 'FdmAlice'], [carolToken, 'FdmBob']]) {
+      await fetch(`${BASE_URL}/friends/accept`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${fromToken}` },
+        body: JSON.stringify({ username: toUsername }),
+      });
+    }
+  });
+
+  test('friend-dm requires being signed in and requires an accepted friendship', async () => {
+    const anon = await joinAsAccount('AnonFdm', undefined);
+    let anonError = null;
+    const h1 = (data) => { const m = JSON.parse(data); if (m.type === 'error') anonError = m; };
+    anon.on('message', h1);
+    send(anon, { type: 'friend-dm', toUsername: 'FdmBob', text: 'hi' });
+    await sleep(200);
+    anon.off('message', h1);
+    assert.ok(anonError && /sign in/i.test(anonError.message));
+
+    const alice = await joinAsAccount('FdmAlice', aliceToken);
+    const bob = await joinAsAccount('FdmBob', bobToken);
+    await sleep(150);
+    // Both waiters must be armed *before* sending — sendFriendDm() pushes to bob synchronously
+    // within the same handler that acks alice, so starting bob's wait only after alice's ack
+    // resolves risks missing a message that already arrived with no listener attached yet.
+    const sentPromise = waitFor(alice, (m) => m.type === 'friend-dm-sent');
+    const receivedPromise = waitFor(bob, (m) => m.type === 'friend-dm' && m.from === 'FdmAlice');
+    send(alice, { type: 'friend-dm', toUsername: 'FdmBob', text: 'hey friend' });
+    const [sent, received] = await Promise.all([sentPromise, receivedPromise]);
+    assert.equal(sent.toUsername, 'FdmBob');
+    assert.equal(received.text, 'hey friend');
+  });
+
+  test('create-group-dm requires signed-in members who are all accepted friends of the creator', async () => {
+    const alice = await joinAsAccount('FdmAlice2', aliceToken);
+    send(alice, { type: 'create-group-dm', memberUsernames: ['FdmBob', 'FdmCarol'], name: 'Test Group' });
+    const created = await waitFor(alice, (m) => m.type === 'group-dm-created');
+    assert.equal(created.thread.name, 'Test Group');
+
+    let error = null;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'error') error = m; };
+    alice.on('message', h);
+    send(alice, { type: 'create-group-dm', memberUsernames: ['FdmDave'], name: 'Should Fail' });
+    await sleep(300);
+    alice.off('message', h);
+    assert.ok(error && /can only add friends/i.test(error.message));
+  });
+});
+
+describe('whiteboard stroke sanitization', () => {
+  test('out-of-range and non-finite points are dropped; valid ones survive', async () => {
+    const a = await connectWs();
+    const b = await connectWs();
+    send(a, { type: 'wb-join', code: 'WBSTROKE1', name: 'Drawer' });
+    await waitFor(a, (m) => m.type === 'wb-init');
+    send(b, { type: 'wb-join', code: 'WBSTROKE1', name: 'Watcher' });
+    await waitFor(b, (m) => m.type === 'wb-init');
+    await sleep(150);
+
+    send(a, {
+      type: 'wb-stroke',
+      color: '#ff0000',
+      size: 4,
+      points: [
+        { x: 10, y: 20 },       // valid
+        { x: 999999, y: 20 },   // out of STROKE_COORD_MAX range
+        { x: 'abc', y: 20 },    // +'abc' is NaN — must be caught by the Number.isFinite check
+        { x: 30, y: 40 },       // valid
+        'not even an object',   // malformed entry
+      ],
+    });
+    const stroke = await waitFor(b, (m) => m.type === 'wb-stroke');
+    assert.deepEqual(stroke.stroke.points, [{ x: 10, y: 20 }, { x: 30, y: 40 }]);
+  });
+
+  test('a stroke with only invalid points is dropped entirely (no broadcast, no empty stroke)', async () => {
+    const a = await connectWs();
+    const b = await connectWs();
+    send(a, { type: 'wb-join', code: 'WBSTROKE2', name: 'Drawer' });
+    await waitFor(a, (m) => m.type === 'wb-init');
+    send(b, { type: 'wb-join', code: 'WBSTROKE2', name: 'Watcher' });
+    await waitFor(b, (m) => m.type === 'wb-init');
+    await sleep(150);
+
+    let sawStroke = false;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'wb-stroke') sawStroke = true; };
+    b.on('message', h);
+    send(a, { type: 'wb-stroke', color: '#000', size: 4, points: [{ x: 999999, y: 999999 }] });
+    await sleep(300);
+    b.off('message', h);
+    assert.equal(sawStroke, false);
   });
 });
