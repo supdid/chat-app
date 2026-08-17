@@ -859,9 +859,14 @@ describe('Trivia reconnect mid-round', () => {
     await waitFor(p2, (m) => m.type === 'tv-init');
     await sleep(150);
 
+    // Both waiters must be armed *before* sending — broadcastTv delivers to p1 and p2
+    // essentially simultaneously, so awaiting p1's wait first and only then arming p2's risked
+    // missing a message that already arrived with no listener attached yet (same race class as
+    // an earlier friend-dm test fix elsewhere in this file).
+    const p1QuestionPromise = waitFor(p1, (m) => m.type === 'tv-question');
+    const p2QuestionPromise = waitFor(p2, (m) => m.type === 'tv-question');
     send(p1, { type: 'tv-start' });
-    await waitFor(p1, (m) => m.type === 'tv-question');
-    await waitFor(p2, (m) => m.type === 'tv-question');
+    await Promise.all([p1QuestionPromise, p2QuestionPromise]);
 
     send(p1, { type: 'tv-answer', choice: 0 });
     await waitFor(p1, (m) => m.type === 'tv-answer-ack');
@@ -870,9 +875,15 @@ describe('Trivia reconnect mid-round', () => {
     // A "reconnect" is really just a fresh connection under the same name — tv-join mints a new
     // per-connection id every time, which is exactly the case this fix has to survive.
     const p1b = await connectWs();
+    // Same race as above, one level deeper: tv-join's handler sends tv-init and (mid-round)
+    // tv-question back-to-back synchronously, with no await between them — if both arrive in the
+    // same synchronous read on the client side, waiting for tv-init first and only then arming a
+    // second waitFor for tv-question risks missing it, since the two messages can already both be
+    // "in flight" to already-registered listeners before this code resumes after the first await.
+    const initPromise = waitFor(p1b, (m) => m.type === 'tv-init');
+    const questionPromise = waitFor(p1b, (m) => m.type === 'tv-question');
     send(p1b, { type: 'tv-join', code, name: 'TvPlayer1' });
-    await waitFor(p1b, (m) => m.type === 'tv-init');
-    const question = await waitFor(p1b, (m) => m.type === 'tv-question');
+    const [, question] = await Promise.all([initPromise, questionPromise]);
     assert.equal(question.alreadyAnswered, true);
 
     let gotAck = false;
@@ -966,6 +977,27 @@ describe('edit and delete message', () => {
     send(owner, { type: 'edit-message', messageId: posted.id, text: 'edited text' });
     const edited = await waitFor(owner, (m) => m.type === 'message-edited');
     assert.equal(edited.text, 'edited text');
+  });
+
+  test('a muted user cannot edit their own existing message to bypass the mute', async () => {
+    const { ws: host, code } = await joinRoom('EditMuteHost');
+    const guest = await joinExistingRoom('EditMuteGuest', code);
+    await sleep(150);
+
+    send(guest, { type: 'message', text: 'before mute' });
+    const posted = await waitFor(guest, (m) => m.type === 'message' && m.text === 'before mute');
+
+    send(host, { type: 'mute-user', name: 'EditMuteGuest' });
+    await waitFor(host, (m) => m.type === 'user-muted');
+    await waitFor(guest, (m) => m.type === 'user-muted');
+
+    let editWorked = false;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'message-edited') editWorked = true; };
+    guest.on('message', h);
+    send(guest, { type: 'edit-message', messageId: posted.id, text: 'sneaking this past the mute' });
+    await sleep(300);
+    guest.off('message', h);
+    assert.equal(editWorked, false, 'a muted user must not be able to edit an existing message to say something new');
   });
 
   test('the message owner OR the room host can delete; anyone else cannot', async () => {

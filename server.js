@@ -4760,6 +4760,15 @@ wss.on('connection', (ws, req) => {
       // re-editing one still broadcasts to the whole room on every call with no throttle before
       // this.
       if (isWsMsgRateLimited(ws)) return;
+      const room = rooms.get(ws.room);
+      // The 'message' handler above refuses a muted user's *new* posts, but this never checked
+      // the same thing — a muted user could still edit an existing message of theirs to say
+      // anything, a real moderation bypass (mute someone, and they just repurpose whatever they
+      // already had posted instead of being blocked outright).
+      if (room && room.muted && room.muted.has(ws.profile.name)) {
+        send(ws, { type: 'error', message: 'You have been muted in this room' });
+        return;
+      }
       const messageId = String(msg.messageId || '');
       const text = String(msg.text || '').slice(0, 2000).trim();
       if (!messageId || !text) return;
@@ -4770,7 +4779,6 @@ wss.on('connection', (ws, req) => {
       // handler above now guards against on creation.
       if (!target || target.room_code !== ws.room || !ownsMessage(target, ws) || target.deleted || target.media_type === 'poll') return;
       db.updateMessageText(messageId, text);
-      const room = rooms.get(ws.room);
       const entry = room && room.history.find((m) => m.id === messageId);
       if (entry) { entry.text = text; entry.edited = true; }
       broadcastRoom(ws.room, { type: 'message-edited', messageId, text });
