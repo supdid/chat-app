@@ -3388,6 +3388,22 @@ function makePeerConnection(sub) {
     }
   });
 
+  // Nothing previously watched connection health at all — a genuine ICE failure for this one
+  // peer pair (the WS itself, and every other peer's connection, can stay perfectly fine) left a
+  // dead RTCPeerConnection and a permanently frozen call tile with no indication anything was
+  // wrong; only a full hangup ever cleared it. 'failed' is the terminal state (unlike
+  // 'disconnected', which is often transient and can recover on its own) — tear down just this
+  // one peer on it, same as if they'd left, so the rest of the call isn't affected and the user
+  // gets an honest signal instead of a tile that looks connected but isn't.
+  pc.addEventListener('iceconnectionstatechange', () => {
+    if (pc.iceConnectionState === 'failed') {
+      const peer = voicePeers.get(sub);
+      const name = peer && peer.name;
+      removeVoicePeer(sub);
+      showAppToast(`📵 Lost connection to ${name || 'a participant'}`);
+    }
+  });
+
   pc.addEventListener('track', (e) => {
     const peer = voicePeers.get(sub);
     if (!peer) return;
