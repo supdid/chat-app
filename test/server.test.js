@@ -589,3 +589,62 @@ describe('whiteboard stroke sanitization', () => {
     assert.equal(sawStroke, false);
   });
 });
+
+describe('/post-image and /post-media external URL allowlist', () => {
+  test('/post-image rejects an arbitrary external URL but accepts an /uploads/ path and the Pollinations.ai host', async () => {
+    const { code } = await joinRoom('PostImageHost');
+
+    const evilRes = await fetch(`${BASE_URL}/post-image`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, name: 'PostImageHost', mediaUrl: 'https://evil.example/track.gif', prompt: 'x' }),
+    });
+    assert.equal(evilRes.status, 400, 'an arbitrary external URL must be rejected outright (tracker-link risk)');
+
+    const uploadsRes = await fetch(`${BASE_URL}/post-image`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, name: 'PostImageHost', mediaUrl: '/uploads/fake-test-file.jpg', prompt: 'x' }),
+    });
+    assert.equal(uploadsRes.status, 200, 'a real /uploads/ path must still be accepted');
+
+    const pollinationsRes = await fetch(`${BASE_URL}/post-image`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, name: 'PostImageHost', mediaUrl: 'https://image.pollinations.ai/prompt/test', prompt: 'x' }),
+    });
+    assert.equal(pollinationsRes.status, 200, "AI Studio's own uncaptioned-image flow (a direct Pollinations URL) must still work");
+  });
+
+  test('/post-media rejects any external URL — its only real client always uploads first', async () => {
+    const { code } = await joinRoom('PostMediaHost');
+
+    const evilRes = await fetch(`${BASE_URL}/post-media`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, name: 'PostMediaHost', mediaUrl: 'https://evil.example/track.mp4', mediaType: 'video' }),
+    });
+    assert.equal(evilRes.status, 400);
+
+    // Not even the Pollinations allowlist applies here — /post-media has no legitimate caller
+    // that needs an external host at all.
+    const pollinationsRes = await fetch(`${BASE_URL}/post-media`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, name: 'PostMediaHost', mediaUrl: 'https://image.pollinations.ai/prompt/test', mediaType: 'image' }),
+    });
+    assert.equal(pollinationsRes.status, 400);
+
+    const uploadsRes = await fetch(`${BASE_URL}/post-media`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, name: 'PostMediaHost', mediaUrl: '/uploads/fake-test-video.mp4', mediaType: 'video' }),
+    });
+    assert.equal(uploadsRes.status, 200);
+  });
+});
+
+describe('admin routes require the admin key', () => {
+  test('every /admin/* route rejects a missing or wrong key', async () => {
+    for (const path of ['/admin/errors', '/admin/reports', '/admin/patches']) {
+      const noKeyRes = await fetch(`${BASE_URL}${path}`);
+      assert.equal(noKeyRes.status, 401, `${path} without a key should 401`);
+      const wrongKeyRes = await fetch(`${BASE_URL}${path}?key=definitely-not-the-real-key`);
+      assert.equal(wrongKeyRes.status, 401, `${path} with a wrong key should 401`);
+    }
+  });
+});
