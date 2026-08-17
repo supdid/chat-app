@@ -737,6 +737,35 @@ function isAuthRateLimited(req) {
   return false;
 }
 
+// isAuthRateLimited above only throttles per-IP — a distributed attacker (many IPs/a botnet) can
+// brute-force one specific account's password at unlimited aggregate rate with that alone, since
+// nothing tracks failures *per account*. This does, but deliberately doesn't fully lock the
+// account out at the threshold — an attacker could otherwise cheaply deny a real user service
+// just by feeding wrong passwords for their username from anywhere, with no password of their own
+// needed. A generous threshold instead: only kicks in under genuine sustained/distributed brute-
+// forcing, never affects a real user who fat-fingers their password a few times. Only failed
+// attempts count — a successful login never touches this.
+const usernameFailLimits = new Map();
+const USERNAME_FAIL_WINDOW_MS = 10 * 60 * 1000;
+// Overridable via env, same as the upload-sweep timers above, so the regression suite can verify
+// this fires without needing 20 real requests (which would trip the stricter per-IP auth limiter
+// first, since every test request comes from the same IP). Unset in production, no effect there.
+const USERNAME_FAIL_MAX = Number(process.env.USERNAME_FAIL_MAX) || 20;
+function isUsernameFailRateLimited(username) {
+  const key = username.toLowerCase();
+  const now = Date.now();
+  const timestamps = (usernameFailLimits.get(key) || []).filter((t) => now - t < USERNAME_FAIL_WINDOW_MS);
+  return timestamps.length >= USERNAME_FAIL_MAX;
+}
+function recordUsernameFail(username) {
+  const key = username.toLowerCase();
+  const now = Date.now();
+  const timestamps = (usernameFailLimits.get(key) || []).filter((t) => now - t < USERNAME_FAIL_WINDOW_MS);
+  timestamps.push(now);
+  usernameFailLimits.set(key, timestamps);
+  if (usernameFailLimits.size > 10000) usernameFailLimits.clear(); // crude bound on worst-case memory, same pattern as authRateLimits
+}
+
 // /post-image and /post-media are the only two ways to create a chat message that don't go
 // through a WebSocket connection (AI Studio / Video Editor posting from their own tab), so they
 // never hit the ws.msgTimestamps flood gate every other message-creation path shares (see
@@ -831,8 +860,12 @@ app.post('/auth/login', (req, res) => {
   if (isAuthRateLimited(req)) return res.status(429).json({ error: 'Too many attempts — try again in a minute' });
   const username = String(req.body.username || '').trim();
   const password = String(req.body.password || '');
+  if (username && isUsernameFailRateLimited(username)) {
+    return res.status(429).json({ error: 'Too many attempts — try again in a few minutes' });
+  }
   const account = db.getAccountByUsername(username);
   if (!account || !verifyPassword(password, account.salt, account.password_hash)) {
+    if (username) recordUsernameFail(username);
     return res.status(401).json({ error: 'Wrong username or password' });
   }
   const token = crypto.randomUUID();
@@ -876,7 +909,14 @@ app.post('/auth/google', async (req, res) => {
   }
 
   const googleId = payload.sub;
-  const email = payload.email || null;
+  // verifyIdToken only proves the token was really issued by Google for this app — it does NOT
+  // mean Google itself has confirmed the holder controls this email address (Google's own
+  // documented guidance is that callers must check email_verified themselves before trusting the
+  // address for anything security-sensitive). Without this check, an attacker who can obtain a
+  // legitimately-signed token carrying an unverified victim email (possible via some federated-
+  // IdP-backed or admin-provisioned Google accounts) could get it silently linked to the victim's
+  // existing password account below — full account takeover, no password needed.
+  const email = payload.email_verified ? payload.email || null : null;
 
   let account = db.getAccountByGoogleId(googleId);
   if (!account && email) {

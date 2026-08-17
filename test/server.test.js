@@ -1271,3 +1271,42 @@ describe('orphaned upload sweep', () => {
     }
   });
 });
+
+describe('per-username login brute-force throttle', () => {
+  // isAuthRateLimited (the pre-existing per-IP limiter) is stricter (8/60s) than a real brute-
+  // force threshold needs to be and would trip first if this test just hammered /auth/login
+  // directly on the shared instance — uses its own dedicated server with USERNAME_FAIL_MAX
+  // shrunk via env override so a handful of requests is enough to prove the mechanism, well under
+  // the per-IP cap.
+  test('repeated wrong passwords against one username lock it out, without affecting a different username on the same IP', async () => {
+    const throttleServer = await startTestServer({ USERNAME_FAIL_MAX: '3' }, 3197);
+    try {
+      const base = `http://localhost:${throttleServer.port}`;
+      const signup = async (username) => fetch(`${base}/auth/signup`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password: 'realpassword123', email: `${username.toLowerCase()}@test.com` }),
+      }).then((r) => r.json());
+      await signup('BruteForceVictim');
+      await signup('BruteForceBystander');
+
+      const login = (username, password) => fetch(`${base}/auth/login`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+
+      for (let i = 0; i < 3; i++) {
+        const res = await login('BruteForceVictim', 'wrong-password');
+        assert.equal(res.status, 401, `attempt ${i + 1} should be a normal wrong-password rejection`);
+      }
+      // The 4th attempt uses the REAL password — if the throttle only blocked wrong guesses it'd
+      // succeed here, but it must lock out the account itself regardless of what's supplied next.
+      const lockedOut = await login('BruteForceVictim', 'realpassword123');
+      assert.equal(lockedOut.status, 429, 'the account must be locked out after repeated failures, even with the correct password');
+
+      const bystander = await login('BruteForceBystander', 'realpassword123');
+      assert.equal(bystander.status, 200, "a different username on the same IP/server must be unaffected — this isn't a per-IP limit");
+    } finally {
+      await throttleServer.stop();
+    }
+  });
+});
