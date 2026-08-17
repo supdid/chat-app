@@ -1374,3 +1374,37 @@ describe('WS max payload size', () => {
     assert.equal(echoed.name, 'MaxPayloadHost');
   });
 });
+
+describe('/room-qr and /link-preview rate limits', () => {
+  test('/room-qr is rate-limited', async () => {
+    const { code } = await joinRoom('QrRateLimitHost');
+    let okCount = 0;
+    let sawLimited = false;
+    for (let i = 0; i < 12; i++) {
+      const res = await fetch(`${BASE_URL}/room-qr/${code}`);
+      if (res.status === 429) sawLimited = true;
+      else if (res.status === 200) okCount++;
+    }
+    assert.ok(okCount > 0, 'at least some requests should succeed before the limit kicks in');
+    assert.ok(sawLimited, 'a burst of 12 requests should eventually hit the rate limit');
+  });
+
+  test('/link-preview is rate-limited (checked before any outbound fetch is attempted)', async () => {
+    // /room-qr and /link-preview share the same per-IP budget as every other route this session
+    // added it to (isPostMediaRateLimited) — correct, intentional behavior, but it means the
+    // previous test in this block already spent part of this IP's window. Let it fully clear
+    // first so this test starts from a known, fresh state instead of inheriting that one's spend.
+    await sleep(6500);
+    let sawLimited = false;
+    let sawRejected = false;
+    for (let i = 0; i < 12; i++) {
+      // A private-host URL is rejected before any real network call — same code path a valid
+      // external URL would take, just without this test depending on real outbound network access.
+      const res = await fetch(`${BASE_URL}/link-preview?url=${encodeURIComponent('http://127.0.0.1/x')}`);
+      if (res.status === 429) sawLimited = true;
+      else if (res.status === 400) sawRejected = true;
+    }
+    assert.ok(sawRejected, 'at least some requests should reach the normal private-host rejection');
+    assert.ok(sawLimited, 'a burst of 12 requests should eventually hit the rate limit');
+  });
+});

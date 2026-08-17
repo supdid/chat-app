@@ -528,6 +528,11 @@ app.post('/export', (req, res) => {
 // on the join screen with the room pre-filled, same deep-link param the rejoin-on-reload flow
 // already reads (?room=).
 app.get('/room-qr/:code', async (req, res) => {
+  // Unlike every other content-serving route in this file, this had no throttle at all — cheap
+  // per call, but still a real CPU-amplification vector for anyone who already knows one valid
+  // room code (repeated requests to a fixed URL are trivial to script). Same shared per-IP gate
+  // every other previously-unprotected route this session got.
+  if (isPostMediaRateLimited(req)) return res.status(429).end();
   const code = String(req.params.code || '').toUpperCase().trim();
   if (!code || (!rooms.has(code) && !db.getRoom(code))) return res.status(404).end();
   const url = `${req.protocol}://${req.get('host')}/?room=${encodeURIComponent(code)}`;
@@ -599,6 +604,13 @@ function decodeHtmlEntities(str) {
 }
 
 app.get('/link-preview', async (req, res) => {
+  // Unlike every other route that reaches out to a client-chosen resource, this had no throttle
+  // at all — worse than most, since it's not just cheap-per-call like /room-qr: this makes the
+  // SERVER issue an outbound fetch (up to 5s) to a URL of the caller's choosing, unauthenticated,
+  // no prior knowledge needed (no room code, no anything). Varying the URL bypasses the existing
+  // per-URL cache entirely, so an attacker could turn this into an open outbound-request relay or
+  // just tie up server resources with many concurrent slow fetches. Same shared per-IP gate.
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many requests too quickly' });
   const url = String(req.query.url || '');
   let parsed;
   try {
