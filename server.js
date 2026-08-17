@@ -26,6 +26,16 @@ const server = http.createServer(app);
 // reduction from the default, closing off the bulk of the DoS risk from an oversized frame.
 const WS_MAX_PAYLOAD_BYTES = 4 * 1024 * 1024;
 const wss = new WebSocketServer({ server, maxPayload: WS_MAX_PAYLOAD_BYTES });
+// Same reasoning as the per-connection ws.on('error', ...) handler further down (see its comment
+// for the full unhandled-'error'-event-crashes-the-process mechanism this guards against) — this
+// one is at the WebSocketServer level itself, for anything that could go wrong before an
+// individual connection even exists (e.g. during the upgrade handshake). Manual testing against a
+// scratch server found the specific handshake-malformation cases actually tried degrade gracefully
+// on their own (ws responds with a normal HTTP 400, no crash) rather than reaching this — but
+// costs nothing to have as defense-in-depth against whatever wasn't tried.
+wss.on('error', (err) => {
+  reportError('server', err, { wssError: true });
+});
 // Registered this early so every route below — including the self-healing routes, which are
 // defined before the rest of the app's routes — can read req.body on POST requests.
 app.use(express.json());
