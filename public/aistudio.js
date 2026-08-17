@@ -332,6 +332,14 @@ async function generate(prompt, seed, topText, bottomText) {
     addToGallery(finalUrl, prompt);
     generateBtn.disabled = false;
     regenerateBtn.disabled = false;
+    // Always clear these regardless of staleness below — if the user has since browsed to a
+    // gallery item (bumping viewToken with no new generate() call to clean up after this one),
+    // nothing else will ever clear this call's own progress-bar intervals, and they'd otherwise
+    // tick forever in the background. stopLoadingAnimation() further down (which also snaps the
+    // progress bar to 100%, a visible effect) stays gated behind the staleness check below, since
+    // that visual change should only ever apply to whatever the user is currently looking at.
+    clearInterval(progressTimer);
+    clearInterval(messageTimer);
     if (myToken !== viewToken) return; // user has since browsed to a different view — result still saved above, just don't yank the display out from under them
     currentPrompt = prompt;
     currentUrl = finalUrl;
@@ -354,6 +362,9 @@ async function generate(prompt, seed, topText, bottomText) {
   } catch {
     generateBtn.disabled = false;
     regenerateBtn.disabled = false;
+    // Same unconditional interval cleanup as the success path above, for the same reason.
+    clearInterval(progressTimer);
+    clearInterval(messageTimer);
     if (myToken !== viewToken) return;
     stopLoadingAnimation(false);
     resultLoading.classList.add('hidden');
@@ -439,7 +450,12 @@ const GALLERY_LIMIT = 40;
 
 function loadGallery() {
   try {
-    return JSON.parse(localStorage.getItem(GALLERY_KEY) || '[]');
+    const parsed = JSON.parse(localStorage.getItem(GALLERY_KEY) || '[]');
+    // Only the JSON-parse failure was guarded before — a value that parses fine but isn't an
+    // array (manual tampering, or a future format change) flowed straight through, and every
+    // caller assumes an array (addToGallery's .filter(), renderGallery's for...of), throwing and
+    // breaking generation/gallery rendering entirely rather than just losing the saved gallery.
+    return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
   }
