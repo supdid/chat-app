@@ -6,6 +6,7 @@
 'use strict';
 const { test, describe, before, after } = require('node:test');
 const assert = require('node:assert/strict');
+const WebSocket = require('ws');
 const { startTestServer, connectWs, send, waitFor, sleep, BASE_URL } = require('./helpers');
 
 let server;
@@ -1205,5 +1206,68 @@ describe('Build Craft fall-damage flood gate', () => {
     await sleep(500);
     watcher.off('message', h);
     assert.ok(hitCount > 0 && hitCount <= 8, `expected 1-8 of 15 bc-hit broadcasts through, got ${hitCount}`);
+  });
+});
+
+describe('orphaned upload sweep', () => {
+  // POST /upload is public and unauthenticated (needed by every "attach media" feature), and
+  // nothing ever required the returned URL to actually get used for anything — a file uploaded
+  // and never attached anywhere lived on disk forever with no size quota, an unauthenticated
+  // disk-fill DoS. Uses its own dedicated server instance (distinct port) with the grace/sweep
+  // timers shrunk to milliseconds via env override, so this test doesn't have to wait on the real
+  // 15-minute/5-minute production values or affect the one shared instance every other test uses.
+  test('an unclaimed upload gets swept after the grace period; a claimed one survives it', async () => {
+    const sweepServer = await startTestServer(
+      { UPLOAD_CLAIM_GRACE_MS: '150', UPLOAD_SWEEP_INTERVAL_MS: '150' },
+      3198
+    );
+    try {
+      const base = `http://localhost:${sweepServer.port}`;
+
+      const uploadOne = async (name) => {
+        const form = new FormData();
+        form.append('file', new Blob([`fake file content ${name}`], { type: 'image/png' }), `${name}.png`);
+        const res = await fetch(`${base}/upload`, { method: 'POST', body: form });
+        const data = await res.json();
+        return data.url;
+      };
+      const unclaimedUrl = await uploadOne('unclaimed');
+      const claimedUrl = await uploadOne('claimed');
+
+      // Room needs to actually exist in-memory (rooms.get(code)) for /post-image to accept a
+      // post into it — created via a real WS join, same as every other real client.
+      const ws = new WebSocket(`ws://localhost:${sweepServer.port}`);
+      await new Promise((resolve) => ws.on('open', resolve));
+      ws.send(JSON.stringify({ type: 'join-server', username: 'UploadSweepHost' }));
+      await new Promise((resolve) => {
+        const h = (data) => { if (JSON.parse(data).type === 'joined-server') { ws.off('message', h); resolve(); } };
+        ws.on('message', h);
+      });
+      ws.send(JSON.stringify({ type: 'create-room' }));
+      const code = await new Promise((resolve) => {
+        const h = (data) => { const m = JSON.parse(data); if (m.type === 'joined-room') { ws.off('message', h); resolve(m.code); } };
+        ws.on('message', h);
+      });
+
+      const claimRes = await fetch(`${base}/post-image`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code, name: 'UploadSweepHost', mediaUrl: claimedUrl, prompt: 'x' }),
+      });
+      assert.equal(claimRes.status, 200, 'claiming the upload via /post-image should succeed');
+
+      // Both files exist immediately after upload, before any sweep has had a chance to run.
+      assert.equal((await fetch(`${base}${unclaimedUrl}`)).status, 200);
+      assert.equal((await fetch(`${base}${claimedUrl}`)).status, 200);
+
+      // Past at least one full grace-period-then-sweep-interval cycle.
+      await sleep(600);
+
+      assert.equal((await fetch(`${base}${claimedUrl}`)).status, 200, 'a claimed upload must survive the sweep');
+      assert.equal((await fetch(`${base}${unclaimedUrl}`)).status, 404, 'an unclaimed upload must be swept away');
+
+      ws.close();
+    } finally {
+      await sweepServer.stop();
+    }
   });
 });

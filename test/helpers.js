@@ -19,7 +19,10 @@ const WS_URL = `ws://localhost:${TEST_PORT}`;
 // node_modules and public/ are symlinked (62MB+, and tests never need to modify either) rather
 // than copied — only the small root server-side files get a real copy, into a fresh temp dir so
 // each test file run gets its own DB/keys with zero chance of touching the real ~/chat-app data.
-async function startTestServer() {
+// `envOverrides`/`port` let a test spin up its own dedicated instance (distinct port) with
+// different env — e.g. shrinking a normally-minutes-long timer down to milliseconds to actually
+// exercise it — without affecting the one shared instance every other test in the suite uses.
+async function startTestServer(envOverrides = {}, port = TEST_PORT) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'valk-test-'));
   fs.symlinkSync(path.join(REPO_ROOT, 'node_modules'), path.join(dir, 'node_modules'));
   fs.symlinkSync(path.join(REPO_ROOT, 'public'), path.join(dir, 'public'));
@@ -31,17 +34,18 @@ async function startTestServer() {
 
   const proc = spawn('node', ['server.js'], {
     cwd: dir,
-    env: { ...process.env, PORT: String(TEST_PORT) },
+    env: { ...process.env, PORT: String(port), ...envOverrides },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';
   proc.stdout.on('data', (d) => { output += d; });
   proc.stderr.on('data', (d) => { output += d; });
 
+  const base = `http://localhost:${port}`;
   const deadline = Date.now() + 10000;
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(`${BASE_URL}/`);
+      const res = await fetch(`${base}/`);
       if (res.status === 200) break;
     } catch { /* not up yet */ }
     if (proc.exitCode !== null) {
@@ -53,6 +57,7 @@ async function startTestServer() {
   return {
     dir,
     proc,
+    port,
     getOutput: () => output,
     async stop() {
       proc.kill();

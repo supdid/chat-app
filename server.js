@@ -362,6 +362,7 @@ app.post('/post-image', (req, res) => {
     ? rawMediaUrl
     : null;
   const prompt = String(req.body.prompt || '').slice(0, 500).trim();
+  claimUpload(mediaUrl);
   if (!code || !mediaUrl) return res.status(400).json({ error: 'Missing room code or image' });
   const room = rooms.get(code);
   if (!room) return res.status(404).json({ error: 'Room not found' });
@@ -409,6 +410,7 @@ app.post('/post-media', (req, res) => {
   const mediaUrl = rawMediaUrl && rawMediaUrl.startsWith('/uploads/') ? rawMediaUrl : null;
   const mediaType = ['video', 'image', 'audio'].includes(req.body.mediaType) ? req.body.mediaType : null;
   const caption = String(req.body.caption || '').slice(0, 500).trim();
+  claimUpload(mediaUrl);
   if (!code || !mediaUrl || !mediaType) return res.status(400).json({ error: 'Missing room code or media' });
   const room = rooms.get(code);
   if (!room) return res.status(404).json({ error: 'Room not found' });
@@ -622,6 +624,24 @@ app.get('/link-preview', async (req, res) => {
   }
 });
 
+// /upload is the single shared, public, unauthenticated endpoint every "attach media" feature in
+// this app funnels through — but nothing ever required the returned URL to actually get used for
+// anything. A file uploaded and never attached to a message/video/avatar/etc. was invisible to
+// cleanupInactiveRooms below (which only ever finds files by walking messages/videos that
+// reference them) and lived on disk forever, with no size quota anywhere: an anonymous script
+// hitting POST /upload in a loop — rate-limited to 8 requests/6s, but each one can be up to the
+// existing 300MB cap — could fill this app's disk in minutes from a single IP with zero login and
+// zero further action. Tracks every upload's URL + timestamp; claimUpload() (called from every
+// route below that actually persists a client-supplied /uploads/ URL somewhere real) removes the
+// entry, and sweepOrphanedUploads() near cleanupInactiveRooms deletes anything still unclaimed
+// after a generous grace period. In-memory only (resets on restart) — same "simple bound, not
+// perfect accounting" tradeoff this file's other in-memory rate-limit maps already make; the
+// worst case on a restart is a handful of pre-restart orphans going unswept, not a new hole.
+const pendingUploads = new Map(); // url -> uploadedAt
+function claimUpload(url) {
+  if (typeof url === 'string') pendingUploads.delete(url);
+}
+
 app.post('/upload', (req, res) => {
   // Unlike every other HTTP room-content route, this had zero throttling and needs no auth/room
   // membership — a scripted burst (up to the existing 300MB-per-file cap, no login required)
@@ -636,7 +656,9 @@ app.post('/upload', (req, res) => {
       : req.file.mimetype.startsWith('audio/')
       ? 'audio'
       : 'image';
-    res.json({ url: `/uploads/${req.file.filename}`, mediaType });
+    const url = `/uploads/${req.file.filename}`;
+    pendingUploads.set(url, Date.now());
+    res.json({ url, mediaType });
   });
 });
 
@@ -1137,6 +1159,8 @@ app.post('/api/scorpture/videos', (req, res) => {
     ? req.body.thumbnailUrl.slice(0, 2000)
     : null;
   const category = SCORPTURE_CATEGORIES.includes(req.body.category) ? req.body.category : null;
+  claimUpload(videoUrl);
+  claimUpload(thumbnailUrl);
   if (!title || !videoUrl.startsWith('/uploads/')) return res.status(400).json({ error: 'Missing title or video file' });
   const id = crypto.randomUUID();
   db.insertScorptureVideo({
@@ -1169,6 +1193,7 @@ app.put('/api/scorpture/videos/:id', (req, res) => {
   const thumbnailUrl = typeof req.body.thumbnailUrl === 'string' && req.body.thumbnailUrl.startsWith('/uploads/')
     ? req.body.thumbnailUrl.slice(0, 2000)
     : video.thumbnail_url;
+  claimUpload(thumbnailUrl);
   db.updateScorptureVideo(video.id, { title, description, category, thumbnailUrl });
   res.json({ ok: true, title, description, category, thumbnailUrl });
 });
@@ -1318,6 +1343,7 @@ app.post('/api/scorpture/banner', (req, res) => {
   const account = getAccountFromReq(req);
   if (!account) return res.status(401).json({ error: 'Not signed in' });
   const bannerUrl = typeof req.body.bannerUrl === 'string' ? req.body.bannerUrl.slice(0, 2000) : '';
+  claimUpload(bannerUrl);
   if (!bannerUrl.startsWith('/uploads/')) return res.status(400).json({ error: 'Missing banner image' });
   db.setScorptureBanner(account.id, bannerUrl);
   res.json({ ok: true, bannerUrl });
@@ -1329,6 +1355,7 @@ app.post('/api/scorpture/avatar', (req, res) => {
   const account = getAccountFromReq(req);
   if (!account) return res.status(401).json({ error: 'Not signed in' });
   const avatarUrl = typeof req.body.avatarUrl === 'string' ? req.body.avatarUrl.slice(0, 2000) : '';
+  claimUpload(avatarUrl);
   if (!avatarUrl.startsWith('/uploads/')) return res.status(400).json({ error: 'Missing avatar image' });
   db.setScorptureAvatar(account.id, avatarUrl);
   res.json({ ok: true, avatarUrl });
@@ -1388,6 +1415,7 @@ app.post('/api/scorpture/overlays', (req, res) => {
     if (type === 'image' && !content.startsWith('/uploads/')) {
       return res.status(400).json({ error: 'Image overlays must reference an uploaded file' });
     }
+    if (type === 'image') claimUpload(content);
     overlays.push({ id: crypto.randomUUID(), type, content, position });
   }
   db.setScorptureOverlays(account.id, overlays);
@@ -4045,6 +4073,7 @@ wss.on('connection', (ws, req) => {
       // leaks their IP, independent of whether they ever open a message from that user.
       const rawAvatarUrl = typeof msg.avatarUrl === 'string' ? msg.avatarUrl.slice(0, 500) : null;
       const avatarUrl = rawAvatarUrl && rawAvatarUrl.startsWith('/uploads/') ? rawAvatarUrl : null;
+      claimUpload(avatarUrl);
       ws.profile.avatarUrl = avatarUrl;
       db.upsertProfile(ws.profile.name, { avatarUrl });
       const payload = { type: 'profile-updated', name: ws.profile.name, avatarUrl, status: ws.profile.status };
@@ -4130,7 +4159,12 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'set-wallpaper' && ws.room) {
       const dbRoom = db.getRoom(ws.room);
       if (!dbRoom || dbRoom.host_name !== ws.profile.name) return;
-      const url = typeof msg.url === 'string' ? msg.url.slice(0, 500) : null;
+      // Same tracker-link gap set-avatar had (fixed earlier this session): the real UI only ever
+      // sends back its own /upload result, but nothing server-side enforced that — a raw WS client
+      // could set any external URL, loaded as a real background-image for every room member.
+      const rawUrl = typeof msg.url === 'string' ? msg.url.slice(0, 500) : null;
+      const url = rawUrl && rawUrl.startsWith('/uploads/') ? rawUrl : null;
+      claimUpload(url);
       db.setWallpaper(ws.room, url);
       broadcastRoom(ws.room, { type: 'wallpaper-updated', url });
       return;
@@ -4453,6 +4487,7 @@ wss.on('connection', (ws, req) => {
       const mediaUrl = typeof msg.mediaUrl === 'string' && (mediaType === 'poll' ? msg.mediaUrl === 'poll' : msg.mediaUrl.startsWith('/uploads/'))
         ? msg.mediaUrl
         : null;
+      claimUpload(mediaUrl);
       if (!text && !(mediaUrl && mediaType)) return;
       if (mediaType === 'poll' && !isValidPollText(text)) return;
 
@@ -4657,6 +4692,28 @@ function cleanupInactiveRooms() {
 
 setTimeout(cleanupInactiveRooms, 30 * 1000); // shortly after boot, not instantly — let startup settle first
 setInterval(cleanupInactiveRooms, CLEANUP_INTERVAL_MS);
+
+// See pendingUploads/claimUpload near the /upload route above for why this exists. Generous grace
+// period — real flows (AI Studio's caption-then-upload-then-post, the video editor's "send to
+// chat" happening well after editing) can legitimately take a while between upload and claim —
+// balanced against not leaving a sustained-abuse window open too long.
+// Overridable via env so the regression suite can verify real sweep behavior in milliseconds
+// instead of minutes — unset in production, so this has no effect there.
+const UPLOAD_CLAIM_GRACE_MS = Number(process.env.UPLOAD_CLAIM_GRACE_MS) || 15 * 60 * 1000;
+const UPLOAD_SWEEP_INTERVAL_MS = Number(process.env.UPLOAD_SWEEP_INTERVAL_MS) || 5 * 60 * 1000;
+function sweepOrphanedUploads() {
+  const cutoff = Date.now() - UPLOAD_CLAIM_GRACE_MS;
+  let swept = 0;
+  for (const [url, uploadedAt] of pendingUploads) {
+    if (uploadedAt > cutoff) continue;
+    deleteUploadFile(url);
+    pendingUploads.delete(url);
+    swept += 1;
+  }
+  if (swept) console.log(`[cleanup] Swept ${swept} orphaned upload(s) never attached to anything.`);
+  return swept;
+}
+setInterval(sweepOrphanedUploads, UPLOAD_SWEEP_INTERVAL_MS);
 
 app.post('/admin/cleanup/run', requireAdmin, (req, res) => {
   try {
