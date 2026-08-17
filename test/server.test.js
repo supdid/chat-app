@@ -1220,6 +1220,32 @@ describe('Build Craft fall-damage flood gate', () => {
   });
 });
 
+describe('Build Craft position broadcast flood gate', () => {
+  // Real-time position streams (bc-pos, and the same-pattern gw-pos/sw-pos) legitimately run much
+  // faster than chat — the client throttles itself to ~8/sec, but nothing server-side enforced
+  // that before this fix. Uses the higher-throughput isStrokeRateLimited gate (20/sec) instead of
+  // the standard chat gate (~1.3/sec), which would break real gameplay smoothness.
+  test('bc-pos is rate-limited at the higher stroke-rate ceiling, not the much tighter chat-message one', async () => {
+    const code = 'BCPOSFLOOD1';
+    const mover = await connectWs();
+    const watcher = await connectWs();
+    send(mover, { type: 'bc-join', code, name: 'BcPosMover' });
+    await waitFor(mover, (m) => m.type === 'bc-init');
+    send(watcher, { type: 'bc-join', code, name: 'BcPosWatcher' });
+    await waitFor(watcher, (m) => m.type === 'bc-init');
+    await sleep(150);
+
+    let posCount = 0;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'bc-pos') posCount++; };
+    watcher.on('message', h);
+    for (let i = 0; i < 60; i++) send(mover, { type: 'bc-pos', x: i, y: 0, z: 0, yaw: 0 });
+    await sleep(500);
+    watcher.off('message', h);
+    assert.ok(posCount > 8, `expected more than the tight chat-gate ceiling (8) to get through, got ${posCount}`);
+    assert.ok(posCount > 0 && posCount <= 40, `expected 1-40 of 60 bc-pos broadcasts through, got ${posCount}`);
+  });
+});
+
 describe('orphaned upload sweep', () => {
   // POST /upload is public and unauthenticated (needed by every "attach media" feature), and
   // nothing ever required the returned URL to actually get used for anything — a file uploaded

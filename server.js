@@ -2939,6 +2939,14 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'bc-pos' && ws.bcRoom) {
+      // No throttle at all before this — a raw WS client ignoring buildcraft.js's own 120ms
+      // client-side send throttle (updateBcPosBroadcast) could flood the whole room with
+      // position broadcasts. The standard chat gate (isWsMsgRateLimited, ~1.3/sec) would be far
+      // too tight for legitimate use here — position streams are meant to run much faster than
+      // chat — so this reuses isStrokeRateLimited (20/sec) instead, the same "faster than chat
+      // but still bounded" gate whiteboard/Pictionary strokes already use, which comfortably
+      // covers the real ~8/sec (120ms) legitimate rate with headroom for jitter.
+      if (isStrokeRateLimited(ws)) return;
       const room = rooms.get(ws.bcRoom);
       const p = room && room.bc && room.bc.players.get(ws);
       if (!p) return;
@@ -3183,6 +3191,10 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'gw-pos' && ws.gwRoom) {
+      // Same reasoning as bc-pos above — no throttle before this, and the standard chat gate
+      // would be too tight for a real-time position stream (legitimate client throttle is 100ms,
+      // ~10/sec).
+      if (isStrokeRateLimited(ws)) return;
       const room = rooms.get(ws.gwRoom);
       const session = room && room.gw && room.gw.get(ws.gwLevel);
       const p = session && session.players.get(ws);
@@ -3249,6 +3261,10 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'sw-pos' && ws.swRoom) {
+      // Same reasoning as bc-pos above — no throttle before this, and the standard chat gate
+      // would be too tight for a real-time position stream (legitimate client throttle is 100ms,
+      // ~10/sec).
+      if (isStrokeRateLimited(ws)) return;
       const room = rooms.get(ws.swRoom);
       const p = room && room.sw && room.sw.players.get(ws);
       if (!p) return;
