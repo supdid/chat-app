@@ -712,3 +712,37 @@ describe('Hangman reveals the word on a loss', () => {
     assert.ok(ended.word.length > 0, 'hm-round-end must carry the real word — the client renderWord([...data.word]) fix depends on this');
   });
 });
+
+describe('Geometry Wave leaderboard submission cooldown', () => {
+  test('an immediate completion is accepted, a rapid re-submission is blocked, and it recovers after the cooldown', async () => {
+    const code = 'GWCOOLDOWN1';
+    const ws = await connectWs();
+    send(ws, { type: 'gw-join', code, level: 'easy', name: 'GwCooldownSolo' });
+    await waitFor(ws, (m) => m.type === 'gw-init');
+
+    // No min-session gate here (unlike arcade-submit-score) — gw-join fires when the player
+    // actually starts the level, not on page load, so a genuinely fast clear of a short level
+    // could be well under a few seconds.
+    send(ws, { type: 'gw-complete', level: 'easy', percent: 50, name: 'GwCooldownSolo' });
+    await sleep(200);
+    send(ws, { type: 'gw-leaderboard', code, level: 'easy' });
+    const result1 = await waitFor(ws, (m) => m.type === 'gw-leaderboard-result');
+    assert.ok(result1.scores.some((s) => s.name === 'GwCooldownSolo' && s.score === 50));
+
+    // bumpLeaderboard only ever keeps the max score, so this resubmission uses a HIGHER value —
+    // otherwise a blocked-by-cooldown result would be indistinguishable from "correctly ignored
+    // a lower score."
+    send(ws, { type: 'gw-complete', level: 'easy', percent: 100, name: 'GwCooldownSolo' });
+    await sleep(200);
+    send(ws, { type: 'gw-leaderboard', code, level: 'easy' });
+    const result2 = await waitFor(ws, (m) => m.type === 'gw-leaderboard-result');
+    assert.equal(result2.scores.find((s) => s.name === 'GwCooldownSolo').score, 50, 'the higher score submitted within the cooldown window must not land');
+
+    await sleep(2000);
+    send(ws, { type: 'gw-complete', level: 'easy', percent: 100, name: 'GwCooldownSolo' });
+    await sleep(200);
+    send(ws, { type: 'gw-leaderboard', code, level: 'easy' });
+    const result3 = await waitFor(ws, (m) => m.type === 'gw-leaderboard-result');
+    assert.equal(result3.scores.find((s) => s.name === 'GwCooldownSolo').score, 100, 'a submission after the cooldown elapses should succeed');
+  });
+});

@@ -2962,6 +2962,16 @@ wss.on('connection', (ws, req) => {
       const name = String(msg.name || '').slice(0, 30).trim();
       const percent = Math.max(0, Math.min(100, Math.floor(+msg.percent || 0)));
       if (!level || !name || !percent) return;
+      // Fully client-computed like arcade-submit-score (Snake/2048/Fighter Plane) — anyone can
+      // fire a gw-complete frame directly to plant a fake leaderboard entry. Reuses that same
+      // submission-cooldown mitigation, but deliberately NOT the min-session-time half of it:
+      // unlike arcade-join (fires on page load), gw-join fires right when startLevel() actually
+      // starts play, so a genuinely fast clear of a short/easy hand-built level could be well
+      // under the 3s threshold that's safe for the arcade games — a false block on a real score
+      // is worse than leaving this particular gap only partially covered.
+      const nowGw = Date.now();
+      if (nowGw - (ws.lastGwSubmitAt || 0) < ARCADE_SUBMIT_COOLDOWN_MS) return;
+      ws.lastGwSubmitAt = nowGw;
       db.bumpLeaderboard(ws.gwRoom, `gw-${level}`, name, percent);
       return;
     }
