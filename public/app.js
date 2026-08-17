@@ -695,6 +695,14 @@ function handleServerMessage(data) {
       // reply typed there posted as an ordinary top-level message with no error shown.
       threadOverlay.classList.add('hidden');
       currentThreadRootId = null;
+      // Same class of bug as the thread overlay above, just never applied here: room DMs are
+      // explicitly room-scoped (send-dm resolves the recipient by scanning the *current* room's
+      // connected clients), but nothing closed dmOverlay on a room switch. Left open, it kept
+      // showing the old room's thread — and since display names aren't globally unique, sending
+      // from it could silently DM an unrelated same-named person in the new room instead of
+      // erroring, or (if nobody by that name is present) just leave the stale panel open forever.
+      dmOverlay.classList.add('hidden');
+      currentDmWithName = null;
       seedReactions(data.reactions);
       seedActivity(data.activity);
       pinnedMessages = data.pins || [];
@@ -761,6 +769,13 @@ function handleServerMessage(data) {
       voiceCallBanner.classList.add('hidden');
       unreadCount = 0;
       updateUnreadBadge();
+      // Same room-scoped-DM/thread staleness this session already fixed for the joined-room path
+      // — leaving a room entirely (not just switching to another) is an even more direct case of
+      // "this room's context no longer applies."
+      threadOverlay.classList.add('hidden');
+      currentThreadRootId = null;
+      dmOverlay.classList.add('hidden');
+      currentDmWithName = null;
       showScreen(roomSelectScreen);
       break;
 
@@ -2226,6 +2241,10 @@ function signOutAccount() {
   currentDmWithName = null;
   groupDmOverlay.classList.add('hidden');
   currentGroupDmId = null;
+  // closeFriendsPanel() already does this when the panel is closed normally — signing out while
+  // it happens to be open skipped that, leaving the 8s poll interval running forever (harmless
+  // since loadFriends() itself no-ops with no accountToken, but a permanent stray timer).
+  clearInterval(friendsPollInterval);
   renderAccountState();
 }
 accountSignoutBtn.addEventListener('click', signOutAccount);
