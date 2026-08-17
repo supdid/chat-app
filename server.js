@@ -2582,6 +2582,18 @@ function resolveModerationTarget(ws, msg) {
 }
 
 wss.on('connection', (ws, req) => {
+  // Registered before anything else, including the connect-rate-limit check right below that can
+  // close the connection immediately — without a listener for the 'error' event, Node's
+  // EventEmitter throws an unhandled 'error' as an uncaught exception, which escapes past any
+  // try/catch (this happens at the stream/frame level, not application code) into the
+  // process-level uncaughtException handler near the top of this file, which deliberately calls
+  // process.exit(1) — turning ONE bad frame from ANY connected client into a crash of the entire
+  // server for every single connected user. Registering this any later left a real gap: a
+  // connection rejected by isWsConnectRateLimited below (closed before this line used to run) had
+  // no error protection at all during its own rejection.
+  ws.on('error', (err) => {
+    reportError('server', err, { wsConnectionError: true });
+  });
   // Only used to defend against a single IP claiming an outsized share of one stream's
   // viewer slots (see MAX_SCORPTURE_VIEWERS_PER_IP below) — 'trust proxy' above only affects
   // req.ip on HTTP routes, not this raw upgrade request, so the X-Forwarded-For header (set by
@@ -2592,18 +2604,6 @@ wss.on('connection', (ws, req) => {
     ws.close(1013, 'Too many connections too quickly — slow down a bit.');
     return;
   }
-  // Without this, a protocol-level error on this connection (an oversized frame past maxPayload,
-  // malformed data, a compression error, etc.) has no listener for the 'error' event — and
-  // Node's EventEmitter throws an unhandled 'error' event as an uncaught exception if nothing is
-  // listening for it. That exception escapes straight past the try/catch around the message
-  // dispatch below (this happens at the stream/frame level, before a 'message' event is even
-  // produced) into the process-level uncaughtException handler near the top of this file, which
-  // deliberately calls process.exit(1) — turning ONE bad frame from ANY connected client into a
-  // crash of the entire server for every single connected user. This was true even before
-  // WS_MAX_PAYLOAD_BYTES existed (just needed a 100MB+ frame instead of a 4MB+ one to trigger).
-  ws.on('error', (err) => {
-    reportError('server', err, { wsConnectionError: true });
-  });
   ws.on('message', (raw) => {
     let msg;
     try {
