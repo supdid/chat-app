@@ -3007,6 +3007,10 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'bc-set-armor' && ws.bcRoom) {
+      // Unlike bc-claim/dg-start/tv-start (naturally bounded by a per-player cap or "can't
+      // restart an active round"), this and bc-set-skin below have no such natural limit — a
+      // cosmetic/loadout choice can be toggled at will, with a room-wide broadcast every time.
+      if (isWsMsgRateLimited(ws)) return;
       const room = rooms.get(ws.bcRoom);
       const me = room && room.bc && room.bc.players.get(ws);
       if (!me) return;
@@ -3019,6 +3023,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'bc-set-skin' && ws.bcRoom) {
+      if (isWsMsgRateLimited(ws)) return;
       const room = rooms.get(ws.bcRoom);
       const me = room && room.bc && room.bc.players.get(ws);
       if (!me || !/^#[0-9a-fA-F]{6}$/.test(msg.color || '')) return;
@@ -3810,6 +3815,10 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'dg-set-spectator' && ws.dgRoom) {
+      // No natural bounding the way dg-start/dg-set-category have (can't restart/re-category an
+      // active round) — this can be toggled at will, any time, with a room-wide broadcast every
+      // call.
+      if (isWsMsgRateLimited(ws)) return;
       const room = rooms.get(ws.dgRoom);
       const dg = room && room.dg;
       const me = dg && dg.players.get(ws);
@@ -3823,6 +3832,10 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'dg-set-category' && ws.dgRoom) {
+      // Only bounded to "no active round" — freely spammable the whole time a room sits between
+      // rounds (which could be indefinitely, e.g. everyone just chatting), each call broadcasting
+      // to the room.
+      if (isWsMsgRateLimited(ws)) return;
       const room = rooms.get(ws.dgRoom);
       const dg = room && room.dg;
       if (!dg || dg.roundEndAt) return;

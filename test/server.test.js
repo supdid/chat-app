@@ -1260,6 +1260,50 @@ describe('Build Craft position broadcast flood gate', () => {
   });
 });
 
+describe('cosmetic/settings toggles without natural bounding are rate-limited', () => {
+  // Unlike bc-claim (capped at BC_MAX_CLAIMS_PER_PLAYER) or dg-start/tv-start (can't restart an
+  // active round), these have no such natural limit — freely toggleable at will, each broadcasting
+  // to the room. All share the standard isWsMsgRateLimited gate (not the higher-throughput one
+  // bc-pos uses — these aren't meant to be sent at real-time-movement frequency).
+  test('bc-set-skin flood is rate-limited', async () => {
+    const code = 'BCSKINFLOOD1';
+    const changer = await connectWs();
+    const watcher = await connectWs();
+    send(changer, { type: 'bc-join', code, name: 'BcSkinChanger' });
+    await waitFor(changer, (m) => m.type === 'bc-init');
+    send(watcher, { type: 'bc-join', code, name: 'BcSkinWatcher' });
+    await waitFor(watcher, (m) => m.type === 'bc-init');
+    await sleep(150);
+
+    let count = 0;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'bc-skin-changed') count++; };
+    watcher.on('message', h);
+    for (let i = 0; i < 15; i++) send(changer, { type: 'bc-set-skin', color: i % 2 === 0 ? '#ff0000' : '#00ff00' });
+    await sleep(500);
+    watcher.off('message', h);
+    assert.ok(count > 0 && count <= 8, `expected 1-8 bc-skin-changed broadcasts through, got ${count}`);
+  });
+
+  test('dg-set-spectator flood is rate-limited', async () => {
+    const code = 'DGSPECFLOOD1';
+    const toggler = await connectWs();
+    const watcher = await connectWs();
+    send(toggler, { type: 'dg-join', code, name: 'DgSpecToggler' });
+    await waitFor(toggler, (m) => m.type === 'dg-init');
+    send(watcher, { type: 'dg-join', code, name: 'DgSpecWatcher' });
+    await waitFor(watcher, (m) => m.type === 'dg-init');
+    await sleep(150);
+
+    let count = 0;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'dg-spectator-changed') count++; };
+    watcher.on('message', h);
+    for (let i = 0; i < 15; i++) send(toggler, { type: 'dg-set-spectator', spectate: i % 2 === 0 });
+    await sleep(500);
+    watcher.off('message', h);
+    assert.ok(count > 0 && count <= 8, `expected 1-8 dg-spectator-changed broadcasts through, got ${count}`);
+  });
+});
+
 describe('orphaned upload sweep', () => {
   // POST /upload is public and unauthenticated (needed by every "attach media" feature), and
   // nothing ever required the returned URL to actually get used for anything — a file uploaded
