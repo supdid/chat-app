@@ -1701,6 +1701,40 @@ const ARCADE_SUBMIT_COOLDOWN_MS = 2000;
 const ARCADE_SUBMIT_MIN_SESSION_MS = 3000;
 const RATE_LIMIT_WINDOW_MS = 6000;
 const RATE_LIMIT_MAX_MESSAGES = 8; // generous for real typing/conversation, tight enough to stop a flood
+// Every isWsMsgRateLimited/isStrokeRateLimited flood gate in this file (there are many — chat
+// messages, reactions, typing, dg-guess, create-group-dm, bc-fall-damage, scorpture-signal,
+// whiteboard strokes, and more) is tracked on the `ws` connection object itself
+// (ws.msgTimestamps/ws.strokeTimestamps). That's fine against a client sending too fast on one
+// connection, but nothing capped how fast a client could open brand-new connections — and a fresh
+// connection means a fresh object with no timestamps yet. Without this, every one of those flood
+// gates was trivially bypassable by just reconnecting whenever the limit was hit, no slower than
+// the WS handshake itself allows: open a connection, burst up to the limit, disconnect, repeat.
+// This closes that off at the root (new-connection rate, not each gate's own per-message rate) —
+// generous enough that no legitimate reconnect pattern (a network blip, a page reload, several
+// tabs) comes close, since this app's client only ever holds one WS connection open per tab and
+// only reconnects on an actual drop.
+// Deliberately generous — this app runs behind shared NAT often enough (a household, a LAN
+// party, a small office) that several genuinely distinct people can share one apparent IP and all
+// reasonably reconnect around the same time (e.g. right after a server restart). Even at this
+// generous a cap, a reconnect-cycling attacker goes from literally unbounded to a hard ceiling —
+// a real improvement — without meaningfully risking false positives against legitimate bursts.
+// Overridable via env (see below) so the regression suite can verify the mechanism with a small
+// number of connections instead of needing hundreds; unset in production, no effect there.
+const WS_CONNECT_LIMIT_WINDOW_MS = Number(process.env.WS_CONNECT_LIMIT_WINDOW_MS) || 60 * 1000;
+const WS_CONNECT_LIMIT_MAX = Number(process.env.WS_CONNECT_LIMIT_MAX) || 60;
+const wsConnectRateLimits = new Map();
+function isWsConnectRateLimited(ip) {
+  const now = Date.now();
+  const timestamps = (wsConnectRateLimits.get(ip) || []).filter((t) => now - t < WS_CONNECT_LIMIT_WINDOW_MS);
+  if (timestamps.length >= WS_CONNECT_LIMIT_MAX) {
+    wsConnectRateLimits.set(ip, timestamps);
+    return true;
+  }
+  timestamps.push(now);
+  wsConnectRateLimits.set(ip, timestamps);
+  if (wsConnectRateLimits.size > 10000) wsConnectRateLimits.clear(); // crude bound on worst-case memory
+  return false;
+}
 // The ws.msgTimestamps flood-gate check (filter/compare/push) was copy-pasted verbatim at every
 // call site that adopted it over many sessions — extracted once, same pattern isStrokeRateLimited
 // below already uses for its own per-connection limiter.
@@ -2536,6 +2570,10 @@ wss.on('connection', (ws, req) => {
   // the same local reverse proxy) is read directly here.
   const xff = req.headers['x-forwarded-for'];
   ws._ip = (xff ? xff.split(',')[0].trim() : null) || req.socket.remoteAddress || 'unknown';
+  if (isWsConnectRateLimited(ws._ip)) {
+    ws.close(1013, 'Too many connections too quickly — slow down a bit.');
+    return;
+  }
   ws.on('message', (raw) => {
     let msg;
     try {

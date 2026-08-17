@@ -34,7 +34,14 @@ async function startTestServer(envOverrides = {}, port = TEST_PORT) {
 
   const proc = spawn('node', ['server.js'], {
     cwd: dir,
-    env: { ...process.env, PORT: String(port), ...envOverrides },
+    // WS_CONNECT_LIMIT_MAX defaults sky-high here: every test in this suite connects from the
+    // same loopback IP, simulating many distinct real users who'd never actually share one IP in
+    // practice — the per-IP new-connection rate limit that protects real deployments would
+    // otherwise starve later tests once the shared instance's connection count climbs past the
+    // production default over a full suite run. A test that wants to verify the limiter itself
+    // overrides this back down on its own dedicated instance (see the "per-IP WS connection rate
+    // limit" describe block).
+    env: { ...process.env, PORT: String(port), WS_CONNECT_LIMIT_MAX: '1000000', ...envOverrides },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';

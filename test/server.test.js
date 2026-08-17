@@ -1310,3 +1310,45 @@ describe('per-username login brute-force throttle', () => {
     }
   });
 });
+
+describe('per-IP WS connection rate limit', () => {
+  // Every isWsMsgRateLimited/isStrokeRateLimited flood gate in the app is tracked on the `ws`
+  // connection object, so a fresh connection means a fresh, unthrottled counter — without a cap
+  // on how fast new connections themselves can open, every one of those gates was trivially
+  // bypassable by reconnecting whenever the per-connection limit was hit. Own dedicated instance
+  // with the threshold shrunk via env override (the shared instance across the rest of this file
+  // opts out entirely via test/helpers.js's default WS_CONNECT_LIMIT_MAX override, since it
+  // simulates many distinct "users" from one loopback IP that would otherwise starve each other).
+  test('connections beyond the per-IP cap are closed immediately; ones under it are unaffected', async () => {
+    const connLimitServer = await startTestServer(
+      { WS_CONNECT_LIMIT_MAX: '5', WS_CONNECT_LIMIT_WINDOW_MS: '10000' },
+      3196
+    );
+    const opened = [];
+    try {
+      const url = `ws://localhost:${connLimitServer.port}`;
+      for (let i = 0; i < 5; i++) {
+        const ws = new WebSocket(url);
+        await new Promise((resolve, reject) => {
+          ws.on('open', resolve);
+          ws.on('close', (code) => reject(new Error(`connection ${i + 1} was unexpectedly closed (code ${code})`)));
+        });
+        opened.push(ws);
+      }
+
+      // The WS handshake itself already completes before the server's 'connection' handler runs
+      // application code, so the client-side socket may still fire 'open' — the rejection is the
+      // server closing it right after, not refusing the handshake. What matters is that it closes
+      // with the expected code shortly afterward, not whether 'open' fires first.
+      const sixth = new WebSocket(url);
+      const closeCode = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('the 6th connection was never closed')), 3000);
+        sixth.on('close', (code) => { clearTimeout(timer); resolve(code); });
+      });
+      assert.equal(closeCode, 1013, 'a connection beyond the cap should be closed with 1013 (Try Again Later)');
+    } finally {
+      opened.forEach((ws) => ws.close());
+      await connLimitServer.stop();
+    }
+  });
+});
