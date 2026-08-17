@@ -1408,3 +1408,85 @@ describe('/room-qr and /link-preview rate limits', () => {
     assert.ok(sawLimited, 'a burst of 12 requests should eventually hit the rate limit');
   });
 });
+
+describe('more previously-unprotected HTTP routes are now rate-limited', () => {
+  // All of these share the same isPostMediaRateLimited budget as /room-qr and /link-preview
+  // above (and /upload/post-image/post-media elsewhere) — wait for a fresh window each time so
+  // one test's spend doesn't leak into the next, same lesson as that describe block.
+  test('/search is rate-limited', async () => {
+    const { code } = await joinRoom('SearchRateLimitHost');
+    let sawLimited = false;
+    for (let i = 0; i < 12; i++) {
+      const res = await fetch(`${BASE_URL}/search`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code, q: 'x' }),
+      });
+      if (res.status === 429) sawLimited = true;
+    }
+    assert.ok(sawLimited, 'a burst of 12 requests should eventually hit the rate limit');
+    await sleep(6500);
+  });
+
+  test('/push/subscribe is rate-limited', async () => {
+    let sawLimited = false;
+    for (let i = 0; i < 12; i++) {
+      const res = await fetch(`${BASE_URL}/push/subscribe`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Pusher', subscription: { endpoint: `https://example.test/ep${i}` } }),
+      });
+      if (res.status === 429) sawLimited = true;
+    }
+    assert.ok(sawLimited, 'a burst of 12 requests should eventually hit the rate limit');
+    await sleep(6500);
+  });
+
+  test('/api/scorpture/videos/:id/report is rate-limited (unlike its sibling /like, a bounded toggle)', async () => {
+    const signup = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'ReportRateLimiter', password: 'pass1234', email: 'reportratelimiter@test.com' }),
+    }).then((r) => r.json());
+    const authHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${signup.token}` };
+
+    const form = new FormData();
+    form.append('file', new Blob(['fake video bytes'], { type: 'video/mp4' }), 'clip.mp4');
+    const uploadRes = await fetch(`${BASE_URL}/upload`, { method: 'POST', body: form });
+    const { url: videoUrl } = await uploadRes.json();
+    const video = await fetch(`${BASE_URL}/api/scorpture/videos`, {
+      method: 'POST', headers: authHeaders,
+      body: JSON.stringify({ title: 'Report Rate Limit Test Video', videoUrl }),
+    }).then((r) => r.json());
+
+    let sawLimited = false;
+    for (let i = 0; i < 12; i++) {
+      const res = await fetch(`${BASE_URL}/api/scorpture/videos/${video.id}/report`, {
+        method: 'POST', headers: authHeaders,
+        body: JSON.stringify({ reason: 'spam test ' + i }),
+      });
+      if (res.status === 429) sawLimited = true;
+    }
+    assert.ok(sawLimited, 'a burst of 12 requests should eventually hit the rate limit');
+  });
+
+  test('/auth/google is rate-limited, same as its /auth/signup and /auth/login siblings', async () => {
+    // The shared instance every other test in this file uses defaults AUTH_LIMIT_MAX to
+    // effectively unlimited (see test/helpers.js) so unrelated tests' own signups/logins never
+    // get spuriously 429'd — which means it can't be used to observe this limiter actually firing.
+    // A dedicated instance explicitly overriding back to the real production value, on a fresh,
+    // untouched budget, actually exercises it.
+    const googleAuthServer = await startTestServer({ AUTH_LIMIT_MAX: '8' }, 3195);
+    try {
+      const base = `http://localhost:${googleAuthServer.port}`;
+      let sawLimited = false;
+      for (let i = 0; i < 12; i++) {
+        const res = await fetch(`${base}/auth/google`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ credential: 'not-a-real-credential' }),
+        });
+        if (res.status === 429) sawLimited = true;
+      }
+      assert.ok(sawLimited, 'a burst of 12 requests should eventually hit the rate limit (no real Google client is configured for this scratch server, so every non-429 response is expected to be a 400)');
+    } finally {
+      await googleAuthServer.stop();
+    }
+  });
+});

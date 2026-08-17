@@ -481,6 +481,12 @@ app.post('/post-media', (req, res) => {
 // persistence was built first, since search over just the last 50 messages wouldn't
 // be very useful.
 app.post('/search', (req, res) => {
+  // No throttle at all before this — real DB query cost per call, and (like /export below) an
+  // oracle for brute-forcing a PIN-protected room's PIN if the code is already known. The PIN
+  // check itself is documented elsewhere as "not real security", but a rate limit still raises
+  // the practical cost of automated guessing for free, same as every other content route in this
+  // file that got this treatment.
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many requests too quickly' });
   const body = req.body || {};
   const code = String(body.code || '').toUpperCase().trim();
   const q = String(body.q || '').trim();
@@ -498,6 +504,9 @@ app.post('/search', (req, res) => {
 // Kept as a real download (Content-Disposition), just reached via fetch()+blob from the client
 // now instead of a plain <a href> navigation, since a GET-only <a> can't carry a POST body.
 app.post('/export', (req, res) => {
+  // Same PIN-oracle/no-throttle reasoning as /search above — this one also dumps a room's entire
+  // message history per call, real DB read cost on top of the PIN-guessing concern.
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many requests too quickly' });
   const code = String(req.body.code || '').toUpperCase().trim();
   const dbRoom = db.getRoom(code);
   if (!code || (!rooms.has(code) && !dbRoom)) return res.status(404).json({ error: 'Room not found' });
@@ -725,6 +734,10 @@ app.get('/push/vapid-public-key', (req, res) => {
 // roomCode is optional — an account-only subscribe (not currently in any room, e.g. right after
 // sign-in) still needs a row so friend-DM push notifications below have somewhere to deliver to.
 app.post('/push/subscribe', (req, res) => {
+  // Unauthenticated (works with no account) row-creating route with no throttle — each call
+  // upserts a push_subscriptions row, an unbounded-growth vector otherwise unlike the toggle/
+  // single-row-per-account routes elsewhere in this file.
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many requests too quickly' });
   const roomCode = String(req.body.roomCode || '').toUpperCase().trim();
   const name = String(req.body.name || '').slice(0, 30).trim();
   const subscription = req.body.subscription;
@@ -941,6 +954,10 @@ function uniqueUsernameFrom(seed) {
 }
 
 app.post('/auth/google', async (req, res) => {
+  // Its siblings /auth/signup and /auth/login both share this same gate — this route does real
+  // cryptographic verification work (verifyIdToken) per call and had no throttle of its own,
+  // inconsistent with the rest of the auth surface.
+  if (isAuthRateLimited(req)) return res.status(429).json({ error: 'Too many attempts — try again in a minute' });
   if (!googleClient) return res.status(400).json({ error: 'Google sign-in is not configured on this server' });
   const credential = String(req.body.credential || '');
   if (!credential) return res.status(400).json({ error: 'Missing credential' });
@@ -1349,6 +1366,9 @@ app.post('/api/scorpture/videos/:id/like', (req, res) => {
 app.post('/api/scorpture/videos/:id/report', (req, res) => {
   const account = getAccountFromReq(req);
   if (!account) return res.status(401).json({ error: 'Not signed in' });
+  // Unlike its sibling /like just above (a toggle — one row per account, bounded), every call
+  // here inserts a brand-new report row with no cap, an unbounded-growth/admin-queue-spam vector.
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many reports too quickly' });
   const video = db.getScorptureVideo(req.params.id);
   if (!video) return res.status(404).json({ error: 'Video not found' });
   db.insertScorptureReport({
@@ -1808,7 +1828,12 @@ const ROOM_CREATE_MAX = 5; // one connection shouldn't need more than a handful 
 const REPORT_WINDOW_MS = 300000;
 const REPORT_MAX = 5; // real abuse reporting is rare enough that 5/5min is generous, not restrictive
 const AUTH_LIMIT_WINDOW_MS = 60000;
-const AUTH_LIMIT_MAX = 8; // signup/login call scryptSync (CPU-bound, synchronous) — cheap to flood without this
+// Overridable via env, same as WS_CONNECT_LIMIT_MAX above — the regression suite's shared test
+// instance runs many distinct signups/logins across dozens of unrelated describe blocks within
+// this window (they all come from one loopback IP, simulating many real, distinct users who'd
+// never actually share an IP), and would otherwise start 429ing unrelated tests' setup steps once
+// enough of the suite had run. Unset in production, no effect there.
+const AUTH_LIMIT_MAX = Number(process.env.AUTH_LIMIT_MAX) || 8; // signup/login call scryptSync (CPU-bound, synchronous) — cheap to flood without this
 const BC_DAY_CYCLE_MS = 20 * 60 * 1000; // must match DAY_CYCLE_MS on the client
 const BC_SLEEP_PHASE_TARGET = 0.27; // roughly sunrise — same constant the client uses to render it
 const BC_SPAWN = { x: 0, y: 2.4, z: 0, yaw: 0 }; // feet-level spawn (matches yawObject.position.set(0,4,0) minus EYE_HEIGHT)

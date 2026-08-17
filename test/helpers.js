@@ -34,14 +34,15 @@ async function startTestServer(envOverrides = {}, port = TEST_PORT) {
 
   const proc = spawn('node', ['server.js'], {
     cwd: dir,
-    // WS_CONNECT_LIMIT_MAX defaults sky-high here: every test in this suite connects from the
-    // same loopback IP, simulating many distinct real users who'd never actually share one IP in
-    // practice — the per-IP new-connection rate limit that protects real deployments would
-    // otherwise starve later tests once the shared instance's connection count climbs past the
-    // production default over a full suite run. A test that wants to verify the limiter itself
-    // overrides this back down on its own dedicated instance (see the "per-IP WS connection rate
-    // limit" describe block).
-    env: { ...process.env, PORT: String(port), WS_CONNECT_LIMIT_MAX: '1000000', ...envOverrides },
+    // WS_CONNECT_LIMIT_MAX/AUTH_LIMIT_MAX default sky-high here: every test in this suite
+    // connects/signs up from the same loopback IP, simulating many distinct real users who'd
+    // never actually share one IP in practice — the per-IP limits that protect real deployments
+    // would otherwise starve later tests' setup steps once the shared instance's connection/
+    // signup count climbs past the production default over a full suite run (AUTH_LIMIT_MAX's
+    // 60s window in particular spans a large fraction of a full run by itself). A test that wants
+    // to verify one of these limiters itself overrides it back down on its own dedicated instance
+    // (see the "per-IP WS connection rate limit" and "/auth/google is rate-limited" tests).
+    env: { ...process.env, PORT: String(port), WS_CONNECT_LIMIT_MAX: '1000000', AUTH_LIMIT_MAX: '1000000', ...envOverrides },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';
