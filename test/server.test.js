@@ -901,3 +901,48 @@ describe('Scorpture watch-live and signal-relay rate limits', () => {
     assert.ok(signalsReceived > 0 && signalsReceived <= 8, `expected 1-8 of 15 signals relayed, got ${signalsReceived}`);
   });
 });
+
+describe('Build Craft sleep consensus', () => {
+  test('a non-sleeping player disconnecting re-triggers the consensus check instead of leaving sleepers stuck', async () => {
+    const code = 'BCSLEEPTEST1';
+    const a = await connectWs();
+    const b = await connectWs();
+    send(a, { type: 'bc-join', code, name: 'BcSleepA' });
+    await waitFor(a, (m) => m.type === 'bc-init');
+    send(b, { type: 'bc-join', code, name: 'BcSleepB' });
+    await waitFor(b, (m) => m.type === 'bc-init');
+    await sleep(150);
+
+    send(a, { type: 'bc-sleep' });
+    const count1 = await waitFor(a, (m) => m.type === 'bc-sleep-count');
+    assert.equal(count1.sleeping, 1);
+    assert.equal(count1.total, 2);
+
+    // B disconnects without ever sleeping — players.size drops to 1, which now numerically
+    // matches sleeping.size (still 1). Before the fix, nothing re-evaluated the threshold after
+    // a disconnect, so A would stay stuck showing "waiting for everyone else" forever.
+    b.close();
+    const skipNight = await waitFor(a, (m) => m.type === 'bc-skip-night', 3000);
+    assert.ok(Number.isFinite(skipNight.offsetMs));
+  });
+
+  test('bc-wake clears the sender from the sleeping set', async () => {
+    // Needs a second (non-sleeping) player, or a lone sleeper's bc-sleep would immediately
+    // satisfy consensus on its own and auto-clear bc.sleeping before bc-wake is even sent —
+    // that would make this test pass without actually exercising the cancel path.
+    const code = 'BCSLEEPTEST2';
+    const ws = await connectWs();
+    const other = await connectWs();
+    send(ws, { type: 'bc-join', code, name: 'BcWakeSolo' });
+    await waitFor(ws, (m) => m.type === 'bc-init');
+    send(other, { type: 'bc-join', code, name: 'BcWakeOther' });
+    await waitFor(other, (m) => m.type === 'bc-init');
+    await sleep(150);
+
+    send(ws, { type: 'bc-sleep' });
+    await waitFor(ws, (m) => m.type === 'bc-sleep-count' && m.sleeping === 1 && m.total === 2);
+    send(ws, { type: 'bc-wake' });
+    const afterWake = await waitFor(ws, (m) => m.type === 'bc-sleep-count');
+    assert.equal(afterWake.sleeping, 0);
+  });
+});

@@ -1936,8 +1936,26 @@ function skipToMorningLocal() {
   showToast('☀️ Morning!');
 }
 
+// Right-clicking the bed again while already sleeping cancels it — previously the only way out
+// of "waiting for everyone else" was the server's own bc-skip-night broadcast, which required
+// everyone still connected to also be sleeping. If anyone else just never came to bed (or the
+// server-side consensus check somehow didn't fire — see checkBcSleepConsensus's own fix for the
+// disconnect case), a sleeping player had zero way to back out short of reloading the page. The
+// server already had a bc-wake handler for this; the client just never sent it.
+function cancelSleep() {
+  isSleeping = false;
+  if (bcSocket && bcSocket.readyState === WebSocket.OPEN) {
+    bcSocket.send(JSON.stringify({ type: 'bc-wake' }));
+  }
+  showToast('🛌 Got up');
+}
+
 function trySleep() {
-  if (isDead || isSleeping) return;
+  if (isDead) return;
+  if (isSleeping) {
+    cancelSleep();
+    return;
+  }
   if (!isNightPhase()) {
     showToast('☀️ You can only sleep at night');
     return;
@@ -1945,7 +1963,7 @@ function trySleep() {
   if (bcSocket && bcSocket.readyState === WebSocket.OPEN) {
     isSleeping = true;
     bcSocket.send(JSON.stringify({ type: 'bc-sleep' }));
-    showToast('💤 Sleeping... waiting for everyone else');
+    showToast('💤 Sleeping... right-click the bed again to get up, or wait for everyone else');
   } else {
     skipToMorningLocal();
   }

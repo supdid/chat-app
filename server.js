@@ -1887,6 +1887,22 @@ function leaveBcVoice(ws) {
   for (const p of voice.values()) send(p.ws, { type: 'bc-voice-peer-left', id: ws.bcId });
 }
 
+// Shared by bc-sleep (after adding a sleeper) and leaveBc (after a disconnect shrinks
+// bc.players) — checking the consensus threshold only at bc-sleep time meant a non-sleeping
+// player disconnecting while others waited never got re-evaluated: sleeping.size could already
+// numerically satisfy the (now smaller) players.size with nothing left to ever re-trigger the
+// check, leaving every sleeper stuck showing "waiting for everyone else" forever.
+function checkBcSleepConsensus(code, bc) {
+  if (!bc.sleeping || bc.sleeping.size === 0 || bc.sleeping.size < bc.players.size || bc.players.size === 0) return;
+  const now = Date.now();
+  const offset = bc.dayNightOffsetMs || 0;
+  const phase = ((now + offset) % BC_DAY_CYCLE_MS) / BC_DAY_CYCLE_MS;
+  const targetPhase = phase > 0.8 ? 1 + BC_SLEEP_PHASE_TARGET : BC_SLEEP_PHASE_TARGET;
+  bc.dayNightOffsetMs = offset + (targetPhase - phase) * BC_DAY_CYCLE_MS;
+  bc.sleeping.clear();
+  broadcastBc(code, { type: 'bc-skip-night', offsetMs: bc.dayNightOffsetMs });
+}
+
 function leaveBc(ws) {
   const code = ws.bcRoom;
   if (!code) return;
@@ -1896,6 +1912,7 @@ function leaveBc(ws) {
     const player = room.bc.players.get(ws);
     room.bc.players.delete(ws);
     if (room.bc.sleeping) room.bc.sleeping.delete(ws);
+    checkBcSleepConsensus(code, room.bc);
     broadcastBc(code, { type: 'bc-player-left', id: ws.bcId });
     if (player) clearRoomActivity(code, player.name);
     // World overrides and claims are both persisted to SQLite (db.setBcOverrides / db.addBcClaim)
@@ -2809,15 +2826,7 @@ wss.on('connection', (ws, req) => {
       if (!bc.sleeping) bc.sleeping = new Set();
       bc.sleeping.add(ws);
       broadcastBc(ws.bcRoom, { type: 'bc-sleep-count', sleeping: bc.sleeping.size, total: bc.players.size });
-      if (bc.sleeping.size >= bc.players.size && bc.players.size > 0) {
-        const now = Date.now();
-        const offset = bc.dayNightOffsetMs || 0;
-        const phase = ((now + offset) % BC_DAY_CYCLE_MS) / BC_DAY_CYCLE_MS;
-        const targetPhase = phase > 0.8 ? 1 + BC_SLEEP_PHASE_TARGET : BC_SLEEP_PHASE_TARGET;
-        bc.dayNightOffsetMs = offset + (targetPhase - phase) * BC_DAY_CYCLE_MS;
-        bc.sleeping.clear();
-        broadcastBc(ws.bcRoom, { type: 'bc-skip-night', offsetMs: bc.dayNightOffsetMs });
-      }
+      checkBcSleepConsensus(ws.bcRoom, bc);
       return;
     }
 

@@ -919,6 +919,13 @@ function handleServerMessage(data) {
       myUsername = data.name;
       if (previousName && previousName !== data.name) {
         roomProfiles.set(data.name, roomProfiles.get(previousName) || { avatarUrl: myProfile && myProfile.avatarUrl, status: myProfile && myProfile.status });
+        // pushNewMessage (server.js) skips a push to whoever's *live* in the room already, keyed
+        // by their current connected name — but the stored subscription row still had the old
+        // name until the next room join re-subscribed. Renaming mid-session (no rejoin) left that
+        // filter mismatched, so a user got a real OS push for every message in the room —
+        // including their own — until they next switched/rejoined. Re-subscribing here keeps the
+        // row's name current immediately instead of waiting on that indirect trigger.
+        subscribeToPush();
       }
       renderMyProfile();
       break;
