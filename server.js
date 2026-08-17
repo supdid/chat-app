@@ -4551,6 +4551,14 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'read' && ws.room) {
       const messageId = String(msg.messageId || '');
       if (!messageId) return;
+      // Same room-ownership check every sibling handler (edit/delete/pin/vote/get-thread/react)
+      // already has — this one was the one gap left. Practically low-risk on its own (ids are
+      // unguessable random UUIDs, and the client only ever compares receipts by exact string
+      // equality against its own room's last message id — see renderSeenBy in app.js — so a
+      // cross-room id just silently never matches anything), but consistent with the rest of the
+      // room-isolation pattern rather than leaving one handler as the odd one out.
+      const readTarget = db.getMessage(messageId);
+      if (!readTarget || readTarget.room_code !== ws.room) return;
       db.setReadReceipt(ws.room, ws.profile.name, messageId);
       broadcastRoom(ws.room, { type: 'read-receipt', name: ws.profile.name, messageId }, ws);
       return;

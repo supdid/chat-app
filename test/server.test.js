@@ -73,6 +73,34 @@ describe('room chat', () => {
     assert.ok(count > 0 && count <= 8, `expected 1-8 typing broadcasts through, got ${count}`);
   });
 
+  test('read receipts are ignored for a message id from another room', async () => {
+    const { ws: hostA } = await joinRoom('ReadReceiptHostA');
+    send(hostA, { type: 'message', text: 'a message in room A' });
+    const msgA = await waitFor(hostA, (m) => m.type === 'message' && m.text === 'a message in room A');
+
+    const { ws: hostB, code: codeB } = await joinRoom('ReadReceiptHostB');
+    const watcherB = await joinExistingRoom('ReadReceiptWatcherB', codeB);
+    await sleep(150);
+
+    let receiptSeen = false;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'read-receipt') receiptSeen = true; };
+    watcherB.on('message', h);
+    // Room B's client tries to mark room A's message as read — ids are opaque, so nothing stops
+    // a client from sending an arbitrary string here.
+    send(hostB, { type: 'read', messageId: msgA.id });
+    await sleep(300);
+    watcherB.off('message', h);
+    assert.equal(receiptSeen, false, 'a message id from a different room must not produce a read-receipt broadcast');
+
+    // Sanity check: a real, same-room message id still works.
+    send(hostB, { type: 'message', text: 'a message in room B' });
+    const msgB = await waitFor(hostB, (m) => m.type === 'message' && m.text === 'a message in room B');
+    const receiptPromise = waitFor(watcherB, (m) => m.type === 'read-receipt' && m.messageId === msgB.id);
+    send(hostB, { type: 'read', messageId: msgB.id });
+    const receipt = await receiptPromise;
+    assert.equal(receipt.name, 'ReadReceiptHostB');
+  });
+
   test('reactions round-trip', async () => {
     const { ws } = await joinRoom('ReactHost');
     send(ws, { type: 'message', text: 'react to me' });
