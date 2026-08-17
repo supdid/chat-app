@@ -4240,6 +4240,10 @@ wss.on('connection', (ws, req) => {
       // src> for every room member who sees that user (makeAvatar in app.js), so an arbitrary URL
       // here is a tracking-pixel vector: everyone who loads the room fetches attacker.com and
       // leaks their IP, independent of whether they ever open a message from that user.
+      // Same flood gate every other content-mutating path in this app shares — this and its two
+      // siblings below (set-status, set-name) had none, despite each doing a DB write plus a
+      // room-wide broadcast on every single call.
+      if (isWsMsgRateLimited(ws)) return;
       const rawAvatarUrl = typeof msg.avatarUrl === 'string' ? msg.avatarUrl.slice(0, 500) : null;
       const avatarUrl = rawAvatarUrl && rawAvatarUrl.startsWith('/uploads/') ? rawAvatarUrl : null;
       claimUpload(avatarUrl);
@@ -4252,6 +4256,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'set-status') {
+      if (isWsMsgRateLimited(ws)) return;
       const status = String(msg.status || '').slice(0, 60).trim() || null;
       ws.profile.status = status;
       db.upsertProfile(ws.profile.name, { status });
@@ -4276,6 +4281,10 @@ wss.on('connection', (ws, req) => {
         send(ws, { type: 'name-updated', name: newName });
         return;
       }
+      // Placed after the no-op "same name" short-circuit above (nothing to throttle there — no
+      // write, no broadcast) but before the duplicate-name scan and the actual rename, so a
+      // rate-limited request doesn't pay for either.
+      if (isWsMsgRateLimited(ws)) return;
       if (ws.room) {
         const room = rooms.get(ws.room);
         if (room) {

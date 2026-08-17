@@ -74,6 +74,17 @@ describe('room chat', () => {
     assert.ok(count > 0 && count <= 8, `expected 1-8 typing broadcasts through, got ${count}`);
   });
 
+  test('flood of set-name/set-status/set-avatar profile changes is rate-limited (shares the same gate)', async () => {
+    const { ws } = await joinRoom('ProfileFloodHost');
+    let updateCount = 0;
+    const handler = (data) => { const m = JSON.parse(data); if (m.type === 'profile-updated') updateCount++; };
+    ws.on('message', handler);
+    for (let i = 0; i < 15; i++) send(ws, { type: 'set-status', status: 'status ' + i });
+    await sleep(500);
+    ws.off('message', handler);
+    assert.ok(updateCount > 0 && updateCount <= 8, `expected 1-8 profile-updated echoes through, got ${updateCount}`);
+  });
+
   test('read receipts are ignored for a message id from another room', async () => {
     const { ws: hostA } = await joinRoom('ReadReceiptHostA');
     send(hostA, { type: 'message', text: 'a message in room A' });
