@@ -291,6 +291,12 @@ function handleMessage(data) {
       roundActive = !!data.endsAt;
       dgIAmDrawer = dgDrawerId === dgMyId;
       roundEndsAt = data.endsAt;
+      // guessedAlready previously only ever got reset by the dg-round-start/dg-round-end
+      // broadcasts — a client that reconnects (e.g. a brief network blip) during the gap between
+      // those two events for a round it never saw start inherits whatever guessedAlready was left
+      // over from before it dropped, permanently hiding the guess box for a round it hasn't
+      // actually guessed on yet. The server now tells us directly instead.
+      guessedAlready = !!data.alreadyGuessed;
       clearBoard();
       (data.strokes || []).forEach(drawStroke);
       if (data.categories && categorySelect.options.length <= 1) {

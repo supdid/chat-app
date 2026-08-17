@@ -457,6 +457,55 @@ describe('Pictionary guess flood gate', () => {
     guesser.off('message', h);
     assert.ok(count > 0 && count <= 8, `expected 1-8 guesses through, got ${count}`);
   });
+
+  // guessedThisRound used to be keyed by a fresh per-connection id (crypto.randomUUID() on every
+  // dg-join, including a reconnect) instead of the stable player name — a guesser who reconnects
+  // mid-round (network blip) got a brand-new id that was never in the set, letting them re-submit
+  // the correct word for a second helping of points, and dg-init had no way to tell a reconnecting
+  // client it had already guessed, permanently hiding its guess box for the rest of the round.
+  test('a reconnecting guesser cannot re-score the same round, and dg-init reports alreadyGuessed', async () => {
+    const drawer = await connectWs();
+    send(drawer, { type: 'dg-join', code: 'DGRECONNECT1', name: 'ReconnectDrawer' });
+    await waitFor(drawer, (m) => m.type === 'dg-init');
+
+    let guesser = await connectWs();
+    send(guesser, { type: 'dg-join', code: 'DGRECONNECT1', name: 'ReconnectGuesser' });
+    await waitFor(guesser, (m) => m.type === 'dg-init');
+    // A second, silent guesser — with only one guessable player, that single correct guess would
+    // immediately satisfy "everyone guessable has guessed" and end the round on its own (see
+    // endDgRound's guessableCount check), resetting guessedThisRound before the reconnect below
+    // gets a chance to matter. This one just needs to exist and never guess.
+    const otherGuesser = await connectWs();
+    send(otherGuesser, { type: 'dg-join', code: 'DGRECONNECT1', name: 'ReconnectOtherGuesser' });
+    await waitFor(otherGuesser, (m) => m.type === 'dg-init');
+    await sleep(150);
+
+    send(drawer, { type: 'dg-start' });
+    const wordPromise = waitFor(drawer, (m) => m.type === 'dg-word');
+    await waitFor(guesser, (m) => m.type === 'dg-round-start');
+    const { word } = await wordPromise;
+
+    send(guesser, { type: 'dg-guess', text: word });
+    const correct = await waitFor(guesser, (m) => m.type === 'dg-correct' && m.name === 'ReconnectGuesser');
+    assert.equal(correct.points, 3, 'first correct guess of the round is worth 3');
+
+    // Simulate a reconnect: close the old connection (real cleanup, same as a dropped socket)
+    // and rejoin under the same name with a fresh connection/id, mid-round.
+    guesser.close();
+    await sleep(150);
+    guesser = await connectWs();
+    send(guesser, { type: 'dg-join', code: 'DGRECONNECT1', name: 'ReconnectGuesser' });
+    const init = await waitFor(guesser, (m) => m.type === 'dg-init');
+    assert.equal(init.alreadyGuessed, true, 'dg-init must tell a reconnecting client it already guessed this round');
+
+    let secondCorrect = false;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'dg-correct' && m.name === 'ReconnectGuesser') secondCorrect = true; };
+    guesser.on('message', h);
+    send(guesser, { type: 'dg-guess', text: word });
+    await sleep(300);
+    guesser.off('message', h);
+    assert.equal(secondCorrect, false, 'the same player reconnecting mid-round must not be able to score twice on one round');
+  });
 });
 
 describe('arcade leaderboard submission throttle', () => {

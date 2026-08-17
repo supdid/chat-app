@@ -3580,6 +3580,11 @@ wss.on('connection', (ws, req) => {
         strokes: dg.strokes,
         categories: DG_CATEGORY_NAMES,
         category: dg.category,
+        // guessedThisRound is keyed by name (stable across a reconnect), while `id` above is a
+        // fresh per-connection value every dg-join generates — without this, a client reconnecting
+        // mid-round (e.g. a brief network blip) has no way to know it already guessed correctly
+        // this round, the same class of gap trivia's alreadyAnswered already closes for tv-question.
+        alreadyGuessed: dg.guessedThisRound.has(name),
       });
       broadcastDg(code, { type: 'dg-player-joined', id, name, isSpectator }, ws);
       setRoomActivity(code, name, 'dg');
@@ -3682,7 +3687,7 @@ wss.on('connection', (ws, req) => {
       if (isWsMsgRateLimited(ws)) return;
       const text = String(msg.text || '').slice(0, 100).trim();
       if (!text) return;
-      if (dg.guessedThisRound.has(me.id)) {
+      if (dg.guessedThisRound.has(me.name)) {
         // A player who's already guessed correctly can still chat, but not by typing the literal
         // answer again — this used to broadcast their text unfiltered, letting the secret word
         // leak straight into the guess-chat feed for everyone still trying to guess it.
@@ -3691,7 +3696,7 @@ wss.on('connection', (ws, req) => {
         return;
       }
       if (text.toLowerCase() === String(dg.word || '').toLowerCase()) {
-        dg.guessedThisRound.add(me.id);
+        dg.guessedThisRound.add(me.name);
         const points = dg.guessedThisRound.size === 1 ? 3 : 1;
         me.score += points;
         db.bumpLeaderboard(ws.dgRoom, 'pictionary', me.name, me.score);
