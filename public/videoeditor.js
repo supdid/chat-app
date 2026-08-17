@@ -273,6 +273,13 @@ function ensureMusicEl() {
   if (!musicAudioEl) {
     musicAudioEl = new Audio();
     musicAudioEl.preload = 'auto';
+    // The export always loops the music track for the full timeline duration (-stream_loop -1,
+    // see renderVideo below) — without this, any track shorter than the timeline (several of the
+    // built-in options are only 16-20s) would audibly just stop partway through live preview
+    // playback while the export keeps looping it for the full length, a real preview/export
+    // divergence. seekTo's own `t % dur` scrubbing logic still handles jumping to an arbitrary
+    // point correctly; this only covers continuous playback running past the track's own end.
+    musicAudioEl.loop = true;
   }
   return musicAudioEl;
 }
@@ -1181,8 +1188,20 @@ function syncOverlaysToClips() {
   overlays = overlays.filter((ov) => {
     const idx = clips.findIndex((c) => c.id === ov.clipId);
     if (idx === -1) return false;
-    ov.start = starts[idx] + ov.localStart;
-    ov.end = starts[idx] + ov.localEnd;
+    const clip = clips[idx];
+    const dur = Math.max(0, clip.trimEnd - clip.trimStart) / clip.speed;
+    // A trim (dragging a handle) or a split+delete can shrink the clip out from under an overlay
+    // anchored further into it — without clamping, localEnd (or even localStart) could point past
+    // the clip's new, shorter duration, and the caption would silently bleed onto whatever clip
+    // now immediately follows, in both the live preview and the actual export filter, with no
+    // error anywhere.
+    const localStart = Math.min(ov.localStart, dur);
+    const localEnd = Math.min(ov.localEnd, dur);
+    if (localEnd <= localStart) return false; // nothing of the overlay's anchored span survived
+    ov.localStart = localStart;
+    ov.localEnd = localEnd;
+    ov.start = starts[idx] + localStart;
+    ov.end = starts[idx] + localEnd;
     return true;
   });
 }
@@ -1725,10 +1744,27 @@ async function renderVideo() {
     renderStatus.textContent = 'Done!';
     await ffmpeg.deleteFile(finalName);
   } catch (err) {
-    errorEl.textContent = 'Rendering failed — try shorter clips, or check that every clip has audio.';
+    const wasTimeout = !!(err && typeof err.message === 'string' && err.message.startsWith('Timed out'));
+    errorEl.textContent = wasTimeout
+      ? 'Rendering timed out and the video engine has been reset — your edits are still here, try exporting again.'
+      : 'Rendering failed — try shorter clips, or check that every clip has audio.';
     errorEl.classList.remove('hidden');
-    for (const f of written) {
-      try { await ffmpeg.deleteFile(f); } catch {}
+    if (wasTimeout) {
+      // A genuine ffmpeg.wasm hang (what the per-step timeout above is guarding against) means
+      // the single worker thread that every future writeFile/exec/deleteFile call goes through is
+      // wedged — the "graceful" cleanup loop below would itself hang forever queued behind the
+      // stuck job, since the core processes one command at a time. That silently defeated the
+      // whole point of the timeout: the UI never actually recovered, it just looked like it might.
+      // terminate() kills the worker outright instead of waiting on it; a fresh instance is loaded
+      // in the background so the next export attempt has something responsive to talk to. Timeline/
+      // clip/overlay state lives in plain JS variables untouched by this, so nothing is lost.
+      try { ffmpeg.terminate(); } catch {}
+      ffmpegReady = false;
+      initFfmpeg();
+    } else {
+      for (const f of written) {
+        try { await ffmpeg.deleteFile(f); } catch {}
+      }
     }
   } finally {
     refreshExportButton();
