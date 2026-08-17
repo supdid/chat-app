@@ -1,6 +1,6 @@
 // Bump this on every deploy. Changing it is what makes the browser see sw.js as a new file, which
 // is what puts a worker into the "waiting" state and raises the update screen (see update-prompt.js).
-const CACHE_NAME = 'valk-cache-v117';
+const CACHE_NAME = 'valk-cache-v118';
 const APP_SHELL = [
   '/',
   '/index.html',
@@ -48,7 +48,13 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       caches.match(request).then((cached) => cached || fetch(request).then((res) => {
         const copy = res.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+        // event.waitUntil keeps the worker alive until this settles — without it, the cache
+        // write was fire-and-forget (respondWith's promise resolves with `res` immediately,
+        // not waiting on the write), so the worker could terminate mid-write and silently drop
+        // it, especially on a fast navigation right after the fetch. Correctness of what's
+        // *served* was never affected, only whether the asset actually ends up cached for next
+        // time / offline use.
+        event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)));
         return res;
       }))
     );
@@ -59,7 +65,7 @@ self.addEventListener('fetch', (event) => {
     fetch(request)
       .then((res) => {
         const copy = res.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+        event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)));
         return res;
       })
       .catch(() => caches.match(request))
