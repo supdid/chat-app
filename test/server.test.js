@@ -572,6 +572,24 @@ describe('room DMs', () => {
     host.off('message', h);
     assert.equal(sawDm, false);
   });
+
+  test('a muted user cannot send-dm — an otherwise-unrestricted free-text private channel', async () => {
+    const { ws: host, code } = await joinRoom('DmMuteHost');
+    const guest = await joinExistingRoom('DmMuteGuest', code);
+    await sleep(150);
+
+    send(host, { type: 'mute-user', name: 'DmMuteGuest' });
+    await waitFor(host, (m) => m.type === 'user-muted');
+    await waitFor(guest, (m) => m.type === 'user-muted');
+
+    let sawDm = false;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'dm') sawDm = true; };
+    host.on('message', h);
+    send(guest, { type: 'send-dm', toName: 'DmMuteHost', text: 'sneaking past the mute' });
+    await sleep(300);
+    host.off('message', h);
+    assert.equal(sawDm, false, 'a muted user must not be able to reach anyone via a fresh DM');
+  });
 });
 
 describe('friend DMs and group DMs (account-gated)', () => {

@@ -4655,6 +4655,13 @@ wss.on('connection', (ws, req) => {
       if (!toName || !text || toName === ws.profile.name) return;
       const room = rooms.get(ws.room);
       if (!room) return;
+      // A muted user was still able to send full free-text private DMs — a real harassment
+      // bypass, arguably worse than the equivalent edit-message gap fixed above, since this is an
+      // entirely fresh, unrestricted channel rather than editing something already said.
+      if (room.muted && room.muted.has(ws.profile.name)) {
+        send(ws, { type: 'error', message: 'You have been muted in this room' });
+        return;
+      }
       const targetClient = [...room.clients].find((c) => c.profile && c.profile.name === toName);
       if (!targetClient) {
         send(ws, { type: 'error', message: `${toName} is not currently in this room` });
@@ -4821,6 +4828,10 @@ wss.on('connection', (ws, req) => {
       // room's reaction list via db.getReactionsForRoom's join on room_code.
       const reactTarget = db.getMessage(messageId);
       if (!reactTarget || reactTarget.room_code !== ws.room) return;
+      // Reactions are still a form of expression a mute is meant to stop — a muted user could
+      // otherwise keep reacting (including provocatively) with no restriction at all.
+      const reactRoom = rooms.get(ws.room);
+      if (reactRoom && reactRoom.muted && reactRoom.muted.has(ws.profile.name)) return;
       // Same flood gate as regular messages — each toggle is a DB write plus a room-wide
       // broadcast, previously unthrottled.
       if (isWsMsgRateLimited(ws)) return;
