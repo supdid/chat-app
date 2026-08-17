@@ -648,3 +648,67 @@ describe('admin routes require the admin key', () => {
     }
   });
 });
+
+describe('Trivia reconnect mid-round', () => {
+  test('a reconnected player cannot answer the same question twice, and the rejoin correctly reports alreadyAnswered', async () => {
+    const code = 'TVRECONNECT1';
+    const p1 = await connectWs();
+    const p2 = await connectWs();
+    send(p1, { type: 'tv-join', code, name: 'TvPlayer1' });
+    await waitFor(p1, (m) => m.type === 'tv-init');
+    send(p2, { type: 'tv-join', code, name: 'TvPlayer2' });
+    await waitFor(p2, (m) => m.type === 'tv-init');
+    await sleep(150);
+
+    send(p1, { type: 'tv-start' });
+    await waitFor(p1, (m) => m.type === 'tv-question');
+    await waitFor(p2, (m) => m.type === 'tv-question');
+
+    send(p1, { type: 'tv-answer', choice: 0 });
+    await waitFor(p1, (m) => m.type === 'tv-answer-ack');
+    await sleep(150);
+
+    // A "reconnect" is really just a fresh connection under the same name — tv-join mints a new
+    // per-connection id every time, which is exactly the case this fix has to survive.
+    const p1b = await connectWs();
+    send(p1b, { type: 'tv-join', code, name: 'TvPlayer1' });
+    await waitFor(p1b, (m) => m.type === 'tv-init');
+    const question = await waitFor(p1b, (m) => m.type === 'tv-question');
+    assert.equal(question.alreadyAnswered, true);
+
+    let gotAck = false;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'tv-answer-ack') gotAck = true; };
+    p1b.on('message', h);
+    send(p1b, { type: 'tv-answer', choice: 1 });
+    await sleep(300);
+    p1b.off('message', h);
+    assert.equal(gotAck, false, 'the reconnected connection must not be able to answer again');
+  });
+});
+
+describe('Hangman reveals the word on a loss', () => {
+  test('hm-round-end always carries the full word as a plain string', async () => {
+    const ws = await connectWs();
+    send(ws, { type: 'hm-join', code: 'HMWORD1', name: 'HmSolo' });
+    await waitFor(ws, (m) => m.type === 'hm-init');
+    send(ws, { type: 'hm-start' });
+    await waitFor(ws, (m) => m.type === 'hm-round-start');
+
+    // Guess enough letters to force a loss (HM_MAX_WRONG wrong guesses) — the actual word is
+    // unknown to this test, so this just guesses a long, letter-diverse run until a round-end
+    // arrives one way or the other.
+    const letters = 'qxzjvwkybgfmpcdhlnrstuoiae'.split('');
+    let ended = null;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'hm-round-end') ended = m; };
+    ws.on('message', h);
+    for (const l of letters) {
+      if (ended) break;
+      send(ws, { type: 'hm-guess-letter', letter: l });
+      await sleep(60);
+    }
+    ws.off('message', h);
+    assert.ok(ended, 'the round should have ended (won or lost) within a full alphabet sweep');
+    assert.equal(typeof ended.word, 'string');
+    assert.ok(ended.word.length > 0, 'hm-round-end must carry the real word — the client renderWord([...data.word]) fix depends on this');
+  });
+});

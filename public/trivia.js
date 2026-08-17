@@ -186,15 +186,20 @@ function handleMessage(data) {
 
     case 'tv-question':
       roundActive = true;
-      hasAnsweredThisRound = false;
+      // A rejoin mid-round (reconnect after a brief drop, or opening the page again) resends the
+      // in-progress question — alreadyAnswered (server-side, keyed by name so it survives the
+      // per-connection id changing on reconnect) tells us whether to leave the choices disabled
+      // instead of always re-enabling them for someone who already locked in an answer.
+      hasAnsweredThisRound = !!data.alreadyAnswered;
       correctIndex = null;
       roundEndsAt = data.endsAt;
       questionCategoryEl.textContent = data.category || '';
       questionCategoryEl.classList.toggle('hidden', !data.category);
       questionTextEl.textContent = data.question;
       renderChoices(data.choices);
+      if (hasAnsweredThisRound) [...choicesGridEl.children].forEach((el) => (el.disabled = true));
       answerCountEl.textContent = '';
-      roundStatusEl.textContent = 'Pick an answer before time runs out!';
+      roundStatusEl.textContent = hasAnsweredThisRound ? 'You already answered — waiting on everyone else…' : 'Pick an answer before time runs out!';
       updateRoundUi();
       break;
 

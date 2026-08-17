@@ -165,6 +165,11 @@ function handleMessage(data) {
     case 'ch-init':
       myId = data.id;
       state = data.state;
+      // A reconnect (the WS auto-reconnects in-place, same JS context, no page reload) re-fires
+      // ch-init, not ch-state — without clearing this too, a piece selected right before a brief
+      // disconnect stayed highlighted against a state that may have moved on (opponent's turn,
+      // a different piece there now, or you're no longer even seated).
+      selected = null;
       lobbyStatusEl.textContent = 'Connected!';
       lobbyEl.classList.add('hidden');
       gameEl.classList.remove('hidden');

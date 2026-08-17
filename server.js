@@ -3086,7 +3086,11 @@ wss.on('connection', (ws, req) => {
       send(ws, { type: 'tv-init', id, players: tvScores(tv) });
       if (inRound) {
         const q = TV_QUESTIONS[tv.currentQuestion];
-        send(ws, { type: 'tv-question', question: q.q, choices: q.choices, category: q.category, endsAt: tv.roundEndAt });
+        // alreadyAnswered lets a reconnecting client correctly disable choice buttons instead of
+        // blindly re-enabling them for someone who answered this exact question before a brief
+        // disconnect — the server-side duplicate-answer guard above is keyed by name for the
+        // same reconnect case, so this just keeps the UI honest about it too.
+        send(ws, { type: 'tv-question', question: q.q, choices: q.choices, category: q.category, endsAt: tv.roundEndAt, alreadyAnswered: tv.answeredThisRound.has(name) });
       }
       broadcastTv(code, { type: 'tv-player-joined', id, name }, ws);
       setRoomActivity(code, name, 'tv');
@@ -3116,11 +3120,14 @@ wss.on('connection', (ws, req) => {
       const tv = room && room.tv;
       if (!tv || tv.currentQuestion === null || !tv.roundEndAt) return;
       const me = tv.players.get(ws);
-      if (!me || tv.answeredThisRound.has(me.id)) return;
+      // Keyed by name, not the per-connection id — tv-join mints a brand-new random id on every
+      // join, including a reconnect mid-round (brief network blip, bouncing to another tab), so
+      // keying this by id let a reconnected player answer (and score) the same question twice.
+      if (!me || tv.answeredThisRound.has(me.name)) return;
       const q = TV_QUESTIONS[tv.currentQuestion];
       const choice = Math.floor(+msg.choice);
       const correct = choice === q.answerIndex;
-      tv.answeredThisRound.set(me.id, correct);
+      tv.answeredThisRound.set(me.name, correct);
       let points = 0;
       if (correct) {
         const rank = [...tv.answeredThisRound.values()].filter(Boolean).length;
