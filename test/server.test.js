@@ -1365,6 +1365,36 @@ describe('orphaned upload sweep', () => {
       await sweepServer.stop();
     }
   });
+
+  // AI Studio's gallery is entirely client-side (localStorage, no server row at all) and
+  // explicitly meant to keep a captioned meme's uploaded composite around indefinitely (it has
+  // its own "remove from gallery" control — a real managed collection, not a throwaway). Without
+  // a way to claim an upload that's never posted to a room, a gallery-only image would silently
+  // 404 once the sweep caught up to it.
+  test('/claim-upload protects a file with no other server-side reference to it', async () => {
+    const sweepServer = await startTestServer(
+      { UPLOAD_CLAIM_GRACE_MS: '150', UPLOAD_SWEEP_INTERVAL_MS: '150' },
+      3194
+    );
+    try {
+      const base = `http://localhost:${sweepServer.port}`;
+      const form = new FormData();
+      form.append('file', new Blob(['gallery-only content'], { type: 'image/jpeg' }), 'meme.jpg');
+      const uploadRes = await fetch(`${base}/upload`, { method: 'POST', body: form });
+      const { url } = await uploadRes.json();
+
+      const claimRes = await fetch(`${base}/claim-upload`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      });
+      assert.equal(claimRes.status, 200);
+
+      await sleep(600); // past a full grace-period-then-sweep-interval cycle
+      assert.equal((await fetch(`${base}${url}`)).status, 200, 'a claimed-via-/claim-upload file must survive the sweep with no message/video/avatar ever referencing it');
+    } finally {
+      await sweepServer.stop();
+    }
+  });
 });
 
 describe('per-username login brute-force throttle', () => {

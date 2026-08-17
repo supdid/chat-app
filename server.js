@@ -716,6 +716,21 @@ app.post('/upload', (req, res) => {
   });
 });
 
+// Lets a client keep an uploaded file alive without ever attaching it to a message/video/avatar/
+// etc. — needed for AI Studio's gallery, which is entirely client-side (localStorage, no server
+// row at all) and explicitly meant to keep a captioned meme's uploaded composite around
+// indefinitely (it has its own "remove from gallery" control, so it's a real managed collection,
+// not a throwaway). Without this, a gallery-only image (generated, kept locally, never posted to
+// a room) would silently 404 once sweepOrphanedUploads caught up to it — a real regression this
+// endpoint exists specifically to prevent. Harmless to call on a URL that was never pending (a
+// raw Pollinations.ai URL, or one already claimed) — claimUpload no-ops either way.
+app.post('/claim-upload', (req, res) => {
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many requests too quickly' });
+  const url = typeof req.body.url === 'string' ? req.body.url.slice(0, 500) : '';
+  if (url.startsWith('/uploads/')) claimUpload(url);
+  res.json({ ok: true });
+});
+
 // Reads `Authorization: Bearer <token>`, returns the account row or null — never throws, so
 // route handlers can treat "not signed in" the same as "bad/expired token". Defined ahead of
 // the push routes below (moved out of the Accounts section further down) since /push/subscribe

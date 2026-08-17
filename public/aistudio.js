@@ -482,6 +482,20 @@ function renderGallery() {
   const items = loadGallery();
   gallerySection.classList.toggle('hidden', items.length === 0);
   galleryGrid.innerHTML = '';
+  // The gallery is entirely client-side (localStorage) with no server-side record at all — a
+  // captioned meme's uploaded composite (see loadAndMaybeComposite's own /upload call) only ever
+  // gets "claimed" server-side by actually posting it to a room. Without this, keeping one in the
+  // gallery without ever posting it would let the server's orphaned-upload sweep delete the file
+  // out from under it. Fire-and-forget: a failure here just means this item stays vulnerable to
+  // the sweep until the next render, not a user-visible error worth surfacing.
+  for (const item of items) {
+    if (item.url && item.url.startsWith('/uploads/')) {
+      fetch('/claim-upload', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: item.url }),
+      }).catch(() => {});
+    }
+  }
   for (const item of items) {
     const cell = document.createElement('div');
     cell.className = 'gallery-item';
