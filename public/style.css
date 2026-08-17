@@ -975,7 +975,8 @@ body {
   cursor: pointer;
 }
 
-.mention-dropdown-item:hover {
+.mention-dropdown-item:hover,
+.mention-dropdown-item.active {
   background: var(--icon-hover-bg);
 }
 

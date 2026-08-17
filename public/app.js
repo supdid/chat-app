@@ -691,6 +691,11 @@ function handleServerMessage(data) {
       typingTimers.clear();
       renderTypingIndicator();
       clearReplyingTo();
+      // A visible @mention dropdown's matches come from the OLD room's lastRoomUsers — left open
+      // across a room switch, it kept showing suggestions from a member list that no longer
+      // applies to where the composer now actually posts.
+      mentionDropdownEl.classList.add('hidden');
+      mentionHighlightIndex = -1;
       // A thread left open while switching rooms kept pointing at the old room's root message —
       // the server silently drops the reply link for a cross-room id (room_code mismatch), so a
       // reply typed there posted as an ordinary top-level message with no error shown.
@@ -1327,12 +1332,25 @@ function currentMentionQuery() {
   return match ? match[1] : null;
 }
 
+// Tracks which dropdown row is keyboard-highlighted (see the messageInput keydown handler
+// below) — reset to 0 (the first match pre-highlighted, matching the usual chat-app UX where
+// Enter alone picks the top suggestion) every time the match list is rebuilt, since the old
+// index otherwise silently refers to a different row after a keystroke changes the filter.
+let mentionHighlightIndex = -1;
+
+function highlightMentionItem(index) {
+  const items = [...mentionDropdownEl.children];
+  mentionHighlightIndex = items.length ? Math.max(0, Math.min(index, items.length - 1)) : -1;
+  items.forEach((item, i) => item.classList.toggle('active', i === mentionHighlightIndex));
+}
+
 function updateMentionDropdown() {
   const query = currentMentionQuery();
   let matches = query === null ? [] : lastRoomUsers.filter((u) => u.name.toLowerCase().startsWith(query.toLowerCase())).slice(0, 5);
   if (query !== null && 'everyone'.startsWith(query.toLowerCase())) matches = [{ name: 'everyone' }, ...matches].slice(0, 5);
   if (!matches.length) {
     mentionDropdownEl.classList.add('hidden');
+    mentionHighlightIndex = -1;
     return;
   }
   mentionDropdownEl.innerHTML = '';
@@ -1348,6 +1366,7 @@ function updateMentionDropdown() {
     mentionDropdownEl.appendChild(item);
   });
   mentionDropdownEl.classList.remove('hidden');
+  highlightMentionItem(0);
 }
 
 function insertMention(name) {
@@ -1356,6 +1375,13 @@ function insertMention(name) {
   const before = value.slice(0, cursor).replace(/@(\S*)$/, `@${name} `);
   messageInput.value = before + value.slice(cursor);
   mentionDropdownEl.classList.add('hidden');
+  mentionHighlightIndex = -1;
+  // Assigning .value resets the caret to the end of the whole string, not just past what was
+  // inserted — with no follow-up here, picking a mention mid-message (e.g. "hi @al there" →
+  // "alice") left the caret after the rest of the message instead of right after the mention,
+  // so anything typed next landed in the wrong place.
+  const caretPos = before.length;
+  messageInput.setSelectionRange(caretPos, caretPos);
   messageInput.focus();
 }
 
@@ -3718,6 +3744,35 @@ messageForm.addEventListener('submit', (e) => {
   ws.send(JSON.stringify(payload));
   messageInput.value = '';
   clearReplyingTo();
+  // The dropdown could still be showing stale matches from the just-sent text (e.g. the message
+  // ended with an unfinished "@al") — previously nothing here hid it, so it stayed visible over
+  // the now-empty composer until the next keystroke.
+  mentionDropdownEl.classList.add('hidden');
+  mentionHighlightIndex = -1;
+});
+
+// Selection only ever worked via mouse click before this — there was no keyboard path at all,
+// so pressing Enter while the dropdown was open just submitted the literal "@al" text instead of
+// picking a match, and Escape didn't close it either.
+messageInput.addEventListener('keydown', (e) => {
+  if (mentionDropdownEl.classList.contains('hidden')) return;
+  const items = [...mentionDropdownEl.children];
+  if (!items.length) return;
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    highlightMentionItem(mentionHighlightIndex + 1);
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    highlightMentionItem(mentionHighlightIndex - 1);
+  } else if (e.key === 'Enter' || e.key === 'Tab') {
+    e.preventDefault();
+    const label = items[mentionHighlightIndex] && items[mentionHighlightIndex].querySelector('span');
+    if (label) insertMention(label.textContent);
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    mentionDropdownEl.classList.add('hidden');
+    mentionHighlightIndex = -1;
+  }
 });
 
 messageInput.addEventListener('input', () => {
