@@ -1352,3 +1352,25 @@ describe('per-IP WS connection rate limit', () => {
     }
   });
 });
+
+describe('WS max payload size', () => {
+  // ws defaults to a 100MiB maxPayload when unset — any connected client could send a single
+  // message up to that size, fully buffered and JSON.parsed before any of this app's own
+  // per-field size checks (bc-block's 2000-change cap, bc-blueprint-save's 20000-block cap, etc.)
+  // ever get a chance to run.
+  test('an oversized message closes the connection (1009) instead of being buffered/parsed', async () => {
+    const ws = await connectWs();
+    const closePromise = new Promise((resolve) => ws.on('close', (code) => resolve(code)));
+    // Comfortably over the app's 4MB cap.
+    ws.send(JSON.stringify({ type: 'message', text: 'x'.repeat(5 * 1024 * 1024) }));
+    const code = await closePromise;
+    assert.equal(code, 1009, 'an over-limit message should close with 1009 (Message Too Big)');
+  });
+
+  test('a normal-sized message still round-trips fine on the same connection type', async () => {
+    const { ws } = await joinRoom('MaxPayloadHost');
+    send(ws, { type: 'message', text: 'still works' });
+    const echoed = await waitFor(ws, (m) => m.type === 'message' && m.text === 'still works');
+    assert.equal(echoed.name, 'MaxPayloadHost');
+  });
+});

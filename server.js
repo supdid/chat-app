@@ -17,7 +17,15 @@ const app = express();
 // loopback address for every request, collapsing every visitor into one shared rate-limit bucket.
 app.set('trust proxy', 'loopback');
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
+// ws defaults to a 100MiB maxPayload when unset — any connected client (getting one just needs an
+// open WS connection, no auth) could send a single message up to that size, which the server
+// fully buffers and JSON.parses before any of this file's own per-field size checks (e.g.
+// bc-block's 2000-change cap, bc-blueprint-save's 20000-block cap) ever get a chance to run. The
+// largest legitimate incoming payload is a maximal Build Craft blueprint save (20,000 blocks,
+// well under 1MB in practice) — 4MB leaves generous headroom for that while still being a ~25x
+// reduction from the default, closing off the bulk of the DoS risk from an oversized frame.
+const WS_MAX_PAYLOAD_BYTES = 4 * 1024 * 1024;
+const wss = new WebSocketServer({ server, maxPayload: WS_MAX_PAYLOAD_BYTES });
 // Registered this early so every route below — including the self-healing routes, which are
 // defined before the rest of the app's routes — can read req.body on POST requests.
 app.use(express.json());
@@ -2574,6 +2582,18 @@ wss.on('connection', (ws, req) => {
     ws.close(1013, 'Too many connections too quickly — slow down a bit.');
     return;
   }
+  // Without this, a protocol-level error on this connection (an oversized frame past maxPayload,
+  // malformed data, a compression error, etc.) has no listener for the 'error' event — and
+  // Node's EventEmitter throws an unhandled 'error' event as an uncaught exception if nothing is
+  // listening for it. That exception escapes straight past the try/catch around the message
+  // dispatch below (this happens at the stream/frame level, before a 'message' event is even
+  // produced) into the process-level uncaughtException handler near the top of this file, which
+  // deliberately calls process.exit(1) — turning ONE bad frame from ANY connected client into a
+  // crash of the entire server for every single connected user. This was true even before
+  // WS_MAX_PAYLOAD_BYTES existed (just needed a 100MB+ frame instead of a 4MB+ one to trigger).
+  ws.on('error', (err) => {
+    reportError('server', err, { wsConnectionError: true });
+  });
   ws.on('message', (raw) => {
     let msg;
     try {
