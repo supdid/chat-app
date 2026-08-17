@@ -1602,7 +1602,18 @@ function landOnGround() {
 // parachute already makes the other direction.
 const CALL_PLANE_MIN_ALTITUDE = 60;
 function callPlane() {
-  if (!gameStarted || mode === 'flying' || mode === 'parachuting' || controllingMissile) return;
+  // mode === 'spectating' wasn't excluded — pressing F during the post-death spectate window
+  // let a player regain control immediately, skipping the rest of the forced camera sequence.
+  if (!gameStarted || mode === 'flying' || mode === 'parachuting' || mode === 'spectating' || controllingMissile) return;
+  // mode === 'tank' wasn't excluded either, and calling a plane in while driving a tank switched
+  // mode straight to 'flying' without going through exitTank() — activeTank.occupied was never
+  // reset, so the abandoned tank stayed permanently marked occupied (excluded from
+  // tryEnterVehicle's search) for the rest of the round. Same bug class as the already-fixed
+  // plane-crash slot leak, just reached via this different exit path.
+  if (mode === 'tank' && activeTank) {
+    activeTank.occupied = false;
+    activeTank = null;
+  }
   mode = 'flying';
   planePos.y = Math.max(planePos.y + 50, CALL_PLANE_MIN_ALTITUDE);
   planePitch = 0;
