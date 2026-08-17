@@ -633,6 +633,19 @@ describe('friend DMs and group DMs (account-gated)', () => {
     assert.ok(error && /can only add friends/i.test(error.message));
   });
 
+  test('create-group-dm is rate-limited like every other content-creation path', async () => {
+    const alice = await joinAsAccount('FdmAliceFlood', aliceToken);
+    let count = 0;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'group-dm-created') count++; };
+    alice.on('message', h);
+    for (let i = 0; i < 15; i++) {
+      send(alice, { type: 'create-group-dm', memberUsernames: ['FdmBob', 'FdmCarol'], name: 'Flood ' + i });
+    }
+    await sleep(500);
+    alice.off('message', h);
+    assert.ok(count > 0 && count <= 8, `expected 1-8 of 15 group-dm creations through, got ${count}`);
+  });
+
   test('blocking a group-DM co-member silences them for the blocker only, live and on reload', async () => {
     const alice = await joinAsAccount('FdmAlice3', aliceToken);
     send(alice, { type: 'create-group-dm', memberUsernames: ['FdmBob', 'FdmCarol'], name: 'Block Test Group' });
@@ -1171,5 +1184,26 @@ describe('Build Craft sleep consensus', () => {
     send(ws, { type: 'bc-wake' });
     const afterWake = await waitFor(ws, (m) => m.type === 'bc-sleep-count');
     assert.equal(afterWake.sleeping, 0);
+  });
+});
+
+describe('Build Craft fall-damage flood gate', () => {
+  test('bc-fall-damage is rate-limited — unlike bc-punch it had no cooldown of its own, and every call broadcasts to the whole room', async () => {
+    const code = 'BCFALLFLOOD1';
+    const victim = await connectWs();
+    const watcher = await connectWs();
+    send(victim, { type: 'bc-join', code, name: 'BcFallVictim' });
+    await waitFor(victim, (m) => m.type === 'bc-init');
+    send(watcher, { type: 'bc-join', code, name: 'BcFallWatcher' });
+    await waitFor(watcher, (m) => m.type === 'bc-init');
+    await sleep(150);
+
+    let hitCount = 0;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'bc-hit') hitCount++; };
+    watcher.on('message', h);
+    for (let i = 0; i < 15; i++) send(victim, { type: 'bc-fall-damage', amount: 1 });
+    await sleep(500);
+    watcher.off('message', h);
+    assert.ok(hitCount > 0 && hitCount <= 8, `expected 1-8 of 15 bc-hit broadcasts through, got ${hitCount}`);
   });
 });

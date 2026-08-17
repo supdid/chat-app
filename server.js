@@ -2782,6 +2782,11 @@ wss.on('connection', (ws, req) => {
       const bc = room && room.bc;
       const me = bc && bc.players.get(ws);
       if (!me || me.health <= 0) return;
+      // Only ever damages the sender's own health (byId: null), so unlike bc-punch this can't
+      // directly harm another player — but applyBcDamage broadcasts a real bc-hit to the whole
+      // room on every call, and this had no cooldown at all, unlike bc-punch's dedicated one. A
+      // raw WS client spamming this was a room-wide broadcast flood, not just self-harm.
+      if (isWsMsgRateLimited(ws)) return;
       const amount = Math.max(0, Math.min(BC_MAX_HEALTH, Math.floor(+msg.amount || 0)));
       if (amount <= 0) return;
       applyBcDamage(ws.bcRoom, ws, me, amount, null);
@@ -3813,6 +3818,13 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'create-group-dm') {
       if (!ws.accountId) {
         send(ws, { type: 'error', message: 'Sign in to start a group DM' });
+        return;
+      }
+      // Same flood gate as every other message/content-creation path in this app — this is a DB
+      // write plus a live WS fanout (and a toast on every other member's open tab) to everyone
+      // added, and had no throttle of its own even though its sibling send-group-dm already does.
+      if (isWsMsgRateLimited(ws)) {
+        send(ws, { type: 'error', message: 'You are creating group DMs too fast — slow down a bit.' });
         return;
       }
       const memberUsernames = Array.isArray(msg.memberUsernames) ? msg.memberUsernames.slice(0, 20) : [];
