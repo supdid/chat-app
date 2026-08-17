@@ -2273,6 +2273,24 @@ function crashPlane(reason) {
   planeGroup.visible = false;
   health = 0;
   renderHealth();
+  // Only exitPlane() (a normal landing) used to release activePlaneSlot — a crash never went
+  // through that path, so a boarded parked plane's slot stayed occupied:true (and its
+  // placeholder mesh stayed hidden) forever after a fatal crash. Beyond permanently losing that
+  // plane from the pool for the rest of the round, it left activePlaneSlot itself stale: the
+  // *next* time the player boarded a different plane and landed normally, exitPlane() would find
+  // this old truthy reference and reposition/reveal *that* abandoned plane at the new landing
+  // spot instead of the one actually just landed, silently mixing up two unrelated flights.
+  // Mirrors exitPlane()'s own cleanup (reposition + reveal at the crash site, occupied=false)
+  // rather than leaving the slot's mesh invisible-but-technically-available forever.
+  if (activePlaneSlot) {
+    activePlaneSlot.occupied = false;
+    activePlaneSlot.x = planePos.x;
+    activePlaneSlot.z = planePos.z;
+    activePlaneSlot.mesh.position.set(planePos.x, 1.2, planePos.z);
+    activePlaneSlot.mesh.rotation.y = planeYaw;
+    activePlaneSlot.mesh.visible = true;
+    activePlaneSlot = null;
+  }
   die(reason);
 }
 

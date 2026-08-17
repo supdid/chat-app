@@ -728,6 +728,12 @@ function renderInspector() {
     });
     speedSelect.addEventListener('change', () => {
       clip.speed = parseFloat(speedSelect.value);
+      // Every other structural edit (trim, reorder, split, delete) calls this — speed was the
+      // one mutation left out. Overlay start/end are cached, not recomputed live from
+      // clipGlobalStarts(), and changing any clip's speed shifts every later clip's true global
+      // start — without this, a caption's cached timing silently drifts out of sync with the
+      // footage in both the live preview and the actual rendered export.
+      syncOverlaysToClips();
       renderTimeline();
       refreshPreviewForEdits();
     });

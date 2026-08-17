@@ -861,3 +861,43 @@ describe('thread replies', () => {
     assert.ok(thread.replies.some((r) => r.text === 'a reply'));
   });
 });
+
+describe('Scorpture watch-live and signal-relay rate limits', () => {
+  test('rapid watch-live/leave-live cycling and signal bursts are both rate-limited', async () => {
+    const streamerSignup = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'ScorptureStreamer', password: 'pass1234', email: 'scorpturestreamer@test.com' }),
+    }).then((r) => r.json());
+
+    const streamer = await connectWs();
+    send(streamer, { type: 'scorpture-hello', accountToken: streamerSignup.token });
+    await waitFor(streamer, (m) => m.type === 'scorpture-hello-ack');
+    send(streamer, { type: 'scorpture-go-live', title: 'Test Stream' });
+    await waitFor(streamer, (m) => m.type === 'scorpture-go-live-ack');
+
+    const viewer = await connectWs();
+    let joinedCount = 0;
+    const h1 = (data) => { const m = JSON.parse(data); if (m.type === 'scorpture-watch-ack' && m.live) joinedCount++; };
+    viewer.on('message', h1);
+    for (let i = 0; i < 15; i++) {
+      send(viewer, { type: 'scorpture-watch-live', streamerUsername: 'ScorptureStreamer' });
+      send(viewer, { type: 'scorpture-leave-live' });
+    }
+    await sleep(500);
+    viewer.off('message', h1);
+    assert.ok(joinedCount > 0 && joinedCount <= 8, `expected 1-8 of 15 watch attempts through, got ${joinedCount}`);
+
+    await sleep(6500); // let the rate-limit window fully clear before testing the signal path
+    send(viewer, { type: 'scorpture-watch-live', streamerUsername: 'ScorptureStreamer' });
+    await waitFor(viewer, (m) => m.type === 'scorpture-watch-ack' && m.live);
+    await sleep(200);
+
+    let signalsReceived = 0;
+    const h2 = (data) => { const m = JSON.parse(data); if (m.type === 'scorpture-signal') signalsReceived++; };
+    streamer.on('message', h2);
+    for (let i = 0; i < 15; i++) send(viewer, { type: 'scorpture-signal', signal: { fake: i } });
+    await sleep(500);
+    streamer.off('message', h2);
+    assert.ok(signalsReceived > 0 && signalsReceived <= 8, `expected 1-8 of 15 signals relayed, got ${signalsReceived}`);
+  });
+});

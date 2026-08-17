@@ -2522,6 +2522,13 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'scorpture-watch-live') {
+      // Rate-limited (not scorpture-leave-live, its counterpart below — that one only ever does
+      // cleanup, and throttling it risks leaving stream.viewers/viewerIps stuck over-counted,
+      // defeating the very cap this is meant to protect). Without this, a single connection
+      // could loop watch→leave against one streamer as fast as the network allows, each cycle
+      // forcing that streamer's browser to open/close a fresh RTCPeerConnection — an
+      // unauthenticated DoS against a specific broadcaster's tab.
+      if (isWsMsgRateLimited(ws)) return;
       const streamerAccount = db.getAccountByUsername(String(msg.streamerUsername || '').trim());
       const stream = streamerAccount ? liveStreams.get(streamerAccount.id) : null;
       if (!stream) {
@@ -2569,6 +2576,10 @@ wss.on('connection', (ws, req) => {
     // streamer, so it addresses implicitly via ws.scorptureStreamerAccountId; the streamer
     // addresses a specific viewer explicitly via msg.viewerId (it may be broadcasting to several).
     if (msg.type === 'scorpture-signal') {
+      // Real signaling traffic is naturally low-volume (a handful of SDP/ICE messages per call
+      // setup), so this is cheap insurance rather than a load-bearing limit — but it was missing
+      // entirely, unlike every other WS path that relays content to another connection.
+      if (isWsMsgRateLimited(ws)) return;
       if (ws.scorptureStreamerAccountId) {
         const stream = liveStreams.get(ws.scorptureStreamerAccountId);
         if (stream) send(stream.ws, { type: 'scorpture-signal', viewerId: ws.scorptureViewerId, signal: msg.signal });
