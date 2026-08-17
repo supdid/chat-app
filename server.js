@@ -34,7 +34,14 @@ const wss = new WebSocketServer({ server, maxPayload: WS_MAX_PAYLOAD_BYTES });
 // on their own (ws responds with a normal HTTP 400, no crash) rather than reaching this — but
 // costs nothing to have as defense-in-depth against whatever wasn't tried.
 wss.on('error', (err) => {
-  reportError('server', err, { wssError: true });
+  // See the matching try/catch on the per-connection ws.on('error', ...) handler further down for
+  // why this is wrapped: a failure inside reportError itself (a synchronous DB write) must never
+  // become the very crash this handler exists to prevent.
+  try {
+    reportError('server', err, { wssError: true });
+  } catch {
+    // Deliberately swallowed.
+  }
 });
 // Registered this early so every route below — including the self-healing routes, which are
 // defined before the rest of the app's routes — can read req.body on POST requests.
@@ -138,7 +145,15 @@ function reportError(source, err, context = {}) {
 process.on('unhandledRejection', (reason) => {
   const err = reason instanceof Error ? reason : new Error(String(reason));
   console.error('Unhandled rejection:', err);
-  reportError('server', err, { fatal: false });
+  // If reportError itself throws (a synchronous DB write failing), letting that escape this
+  // listener would very likely resurface as another uncaughtException with nothing to distinguish
+  // it from a real fatal one — this is meant to stay non-fatal (see the comment above), so a
+  // failure to *log* the original error must never escalate it into an exit.
+  try {
+    reportError('server', err, { fatal: false });
+  } catch {
+    // Deliberately swallowed.
+  }
 });
 
 process.on('uncaughtException', (err) => {
@@ -2592,7 +2607,16 @@ wss.on('connection', (ws, req) => {
   // connection rejected by isWsConnectRateLimited below (closed before this line used to run) had
   // no error protection at all during its own rejection.
   ws.on('error', (err) => {
-    reportError('server', err, { wsConnectionError: true });
+    // reportError itself does a synchronous DB write — if that throws (locked/corrupted DB, disk
+    // full, whatever), the exception would propagate back out through ws's own internal emit()
+    // call stack rather than through this file's application code, right back to the exact
+    // uncaught-exception crash this handler exists to prevent. try/catch this specific call so a
+    // failure to *log* the error can never itself become the crash.
+    try {
+      reportError('server', err, { wsConnectionError: true });
+    } catch {
+      // Deliberately swallowed — see comment above.
+    }
   });
   // Only used to defend against a single IP claiming an outsized share of one stream's
   // viewer slots (see MAX_SCORPTURE_VIEWERS_PER_IP below) — 'trust proxy' above only affects
@@ -4732,7 +4756,16 @@ wss.on('connection', (ws, req) => {
       return;
     }
     } catch (err) {
-      reportError('server', err, { wsMessageType: msg && msg.type, room: ws.room || null });
+      // Same reasoning as the try/catch inside ws.on('error', ...) above: this whole outer
+      // try/catch exists so a bug in any single message handler can't kill this connection's
+      // message loop (or the whole process) — but if reportError itself throws (a synchronous DB
+      // write failing), that exception would propagate back out through ws's own internal emit()
+      // call stack the exact same way, defeating the entire point of this catch block existing.
+      try {
+        reportError('server', err, { wsMessageType: msg && msg.type, room: ws.room || null });
+      } catch {
+        // Deliberately swallowed.
+      }
     }
   });
 
