@@ -1508,6 +1508,14 @@ function sendGroupDm(groupId, fromAccountId, fromName, text, excludeWs) {
   const memberIds = db.getGroupDmMemberIds(groupId);
   const livePayload = JSON.stringify({ type: 'group-dm', groupId, fromAccountId, fromName, text, at: Date.now() });
   for (const accountId of memberIds) {
+    // Blocking someone was a no-op inside a shared group DM (block only ever touched the
+    // `friendships` table, and group-DM fan-out here never consulted it) — the blocked party
+    // could keep posting and the blocker kept receiving their messages live + as real pushes,
+    // completely defeating the point of blocking them. Skip delivery to a blocked pair (in
+    // either direction) without touching group membership itself, so the rest of the group is
+    // unaffected. Never true for accountId === fromAccountId (no self-block path exists), so
+    // this doesn't interfere with the sender's own other-device sync below.
+    if (db.isBlockedBetween(fromAccountId, accountId)) continue;
     const liveConnections = accountConnections.get(accountId);
     if (liveConnections) {
       for (const c of liveConnections) {
@@ -3850,7 +3858,12 @@ wss.on('connection', (ws, req) => {
         send(ws, { type: 'error', message: 'Not a member of that group DM' });
         return;
       }
-      send(ws, { type: 'group-dm-messages', groupId, messages: db.getGroupDmMessages(groupId) });
+      // Same block filter as live delivery in sendGroupDm — without it, reopening/reloading the
+      // thread would show every message a blocked member ever sent even though none of them were
+      // delivered live, which is worse than doing nothing (the block would look broken, not just
+      // incomplete).
+      const messages = db.getGroupDmMessages(groupId).filter((m) => !db.isBlockedBetween(ws.accountId, m.fromAccountId));
+      send(ws, { type: 'group-dm-messages', groupId, messages });
       return;
     }
 
@@ -3896,6 +3909,18 @@ wss.on('connection', (ws, req) => {
       }
       db.removeGroupDmMember(groupId, ws.accountId);
       send(ws, { type: 'group-dm-left', groupId });
+      // The remaining members previously got no live signal at all when someone left — their
+      // rendered member list for this thread stayed stale (still showing the departed user)
+      // until they next reopened the thread. Message delivery itself was unaffected (member set
+      // is re-queried at send time), this only fixes the display.
+      const leftPayload = JSON.stringify({ type: 'group-dm-member-left', groupId, username: ws.profile.name });
+      for (const accountId of db.getGroupDmMemberIds(groupId)) {
+        const liveConnections = accountConnections.get(accountId);
+        if (!liveConnections) continue;
+        for (const c of liveConnections) {
+          if (c.readyState === c.OPEN) c.send(leftPayload);
+        }
+      }
       return;
     }
 
@@ -4268,7 +4293,13 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'voice-signal' && ws.room) {
       const voice = voiceRoom(ws.room, false);
-      const target = voice && voice.get(String(msg.to || ''));
+      // The sender being in the room's chat isn't the same as being on the call — without this
+      // check, anyone in the text room (never having sent voice-join) could forge a signal to a
+      // real participant's sub, making the victim's client create a fresh RTCPeerConnection + a
+      // ghost call tile for a "peer" that never actually joined. That ghost never gets cleaned up
+      // by the normal voice-peer-left path (the forger was never in the `voice` Map to begin with).
+      if (!voice || !voice.has(ws.profile.sub)) return;
+      const target = voice.get(String(msg.to || ''));
       if (!target) return;
       send(target.ws, { type: 'voice-signal', from: ws.profile.sub, signal: msg.signal });
       return;
@@ -4276,8 +4307,8 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'voice-share' && ws.room) {
       const voice = voiceRoom(ws.room, false);
-      if (!voice) return;
       const sub = ws.profile.sub;
+      if (!voice || !voice.has(sub)) return;
       for (const [s, p] of voice) {
         if (s !== sub) send(p.ws, { type: 'voice-share', sub, sharing: !!msg.sharing });
       }
@@ -4286,8 +4317,8 @@ wss.on('connection', (ws, req) => {
 
     if ((msg.type === 'raise-hand' || msg.type === 'lower-hand') && ws.room) {
       const voice = voiceRoom(ws.room, false);
-      if (!voice) return;
       const sub = ws.profile.sub;
+      if (!voice || !voice.has(sub)) return;
       const raised = msg.type === 'raise-hand';
       for (const [s, p] of voice) {
         if (s !== sub) send(p.ws, { type: raised ? 'hand-raised' : 'hand-lowered', sub, name: ws.profile.name });
@@ -4296,11 +4327,14 @@ wss.on('connection', (ws, req) => {
     }
 
     // A request, not an enforced mute — this app has no roles/auth, so nothing should ever
-    // let one participant force-mute another's mic. Every peer decides for itself.
+    // let one participant force-mute another's mic. Every peer decides for itself. Still requires
+    // the sender to actually be on the call — otherwise anyone in the text room (never having
+    // joined the call) could force-mute every real participant with no way to tell it wasn't a
+    // genuine fellow caller.
     if (msg.type === 'mute-all-request' && ws.room) {
       const voice = voiceRoom(ws.room, false);
-      if (!voice) return;
       const sub = ws.profile.sub;
+      if (!voice || !voice.has(sub)) return;
       for (const [s, p] of voice) {
         if (s !== sub) send(p.ws, { type: 'mute-all-request', fromName: ws.profile.name });
       }
@@ -4492,6 +4526,13 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'typing' && ws.room) {
+      // The real client already self-throttles to one 'typing' send per 2s (see app.js), but
+      // unlike every other message-creation path in this app, this handler had zero server-side
+      // rate limiting of its own — a raw WS client ignoring that throttle could flood every other
+      // room member's socket with 'typing' broadcasts. Same shared gate as chat messages/reactions/
+      // Scorpture watch-live etc: cheap for a real user (well under budget at 1 send/2s), closes
+      // the flood off for anyone bypassing the client.
+      if (isWsMsgRateLimited(ws)) return;
       broadcastRoom(ws.room, { type: 'typing', name: ws.profile.name }, ws);
       return;
     }

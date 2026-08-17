@@ -393,6 +393,7 @@ let handRaised = false;
 let callRecorder = null;
 let callRecordDest = null; // MediaStreamAudioDestinationNode mixing all call audio
 let callRecordCtx = null;
+let recordedRemoteStreams = null; // Set of remote MediaStreams already mixed into the current recording — avoids double-mixing the same peer's audio if their track re-negotiates mid-recording
 let muteAllNoticeTimer = null;
 
 // --- Dark / light theme ---
@@ -870,6 +871,14 @@ function handleServerMessage(data) {
     case 'group-dm-created':
       showAppToast(`💬 Group DM ${data.thread.name ? `"${data.thread.name}"` : 'started'}`);
       if (groupsOverlay && !groupsOverlay.classList.contains('hidden')) loadGroupThreads();
+      break;
+
+    case 'group-dm-member-left':
+      if (currentGroupDmId === data.groupId) {
+        currentGroupDmMemberNames = currentGroupDmMemberNames.filter((n) => n !== data.username);
+        groupDmMembersEl.textContent = currentGroupDmMemberNames.length ? `With ${currentGroupDmMemberNames.join(', ')}` : '';
+        showAppToast(`👋 ${data.username} left the group`);
+      }
       break;
 
     case 'group-dm-messages':
@@ -2536,6 +2545,7 @@ friendDmForm.addEventListener('submit', (e) => {
 // --- Group DMs: persisted multi-person threads among friends, account-based (works across
 // rooms/devices, unlike the room-scoped 1:1 dm-overlay above). ---
 let currentGroupDmId = null;
+let currentGroupDmMemberNames = [];
 let lastLoadedFriends = [];
 let lastLoadedThreads = [];
 
@@ -2581,8 +2591,9 @@ function loadGroupThreads() {
 
 function openGroupDm(groupId, thread) {
   currentGroupDmId = groupId;
+  currentGroupDmMemberNames = thread ? thread.members.map((m) => m.username) : [];
   groupDmTitleEl.textContent = thread ? groupThreadLabel(thread) : 'Group';
-  groupDmMembersEl.textContent = thread ? `With ${thread.members.map((m) => m.username).join(', ')}` : '';
+  groupDmMembersEl.textContent = currentGroupDmMemberNames.length ? `With ${currentGroupDmMemberNames.join(', ')}` : '';
   groupDmMessagesEl.innerHTML = '<p class="search-status">Loading…</p>';
   groupsOverlay.classList.add('hidden');
   groupDmOverlay.classList.remove('hidden');
@@ -3075,19 +3086,43 @@ function setTileHandRaised(sub, raised) {
 // --- Call recording (client-side, audio-only) ---
 // Mixes the local mic and every remote peer's incoming audio into one MediaRecorder via
 // a shared AudioContext — recording never touches the server, it's a pure local download.
+// Mixes one more remote peer's stream into the in-progress recording, if there is one — called
+// both from startCallRecording() (for peers already on the call) and from the peer-connection
+// 'track' handler (for anyone whose audio arrives, or re-negotiates, after recording began).
+// Without this, a call recording silently excluded any peer who joined mid-recording: the
+// MediaRecorder graph was only ever wired up once, at the moment Record was clicked.
+function addStreamToCallRecording(stream) {
+  if (!callRecordCtx || !callRecordDest || !stream || recordedRemoteStreams.has(stream)) return;
+  recordedRemoteStreams.add(stream);
+  callRecordCtx.createMediaStreamSource(stream).connect(callRecordDest);
+}
+
+// Reconnects the current local mic track into an in-progress recording — called after
+// startVoiceCall/retryEnableMicrophone/switchMicrophone replace `localStream`. Without this, the
+// recording's local-audio source stayed wired to whichever MediaStreamTrack existed at the moment
+// Record was clicked; once that track was stopped (mic switch, or the initial permission grant
+// happening after Record was already running) the recording lost the local side of the
+// conversation for its entire remainder with no indication anything was wrong.
+function reconnectLocalTrackToCallRecording() {
+  if (!callRecordCtx || !callRecordDest) return;
+  const track = localStream && localStream.getAudioTracks()[0];
+  if (track) callRecordCtx.createMediaStreamSource(new MediaStream([track])).connect(callRecordDest);
+}
+
 function startCallRecording() {
   if (callRecorder || !window.MediaRecorder) return;
   const AudioCtx = window.AudioContext || window.webkitAudioContext;
   if (!AudioCtx) return;
   callRecordCtx = new AudioCtx();
   callRecordDest = callRecordCtx.createMediaStreamDestination();
+  recordedRemoteStreams = new Set();
 
   if (localStream && localStream.getAudioTracks()[0]) {
     callRecordCtx.createMediaStreamSource(new MediaStream([localStream.getAudioTracks()[0]])).connect(callRecordDest);
   }
   for (const peer of voicePeers.values()) {
     if (peer.audioEl && peer.audioEl.srcObject) {
-      callRecordCtx.createMediaStreamSource(peer.audioEl.srcObject).connect(callRecordDest);
+      addStreamToCallRecording(peer.audioEl.srcObject);
     }
   }
 
@@ -3110,6 +3145,7 @@ function startCallRecording() {
     if (callRecordCtx) callRecordCtx.close();
     callRecordCtx = null;
     callRecordDest = null;
+    recordedRemoteStreams = null;
   });
   callRecorder.start();
   callRecordBtn.classList.add('active', 'recording');
@@ -3156,6 +3192,7 @@ async function retryEnableMicrophone() {
   micRetryBtn.classList.add('hidden');
   localVoiceStop = attachSpeakingDetector(localStream, (speaking) => setTileSpeaking('me', speaking));
   updateMicMuteButton();
+  reconnectLocalTrackToCallRecording();
 
   const track = localStream.getAudioTracks()[0];
   for (const [sub, peer] of voicePeers) {
@@ -3230,6 +3267,7 @@ async function switchMicrophone(deviceId) {
   if (oldTrack) oldTrack.stop();
   localStream = newStream;
   localVoiceStop = attachSpeakingDetector(localStream, (speaking) => setTileSpeaking('me', speaking));
+  reconnectLocalTrackToCallRecording();
 }
 
 micDeviceSelect.addEventListener('change', () => switchMicrophone(micDeviceSelect.value));
@@ -3368,6 +3406,7 @@ function makePeerConnection(sub) {
     peer.audioEl.srcObject = e.streams[0];
     if (peer.stopDetector) peer.stopDetector();
     peer.stopDetector = attachSpeakingDetector(e.streams[0], (speaking) => setTileSpeaking(sub, speaking));
+    addStreamToCallRecording(e.streams[0]);
   });
 
   return pc;

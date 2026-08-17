@@ -61,6 +61,18 @@ describe('room chat', () => {
     assert.ok(count > 0 && count <= 8, `expected 1-8 messages through, got ${count}`);
   });
 
+  test('flood of typing events is rate-limited (shares the same gate as chat messages)', async () => {
+    const { ws, code } = await joinRoom('TypingFloodHost');
+    const other = await joinExistingRoom('TypingFloodWatcher', code);
+    let count = 0;
+    const handler = (data) => { const m = JSON.parse(data); if (m.type === 'typing') count++; };
+    other.on('message', handler);
+    for (let i = 0; i < 15; i++) send(ws, { type: 'typing' });
+    await sleep(500);
+    other.off('message', handler);
+    assert.ok(count > 0 && count <= 8, `expected 1-8 typing broadcasts through, got ${count}`);
+  });
+
   test('reactions round-trip', async () => {
     const { ws } = await joinRoom('ReactHost');
     send(ws, { type: 'message', text: 'react to me' });
@@ -542,6 +554,75 @@ describe('friend DMs and group DMs (account-gated)', () => {
     await sleep(300);
     alice.off('message', h);
     assert.ok(error && /can only add friends/i.test(error.message));
+  });
+
+  test('blocking a group-DM co-member silences them for the blocker only, live and on reload', async () => {
+    const alice = await joinAsAccount('FdmAlice3', aliceToken);
+    send(alice, { type: 'create-group-dm', memberUsernames: ['FdmBob', 'FdmCarol'], name: 'Block Test Group' });
+    const created = await waitFor(alice, (m) => m.type === 'group-dm-created');
+    const groupId = created.thread.id;
+
+    await fetch(`${BASE_URL}/friends/block`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${aliceToken}` },
+      body: JSON.stringify({ username: 'FdmBob' }),
+    });
+
+    const bob = await joinAsAccount('FdmBob2', bobToken);
+    const carol = await joinAsAccount('FdmCarol2', carolToken);
+    await sleep(150);
+
+    let aliceGotIt = false;
+    const aliceHandler = (data) => { const m = JSON.parse(data); if (m.type === 'group-dm' && m.groupId === groupId) aliceGotIt = true; };
+    alice.on('message', aliceHandler);
+    const carolPromise = waitFor(carol, (m) => m.type === 'group-dm' && m.groupId === groupId);
+    send(bob, { type: 'send-group-dm', groupId, text: 'hi from blocked bob' });
+    const carolReceived = await carolPromise;
+    await sleep(200);
+    alice.off('message', aliceHandler);
+    assert.equal(carolReceived.text, 'hi from blocked bob', 'an unblocked co-member still gets it live');
+    assert.equal(aliceGotIt, false, 'the blocker must not get a live delivery from the blocked member');
+
+    send(alice, { type: 'get-group-dm-messages', groupId });
+    const history = await waitFor(alice, (m) => m.type === 'group-dm-messages' && m.groupId === groupId);
+    assert.ok(!history.messages.some((msg) => msg.text === 'hi from blocked bob'), 'the blocked member\'s message must not appear in the blocker\'s reloaded history either');
+
+    send(carol, { type: 'get-group-dm-messages', groupId });
+    const carolHistory = await waitFor(carol, (m) => m.type === 'group-dm-messages' && m.groupId === groupId);
+    assert.ok(carolHistory.messages.some((msg) => msg.text === 'hi from blocked bob'), 'an unblocked member still sees it in history');
+  });
+});
+
+describe('voice call signaling requires the sender to actually be on the call', () => {
+  test('voice-signal from a room member who never sent voice-join is silently dropped, not relayed', async () => {
+    const { ws: a, code } = await joinRoom('VoiceHostA');
+    const b = await joinExistingRoom('VoiceAttackerB', code);
+    const c = await joinExistingRoom('VoiceLegitC', code);
+
+    send(a, { type: 'voice-join' });
+    await waitFor(a, (m) => m.type === 'voice-peers');
+
+    // C legitimately joins the call — this is how a real client would learn A's sub, via the
+    // peers list. B (the attacker below) never calls voice-join at all, so never learns or is
+    // meant to know any sub — but the test harness can see across connections, so it borrows
+    // this to get a real sub value to target.
+    send(c, { type: 'voice-join' });
+    const cPeers = await waitFor(c, (m) => m.type === 'voice-peers');
+    const aSub = cPeers.peers.find((p) => p.name === 'VoiceHostA').sub;
+
+    let aGotForged = false;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'voice-signal' && m.signal && m.signal.bogus) aGotForged = true; };
+    a.on('message', h);
+    send(b, { type: 'voice-signal', to: aSub, signal: { type: 'offer', bogus: true } });
+    await sleep(300);
+    a.off('message', h);
+    assert.equal(aGotForged, false, 'a room member who never joined the call must not be able to forge signaling to a real participant');
+
+    // Sanity check: a genuine participant's signal to A still goes through — the fix must not
+    // have broken real signaling.
+    const legitPromise = waitFor(a, (m) => m.type === 'voice-signal' && m.signal && m.signal.legit);
+    send(c, { type: 'voice-signal', to: aSub, signal: { type: 'offer', legit: true } });
+    const legit = await legitPromise;
+    assert.equal(legit.signal.legit, true);
   });
 });
 
