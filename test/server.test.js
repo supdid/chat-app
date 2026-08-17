@@ -794,6 +794,22 @@ describe('/post-image and /post-media external URL allowlist', () => {
     });
     assert.equal(uploadsRes.status, 200);
   });
+
+  // set-avatar was the one "attach media" path in the app that never got this restriction — a
+  // raw WS client (the real UI only ever sends back its own /upload result) could set any
+  // external URL, which every room member's client renders as a real <img src> for that user —
+  // a tracking-pixel vector, the exact class of bug this whole describe block is about.
+  test('set-avatar rejects an arbitrary external URL but accepts a real /uploads/ path', async () => {
+    const { ws } = await joinRoom('AvatarHost');
+
+    send(ws, { type: 'set-avatar', avatarUrl: 'https://evil.example/track.gif' });
+    const rejected = await waitFor(ws, (m) => m.type === 'profile-updated');
+    assert.equal(rejected.avatarUrl, null, 'an arbitrary external URL must be dropped, not stored or broadcast');
+
+    send(ws, { type: 'set-avatar', avatarUrl: '/uploads/fake-avatar.jpg' });
+    const accepted = await waitFor(ws, (m) => m.type === 'profile-updated');
+    assert.equal(accepted.avatarUrl, '/uploads/fake-avatar.jpg', 'a real /uploads/ path must still be accepted');
+  });
 });
 
 describe('admin routes require the admin key', () => {

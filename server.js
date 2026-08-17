@@ -4024,7 +4024,15 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'set-avatar') {
-      const avatarUrl = typeof msg.avatarUrl === 'string' ? msg.avatarUrl.slice(0, 500) : null;
+      // Every other "attach media" path in this app (post-image, post-media, scorpture uploads/
+      // banner/avatar) requires a real /uploads/ URL — this one didn't, letting a raw WS client
+      // (bypassing the real UI, which only ever sends back its own /upload result — see app.js's
+      // set-avatar send site) set any external URL as their avatar. It's rendered as a real <img
+      // src> for every room member who sees that user (makeAvatar in app.js), so an arbitrary URL
+      // here is a tracking-pixel vector: everyone who loads the room fetches attacker.com and
+      // leaks their IP, independent of whether they ever open a message from that user.
+      const rawAvatarUrl = typeof msg.avatarUrl === 'string' ? msg.avatarUrl.slice(0, 500) : null;
+      const avatarUrl = rawAvatarUrl && rawAvatarUrl.startsWith('/uploads/') ? rawAvatarUrl : null;
       ws.profile.avatarUrl = avatarUrl;
       db.upsertProfile(ws.profile.name, { avatarUrl });
       const payload = { type: 'profile-updated', name: ws.profile.name, avatarUrl, status: ws.profile.status };
