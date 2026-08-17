@@ -1039,6 +1039,20 @@ describe('pin and unpin', () => {
     const unpinnedUpdate = await waitFor(guest, (m) => m.type === 'pins-updated');
     assert.ok(!unpinnedUpdate.pins.some((p) => p.message.id === posted.id));
   });
+
+  test('flood of pin/unpin toggles is rate-limited (shares the same gate as chat messages)', async () => {
+    const { ws: host } = await joinRoom('PinFloodHost');
+    send(host, { type: 'message', text: 'pin flood target' });
+    const posted = await waitFor(host, (m) => m.type === 'message' && m.text === 'pin flood target');
+
+    let count = 0;
+    const handler = (data) => { const m = JSON.parse(data); if (m.type === 'pins-updated') count++; };
+    host.on('message', handler);
+    for (let i = 0; i < 15; i++) send(host, { type: i % 2 === 0 ? 'pin-message' : 'unpin-message', messageId: posted.id });
+    await sleep(500);
+    host.off('message', handler);
+    assert.ok(count > 0 && count <= 8, `expected 1-8 pins-updated broadcasts through, got ${count}`);
+  });
 });
 
 describe('thread replies', () => {

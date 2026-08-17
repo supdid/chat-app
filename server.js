@@ -4516,6 +4516,10 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'vote-poll' && ws.room) {
+      // Same flood gate as its sibling content-mutating paths — re-voting rapidly on the same
+      // poll (changing your own vote back and forth) broadcasts the full vote tally to the whole
+      // room on every call, with no throttle before this.
+      if (isWsMsgRateLimited(ws)) return;
       const messageId = String(msg.messageId || '');
       const target = db.getMessage(messageId);
       if (!target || target.room_code !== ws.room || target.media_type !== 'poll' || target.deleted) return;
@@ -4717,6 +4721,10 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'edit-message' && ws.room) {
+      // Same flood gate as 'message' above — bounded to editing your own messages, but repeatedly
+      // re-editing one still broadcasts to the whole room on every call with no throttle before
+      // this.
+      if (isWsMsgRateLimited(ws)) return;
       const messageId = String(msg.messageId || '');
       const text = String(msg.text || '').slice(0, 2000).trim();
       if (!messageId || !text) return;
@@ -4735,6 +4743,10 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'delete-message' && ws.room) {
+      // Same flood gate as 'edit-message' above — each individual message can only be deleted
+      // once (target.deleted guards that), but rapidly deleting many different messages in a row
+      // still broadcasts to the whole room every time, with no throttle before this.
+      if (isWsMsgRateLimited(ws)) return;
       const messageId = String(msg.messageId || '');
       if (!messageId) return;
       const target = db.getMessage(messageId);
@@ -4775,6 +4787,10 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'pin-message' && ws.room) {
+      // Same flood gate every other content-mutating path shares — any room member (not just the
+      // host) can pin/unpin, and each call does a DB write plus a room-wide broadcast of the full
+      // pins list, with no throttle before this.
+      if (isWsMsgRateLimited(ws)) return;
       const messageId = String(msg.messageId || '');
       const target = db.getMessage(messageId);
       if (!target || target.room_code !== ws.room) return;
@@ -4784,6 +4800,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'unpin-message' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
       const messageId = String(msg.messageId || '');
       db.unpinMessage(ws.room, messageId);
       broadcastRoom(ws.room, { type: 'pins-updated', pins: db.getPins(ws.room) });
