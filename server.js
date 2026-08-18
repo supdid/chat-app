@@ -1802,16 +1802,26 @@ const SW_RESPAWN_GRACE_MS = 500;
 // cooldown/range/alive-state before applying damage" model as bc-punch/sw-strike — not real
 // anti-cheat, a loose sanity check.
 const FG_MAX_HEALTH = 150;
+// unlockKills is a career total (see fg_stats/bumpFgKills in db.js — a running count, unlike the
+// generic leaderboard table's best-score-ever semantics), not a per-match one — earned kills carry
+// over between matches and reconnects, same as a real shooter's weapon-unlock progression. Env-
+// overridable (unset in production, no effect there) so the regression suite can unlock a weapon
+// after 1-2 scripted kills instead of the real thresholds.
+const FG_RIFLE_UNLOCK_KILLS = Number(process.env.FG_RIFLE_UNLOCK_KILLS ?? 5);
+const FG_SNIPER_UNLOCK_KILLS = Number(process.env.FG_SNIPER_UNLOCK_KILLS ?? 15);
 const FG_WEAPONS = {
-  pistol: { damage: 20, cooldownMs: 220, range: 45 },
-  rifle: { damage: 28, cooldownMs: 160, range: 55 },
+  pistol: { damage: 20, cooldownMs: 220, range: 45, unlockKills: 0 },
+  rifle: { damage: 28, cooldownMs: 160, range: 55, unlockKills: FG_RIFLE_UNLOCK_KILLS },
   // headshotDamage only applies to a shot the client reports as a headshot (a raycast against the
   // target's head hitbox, done client-side same as this game's own crosshair/aim already is) —
   // same loose-trust model this whole file already uses for position/range, not real anti-cheat.
   // Only the sniper has this; pistol/rifle ignore an incoming headshot flag entirely.
-  sniper: { damage: 50, headshotDamage: 150, cooldownMs: 1300, range: 90 },
+  sniper: { damage: 50, headshotDamage: 150, cooldownMs: 1300, range: 90, unlockKills: FG_SNIPER_UNLOCK_KILLS },
 };
 const FG_DEFAULT_WEAPON = 'pistol';
+function fgUnlockedWeapons(totalKills) {
+  return Object.keys(FG_WEAPONS).filter((key) => totalKills >= FG_WEAPONS[key].unlockKills);
+}
 // Overridable via env, same pattern as several other constants in this file — lets the regression
 // suite exercise a full round/intermission/match cycle in milliseconds instead of real minutes.
 // Unset in production, no effect there.
@@ -3569,12 +3579,15 @@ wss.on('connection', (ws, req) => {
       let role = 'spectator';
       if (!fg.slotA) { fg.slotA = ws; role = 'a'; }
       else if (!fg.slotB) { fg.slotB = ws; role = 'b'; }
+      const totalKills = db.getFgKills(code, name);
       send(ws, {
         type: 'fg-init',
         id,
         role,
         weapons: FG_WEAPONS,
         maxHealth: FG_MAX_HEALTH,
+        totalKills,
+        unlockedWeapons: fgUnlockedWeapons(totalKills),
         players: [...fg.players.values()],
         slotAId: fg.slotA ? fg.players.get(fg.slotA).id : null,
         slotBId: fg.slotB ? fg.players.get(fg.slotB).id : null,
@@ -3602,6 +3615,10 @@ wss.on('connection', (ws, req) => {
       const fg = room && room.fg;
       const p = fg && fg.players.get(ws);
       if (!p || !Object.prototype.hasOwnProperty.call(FG_WEAPONS, msg.weapon)) return;
+      // Actually enforced here, not just hidden/greyed-out client-side — a raw WS client could
+      // otherwise just send fg-select-weapon for a locked weapon directly and skip the unlock
+      // requirement entirely.
+      if (db.getFgKills(ws.fgRoom, p.name) < FG_WEAPONS[msg.weapon].unlockKills) return;
       p.weapon = msg.weapon;
       broadcastFg(ws.fgRoom, { type: 'fg-weapon-changed', id: p.id, weapon: p.weapon });
       return;
@@ -3659,6 +3676,11 @@ wss.on('connection', (ws, req) => {
       target.deaths += 1;
       attacker.kills += 1;
       broadcastFg(ws.fgRoom, { type: 'fg-death', id: target.id, killedBy: attacker.id, weapon: attacker.weapon, headshot });
+      // Career total, not the in-memory per-match `attacker.kills` above — persists across matches
+      // and reconnects (see fg_stats/bumpFgKills in db.js), which is what weapon unlocks are keyed
+      // to. Sent only to the attacker; nobody else's unlock progress is their business.
+      const totalKills = db.bumpFgKills(ws.fgRoom, attacker.name);
+      send(ws, { type: 'fg-unlock-progress', totalKills, unlockedWeapons: fgUnlockedWeapons(totalKills) });
       endFgRound(ws.fgRoom, attackerSlot);
       return;
     }

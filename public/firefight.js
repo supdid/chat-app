@@ -421,8 +421,13 @@ if (isTouchDevice) {
 }
 
 // ==== Weapons ====
-let weapons = {}; // populated from fg-init: { pistol: {damage,cooldownMs,range}, ... }
+let weapons = {}; // populated from fg-init: { pistol: {damage,cooldownMs,range,unlockKills}, ... }
 let maxHealth = 150; // overwritten from fg-init's maxHealth once connected; this default only matters for the brief pre-connect render
+let totalKills = 0; // career total for this room (see fg_stats/bumpFgKills in server.js/db.js) — what weapon unlocks are keyed to, not this match's kill count
+let unlockedWeapons = ['pistol']; // server-computed from totalKills; also the real enforcement (see fg-select-weapon in server.js) — this is only used for the UI here
+function isUnlocked(key) {
+  return unlockedWeapons.includes(key);
+}
 function buildWeaponButtons() {
   const order = ['pistol', 'rifle', 'sniper'];
   const labels = { pistol: '🔫 Pistol', rifle: '🔫 Rifle', sniper: '🎯 Sniper' };
@@ -430,20 +435,24 @@ function buildWeaponButtons() {
     container.innerHTML = '';
     order.forEach((key) => {
       if (!weapons[key]) return;
+      const unlocked = isUnlocked(key);
       const btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = 'weapon-btn' + (key === player.weapon ? ' active' : '');
+      btn.className = 'weapon-btn' + (key === player.weapon ? ' active' : '') + (unlocked ? '' : ' locked');
       btn.dataset.weapon = key;
+      const need = weapons[key].unlockKills || 0;
       btn.innerHTML = container === touchWeaponButtonsEl
-        ? `<span>${labels[key].split(' ')[0]}</span>`
-        : `<span>${labels[key]}</span><span>${weapons[key].damage} dmg</span>`;
+        ? `<span>${unlocked ? labels[key].split(' ')[0] : '🔒'}</span>`
+        : unlocked
+        ? `<span>${labels[key]}</span><span>${weapons[key].damage} dmg</span>`
+        : `<span>${labels[key]}</span><span>🔒 ${need} kills (${totalKills}/${need})</span>`;
       btn.addEventListener('click', () => selectWeapon(key));
       container.appendChild(btn);
     });
   });
 }
 function selectWeapon(key) {
-  if (!weapons[key]) return;
+  if (!weapons[key] || !isUnlocked(key)) return;
   player.weapon = key;
   document.querySelectorAll('.weapon-btn').forEach((b) => b.classList.toggle('active', b.dataset.weapon === key));
   updateWeaponHud();
@@ -640,6 +649,9 @@ function handleMessage(data) {
       roundEndsAt = data.endsAt;
       weapons = data.weapons;
       maxHealth = data.maxHealth;
+      totalKills = data.totalKills || 0;
+      unlockedWeapons = data.unlockedWeapons || ['pistol'];
+      if (!isUnlocked(player.weapon)) player.weapon = 'pistol';
       buildWeaponButtons();
       updateWeaponHud();
       data.players.forEach((p) => {
@@ -794,6 +806,15 @@ function handleMessage(data) {
     }
     case 'fg-leaderboard-result': {
       renderLeaderboard(data.scores || []);
+      break;
+    }
+    case 'fg-unlock-progress': {
+      const newlyUnlocked = (data.unlockedWeapons || []).filter((w) => !unlockedWeapons.includes(w));
+      totalKills = data.totalKills;
+      unlockedWeapons = data.unlockedWeapons || unlockedWeapons;
+      buildWeaponButtons();
+      const labels = { rifle: 'Rifle', sniper: 'Sniper' };
+      newlyUnlocked.forEach((w) => { if (labels[w]) addKillFeed(`🔓 ${labels[w]} unlocked!`); });
       break;
     }
   }

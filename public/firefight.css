@@ -179,6 +179,12 @@ button.primary:disabled {
   box-shadow: 0 0 12px rgba(255, 176, 32, 0.35);
 }
 
+.weapon-btn.locked {
+  opacity: 0.5;
+  cursor: default;
+  border-style: dashed;
+}
+
 #spectator-banner {
   position: fixed;
   top: 0.85rem;

@@ -1771,8 +1771,12 @@ describe('Firefight (1v1 duel shooter)', () => {
       // FG_RESPAWN_GRACE_MS is 0 here (not just shrunk) — these tests fire their first shot within
       // a few ms of round-start, well inside even a small nonzero grace window, which would
       // silently reject that shot and throw off the exact hit-count math these tests depend on.
-      // The grace period's own behavior isn't what's under test here.
-      { FG_ROUND_MS: '2000', FG_INTERMISSION_MS: '150', FG_ROUNDS_TO_WIN: '2', FG_RESPAWN_GRACE_MS: '0' },
+      // The grace period's own behavior isn't what's under test here. Weapon unlocks are zeroed
+      // out too — this shared instance's players start every test at 0 career kills, and most
+      // tests here (e.g. the headshot ones) need to freely select rifle/sniper without earning
+      // them first; the unlock gate itself gets its own dedicated instance with real, small
+      // thresholds further down ("weapons must be unlocked with career kills...").
+      { FG_ROUND_MS: '2000', FG_INTERMISSION_MS: '150', FG_ROUNDS_TO_WIN: '2', FG_RESPAWN_GRACE_MS: '0', FG_RIFLE_UNLOCK_KILLS: '0', FG_SNIPER_UNLOCK_KILLS: '0' },
       3193
     );
     base = `http://localhost:${fgServer.port}`;
@@ -2027,6 +2031,84 @@ describe('Firefight (1v1 duel shooter)', () => {
     assert.equal(sawSelfHit, false, 'a duelist must never be able to land a hit on themselves');
 
     a.close(); b.close();
+  });
+
+  test('weapons must be unlocked with career kills before they can be selected', async () => {
+    // Own dedicated instance — FG_RIFLE_UNLOCK_KILLS/FG_SNIPER_UNLOCK_KILLS default to the real
+    // production values (5/15), far too slow to actually earn in a test; shrunk here to 1 and 2.
+    const unlockServer = await startTestServer(
+      {
+        FG_ROUND_MS: '3000', FG_INTERMISSION_MS: '100', FG_ROUNDS_TO_WIN: '5',
+        FG_RESPAWN_GRACE_MS: '0', FG_RIFLE_UNLOCK_KILLS: '1', FG_SNIPER_UNLOCK_KILLS: '2',
+      },
+      3210
+    );
+    try {
+      function unlockConnect() {
+        return new Promise((resolve) => {
+          const sock = new WebSocket(`ws://localhost:${unlockServer.port}`);
+          sock.on('open', () => resolve(sock));
+        });
+      }
+      const code = 'FFUNLOCK1';
+      const a = await unlockConnect();
+      const b = await unlockConnect();
+      send(a, { type: 'fg-join', code, name: 'FfUnlockA' });
+      const initA = await waitFor(a, (m) => m.type === 'fg-init');
+      assert.deepEqual(initA.unlockedWeapons, ['pistol'], 'a fresh player must start with only the pistol unlocked');
+      send(b, { type: 'fg-join', code, name: 'FfUnlockB' });
+      await waitFor(b, (m) => m.type === 'fg-init');
+
+      // A locked weapon must not be selectable — no fg-weapon-changed broadcast at all.
+      let sawWeaponChange = false;
+      const h = (data) => { if (JSON.parse(data).type === 'fg-weapon-changed') sawWeaponChange = true; };
+      a.on('message', h);
+      send(a, { type: 'fg-select-weapon', weapon: 'rifle' });
+      await sleep(150);
+      a.off('message', h);
+      assert.equal(sawWeaponChange, false, 'selecting a locked weapon must be rejected');
+
+      send(a, { type: 'fg-start' });
+      await waitFor(a, (m) => m.type === 'fg-round-start');
+      await waitFor(b, (m) => m.type === 'fg-round-start');
+
+      // Pistol (still the only unlocked weapon) needs 8 hits to kill at 150 max HP / 20 damage.
+      const progressPromise = waitFor(a, (m) => m.type === 'fg-unlock-progress');
+      for (let i = 0; i < 8; i++) {
+        send(a, { type: 'fg-shoot' });
+        await sleep(230);
+      }
+      const progress = await progressPromise;
+      assert.equal(progress.totalKills, 1);
+      assert.deepEqual(progress.unlockedWeapons, ['pistol', 'rifle'], 'one kill must unlock exactly the rifle, not the sniper too');
+
+      // Rifle is now unlocked and selectable; sniper still isn't (needs 2 kills, only has 1).
+      const changePromise = waitFor(a, (m) => m.type === 'fg-weapon-changed' && m.weapon === 'rifle');
+      send(a, { type: 'fg-select-weapon', weapon: 'rifle' });
+      await changePromise;
+
+      let sawSniperChange = false;
+      const h2 = (data) => { const m = JSON.parse(data); if (m.type === 'fg-weapon-changed' && m.weapon === 'sniper') sawSniperChange = true; };
+      a.on('message', h2);
+      send(a, { type: 'fg-select-weapon', weapon: 'sniper' });
+      await sleep(150);
+      a.off('message', h2);
+      assert.equal(sawSniperChange, false, 'sniper must still be locked after only one kill');
+
+      // A fresh connection joining the SAME room under the same name (simulating a reconnect —
+      // it lands as a spectator here since both duelist slots are already taken, which doesn't
+      // matter for what's being checked) must report the same persisted unlock progress — career
+      // kills are per (room, name), not per session.
+      const c = await unlockConnect();
+      send(c, { type: 'fg-join', code, name: 'FfUnlockA' });
+      const initReconnect = await waitFor(c, (m) => m.type === 'fg-init');
+      assert.equal(initReconnect.totalKills, 1, 'career kills must persist across a fresh join, not reset');
+      assert.deepEqual(initReconnect.unlockedWeapons, ['pistol', 'rifle']);
+
+      a.close(); b.close(); c.close();
+    } finally {
+      await unlockServer.stop();
+    }
   });
 });
 

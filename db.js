@@ -101,6 +101,20 @@ db.exec(`
     PRIMARY KEY (room_code, game, name)
   );
 
+  -- Firefight weapon-unlock progress. Deliberately separate from the generic leaderboard table
+  -- above: that one only ever keeps the best score a name has achieved (a high-score board), not
+  -- a running total, so it can't answer "how many kills has this player earned, ever" — exactly
+  -- what unlocking weapons needs. total_kills only ever increases (see bumpFgKills in server.js's
+  -- call site), one row per (room, name), same identity convention every other per-room stat here
+  -- already uses.
+  CREATE TABLE IF NOT EXISTS fg_stats (
+    room_code TEXT,
+    name TEXT,
+    total_kills INTEGER DEFAULT 0,
+    updated_at INTEGER,
+    PRIMARY KEY (room_code, name)
+  );
+
   CREATE TABLE IF NOT EXISTS bc_blueprints (
     id TEXT PRIMARY KEY,
     room_code TEXT,
@@ -762,6 +776,23 @@ function getLeaderboard(code, game, limit = 10) {
   return db
     .prepare('SELECT name, score FROM leaderboard WHERE room_code = ? AND game = ? ORDER BY score DESC LIMIT ?')
     .all(code, game, limit);
+}
+
+// ---- Firefight weapon-unlock progress (see fg_stats above) ----
+
+function getFgKills(code, name) {
+  const row = db.prepare('SELECT total_kills FROM fg_stats WHERE room_code = ? AND name = ?').get(code, name);
+  return row ? row.total_kills : 0;
+}
+
+function bumpFgKills(code, name) {
+  db.prepare(
+    `INSERT INTO fg_stats (room_code, name, total_kills, updated_at) VALUES (?, ?, 1, ?)
+     ON CONFLICT(room_code, name) DO UPDATE SET
+       total_kills = fg_stats.total_kills + 1,
+       updated_at = excluded.updated_at`
+  ).run(code, name, Date.now());
+  return getFgKills(code, name);
 }
 
 // ---- Build Craft blueprints ----
@@ -1564,6 +1595,8 @@ module.exports = {
   upsertProfile,
   bumpLeaderboard,
   getLeaderboard,
+  getFgKills,
+  bumpFgKills,
   saveBlueprint,
   getBlueprints,
   getBlueprint,
