@@ -534,6 +534,85 @@ button.primary:disabled {
   100% { transform: scale(1); opacity: 1; }
 }
 
+/* Confirmed-hit feedback — separate from #crosshair's fire-kick above, which fires on every shot
+   regardless of whether it lands. This only shows once fg-hit/fg-death actually confirms the
+   shooter's own shot connected, so it needed its own element rather than reusing the crosshair's. */
+#hit-marker {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  width: 22px;
+  height: 22px;
+  margin: -11px 0 0 -11px;
+  z-index: 9;
+  pointer-events: none;
+  opacity: 0;
+}
+
+#hit-marker::before, #hit-marker::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 3px;
+  margin-top: -1.5px;
+  background: #fff;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.9);
+}
+
+#hit-marker::before { transform: rotate(45deg); }
+#hit-marker::after { transform: rotate(-45deg); }
+
+#hit-marker.show {
+  animation: hit-marker-pop 0.28s ease-out;
+}
+
+#hit-marker.headshot::before, #hit-marker.headshot.show::before,
+#hit-marker.headshot::after, #hit-marker.headshot.show::after {
+  background: #ff5a3c;
+}
+
+@keyframes hit-marker-pop {
+  0% { opacity: 1; transform: scale(1.5); }
+  60% { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1); }
+}
+
+/* Sniper aim-down-sights vignette — the FOV zoom (see updateFov in firefight.js) already narrows
+   the view; this adds the scope's actual visual read: a hard-edged dark ring around a clear
+   center circle, with the scope's own crosshair drawn on top since the normal #crosshair reads
+   as too small/plain once zoomed in this far. */
+#scope-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9;
+  pointer-events: none;
+  background: radial-gradient(circle at center, transparent 0, transparent 29vh, #05060a 29.6vh);
+}
+
+#scope-overlay::before, #scope-overlay::after {
+  content: '';
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  background: rgba(20, 24, 20, 0.85);
+}
+
+#scope-overlay::before {
+  width: 1px;
+  height: 60vh;
+  margin-left: -0.5px;
+  margin-top: -30vh;
+}
+
+#scope-overlay::after {
+  width: 60vh;
+  height: 1px;
+  margin-top: -0.5px;
+  margin-left: -30vh;
+}
+
 /* Touch controls (mobile) */
 #touch-controls {
   position: fixed;

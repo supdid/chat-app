@@ -38,6 +38,8 @@ const matchendOverlay = document.getElementById('matchend-overlay');
 const matchendTextEl = document.getElementById('matchend-text');
 const rematchBtn = document.getElementById('rematch-btn');
 const crosshairEl = document.getElementById('crosshair');
+const hitMarkerEl = document.getElementById('hit-marker');
+const scopeOverlayEl = document.getElementById('scope-overlay');
 const damageFlashEl = document.getElementById('damage-flash');
 const touchControlsEl = document.getElementById('touch-controls');
 const touchWeaponButtonsEl = document.getElementById('touch-weapon-buttons');
@@ -416,6 +418,14 @@ let pointerLocked = false;
 let aiming = false;
 let lastShotAt = 0;
 
+// Single chokepoint for every place that sets `aiming`, rather than each call site touching the
+// overlay itself — the scope only makes sense for the sniper (rifle/pistol ADS is just the plain
+// FOV zoom in updateFov), and this is the one place that needs to know both facts at once.
+function setAiming(v) {
+  aiming = v;
+  scopeOverlayEl.classList.toggle('hidden', !(v && player.weapon === 'sniper'));
+}
+
 // Tuned so the jump apex (vy0^2 / (2*g) ≈ 2.5 units) clears the arena's cover boxes (1.6-1.8
 // units tall) with comfortable margin, while the perimeter walls (6 units) stay permanently
 // impassable — no special-casing needed, a normal jump just can never reach that high.
@@ -440,8 +450,15 @@ function tickVertical(dt) {
   player.vy -= GRAVITY * dt;
   let ny = player.y + player.vy * dt;
   const surface = groundHeightAt(player.x, player.z);
-  if (ny <= surface) { ny = surface; player.vy = 0; player.grounded = true; }
-  else { player.grounded = false; }
+  if (ny <= surface) {
+    // Only a real fall (past some downward speed) kicks up dust — otherwise walking over the seam
+    // between two overlapping obstacle footprints (groundHeightAt can step up/down there) would
+    // spawn a puff on every ordinary step.
+    if (!player.grounded && player.vy < -4) spawnLandingDust(new THREE.Vector3(player.x, surface, player.z));
+    ny = surface; player.vy = 0; player.grounded = true;
+  } else {
+    player.grounded = false;
+  }
   player.y = ny;
 }
 
@@ -476,7 +493,7 @@ function readKeyboardMove() {
 }
 
 function clearHeldInput() {
-  move.f = 0; move.r = 0; aiming = false; keys.clear();
+  move.f = 0; move.r = 0; setAiming(false); keys.clear();
 }
 document.addEventListener('visibilitychange', () => { if (document.hidden) clearHeldInput(); });
 window.addEventListener('blur', clearHeldInput);
@@ -507,9 +524,9 @@ document.addEventListener('mousemove', (e) => {
 canvas.addEventListener('mousedown', (e) => {
   if (isTouchDevice || !pointerLocked) return;
   if (e.button === 0) attemptShoot();
-  else if (e.button === 2) aiming = true;
+  else if (e.button === 2) setAiming(true);
 });
-canvas.addEventListener('mouseup', (e) => { if (e.button === 2) aiming = false; });
+canvas.addEventListener('mouseup', (e) => { if (e.button === 2) setAiming(false); });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
 if (isTouchDevice) {
@@ -571,9 +588,9 @@ if (isTouchDevice) {
   canvas.addEventListener('touchcancel', releaseLookTouch);
 
   touchFireBtn.addEventListener('touchstart', (e) => { e.preventDefault(); attemptShoot(); }, { passive: false });
-  touchAimBtn.addEventListener('touchstart', (e) => { e.preventDefault(); aiming = true; }, { passive: false });
-  touchAimBtn.addEventListener('touchend', (e) => { e.preventDefault(); aiming = false; });
-  touchAimBtn.addEventListener('touchcancel', () => { aiming = false; });
+  touchAimBtn.addEventListener('touchstart', (e) => { e.preventDefault(); setAiming(true); }, { passive: false });
+  touchAimBtn.addEventListener('touchend', (e) => { e.preventDefault(); setAiming(false); });
+  touchAimBtn.addEventListener('touchcancel', () => { setAiming(false); });
   touchJumpBtn.addEventListener('touchstart', (e) => { e.preventDefault(); tryJump(); }, { passive: false });
 }
 
@@ -613,6 +630,7 @@ function selectWeapon(key) {
   player.weapon = key;
   document.querySelectorAll('.weapon-btn').forEach((b) => b.classList.toggle('active', b.dataset.weapon === key));
   updateWeaponHud();
+  setAiming(aiming); // re-checks the scope overlay against the new weapon — a switch made mid-aim (Digit1/2/3 isn't gated to between-rounds) shouldn't leave a sniper scope up on a pistol
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'fg-select-weapon', weapon: key }));
 }
 function updateWeaponHud() {
@@ -681,6 +699,26 @@ function spawnImpactSpark(pos, headshot) {
       Math.cos(phi) * 0.6 + 0.5,
       Math.sin(phi) * Math.sin(theta)
     ).multiplyScalar(speed);
+    activeSparks.push({ sprite, vel, bornAt: performance.now() });
+  }
+}
+
+// Landing dust from a real fall (see tickVertical) — shares the same activeSparks pool/decay loop
+// as combat impact sparks, just with a dusty color and a mostly-horizontal outward velocity
+// instead of impact sparks' full-sphere spray. Local-only, like every other combat FX here: this
+// client only ever detects its *own* player.grounded transition, so a remote player's landing
+// dust never renders for anyone but them — same "trust the client, cosmetics only" gap already
+// documented above for muzzle flashes on someone else's miss.
+function spawnLandingDust(pos) {
+  const n = 8;
+  for (let i = 0; i < n; i++) {
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ color: 0xcbb994, transparent: true, opacity: 1, depthTest: false }));
+    sprite.scale.set(0.16, 0.16, 1);
+    sprite.position.copy(pos);
+    scene.add(sprite);
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 0.8 + Math.random() * 1.6;
+    const vel = new THREE.Vector3(Math.cos(angle) * speed, 0.5 + Math.random() * 0.6, Math.sin(angle) * speed);
     activeSparks.push({ sprite, vel, bornAt: performance.now() });
   }
 }
@@ -776,6 +814,12 @@ function flashDamage() {
   damageFlashEl.classList.remove('show');
   void damageFlashEl.offsetWidth;
   damageFlashEl.classList.add('show');
+}
+function showHitMarker(headshot) {
+  hitMarkerEl.classList.remove('show');
+  void hitMarkerEl.offsetWidth;
+  hitMarkerEl.classList.toggle('headshot', !!headshot);
+  hitMarkerEl.classList.add('show');
 }
 let bannerTimer = null;
 function showRoundBanner(text) {
@@ -1074,6 +1118,7 @@ function handleMessage(data) {
         playSound('hurt');
       } else if (data.byId === myId) {
         playSound(data.headshot ? 'headshot' : 'hit');
+        showHitMarker(data.headshot);
         if (data.headshot) addKillFeed('🎯 Headshot!');
       } else {
         playSound('hit');
@@ -1092,6 +1137,8 @@ function handleMessage(data) {
         myDeathAt = performance.now();
       } else if (data.killedBy === myId) {
         addKillFeed(`🎯 You eliminated ${knownNames.get(data.id) || 'your opponent'}!${hs}`);
+        showHitMarker(data.headshot);
+        playSound(data.headshot ? 'headshot' : 'hit');
       } else {
         addKillFeed(`${knownNames.get(data.killedBy) || 'Someone'} eliminated ${knownNames.get(data.id) || 'someone'}${hs}`);
       }
