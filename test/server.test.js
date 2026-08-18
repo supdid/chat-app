@@ -1975,3 +1975,63 @@ describe('Firefight (1v1 duel shooter)', () => {
     a.close(); b.close();
   });
 });
+
+// Found alongside the Firefight self-fight exploit above: chess and tic-tac-toe assign their two
+// fixed roles (white/black, X/O) the same way — an id-truthiness check plus a `players` Map keyed
+// by the connection, not the id — so a repeat join on one connection generates a fresh id,
+// "claims" the second role with it, and silently orphans the first id forever (still sitting in
+// whiteId/xId with no matching players entry left, since the Map overwrote that entry when the
+// repeat join ran). Unlike Firefight this doesn't hand out guaranteed wins, but it does
+// permanently soft-lock the game — nobody can ever move as the orphaned color/symbol again, and
+// once both are "claimed" this way no real second player can join either.
+describe('fixed-role two-player games reject a same-connection repeat join', () => {
+  test('chess: a repeat ch-join on one connection cannot claim both colors', async () => {
+    const code = 'CHSELFJOIN1';
+    const a = await connectWs();
+    send(a, { type: 'ch-join', code, name: 'Solo1' });
+    const initA = await waitFor(a, (m) => m.type === 'ch-init');
+    const myColor = initA.state.players.find((p) => p.id === initA.id).color;
+    assert.equal(myColor, 'white');
+
+    let sawSecondInit = false;
+    const h = (data) => { if (JSON.parse(data).type === 'ch-init') sawSecondInit = true; };
+    a.on('message', h);
+    send(a, { type: 'ch-join', code, name: 'Solo2' });
+    await sleep(200);
+    a.off('message', h);
+    assert.equal(sawSecondInit, false, 'a repeat ch-join on the same connection must not be re-processed');
+
+    const b = await connectWs();
+    send(b, { type: 'ch-join', code, name: 'RealB' });
+    const initB = await waitFor(b, (m) => m.type === 'ch-init');
+    const bColor = initB.state.players.find((p) => p.id === initB.id).color;
+    assert.equal(bColor, 'black', 'black must still be claimable by a genuinely different connection');
+
+    a.close(); b.close();
+  });
+
+  test('tic-tac-toe: a repeat tt-join on one connection cannot claim both symbols', async () => {
+    const code = 'TTSELFJOIN1';
+    const a = await connectWs();
+    send(a, { type: 'tt-join', code, name: 'Solo1' });
+    const initA = await waitFor(a, (m) => m.type === 'tt-init');
+    const mySymbol = initA.state.players.find((p) => p.id === initA.id).symbol;
+    assert.equal(mySymbol, 'X');
+
+    let sawSecondInit = false;
+    const h = (data) => { if (JSON.parse(data).type === 'tt-init') sawSecondInit = true; };
+    a.on('message', h);
+    send(a, { type: 'tt-join', code, name: 'Solo2' });
+    await sleep(200);
+    a.off('message', h);
+    assert.equal(sawSecondInit, false, 'a repeat tt-join on the same connection must not be re-processed');
+
+    const b = await connectWs();
+    send(b, { type: 'tt-join', code, name: 'RealB' });
+    const initB = await waitFor(b, (m) => m.type === 'tt-init');
+    const bSymbol = initB.state.players.find((p) => p.id === initB.id).symbol;
+    assert.equal(bSymbol, 'O', 'O must still be claimable by a genuinely different connection');
+
+    a.close(); b.close();
+  });
+});

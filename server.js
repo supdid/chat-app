@@ -3890,6 +3890,15 @@ wss.on('connection', (ws, req) => {
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
+      // Same fix as fg-join's — see its comment for the full exploit this closes. Here a repeat
+      // join corrupted the game rather than granting a guaranteed win: whiteId/blackId are IDs,
+      // not connections, and a second ch-join generates a fresh id and overwrites this ws's single
+      // Map entry with it — so the FIRST id (still sitting in whiteId or blackId) permanently
+      // points to an entry that no longer exists, soft-locking that color forever (ch-move checks
+      // ch.players.get(ws), which only ever reflects the *latest* entry) and, once both colors are
+      // "claimed" this way, locking out any real second player too.
+      if (ws.chRoom === code) return;
+      if (ws.chRoom) leaveCh(ws);
       const room = getOrCreateRoom(code);
       if (!room.ch) {
         room.ch = { players: new Map(), board: chessInitialBoard(), turn: 'white', winner: null, whiteId: null, blackId: null };
@@ -3983,6 +3992,12 @@ wss.on('connection', (ws, req) => {
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
+      // Same fix as ch-join's just above (and fg-join's, which this whole class was originally
+      // found in) — a repeat join here permanently soft-locks whichever symbol it "claims" a
+      // second time, since xId/oId are stable ids but this ws's single Map entry only ever holds
+      // the latest one.
+      if (ws.ttRoom === code) return;
+      if (ws.ttRoom) leaveTt(ws);
       const room = getOrCreateRoom(code);
       if (!room.tt) {
         room.tt = { players: new Map(), mode: 'tictactoe', board: new Array(9).fill(null), turn: 'X', winner: null, xId: null, oId: null };
