@@ -1665,3 +1665,174 @@ describe('more previously-unprotected HTTP routes are now rate-limited', () => {
     }
   });
 });
+
+describe('Firefight (1v1 duel shooter)', () => {
+  // Dedicated instance with the round/intermission timers and win threshold shrunk via env
+  // override, so a full multi-round match can be driven in well under a second instead of the
+  // real 90s-per-round production values.
+  let fgServer, base;
+  before(async () => {
+    fgServer = await startTestServer(
+      // FG_RESPAWN_GRACE_MS is 0 here (not just shrunk) — these tests fire their first shot within
+      // a few ms of round-start, well inside even a small nonzero grace window, which would
+      // silently reject that shot and throw off the exact hit-count math these tests depend on.
+      // The grace period's own behavior isn't what's under test here.
+      { FG_ROUND_MS: '2000', FG_INTERMISSION_MS: '150', FG_ROUNDS_TO_WIN: '2', FG_RESPAWN_GRACE_MS: '0' },
+      3193
+    );
+    base = `http://localhost:${fgServer.port}`;
+  });
+  after(async () => { await fgServer.stop(); });
+
+  function fgConnect() {
+    return new Promise((resolve) => {
+      const ws = new WebSocket(`ws://localhost:${fgServer.port}`);
+      ws.on('open', () => resolve(ws));
+    });
+  }
+
+  test('join assigns the first two as duelists and everyone else as a spectator', async () => {
+    const code = 'FFJOIN1';
+    const a = await fgConnect();
+    const b = await fgConnect();
+    const c = await fgConnect();
+
+    send(a, { type: 'fg-join', code, name: 'FfA' });
+    const initA = await waitFor(a, (m) => m.type === 'fg-init');
+    assert.equal(initA.role, 'a');
+
+    send(b, { type: 'fg-join', code, name: 'FfB' });
+    const initB = await waitFor(b, (m) => m.type === 'fg-init');
+    assert.equal(initB.role, 'b');
+
+    send(c, { type: 'fg-join', code, name: 'FfC' });
+    const initC = await waitFor(c, (m) => m.type === 'fg-init');
+    assert.equal(initC.role, 'spectator');
+
+    a.close(); b.close(); c.close();
+  });
+
+  test('a full duel: shooting to a kill ends the round, and winning enough rounds ends the match', async () => {
+    const code = 'FFDUEL1';
+    const a = await fgConnect();
+    const b = await fgConnect();
+    send(a, { type: 'fg-join', code, name: 'FfDuelA' });
+    await waitFor(a, (m) => m.type === 'fg-init');
+    send(b, { type: 'fg-join', code, name: 'FfDuelB' });
+    await waitFor(b, (m) => m.type === 'fg-init');
+
+    const startPromiseA = waitFor(a, (m) => m.type === 'fg-round-start');
+    const startPromiseB = waitFor(b, (m) => m.type === 'fg-round-start');
+    send(a, { type: 'fg-start' });
+    const [firstRound] = await Promise.all([startPromiseA, startPromiseB]);
+    assert.equal(firstRound.roundNumber, 1);
+
+    // FG_ROUNDS_TO_WIN=2 for this instance — play out two full rounds, A always winning.
+    for (let round = 1; round <= 2; round++) {
+      // Pistol (the default weapon) deals 20 damage with a 220ms cooldown — 5 hits (100 HP) kill.
+      // Both players are at the same default position (0,0,0), well within pistol's 45-unit range.
+      //
+      // Every waiter for this round's *entire* remaining sequence (death, then either the next
+      // round-start or the match-end) is armed up front, before a single shot is fired — not
+      // attached only after the previous step resolves. FG_INTERMISSION_MS is only 150ms on this
+      // instance, so the death->round-end->next-round-start chain can complete faster than this
+      // test's own await chain would otherwise get back around to arming the next listener,
+      // missing a message that already arrived with nothing listening for it yet (the same race
+      // class already fixed in the Trivia reconnect test elsewhere in this file).
+      const deathPromise = waitFor(b, (m) => m.type === 'fg-death');
+      const nextEventPromiseA = round < 2
+        ? waitFor(a, (m) => m.type === 'fg-round-start' && m.roundNumber === round + 1)
+        : waitFor(a, (m) => m.type === 'fg-match-end');
+      const nextEventPromiseB = round < 2
+        ? waitFor(b, (m) => m.type === 'fg-round-start' && m.roundNumber === round + 1)
+        : null;
+
+      for (let i = 0; i < 5; i++) {
+        send(a, { type: 'fg-shoot' });
+        await sleep(230);
+      }
+      await deathPromise;
+
+      if (round < 2) {
+        await Promise.all([nextEventPromiseA, nextEventPromiseB]);
+      } else {
+        const matchEnd = await nextEventPromiseA;
+        assert.equal(matchEnd.winner, 'a');
+        assert.equal(matchEnd.scoreA, 2);
+      }
+    }
+
+    a.close(); b.close();
+  });
+
+  test('a queued spectator cannot deal damage, and gets promoted into an opened slot when a duelist leaves', async () => {
+    const code = 'FFSPEC1';
+    const a = await fgConnect();
+    const b = await fgConnect();
+    const c = await fgConnect();
+    send(a, { type: 'fg-join', code, name: 'FfSpecA' });
+    await waitFor(a, (m) => m.type === 'fg-init');
+    send(b, { type: 'fg-join', code, name: 'FfSpecB' });
+    await waitFor(b, (m) => m.type === 'fg-init');
+    send(c, { type: 'fg-join', code, name: 'FfSpecC' });
+    await waitFor(c, (m) => m.type === 'fg-init');
+
+    send(a, { type: 'fg-start' });
+    await waitFor(a, (m) => m.type === 'fg-round-start');
+    await waitFor(b, (m) => m.type === 'fg-round-start');
+
+    let sawHitFromSpectator = false;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'fg-hit' || m.type === 'fg-death') sawHitFromSpectator = true; };
+    a.on('message', h);
+    b.on('message', h);
+    send(c, { type: 'fg-shoot' });
+    await sleep(300);
+    a.off('message', h);
+    b.off('message', h);
+    assert.equal(sawHitFromSpectator, false, 'a queued spectator has no opponent and must not be able to deal damage');
+
+    const slotFilledPromise = waitFor(c, (m) => m.type === 'fg-slot-filled' && m.slot === 'b');
+    b.close();
+    const slotFilled = await slotFilledPromise;
+    assert.equal(slotFilled.name, 'FfSpecC', 'the longest-waiting spectator should be promoted into the vacated slot');
+
+    a.close(); c.close();
+  });
+
+  test('shots respect weapon cooldown and range', async () => {
+    const code = 'FFCOOLDOWN1';
+    const a = await fgConnect();
+    const b = await fgConnect();
+    send(a, { type: 'fg-join', code, name: 'FfCoolA' });
+    await waitFor(a, (m) => m.type === 'fg-init');
+    send(b, { type: 'fg-join', code, name: 'FfCoolB' });
+    await waitFor(b, (m) => m.type === 'fg-init');
+    send(a, { type: 'fg-start' });
+    await waitFor(a, (m) => m.type === 'fg-round-start');
+    await waitFor(b, (m) => m.type === 'fg-round-start');
+
+    // Two shots fired back-to-back with no wait — the second should be dropped by the cooldown,
+    // so only one fg-hit should land even though two fg-shoot messages were sent.
+    let hitCount = 0;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'fg-hit') hitCount++; };
+    b.on('message', h);
+    send(a, { type: 'fg-shoot' });
+    send(a, { type: 'fg-shoot' });
+    await sleep(300);
+    b.off('message', h);
+    assert.equal(hitCount, 1, 'a second shot within the weapon cooldown must not also land');
+
+    // Move B far outside pistol's 45-unit range and confirm a shot from A no longer connects.
+    send(b, { type: 'fg-pos', x: 500, y: 0, z: 0, yaw: 0 });
+    await sleep(150);
+    let hitCount2 = 0;
+    const h2 = (data) => { const m = JSON.parse(data); if (m.type === 'fg-hit') hitCount2++; };
+    b.on('message', h2);
+    send(a, { type: 'fg-shoot' });
+    await sleep(300);
+    b.off('message', h2);
+    assert.equal(hitCount2, 0, 'a shot at a target outside the weapon range must not land');
+
+    a.close(); b.close();
+  });
+});

@@ -1773,6 +1773,33 @@ const SW_KILL_SCORE_BONUS = 20;
 // post-death damage flash/hurt sound right after the elimination toast. Both close once any
 // strike attempt against a just-died target is rejected outright for a short window.
 const SW_RESPAWN_GRACE_MS = 500;
+// ---- Firefight — round-based 1v1 duel shooter (Rivals/tactical-shooter-inspired), on foot only,
+// no vehicles. Exactly two active duelists (slotA/slotB) at a time; anyone else who joins queues
+// as a spectator until a slot opens. Health/damage use a plain 0-100 scale (not the small-int
+// convention SW/BC combat above use) since weapons deal varied, granular damage rather than
+// always exactly 1 point. Same "trust the client's reported position, server just validates
+// cooldown/range/alive-state before applying damage" model as bc-punch/sw-strike — not real
+// anti-cheat, a loose sanity check.
+const FG_MAX_HEALTH = 100;
+const FG_WEAPONS = {
+  pistol: { damage: 20, cooldownMs: 220, range: 45 },
+  rifle: { damage: 28, cooldownMs: 160, range: 55 },
+  sniper: { damage: 100, cooldownMs: 1300, range: 90 },
+};
+const FG_DEFAULT_WEAPON = 'pistol';
+// Overridable via env, same pattern as several other constants in this file — lets the regression
+// suite exercise a full round/intermission/match cycle in milliseconds instead of real minutes.
+// Unset in production, no effect there.
+const FG_ROUND_MS = Number(process.env.FG_ROUND_MS) || 90 * 1000;
+const FG_INTERMISSION_MS = Number(process.env.FG_INTERMISSION_MS) || 6 * 1000;
+const FG_ROUNDS_TO_WIN = Number(process.env.FG_ROUNDS_TO_WIN) || 4;
+// Same reasoning as SW_RESPAWN_GRACE_MS — a freshly-respawned/round-reset player's position isn't
+// updated server-side until their next ~100ms-throttled fg-pos, so without this a shot fired in
+// that window could land using stale position data against someone who should be safe.
+// `?? ` (not `||`) — a real test wants to override this down to a genuine 0, and 0 is falsy, so
+// `Number(...) || 500` would have silently ignored that override and kept the 500ms default.
+const FG_RESPAWN_GRACE_MS = Number(process.env.FG_RESPAWN_GRACE_MS ?? 500);
+const FG_KILL_SCORE_BONUS = 15;
 // ---- Single-player arcade games (Snake, 2048) — no shared room state to speak of, just a
 // per-room best-score leaderboard reusing the same generic `leaderboard` table every other
 // game already uses. One handler pair covers both instead of duplicating near-identical code.
@@ -2187,6 +2214,122 @@ function leaveSw(ws) {
   }
   ws.swRoom = null;
   ws.swId = null;
+}
+
+// ---- Firefight (room.fg) — see the FG_* constants above for the overall design. Broadcasts go
+// to every connection in fg.players (both active duelists and queued spectators), same as every
+// other minigame's broadcast helper in this file.
+function broadcastFg(code, data, exclude) {
+  const room = rooms.get(code);
+  const fg = room && room.fg;
+  if (!fg) return;
+  const payload = JSON.stringify(data);
+  for (const client of fg.players.keys()) {
+    if (client !== exclude && client.readyState === client.OPEN) client.send(payload);
+  }
+}
+
+function fgSlotOf(fg, ws) {
+  if (fg.slotA === ws) return 'a';
+  if (fg.slotB === ws) return 'b';
+  return null;
+}
+
+// Resets both duelists to full health/alive and starts a fresh round clock. Called for the very
+// first round of a match and again after each intermission — always re-checked against the
+// current slotA/slotB (not cached), since either duelist could have left/been replaced since the
+// timer was scheduled.
+function startFgRound(code) {
+  const room = rooms.get(code);
+  const fg = room && room.fg;
+  if (!fg || !fg.slotA || !fg.slotB) return;
+  for (const ws of [fg.slotA, fg.slotB]) {
+    const p = fg.players.get(ws);
+    if (!p) continue;
+    p.health = FG_MAX_HEALTH;
+    p.alive = true;
+    p.respawnedAt = Date.now();
+  }
+  fg.phase = 'active';
+  fg.roundNumber += 1;
+  fg.roundEndAt = Date.now() + FG_ROUND_MS;
+  clearTimeout(fg.timer);
+  fg.timer = setTimeout(() => endFgRound(code, null), FG_ROUND_MS);
+  broadcastFg(code, { type: 'fg-round-start', roundNumber: fg.roundNumber, endsAt: fg.roundEndAt, scoreA: fg.scoreA, scoreB: fg.scoreB });
+}
+
+// winnerSlot is 'a'/'b' (an elimination), or null (the round clock ran out — a draw, no score,
+// same shape as a real tactical shooter's round timer expiring with both sides still alive).
+function endFgRound(code, winnerSlot) {
+  const room = rooms.get(code);
+  const fg = room && room.fg;
+  if (!fg || fg.phase !== 'active') return;
+  clearTimeout(fg.timer);
+  if (winnerSlot === 'a') fg.scoreA += 1;
+  else if (winnerSlot === 'b') fg.scoreB += 1;
+
+  if (fg.scoreA >= FG_ROUNDS_TO_WIN || fg.scoreB >= FG_ROUNDS_TO_WIN) {
+    const matchWinnerSlot = fg.scoreA > fg.scoreB ? 'a' : 'b';
+    const matchWinnerWs = matchWinnerSlot === 'a' ? fg.slotA : fg.slotB;
+    const matchWinner = matchWinnerWs && fg.players.get(matchWinnerWs);
+    // Total kills across the whole match, not just this round — a meaningful "best duel
+    // performance" score for the room's leaderboard, only recorded once per match (not per round).
+    if (matchWinner) db.bumpLeaderboard(code, 'fg', matchWinner.name, matchWinner.kills);
+    fg.phase = 'match-end';
+    broadcastFg(code, { type: 'fg-match-end', winner: matchWinnerSlot, scoreA: fg.scoreA, scoreB: fg.scoreB });
+    // A fresh fg-start is required for a new match — same "explicit start, not auto-restart"
+    // convention every other round-based minigame in this file uses (dg-start, tv-start).
+    fg.phase = 'waiting';
+    fg.scoreA = 0;
+    fg.scoreB = 0;
+    fg.roundNumber = 0;
+    for (const ws of [fg.slotA, fg.slotB]) {
+      const p = ws && fg.players.get(ws);
+      if (p) p.kills = 0;
+    }
+    return;
+  }
+
+  fg.phase = 'intermission';
+  broadcastFg(code, { type: 'fg-round-end', winnerSlot, scoreA: fg.scoreA, scoreB: fg.scoreB });
+  fg.timer = setTimeout(() => startFgRound(code), FG_INTERMISSION_MS);
+}
+
+function leaveFg(ws) {
+  const code = ws.fgRoom;
+  if (!code) return;
+  const room = rooms.get(code);
+  const fg = room && room.fg;
+  if (fg) {
+    const player = fg.players.get(ws);
+    fg.players.delete(ws);
+    const slot = fgSlotOf(fg, ws);
+    if (slot === 'a') fg.slotA = null;
+    if (slot === 'b') fg.slotB = null;
+    if (slot) {
+      // The pairing just changed — any in-progress match no longer means anything (the departed
+      // duelist's opponent shouldn't keep a lead built against someone who isn't there anymore).
+      clearTimeout(fg.timer);
+      fg.phase = 'waiting';
+      fg.scoreA = 0;
+      fg.scoreB = 0;
+      fg.roundNumber = 0;
+      // Promote the longest-waiting spectator (Map iteration order is insertion order) into the
+      // now-empty slot, same "first queued, first up" fairness every other queue-based feature in
+      // this app uses.
+      for (const [otherWs, otherP] of fg.players) {
+        if (fgSlotOf(fg, otherWs)) continue;
+        if (slot === 'a') fg.slotA = otherWs; else fg.slotB = otherWs;
+        broadcastFg(code, { type: 'fg-slot-filled', slot, id: otherP.id, name: otherP.name });
+        break;
+      }
+    }
+    if (player) broadcastFg(code, { type: 'fg-player-left', id: player.id });
+    if (player) clearRoomActivity(code, player.name);
+    if (fg.players.size === 0) { clearTimeout(fg.timer); delete room.fg; }
+  }
+  ws.fgRoom = null;
+  ws.fgId = null;
 }
 
 // ---- Trivia Night (room.tv) — curated question bank, free/no-signup, no external trivia API.
@@ -3356,6 +3499,122 @@ wss.on('connection', (ws, req) => {
       const code = String(msg.code || '').toUpperCase().trim();
       if (!code) return;
       send(ws, { type: 'sw-leaderboard-result', scores: db.getLeaderboard(code, 'sw', 10) });
+      return;
+    }
+
+    if (msg.type === 'fg-join') {
+      const code = String(msg.code || '').toUpperCase().trim();
+      const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
+      if (!code) return;
+      const room = getOrCreateRoom(code);
+      if (!room.fg) room.fg = { players: new Map(), slotA: null, slotB: null, phase: 'waiting', scoreA: 0, scoreB: 0, roundNumber: 0, roundEndAt: null, timer: null };
+      const fg = room.fg;
+      if (fg.players.size >= MAX_GAME_PLAYERS) {
+        send(ws, { type: 'fg-full' });
+        return;
+      }
+      const id = crypto.randomUUID();
+      ws.fgRoom = code;
+      ws.fgId = id;
+      const entry = { id, name, x: 0, y: 0, z: 0, yaw: 0, health: FG_MAX_HEALTH, alive: false, weapon: FG_DEFAULT_WEAPON, kills: 0, deaths: 0, lastShotAt: 0, respawnedAt: 0 };
+      fg.players.set(ws, entry);
+      // First two players to ever join a fresh session become the duelists; everyone after that
+      // queues as a spectator until a slot opens (see leaveFg's promotion logic).
+      let role = 'spectator';
+      if (!fg.slotA) { fg.slotA = ws; role = 'a'; }
+      else if (!fg.slotB) { fg.slotB = ws; role = 'b'; }
+      send(ws, {
+        type: 'fg-init',
+        id,
+        role,
+        weapons: FG_WEAPONS,
+        players: [...fg.players.values()],
+        slotAId: fg.slotA ? fg.players.get(fg.slotA).id : null,
+        slotBId: fg.slotB ? fg.players.get(fg.slotB).id : null,
+        phase: fg.phase,
+        scoreA: fg.scoreA,
+        scoreB: fg.scoreB,
+        roundNumber: fg.roundNumber,
+        endsAt: fg.roundEndAt,
+      });
+      broadcastFg(code, { type: 'fg-player-joined', id, name, role }, ws);
+      setRoomActivity(code, name, 'fg');
+      return;
+    }
+
+    if (msg.type === 'fg-start' && ws.fgRoom) {
+      const room = rooms.get(ws.fgRoom);
+      const fg = room && room.fg;
+      if (!fg || fg.phase !== 'waiting' || !fg.slotA || !fg.slotB) return;
+      startFgRound(ws.fgRoom);
+      return;
+    }
+
+    if (msg.type === 'fg-select-weapon' && ws.fgRoom) {
+      const room = rooms.get(ws.fgRoom);
+      const fg = room && room.fg;
+      const p = fg && fg.players.get(ws);
+      if (!p || !Object.prototype.hasOwnProperty.call(FG_WEAPONS, msg.weapon)) return;
+      p.weapon = msg.weapon;
+      broadcastFg(ws.fgRoom, { type: 'fg-weapon-changed', id: p.id, weapon: p.weapon });
+      return;
+    }
+
+    if (msg.type === 'fg-pos' && ws.fgRoom) {
+      // Same reasoning as bc-pos/sw-pos/gw-pos above — real-time position stream, needs the
+      // higher-throughput gate, not the tight chat-message one.
+      if (isStrokeRateLimited(ws)) return;
+      const room = rooms.get(ws.fgRoom);
+      const p = room && room.fg && room.fg.players.get(ws);
+      if (!p) return;
+      const fgClamp = (n) => Math.max(-BC_MAX_COORD, Math.min(BC_MAX_COORD, +n || 0));
+      p.x = fgClamp(msg.x); p.y = fgClamp(msg.y); p.z = fgClamp(msg.z); p.yaw = +msg.yaw || 0;
+      broadcastFg(ws.fgRoom, { type: 'fg-pos', id: p.id, x: p.x, y: p.y, z: p.z, yaw: p.yaw }, ws);
+      return;
+    }
+
+    if (msg.type === 'fg-shoot' && ws.fgRoom) {
+      const room = rooms.get(ws.fgRoom);
+      const fg = room && room.fg;
+      if (!fg || fg.phase !== 'active') return;
+      const attackerSlot = fgSlotOf(fg, ws);
+      if (!attackerSlot) return; // only the two active duelists can deal damage — a queued spectator has nothing to shoot at
+      const attacker = fg.players.get(ws);
+      if (!attacker || !attacker.alive) return;
+      const weapon = FG_WEAPONS[attacker.weapon] || FG_WEAPONS[FG_DEFAULT_WEAPON];
+      const now = Date.now();
+      if (now - (attacker.lastShotAt || 0) < weapon.cooldownMs) return;
+
+      const targetWs = attackerSlot === 'a' ? fg.slotB : fg.slotA;
+      const target = targetWs && fg.players.get(targetWs);
+      if (!target || !target.alive) return;
+      if (now - (target.respawnedAt || 0) < FG_RESPAWN_GRACE_MS) return;
+      const dx = attacker.x - target.x, dy = attacker.y - target.y, dz = attacker.z - target.z;
+      if (Math.sqrt(dx * dx + dy * dy + dz * dz) > weapon.range) return;
+
+      attacker.lastShotAt = now;
+      target.health = Math.max(0, target.health - weapon.damage);
+      if (target.health > 0) {
+        broadcastFg(ws.fgRoom, { type: 'fg-hit', targetId: target.id, health: target.health, byId: attacker.id, weapon: attacker.weapon });
+        return;
+      }
+      target.alive = false;
+      target.deaths += 1;
+      attacker.kills += 1;
+      broadcastFg(ws.fgRoom, { type: 'fg-death', id: target.id, killedBy: attacker.id, weapon: attacker.weapon });
+      endFgRound(ws.fgRoom, attackerSlot);
+      return;
+    }
+
+    if (msg.type === 'fg-leave') {
+      leaveFg(ws);
+      return;
+    }
+
+    if (msg.type === 'fg-leaderboard') {
+      const code = String(msg.code || '').toUpperCase().trim();
+      if (!code) return;
+      send(ws, { type: 'fg-leaderboard-result', scores: db.getLeaderboard(code, 'fg', 10) });
       return;
     }
 
@@ -4909,6 +5168,7 @@ wss.on('connection', (ws, req) => {
     if (ws.bcRoom) leaveBc(ws);
     if (ws.gwRoom) leaveGw(ws);
     if (ws.swRoom) leaveSw(ws);
+    if (ws.fgRoom) leaveFg(ws);
     if (ws.dgRoom) leaveDg(ws);
     if (ws.wbRoom) leaveWb(ws);
     if (ws.tvRoom) leaveTv(ws);
@@ -5025,6 +5285,7 @@ function isRoomFullyEmpty(room) {
     }
   }
   if (room.sw && room.sw.players && room.sw.players.size > 0) return false;
+  if (room.fg && room.fg.players && room.fg.players.size > 0) return false;
   if (room.tv && room.tv.players && room.tv.players.size > 0) return false;
   if (room.dg && room.dg.players && room.dg.players.size > 0) return false;
   // wb/tt/ch/hm were missing here — a room with players only in whiteboard, tic-tac-toe/
