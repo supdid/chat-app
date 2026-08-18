@@ -122,11 +122,18 @@ function clamp(v, lo, hi) {
 
 let scene, camera, renderer;
 const obstacles = []; // { box: THREE.Box3, height } — height is duplicated from box.max.y for cheap access in the hot per-frame collision/standing checks below
+// Real meshes for the same obstacles, kept separately from `obstacles`' AABB-only entries — this
+// is what the shot tracer's raycast needs (an actual Mesh with real geometry), while movement/
+// standing collision stays on the cheap box test above.
+const collidableMeshes = [];
 
 function addObstacle(x, z, w, h, d, color) {
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshStandardMaterial({ color }));
   mesh.position.set(x, h / 2, z);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
   scene.add(mesh);
+  collidableMeshes.push(mesh);
   obstacles.push({
     box: new THREE.Box3(new THREE.Vector3(x - w / 2, 0, z - d / 2), new THREE.Vector3(x + w / 2, h, z + d / 2)),
     height: h,
@@ -140,9 +147,13 @@ function addObstacle(x, z, w, h, d, color) {
 function addPillar(x, z, radius, height, color) {
   const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius * 1.15, height, 12), new THREE.MeshStandardMaterial({ color }));
   mesh.position.set(x, height / 2, z);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
   scene.add(mesh);
+  collidableMeshes.push(mesh);
   const cap = new THREE.Mesh(new THREE.CylinderGeometry(radius * 1.35, radius * 1.35, radius * 0.4, 12), new THREE.MeshStandardMaterial({ color }));
   cap.position.set(x, height + radius * 0.2, z);
+  cap.castShadow = true;
   scene.add(cap);
   const half = radius * 1.15;
   obstacles.push({
@@ -163,17 +174,35 @@ function initScene() {
   renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
   scene.add(new THREE.HemisphereLight(0xfff2d9, 0x8a7550, 1.0));
   const dir = new THREE.DirectionalLight(0xffe9c2, 1.0);
   dir.position.set(25, 40, 15);
+  dir.castShadow = true;
+  dir.shadow.mapSize.set(2048, 2048);
+  // Frustum sized to the plaza+colonnade core (not the full ±40 wall-to-wall span) — that's where
+  // duelists actually fight and where shadow resolution matters; the perimeter can go soft.
+  dir.shadow.camera.left = -30; dir.shadow.camera.right = 30;
+  dir.shadow.camera.top = 30; dir.shadow.camera.bottom = -30;
+  dir.shadow.camera.near = 10; dir.shadow.camera.far = 80;
+  dir.shadow.bias = -0.0015;
   scene.add(dir);
+
+  // Attached to the camera so viewmodel-style effects (muzzle flash) parented to it get their
+  // matrixWorld updated every frame — three.js only auto-updates objects reachable from the scene
+  // graph during render(), and the camera itself isn't in that graph by default.
+  scene.add(camera);
+  camera.add(muzzleFlashSprite);
+  camera.add(muzzleFlashLight);
 
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(ARENA_HALF * 2, ARENA_HALF * 2),
     new THREE.MeshStandardMaterial({ color: 0xe4d9bf })
   );
   ground.rotation.x = -Math.PI / 2;
+  ground.receiveShadow = true;
   scene.add(ground);
 
   // Tall cream marble perimeter walls — well above the ~2.5-unit jump apex, so (as before) they
@@ -231,6 +260,7 @@ function makePlaza() {
   );
   plaza.rotation.x = -Math.PI / 2;
   plaza.position.y = 0.02; // just above the ground plane, avoids z-fighting
+  plaza.receiveShadow = true;
   scene.add(plaza);
 
   const rim = new THREE.Mesh(
@@ -349,9 +379,11 @@ function makeAvatar(name) {
   const mat = new THREE.MeshStandardMaterial({ color: 0xff5a3c });
   const body = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 1.1, 8), mat);
   body.position.y = 1.0;
+  body.castShadow = true;
   group.add(body);
   const head = new THREE.Mesh(new THREE.SphereGeometry(0.32, 12, 12), mat);
   head.position.y = 1.85;
+  head.castShadow = true;
   group.add(head);
   group.add(makeNameSprite(name));
   scene.add(group);
@@ -425,7 +457,10 @@ function updateCameraFromPlayer() {
   camera.position.set(player.x, player.y + EYE_HEIGHT, player.z);
   camera.rotation.x = player.pitch;
   camera.rotation.y = player.yaw;
-  camera.rotation.z = 0;
+  // A slow head-lean on your own death rather than snapping mouse-look away from the player —
+  // roll is otherwise never touched during normal play, so this is the one axis free to use for
+  // it without fighting the pitch/yaw the player is still holding the mouse over.
+  camera.rotation.z = myDeathAt ? Math.min(1, (performance.now() - myDeathAt) / 500) * 0.32 : 0;
 }
 
 function updateFov(dt) {
@@ -584,10 +619,118 @@ function updateWeaponHud() {
   weaponHudEl.textContent = player.weapon ? player.weapon[0].toUpperCase() + player.weapon.slice(1) : '';
 }
 
+// ==== Combat FX — muzzle flash, tracers, impact sparks ====
+// All purely cosmetic and client-local: the server never tells anyone a shot was *fired*, only
+// whether one *landed* (fg-hit/fg-death carry byId/targetId but no shot geometry). So the shooter
+// gets full instant feedback from their own raycast the moment they click; everyone else only
+// sees a tracer/flash/spark when fg-hit or fg-death actually arrives for that shot. A remote miss
+// is invisible to bystanders — same "trust the client, cosmetics only" model the rest of this
+// game's combat already uses, just extended to rendering instead of damage.
+
+// Parented to the camera in initScene() so it rides along for free every frame — camera-local
+// offset (right, down, forward), like a gun barrel low in frame with no actual viewmodel to hang
+// it off of.
+const muzzleFlashSprite = new THREE.Sprite(new THREE.SpriteMaterial({ color: 0xffd27a, transparent: true, opacity: 0, depthTest: false }));
+muzzleFlashSprite.scale.set(0.3, 0.3, 1);
+muzzleFlashSprite.position.set(0.32, -0.28, -0.6);
+muzzleFlashSprite.renderOrder = 999;
+const muzzleFlashLight = new THREE.PointLight(0xffcf66, 0, 6, 2);
+muzzleFlashLight.position.set(0.3, -0.2, -0.5);
+function flashMuzzle() {
+  muzzleFlashSprite.material.opacity = 1;
+  muzzleFlashLight.intensity = 3.5;
+}
+
+const activeFlashes = []; // world-space flashes for other players' confirmed shots — { light, sprite }
+function flashAt(pos) {
+  const light = new THREE.PointLight(0xffcf66, 4, 6, 2);
+  light.position.copy(pos);
+  scene.add(light);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ color: 0xffd27a, transparent: true, opacity: 1, depthTest: false }));
+  sprite.scale.set(0.5, 0.5, 1);
+  sprite.position.copy(pos);
+  scene.add(sprite);
+  activeFlashes.push({ light, sprite });
+}
+
+const activeTracers = []; // { line, bornAt }
+const TRACER_LIFE_MS = 140;
+function spawnTracer(from, to) {
+  const geo = new THREE.BufferGeometry().setFromPoints([from, to]);
+  const mat = new THREE.LineBasicMaterial({ color: 0xfff2b0, transparent: true, opacity: 0.9 });
+  const line = new THREE.Line(geo, mat);
+  line.renderOrder = 998;
+  scene.add(line);
+  activeTracers.push({ line, bornAt: performance.now() });
+}
+
+const activeSparks = []; // { sprite, vel, bornAt }
+const SPARK_LIFE_MS = 380;
+function spawnImpactSpark(pos, headshot) {
+  const n = headshot ? 10 : 6;
+  const color = headshot ? 0xff5a5a : 0xffe066;
+  for (let i = 0; i < n; i++) {
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ color, transparent: true, opacity: 1, depthTest: false }));
+    sprite.scale.set(0.1, 0.1, 1);
+    sprite.position.copy(pos);
+    scene.add(sprite);
+    const theta = Math.random() * Math.PI * 2, phi = Math.random() * Math.PI;
+    const speed = 1.5 + Math.random() * 2.5;
+    const vel = new THREE.Vector3(
+      Math.sin(phi) * Math.cos(theta),
+      Math.cos(phi) * 0.6 + 0.5,
+      Math.sin(phi) * Math.sin(theta)
+    ).multiplyScalar(speed);
+    activeSparks.push({ sprite, vel, bornAt: performance.now() });
+  }
+}
+
+// Where a given player's torso/head currently is, in world space — used to anchor tracers/flashes
+// for shots the local client didn't fire itself (own position for the local id, interpolated
+// avatar group position for anyone else). Returns null only if a remote id's avatar hasn't been
+// created yet, which fg-hit/fg-death should never see in practice (the shooter and target are
+// always already-known duelists by the time a shot can land).
+function posForId(id) {
+  if (id === myId) return new THREE.Vector3(player.x, player.y + EYE_HEIGHT, player.z);
+  const rp = remotePlayers.get(id);
+  if (!rp) return null;
+  return new THREE.Vector3(rp.group.position.x, rp.group.position.y + 1.4, rp.group.position.z);
+}
+
+// Fired from fg-hit/fg-death for every landed shot. The local shooter's own tracer+flash already
+// happened instantly in attemptShoot() (see computeShotRay/flashMuzzle there); this only adds the
+// parts that couldn't happen until the server confirmed it — the impact spark (needs the real
+// target position, not the shooter's raycast guess) always, and the full tracer+flash for anyone
+// else's shot (which otherwise had no visual representation at all).
+function showLandedShot(byId, targetId, headshot) {
+  const targetPos = posForId(targetId);
+  if (!targetPos) return;
+  if (byId !== myId) {
+    const shooterPos = posForId(byId);
+    if (shooterPos) { spawnTracer(shooterPos, targetPos); flashAt(shooterPos); }
+  }
+  spawnImpactSpark(targetPos, headshot);
+}
+
 // Reused across shots rather than allocated fresh each time — this only ever needs a straight
 // down-the-crosshair cast (screen center), never a per-pixel one.
 const shootRaycaster = new THREE.Raycaster();
 const CROSSHAIR_NDC = new THREE.Vector2(0, 0);
+
+// Where the local player's own shot actually lands visually — raycasts against real arena geometry
+// plus every known remote avatar's body/head meshes, capped to the weapon's range so a shot into
+// open sky doesn't draw a tracer to nowhere. This is a rendering-only guess, purely for the
+// shooter's own instant feedback; the server alone decides whether the shot actually deals damage.
+function computeShotEnd(range) {
+  shootRaycaster.setFromCamera(CROSSHAIR_NDC, camera);
+  shootRaycaster.far = range;
+  const avatarMeshes = [...remotePlayers.values()].flatMap((rp) => rp.group.children.filter((c) => c.isMesh));
+  const hits = shootRaycaster.intersectObjects([...collidableMeshes, ...avatarMeshes], false);
+  if (hits.length) return hits[0].point;
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  return camera.position.clone().addScaledVector(dir, range);
+}
 
 // Sniper-only: a real raycast from the crosshair against every visible opponent's head hitbox,
 // same aim the player is actually looking at rather than a proximity guess. The server ultimately
@@ -612,6 +755,9 @@ function attemptShoot() {
   lastShotAt = now;
   const headshot = computeHeadshot();
   playSound(headshot ? 'headshot' : player.weapon === 'sniper' ? 'sniper' : 'shoot');
+  flashMuzzle();
+  const muzzleWorldPos = muzzleFlashSprite.getWorldPosition(new THREE.Vector3());
+  spawnTracer(muzzleWorldPos, computeShotEnd(w.range));
   crosshairEl.classList.remove('fired');
   void crosshairEl.offsetWidth;
   crosshairEl.classList.add('fired');
@@ -750,6 +896,7 @@ leaderboardCloseBtn.addEventListener('click', () => leaderboardOverlay.classList
 // ==== Networking ====
 let ws = null;
 let myId = null;
+let myDeathAt = 0; // performance.now() of this client's own last fg-death, or 0 — drives the camera death-tilt in updateCameraFromPlayer
 let mySlot = 'spectator';
 let slotAId = null, slotBId = null;
 let phase = 'waiting';
@@ -892,6 +1039,8 @@ function handleMessage(data) {
       roundEndsAt = data.endsAt;
       scoreA = data.scoreA; scoreB = data.scoreB;
       player.health = maxHealth; player.alive = true;
+      myDeathAt = 0;
+      for (const rp of remotePlayers.values()) { rp.dying = false; rp.group.rotation.x = 0; }
       renderHealth();
       menuEl.classList.add('hidden');
       matchendOverlay.classList.add('hidden');
@@ -917,6 +1066,7 @@ function handleMessage(data) {
       break;
     }
     case 'fg-hit': {
+      showLandedShot(data.byId, data.targetId, data.headshot);
       if (data.targetId === myId) {
         player.health = data.health;
         renderHealth();
@@ -931,6 +1081,7 @@ function handleMessage(data) {
       break;
     }
     case 'fg-death': {
+      showLandedShot(data.killedBy, data.id, data.headshot);
       const hs = data.headshot ? ' (Headshot!)' : '';
       if (data.id === myId) {
         player.alive = false;
@@ -938,11 +1089,14 @@ function handleMessage(data) {
         renderHealth();
         addKillFeed(`💀 Eliminated by ${knownNames.get(data.killedBy) || 'your opponent'}${hs}`);
         playSound('death');
+        myDeathAt = performance.now();
       } else if (data.killedBy === myId) {
         addKillFeed(`🎯 You eliminated ${knownNames.get(data.id) || 'your opponent'}!${hs}`);
       } else {
         addKillFeed(`${knownNames.get(data.killedBy) || 'Someone'} eliminated ${knownNames.get(data.id) || 'someone'}${hs}`);
       }
+      const rp = remotePlayers.get(data.id);
+      if (rp) { rp.dying = true; rp.deathAt = performance.now(); }
       break;
     }
     case 'fg-round-end': {
@@ -1017,8 +1171,62 @@ function loop(now) {
     rp.group.position.y += (rp.target.y - rp.group.position.y) * 0.25;
     rp.group.position.z += (rp.target.z - rp.group.position.z) * 0.25;
     rp.group.rotation.y += (rp.target.yaw - rp.group.rotation.y) * 0.25;
+    // Tips forward and sinks in place, overriding the normal position lerp above for this one
+    // axis — set as an absolute offset from rp.target.y (not -=), since this branch runs every
+    // frame for as long as `dying` stays true and a -= here would subtract again each frame
+    // forever instead of settling at a fixed depth once t saturates at 1.
+    if (rp.dying) {
+      const t = Math.min(1, (now - rp.deathAt) / 650);
+      rp.group.rotation.x = t * 1.5;
+      rp.group.position.y = rp.target.y - t * 0.9;
+    }
   }
   for (const b of balloons) b.mesh.position.y = b.baseY + Math.sin(now / 1000 + b.phase) * 0.15;
+
+  // Combat FX decay — exponential falloff needs no per-effect timer bookkeeping for the flash/
+  // light, just a per-frame multiply; tracers and sparks age against a hard lifetime instead since
+  // they need to be removed from the scene (and disposed) once fully faded, not just dimmed.
+  muzzleFlashSprite.material.opacity *= 0.8;
+  muzzleFlashLight.intensity *= 0.8;
+
+  for (let i = activeFlashes.length - 1; i >= 0; i--) {
+    const f = activeFlashes[i];
+    f.light.intensity *= 0.75;
+    f.sprite.material.opacity *= 0.75;
+    if (f.light.intensity < 0.05) {
+      scene.remove(f.light);
+      scene.remove(f.sprite);
+      f.sprite.material.dispose();
+      activeFlashes.splice(i, 1);
+    }
+  }
+
+  for (let i = activeTracers.length - 1; i >= 0; i--) {
+    const t = activeTracers[i];
+    const age = now - t.bornAt;
+    if (age > TRACER_LIFE_MS) {
+      scene.remove(t.line);
+      t.line.geometry.dispose();
+      t.line.material.dispose();
+      activeTracers.splice(i, 1);
+      continue;
+    }
+    t.line.material.opacity = 0.9 * (1 - age / TRACER_LIFE_MS);
+  }
+
+  for (let i = activeSparks.length - 1; i >= 0; i--) {
+    const s = activeSparks[i];
+    const age = now - s.bornAt;
+    if (age > SPARK_LIFE_MS) {
+      scene.remove(s.sprite);
+      s.sprite.material.dispose();
+      activeSparks.splice(i, 1);
+      continue;
+    }
+    s.sprite.position.addScaledVector(s.vel, dt);
+    s.vel.y -= 9 * dt; // gravity
+    s.sprite.material.opacity = 1 - age / SPARK_LIFE_MS;
+  }
 
   updateRoundTimer();
   renderer.render(scene, camera);
