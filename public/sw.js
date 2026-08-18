@@ -1,6 +1,6 @@
 // Bump this on every deploy. Changing it is what makes the browser see sw.js as a new file, which
 // is what puts a worker into the "waiting" state and raises the update screen (see update-prompt.js).
-const CACHE_NAME = 'valk-cache-v136';
+const CACHE_NAME = 'valk-cache-v137';
 const APP_SHELL = [
   '/',
   '/index.html',

@@ -103,13 +103,16 @@ function playSound(kind) {
 }
 
 // ==== Arena ====
-const ARENA_HALF = 24;
+const ARENA_HALF = 40; // was 24 — a full palace courtyard, not a small arena
 const EYE_HEIGHT = 1.6;
 const BASE_FOV = 75;
 const MOVE_SPEED = 6.5;
 const PLAYER_RADIUS = 0.4;
-const SPAWN_A = { x: -12, y: 0, z: 0, yaw: -Math.PI / 2 };
-const SPAWN_B = { x: 12, y: 0, z: 0, yaw: Math.PI / 2 };
+const SPAWN_A = { x: -24, y: 0, z: 0, yaw: -Math.PI / 2 };
+const SPAWN_B = { x: 24, y: 0, z: 0, yaw: Math.PI / 2 };
+// Just south of the fountain, facing north toward it — where every fresh join/reconnect lands
+// before a round assigns a real duel spawn point (see the fg-init handler).
+const LOBBY_SPAWN = { x: 0, y: 0, z: 4, yaw: Math.PI };
 function spawnFor(slot) {
   return slot === 'a' ? SPAWN_A : SPAWN_B;
 }
@@ -130,10 +133,29 @@ function addObstacle(x, z, w, h, d, color) {
   });
 }
 
+// Round palace column — a cylinder mesh visually, but collision still uses the same axis-aligned
+// box every other obstacle does (the movement/collision code is AABB-only); a square footprint
+// close to the cylinder's own diameter is visually unnoticeable at this scale and avoids adding a
+// second collision-shape type for one prop.
+function addPillar(x, z, radius, height, color) {
+  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius * 1.15, height, 12), new THREE.MeshStandardMaterial({ color }));
+  mesh.position.set(x, height / 2, z);
+  scene.add(mesh);
+  const cap = new THREE.Mesh(new THREE.CylinderGeometry(radius * 1.35, radius * 1.35, radius * 0.4, 12), new THREE.MeshStandardMaterial({ color }));
+  cap.position.set(x, height + radius * 0.2, z);
+  scene.add(cap);
+  const half = radius * 1.15;
+  obstacles.push({
+    box: new THREE.Box3(new THREE.Vector3(x - half, 0, z - half), new THREE.Vector3(x + half, height, z + half)),
+    height,
+  });
+}
+
 function initScene() {
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x1b2230);
-  scene.fog = new THREE.Fog(0x1b2230, 30, 75);
+  // Warm cream/gold palace courtyard instead of the old dark industrial-arena tone.
+  scene.background = new THREE.Color(0xe8dcc5);
+  scene.fog = new THREE.Fog(0xe8dcc5, 45, 110);
 
   camera = new THREE.PerspectiveCamera(BASE_FOV, window.innerWidth / window.innerHeight, 0.1, 500);
   camera.rotation.order = 'YXZ';
@@ -142,33 +164,47 @@ function initScene() {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
 
-  scene.add(new THREE.HemisphereLight(0xaabbdd, 0x1a1a20, 0.9));
-  const dir = new THREE.DirectionalLight(0xffffff, 0.8);
-  dir.position.set(20, 30, 10);
+  scene.add(new THREE.HemisphereLight(0xfff2d9, 0x8a7550, 1.0));
+  const dir = new THREE.DirectionalLight(0xffe9c2, 1.0);
+  dir.position.set(25, 40, 15);
   scene.add(dir);
 
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(ARENA_HALF * 2, ARENA_HALF * 2),
-    new THREE.MeshStandardMaterial({ color: 0x2b3140 })
+    new THREE.MeshStandardMaterial({ color: 0xe4d9bf })
   );
   ground.rotation.x = -Math.PI / 2;
   scene.add(ground);
 
-  const wallColor = 0x3a4152, wallH = 6;
+  // Tall cream marble perimeter walls — well above the ~2.5-unit jump apex, so (as before) they
+  // stay permanently impassable with no special-casing needed.
+  const wallColor = 0xcbb994, wallH = 8;
   addObstacle(0, -ARENA_HALF, ARENA_HALF * 2, wallH, 1, wallColor);
   addObstacle(0, ARENA_HALF, ARENA_HALF * 2, wallH, 1, wallColor);
   addObstacle(-ARENA_HALF, 0, 1, wallH, ARENA_HALF * 2, wallColor);
   addObstacle(ARENA_HALF, 0, 1, wallH, ARENA_HALF * 2, wallColor);
 
-  const coverColor = 0x54607a, coverH = 1.8;
-  addObstacle(-8, -8, 3, coverH, 3, coverColor);
-  addObstacle(8, 8, 3, coverH, 3, coverColor);
-  addObstacle(-8, 8, 3, coverH, 3, coverColor);
-  addObstacle(8, -8, 3, coverH, 3, coverColor);
-  addObstacle(0, -14, 6, coverH * 0.9, 1.4, coverColor);
-  addObstacle(0, 14, 6, coverH * 0.9, 1.4, coverColor);
-  addObstacle(-16, 0, 1.4, coverH * 0.9, 6, coverColor);
-  addObstacle(16, 0, 1.4, coverH * 0.9, 6, coverColor);
+  // Colonnade ring around the plaza — a columned courtyard, not a solid wall; gaps between
+  // adjacent pillars are 5+ units, plenty of room to walk or shoot through.
+  const pillarColor = 0xe2d3ab;
+  for (let i = 0; i < 8; i++) {
+    const angle = (i / 8) * Math.PI * 2;
+    addPillar(Math.cos(angle) * 9, Math.sin(angle) * 9, 0.6, 4.5, pillarColor);
+  }
+
+  // Mid-field pillar cover at the four diagonals — far enough from both spawns (±24,0) and each
+  // other to leave real sightlines and maneuvering room, not a maze.
+  [[16, 16], [16, -16], [-16, 16], [-16, -16]].forEach(([x, z]) => addPillar(x, z, 0.7, 5, pillarColor));
+
+  // A pair of shorter pillars near each spawn's flanks for immediate cover options, well clear of
+  // the spawn point itself.
+  [[-30, 10], [-30, -10], [30, 10], [30, -10]].forEach(([x, z]) => addPillar(x, z, 0.6, 4.5, pillarColor));
+
+  // Low garden hedges (jumpable, same as the old cover boxes) along the north/south ends only —
+  // the east/west spawn line stays clear.
+  const hedgeColor = 0x4a7a4a, hedgeH = 1.8;
+  addObstacle(0, -30, 7, hedgeH, 1.6, hedgeColor);
+  addObstacle(0, 30, 7, hedgeH, 1.6, hedgeColor);
 
   addLobbyDecor();
   window.addEventListener('resize', onResize);
@@ -187,9 +223,11 @@ function onResize() {
 const balloons = []; // { mesh, baseY, phase } — bobbed each frame in the main loop
 
 function makePlaza() {
+  // Warm pink-white marble pool floor with a soft glow, matching the palace's cream/gold palette
+  // instead of the old aqua-blue tone.
   const plaza = new THREE.Mesh(
     new THREE.CircleGeometry(6, 40),
-    new THREE.MeshStandardMaterial({ color: 0xbfe8f5, emissive: 0x1a3a44, emissiveIntensity: 0.12 })
+    new THREE.MeshStandardMaterial({ color: 0xf0dce2, emissive: 0xf5c9d6, emissiveIntensity: 0.12 })
   );
   plaza.rotation.x = -Math.PI / 2;
   plaza.position.y = 0.02; // just above the ground plane, avoids z-fighting
@@ -246,7 +284,8 @@ function makeBalloon(x, z, color) {
 
 function addLobbyDecor() {
   makePlaza();
-  [[-20, -20], [20, -20], [-20, 20], [20, 20]].forEach(([x, z]) => makePalmTree(x, z));
+  const cornerOffset = ARENA_HALF - 6; // scales with ARENA_HALF, not hardcoded to the old 24-unit arena
+  [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([sx, sz]) => makePalmTree(sx * cornerOffset, sz * cornerOffset));
   const bannerColors = [0xffcf4a, 0x3b7dff];
   for (let i = 0; i < 8; i++) {
     const angle = (i / 8) * Math.PI * 2;
@@ -764,6 +803,12 @@ function handleMessage(data) {
       totalKills = data.totalKills || 0;
       unlockedWeapons = data.unlockedWeapons || ['pistol'];
       if (!isUnlocked(player.weapon)) player.weapon = 'pistol';
+      // Every fresh fg-init — a first join or a reconnect — drops the player back in the lobby
+      // plaza, not wherever they happened to be standing before. player.x/y/z is a module-level
+      // var that otherwise survives a reconnect's fresh WebSocket, so without this a disconnect
+      // mid-wander would resume exactly where they left off instead of back at the lobby.
+      player.x = LOBBY_SPAWN.x; player.y = LOBBY_SPAWN.y; player.z = LOBBY_SPAWN.z; player.yaw = LOBBY_SPAWN.yaw;
+      player.pitch = 0; player.vy = 0; player.grounded = true;
       buildWeaponButtons();
       updateWeaponHud();
       data.players.forEach((p) => {
@@ -917,6 +962,12 @@ function handleMessage(data) {
         : (won ? `You win the match! (${data.scoreA}-${data.scoreB})` : `${winnerName} wins the match. (${data.scoreA}-${data.scoreB})`);
       rematchBtn.classList.toggle('hidden', mySlot !== 'a' && mySlot !== 'b');
       matchendOverlay.classList.remove('hidden');
+      // Back to the lobby plaza once the match is over, same as a fresh join — otherwise everyone
+      // stays standing wherever the final round left them (out at a duel spawn point) instead of
+      // back at the fountain for the next one.
+      player.x = LOBBY_SPAWN.x; player.y = LOBBY_SPAWN.y; player.z = LOBBY_SPAWN.z; player.yaw = LOBBY_SPAWN.yaw;
+      player.pitch = 0; player.vy = 0; player.grounded = true;
+      sendPos(true);
       break;
     }
     case 'fg-leaderboard-result': {
