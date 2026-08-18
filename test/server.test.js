@@ -1931,4 +1931,47 @@ describe('Firefight (1v1 duel shooter)', () => {
 
     a.close(); b.close();
   });
+
+  // fg.slotA/fg.slotB were only ever checked for truthiness ("is a slot open"), not "is this a
+  // different connection" — a single connection sending fg-join twice used to claim both slots
+  // for itself, collapsing the whole "genuine 1v1" model into fighting itself with guaranteed
+  // hits (zero distance to its own position). Fixed by having fg-join ignore a repeat join for a
+  // session it's already active in.
+  test('a single connection cannot claim both duelist slots by joining twice', async () => {
+    const code = 'FFSELFJOIN1';
+    const a = await fgConnect();
+    send(a, { type: 'fg-join', code, name: 'Solo1' });
+    const initA = await waitFor(a, (m) => m.type === 'fg-init');
+    assert.equal(initA.role, 'a');
+
+    // The repeat join must be a silent no-op — no second fg-init, and it must not touch the
+    // existing slotA assignment (confirmed below via a real second connection still getting 'b').
+    let sawSecondInit = false;
+    const h = (data) => { if (JSON.parse(data).type === 'fg-init') sawSecondInit = true; };
+    a.on('message', h);
+    send(a, { type: 'fg-join', code, name: 'Solo2' });
+    await sleep(200);
+    a.off('message', h);
+    assert.equal(sawSecondInit, false, 'a repeat fg-join on the same connection must not be re-processed');
+
+    const b = await fgConnect();
+    send(b, { type: 'fg-join', code, name: 'RealB' });
+    const initB = await waitFor(b, (m) => m.type === 'fg-init');
+    assert.equal(initB.role, 'b', 'a genuinely different connection must still be able to fill slot b');
+
+    // Belt-and-suspenders: even if slotA and slotB somehow ended up equal, fg-shoot's own
+    // self-target guard must refuse to let a connection deal damage to itself.
+    send(a, { type: 'fg-start' });
+    await waitFor(a, (m) => m.type === 'fg-round-start');
+    await waitFor(b, (m) => m.type === 'fg-round-start');
+    let sawSelfHit = false;
+    const h2 = (data) => { const m = JSON.parse(data); if (m.type === 'fg-hit' && m.byId === m.targetId) sawSelfHit = true; };
+    a.on('message', h2);
+    send(a, { type: 'fg-shoot' });
+    await sleep(300);
+    a.off('message', h2);
+    assert.equal(sawSelfHit, false, 'a duelist must never be able to land a hit on themselves');
+
+    a.close(); b.close();
+  });
 });

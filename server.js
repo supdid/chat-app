@@ -3537,6 +3537,17 @@ wss.on('connection', (ws, req) => {
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
+      // A connection already active in this exact session must never re-run slot assignment below
+      // — fg.slotA/fg.slotB are only ever checked for truthiness ("is a slot open"), not "is this
+      // someone else's connection", so a second fg-join on the same ws could otherwise claim BOTH
+      // duelist slots for itself: fgSlotOf always resolves such a connection to 'a', so fg-shoot's
+      // "target" would resolve back to the same entry as "attacker", guaranteeing every shot lands
+      // (zero distance to itself) and letting it farm round/match wins and leaderboard kills solo
+      // — the real client never does this (one fg-join per fresh connection), but a raw WS client
+      // could, and it broke the whole "genuine 1v1" premise this feature was built for. Already
+      // active in a *different* fg session just leaves that one first, same as a normal room switch.
+      if (ws.fgRoom === code) return;
+      if (ws.fgRoom) leaveFg(ws);
       const room = getOrCreateRoom(code);
       if (!room.fg) room.fg = { players: new Map(), slotA: null, slotB: null, phase: 'waiting', scoreA: 0, scoreB: 0, roundNumber: 0, roundEndAt: null, timer: null };
       const fg = room.fg;
@@ -3623,6 +3634,10 @@ wss.on('connection', (ws, req) => {
       attacker.lastShotAt = now;
 
       const targetWs = attackerSlot === 'a' ? fg.slotB : fg.slotA;
+      // Defense in depth alongside fg-join's own guard above (which is what actually prevents
+      // fg.slotA and fg.slotB ever being the same connection in the first place) — same
+      // belt-and-suspenders self-target check sw-strike already has.
+      if (targetWs === ws) return;
       const target = targetWs && fg.players.get(targetWs);
       if (!target || !target.alive) return;
       if (now - (target.respawnedAt || 0) < FG_RESPAWN_GRACE_MS) return;
