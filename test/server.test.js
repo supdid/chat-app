@@ -404,7 +404,12 @@ describe('Web Swing PvP', () => {
     const h1 = (data) => { const m = JSON.parse(data); if (m.type === 'sw-hit' || m.type === 'sw-death') outOfRangeHit = true; };
     b.on('message', h1);
     send(a, { type: 'sw-strike', targetId: bInit.id });
-    await sleep(300);
+    // 600ms here (not the 300ms every other post-strike wait in this test uses) — this attempt
+    // still consumes the attacker's cooldown even though it misses on range (a real swing costs
+    // you the swing whether or not it connects, which is also what closes the flood-gate hole this
+    // was fixed for), so the very next strike attempt needs to clear a full SW_STRIKE_COOLDOWN_MS
+    // (700ms) from *this* send, not from the self-target one three sleeps ago.
+    await sleep(600);
     b.off('message', h1);
     assert.equal(outOfRangeHit, false);
 

@@ -3128,6 +3128,14 @@ wss.on('connection', (ws, req) => {
       if (!attacker || attacker.health <= 0) return;
       const now = Date.now();
       if (now - (attacker.lastPunchAt || 0) < BC_PUNCH_COOLDOWN_MS) return;
+      // Set as soon as the cooldown itself clears, not only once a punch actually connects — a
+      // punch that misses (bad targetId, dead target, out of range) still cost the attacker their
+      // swing in a real fight, and this is what makes the cooldown check above actually throttle
+      // the message rate. Setting it only on a landed hit left every miss free: a raw WS client
+      // spamming bc-punch at a target it knows is out of range paid no cooldown at all, an
+      // unthrottled flood of messages (same bug independently found and fixed in fg-shoot/
+      // sw-strike, which used to follow this exact same shape).
+      attacker.lastPunchAt = now;
 
       let targetWs = null;
       let target = null;
@@ -3141,7 +3149,6 @@ wss.on('connection', (ws, req) => {
       const dx = attacker.x - target.x, dy = attacker.y - target.y, dz = attacker.z - target.z;
       if (Math.sqrt(dx * dx + dy * dy + dz * dz) > BC_PUNCH_RANGE + 3) return;
 
-      attacker.lastPunchAt = now;
       applyBcDamage(ws.bcRoom, targetWs, target, 1, attacker.id);
       return;
     }
@@ -3457,6 +3464,11 @@ wss.on('connection', (ws, req) => {
       if (!attacker || attacker.health <= 0) return;
       const now = Date.now();
       if (now - (attacker.lastStrikeAt || 0) < SW_STRIKE_COOLDOWN_MS) return;
+      // Set right after the cooldown check clears, not only on a landed hit — see the identical
+      // fix (and its full explanation) on bc-punch above; a miss (self-target, dead target,
+      // respawn grace, out of range) used to cost nothing, leaving this cooldown check trivially
+      // bypassable by spamming sw-strike at a target it knows won't connect.
+      attacker.lastStrikeAt = now;
 
       if (msg.targetId === attacker.id) return;
       let target = null;
@@ -3468,7 +3480,6 @@ wss.on('connection', (ws, req) => {
       const dx = attacker.x - target.x, dy = attacker.y - target.y, dz = attacker.z - target.z;
       if (Math.sqrt(dx * dx + dy * dy + dz * dz) > SW_STRIKE_RANGE) return;
 
-      attacker.lastStrikeAt = now;
       target.health -= 1;
       if (target.health > 0) {
         broadcastSw(ws.swRoom, { type: 'sw-hit', targetId: target.id, health: target.health, byId: attacker.id });
@@ -3584,6 +3595,11 @@ wss.on('connection', (ws, req) => {
       const weapon = FG_WEAPONS[attacker.weapon] || FG_WEAPONS[FG_DEFAULT_WEAPON];
       const now = Date.now();
       if (now - (attacker.lastShotAt || 0) < weapon.cooldownMs) return;
+      // Set right after the cooldown check clears, not only on a landed hit — see the identical
+      // fix (and its full explanation) on bc-punch above; a shot that misses (dead target,
+      // respawn grace, out of range) used to cost nothing, leaving this cooldown check trivially
+      // bypassable by spamming fg-shoot at a target known to be out of range.
+      attacker.lastShotAt = now;
 
       const targetWs = attackerSlot === 'a' ? fg.slotB : fg.slotA;
       const target = targetWs && fg.players.get(targetWs);
@@ -3592,7 +3608,6 @@ wss.on('connection', (ws, req) => {
       const dx = attacker.x - target.x, dy = attacker.y - target.y, dz = attacker.z - target.z;
       if (Math.sqrt(dx * dx + dy * dy + dz * dz) > weapon.range) return;
 
-      attacker.lastShotAt = now;
       target.health = Math.max(0, target.health - weapon.damage);
       if (target.health > 0) {
         broadcastFg(ws.fgRoom, { type: 'fg-hit', targetId: target.id, health: target.health, byId: attacker.id, weapon: attacker.weapon });
