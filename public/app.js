@@ -59,6 +59,7 @@ const buildcraftLink = document.getElementById('buildcraft-link');
 const geometrywaveLink = document.getElementById('geometrywave-link');
 const seincejumpLink = document.getElementById('seincejump-link');
 const fighterplaneLink = document.getElementById('fighterplane-link');
+const firefightLink = document.getElementById('firefight-link');
 const pictionaryLink = document.getElementById('pictionary-link');
 const triviaLink = document.getElementById('trivia-link');
 const tictactoeLink = document.getElementById('tictactoe-link');
@@ -2092,6 +2093,7 @@ function updateGameLinks() {
   geometrywaveLink.href = `geometrywave.html${params}`;
   seincejumpLink.href = `seince-jump.html${params}`;
   fighterplaneLink.href = `fighterplane.html${params}`;
+  firefightLink.href = `firefight.html${params}`;
   pictionaryLink.href = `pictionary.html${params}`;
   triviaLink.href = `trivia.html${params}`;
   tictactoeLink.href = `tictactoe.html${params}`;
