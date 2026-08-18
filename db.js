@@ -139,12 +139,20 @@ ensureColumn('bc_claims', 'owner_id', 'TEXT');
 
 // One-time migration: pins used to be single-pin-per-room (PK: room_code) — multi-pin needs a
 // composite PK (room_code, message_id) instead, which ALTER TABLE can't change in place.
-// Guarded by checking the actual PK columns on disk so this only ever runs once.
+// Guarded by checking the actual PK columns on disk so this only ever runs once — but that guard
+// only protects against re-running a *completed* migration, not a crash *during* one. This isn't
+// only a legacy-upgrade path either: the CREATE TABLE IF NOT EXISTS above always creates pins with
+// the old single-column PK, so this block runs on every brand-new database too, including every
+// disposable instance the test suite spins up. Wrapped in an explicit transaction (SQLite allows
+// DDL inside one) so a crash between any of these four statements can't leave the table renamed
+// away with no replacement — either the whole reshape lands, or none of it does, and the next boot
+// finds pins exactly as it left it.
 {
   const pinsInfo = db.prepare('PRAGMA table_info(pins)').all();
   const pinsHasCompositeKey = pinsInfo.filter((c) => c.pk > 0).length > 1;
   if (!pinsHasCompositeKey) {
     db.exec(`
+      BEGIN;
       ALTER TABLE pins RENAME TO pins_old;
       CREATE TABLE pins (
         room_code TEXT,
@@ -155,6 +163,7 @@ ensureColumn('bc_claims', 'owner_id', 'TEXT');
       );
       INSERT INTO pins (room_code, message_id, pinned_by, at) SELECT room_code, message_id, pinned_by, at FROM pins_old;
       DROP TABLE pins_old;
+      COMMIT;
     `);
   }
 }
