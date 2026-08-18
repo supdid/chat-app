@@ -1775,12 +1775,12 @@ const SW_KILL_SCORE_BONUS = 20;
 const SW_RESPAWN_GRACE_MS = 500;
 // ---- Firefight — round-based 1v1 duel shooter (Rivals/tactical-shooter-inspired), on foot only,
 // no vehicles. Exactly two active duelists (slotA/slotB) at a time; anyone else who joins queues
-// as a spectator until a slot opens. Health/damage use a plain 0-100 scale (not the small-int
+// as a spectator until a slot opens. Health/damage use a plain 0-150 scale (not the small-int
 // convention SW/BC combat above use) since weapons deal varied, granular damage rather than
 // always exactly 1 point. Same "trust the client's reported position, server just validates
 // cooldown/range/alive-state before applying damage" model as bc-punch/sw-strike — not real
 // anti-cheat, a loose sanity check.
-const FG_MAX_HEALTH = 100;
+const FG_MAX_HEALTH = 150;
 const FG_WEAPONS = {
   pistol: { damage: 20, cooldownMs: 220, range: 45 },
   rifle: { damage: 28, cooldownMs: 160, range: 55 },
@@ -1799,7 +1799,6 @@ const FG_ROUNDS_TO_WIN = Number(process.env.FG_ROUNDS_TO_WIN) || 4;
 // `?? ` (not `||`) — a real test wants to override this down to a genuine 0, and 0 is falsy, so
 // `Number(...) || 500` would have silently ignored that override and kept the 500ms default.
 const FG_RESPAWN_GRACE_MS = Number(process.env.FG_RESPAWN_GRACE_MS ?? 500);
-const FG_KILL_SCORE_BONUS = 15;
 // ---- Single-player arcade games (Snake, 2048) — no shared room state to speak of, just a
 // per-room best-score leaderboard reusing the same generic `leaderboard` table every other
 // game already uses. One handler pair covers both instead of duplicating near-identical code.
@@ -3528,6 +3527,7 @@ wss.on('connection', (ws, req) => {
         id,
         role,
         weapons: FG_WEAPONS,
+        maxHealth: FG_MAX_HEALTH,
         players: [...fg.players.values()],
         slotAId: fg.slotA ? fg.players.get(fg.slotA).id : null,
         slotBId: fg.slotB ? fg.players.get(fg.slotB).id : null,

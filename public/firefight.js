@@ -39,6 +39,7 @@ const touchControlsEl = document.getElementById('touch-controls');
 const touchWeaponButtonsEl = document.getElementById('touch-weapon-buttons');
 const touchAimBtn = document.getElementById('touch-aim');
 const touchFireBtn = document.getElementById('touch-fire');
+const touchJumpBtn = document.getElementById('touch-jump');
 
 if (isTouchDevice) {
   document.getElementById('controls-list-desktop').classList.add('hidden');
@@ -74,6 +75,7 @@ function blip(kind) {
     hit: { type: 'triangle', f0: 500, f1: 900, g: 0.08, dur: 0.06 },
     hurt: { type: 'square', f0: 220, f1: 90, g: 0.15, dur: 0.16 },
     death: { type: 'sawtooth', f0: 480, f1: 60, g: 0.18, dur: 0.5 },
+    jump: { type: 'square', f0: 220, f1: 440, g: 0.06, dur: 0.09 },
   };
   const p = presets[kind];
   if (!p) return;
@@ -105,13 +107,16 @@ function clamp(v, lo, hi) {
 }
 
 let scene, camera, renderer;
-const obstacles = []; // { box: THREE.Box3 }
+const obstacles = []; // { box: THREE.Box3, height } — height is duplicated from box.max.y for cheap access in the hot per-frame collision/standing checks below
 
 function addObstacle(x, z, w, h, d, color) {
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshStandardMaterial({ color }));
   mesh.position.set(x, h / 2, z);
   scene.add(mesh);
-  obstacles.push({ box: new THREE.Box3(new THREE.Vector3(x - w / 2, 0, z - d / 2), new THREE.Vector3(x + w / 2, h, z + d / 2)) });
+  obstacles.push({
+    box: new THREE.Box3(new THREE.Vector3(x - w / 2, 0, z - d / 2), new THREE.Vector3(x + w / 2, h, z + d / 2)),
+    height: h,
+  });
 }
 
 function initScene() {
@@ -163,13 +168,32 @@ function onResize() {
   renderer.setSize(window.innerWidth, window.innerHeight);
 }
 
-function collides(x, z) {
+// y is the player's current feet height — an obstacle only blocks horizontal movement while the
+// player is below its top surface. Once a jump carries them above it (see tickVertical below),
+// they're free to move over its footprint, same as clearing real cover.
+function collides(x, z, y) {
   for (const o of obstacles) {
+    if (y >= o.height - 0.05) continue;
     const b = o.box;
     if (x + PLAYER_RADIUS > b.min.x && x - PLAYER_RADIUS < b.max.x &&
         z + PLAYER_RADIUS > b.min.z && z - PLAYER_RADIUS < b.max.z) return true;
   }
   return false;
+}
+
+// The height of whatever's directly underfoot at (x, z) — the ground (0) or the top of any
+// obstacle whose footprint contains this point, whichever is higher (so standing at the edge of
+// two overlapping footprints doesn't clip into the shorter one).
+function groundHeightAt(x, z) {
+  let surface = 0;
+  for (const o of obstacles) {
+    const b = o.box;
+    if (x + PLAYER_RADIUS > b.min.x && x - PLAYER_RADIUS < b.max.x &&
+        z + PLAYER_RADIUS > b.min.z && z - PLAYER_RADIUS < b.max.z) {
+      surface = Math.max(surface, o.height);
+    }
+  }
+  return surface;
 }
 
 // ==== Avatars ====
@@ -223,12 +247,18 @@ function removeRemotePlayer(id) {
 }
 
 // ==== Local player + input ====
-const player = { x: 0, y: 0, z: 0, yaw: 0, pitch: 0, health: 100, alive: false, weapon: 'pistol' };
+const player = { x: 0, y: 0, z: 0, yaw: 0, pitch: 0, vy: 0, grounded: true, health: 150, alive: false, weapon: 'pistol' };
 const move = { f: 0, r: 0 };
 const keys = new Set();
 let pointerLocked = false;
 let aiming = false;
 let lastShotAt = 0;
+
+// Tuned so the jump apex (vy0^2 / (2*g) ≈ 2.5 units) clears the arena's cover boxes (1.6-1.8
+// units tall) with comfortable margin, while the perimeter walls (6 units) stay permanently
+// impassable — no special-casing needed, a normal jump just can never reach that high.
+const JUMP_SPEED = 9;
+const GRAVITY = 16;
 
 function tickMovement(dt) {
   const yaw = player.yaw;
@@ -240,12 +270,29 @@ function tickMovement(dt) {
   if (len > 1) { dx /= len; dz /= len; }
   const nx = player.x + dx * MOVE_SPEED * dt;
   const nz = player.z + dz * MOVE_SPEED * dt;
-  if (!collides(nx, player.z)) player.x = clamp(nx, -ARENA_HALF + 1, ARENA_HALF - 1);
-  if (!collides(player.x, nz)) player.z = clamp(nz, -ARENA_HALF + 1, ARENA_HALF - 1);
+  if (!collides(nx, player.z, player.y)) player.x = clamp(nx, -ARENA_HALF + 1, ARENA_HALF - 1);
+  if (!collides(player.x, nz, player.y)) player.z = clamp(nz, -ARENA_HALF + 1, ARENA_HALF - 1);
+}
+
+function tickVertical(dt) {
+  player.vy -= GRAVITY * dt;
+  let ny = player.y + player.vy * dt;
+  const surface = groundHeightAt(player.x, player.z);
+  if (ny <= surface) { ny = surface; player.vy = 0; player.grounded = true; }
+  else { player.grounded = false; }
+  player.y = ny;
+}
+
+function tryJump() {
+  if (!player.grounded) return;
+  if (!(mySlot === 'spectator' || phase !== 'active' || player.alive)) return;
+  player.vy = JUMP_SPEED;
+  player.grounded = false;
+  playSound('jump');
 }
 
 function updateCameraFromPlayer() {
-  camera.position.set(player.x, EYE_HEIGHT, player.z);
+  camera.position.set(player.x, player.y + EYE_HEIGHT, player.z);
   camera.rotation.x = player.pitch;
   camera.rotation.y = player.yaw;
   camera.rotation.z = 0;
@@ -274,6 +321,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Digit1') selectWeapon('pistol');
   if (e.code === 'Digit2') selectWeapon('rifle');
   if (e.code === 'Digit3') selectWeapon('sniper');
+  if (e.code === 'Space') { e.preventDefault(); tryJump(); }
 });
 window.addEventListener('keyup', (e) => keys.delete(e.code));
 
@@ -361,10 +409,12 @@ if (isTouchDevice) {
   touchAimBtn.addEventListener('touchstart', (e) => { e.preventDefault(); aiming = true; }, { passive: false });
   touchAimBtn.addEventListener('touchend', (e) => { e.preventDefault(); aiming = false; });
   touchAimBtn.addEventListener('touchcancel', () => { aiming = false; });
+  touchJumpBtn.addEventListener('touchstart', (e) => { e.preventDefault(); tryJump(); }, { passive: false });
 }
 
 // ==== Weapons ====
 let weapons = {}; // populated from fg-init: { pistol: {damage,cooldownMs,range}, ... }
+let maxHealth = 150; // overwritten from fg-init's maxHealth once connected; this default only matters for the brief pre-connect render
 function buildWeaponButtons() {
   const order = ['pistol', 'rifle', 'sniper'];
   const labels = { pistol: '🔫 Pistol', rifle: '🔫 Rifle', sniper: '🎯 Sniper' };
@@ -412,10 +462,11 @@ function attemptShoot() {
 
 // ==== HUD helpers ====
 function renderHealth() {
-  const pct = clamp(player.health, 0, 100);
+  const hp = clamp(player.health, 0, maxHealth);
+  const pct = maxHealth > 0 ? (hp / maxHealth) * 100 : 0;
   healthFillEl.style.width = pct + '%';
   healthFillEl.classList.toggle('low', pct <= 30);
-  healthNumEl.textContent = Math.round(pct);
+  healthNumEl.textContent = Math.round(hp);
 }
 function flashDamage() {
   damageFlashEl.classList.remove('show');
@@ -561,6 +612,7 @@ function handleMessage(data) {
       roundNumber = data.roundNumber;
       roundEndsAt = data.endsAt;
       weapons = data.weapons;
+      maxHealth = data.maxHealth;
       buildWeaponButtons();
       updateWeaponHud();
       data.players.forEach((p) => {
@@ -620,13 +672,14 @@ function handleMessage(data) {
       roundNumber = data.roundNumber;
       roundEndsAt = data.endsAt;
       scoreA = data.scoreA; scoreB = data.scoreB;
-      player.health = 100; player.alive = true;
+      player.health = maxHealth; player.alive = true;
       renderHealth();
       menuEl.classList.add('hidden');
       matchendOverlay.classList.add('hidden');
       if (mySlot === 'a' || mySlot === 'b') {
         const sp = spawnFor(mySlot);
         player.x = sp.x; player.y = sp.y; player.z = sp.z; player.yaw = sp.yaw; player.pitch = 0;
+        player.vy = 0; player.grounded = true;
         sendPos(true);
       }
       const oppId = mySlot === 'a' ? slotBId : mySlot === 'b' ? slotAId : null;
@@ -715,6 +768,7 @@ function loop(now) {
   readKeyboardMove();
   const canMove = mySlot === 'spectator' || phase !== 'active' || player.alive;
   if (canMove) tickMovement(dt);
+  tickVertical(dt);
   updateCameraFromPlayer();
   updateFov(dt);
   sendPos(false);

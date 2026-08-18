@@ -1729,8 +1729,9 @@ describe('Firefight (1v1 duel shooter)', () => {
 
     // FG_ROUNDS_TO_WIN=2 for this instance — play out two full rounds, A always winning.
     for (let round = 1; round <= 2; round++) {
-      // Pistol (the default weapon) deals 20 damage with a 220ms cooldown — 5 hits (100 HP) kill.
-      // Both players are at the same default position (0,0,0), well within pistol's 45-unit range.
+      // Pistol (the default weapon) deals 20 damage with a 220ms cooldown — 8 hits (140 of 150 HP,
+      // the 8th finishes it) kill. Both players are at the same default position (0,0,0), well
+      // within pistol's 45-unit range.
       //
       // Every waiter for this round's *entire* remaining sequence (death, then either the next
       // round-start or the match-end) is armed up front, before a single shot is fired — not
@@ -1747,7 +1748,7 @@ describe('Firefight (1v1 duel shooter)', () => {
         ? waitFor(b, (m) => m.type === 'fg-round-start' && m.roundNumber === round + 1)
         : null;
 
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < 8; i++) {
         send(a, { type: 'fg-shoot' });
         await sleep(230);
       }
