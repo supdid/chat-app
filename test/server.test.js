@@ -378,9 +378,14 @@ describe('Web Swing PvP', () => {
     send(a, { type: 'sw-join', code: 'SWPVP1', name: 'Attacker' });
     const aInit = await waitFor(a, (m) => m.type === 'sw-init');
     assert.equal(aInit.health, 3);
+    // Both waiters must be armed before b's sw-join is sent, not one after the other — the server
+    // sends b's own sw-init and broadcasts sw-player-joined to a essentially back-to-back, so
+    // arming a's waiter only after awaiting bInit risked missing a message that had already
+    // arrived with nothing listening for it yet (the same race class fixed elsewhere in this file).
+    const bInitPromise = waitFor(b, (m) => m.type === 'sw-init');
+    const aJoinedPromise = waitFor(a, (m) => m.type === 'sw-player-joined');
     send(b, { type: 'sw-join', code: 'SWPVP1', name: 'Victim' });
-    const bInit = await waitFor(b, (m) => m.type === 'sw-init');
-    await waitFor(a, (m) => m.type === 'sw-player-joined');
+    const [bInit] = await Promise.all([bInitPromise, aJoinedPromise]);
     await sleep(150);
 
     // Self-target is rejected.
@@ -1416,6 +1421,91 @@ describe('orphaned upload sweep', () => {
       assert.equal((await fetch(`${base}${unclaimedUrl}`)).status, 404, 'an unclaimed upload must be swept away');
 
       ws.close();
+    } finally {
+      await sweepServer.stop();
+    }
+  });
+
+  // /post-image, /post-media, and POST /api/scorpture/videos all used to call claimUpload()
+  // before their own later rejection checks (room not found, banned/muted, missing title, etc.)
+  // — a routine rejection (not just a rare DB failure) on a call that carried a perfectly real,
+  // just-uploaded file left that file claimed-and-therefore-unsweepable forever, the exact
+  // "orphaned upload lives on disk with nothing referencing it" gap this app has flagged before.
+  // Fixed by moving claimUpload() to after every rejection check; these three cover one rejection
+  // path per route and confirm the upload still gets swept, proving it was never (wrongly) claimed.
+  test('a rejected /post-image call (room not found) leaves its upload unclaimed and sweepable', async () => {
+    const sweepServer = await startTestServer(
+      { UPLOAD_CLAIM_GRACE_MS: '150', UPLOAD_SWEEP_INTERVAL_MS: '150' },
+      3200
+    );
+    try {
+      const base = `http://localhost:${sweepServer.port}`;
+      const form = new FormData();
+      form.append('file', new Blob(['rejected post-image content'], { type: 'image/png' }), 'x.png');
+      const { url } = await (await fetch(`${base}/upload`, { method: 'POST', body: form })).json();
+
+      const res = await fetch(`${base}/post-image`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: 'NOSUCHROOM', name: 'Someone', mediaUrl: url, prompt: 'x' }),
+      });
+      assert.equal(res.status, 404, 'a nonexistent room code must be rejected');
+
+      await sleep(600);
+      assert.equal((await fetch(`${base}${url}`)).status, 404, 'the upload from a rejected post must still be swept');
+    } finally {
+      await sweepServer.stop();
+    }
+  });
+
+  test('a rejected /post-media call (room not found) leaves its upload unclaimed and sweepable', async () => {
+    const sweepServer = await startTestServer(
+      { UPLOAD_CLAIM_GRACE_MS: '150', UPLOAD_SWEEP_INTERVAL_MS: '150' },
+      3201
+    );
+    try {
+      const base = `http://localhost:${sweepServer.port}`;
+      const form = new FormData();
+      form.append('file', new Blob(['rejected post-media content'], { type: 'video/mp4' }), 'x.mp4');
+      const { url } = await (await fetch(`${base}/upload`, { method: 'POST', body: form })).json();
+
+      const res = await fetch(`${base}/post-media`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: 'NOSUCHROOM', name: 'Someone', mediaUrl: url, mediaType: 'video', caption: 'x' }),
+      });
+      assert.equal(res.status, 404, 'a nonexistent room code must be rejected');
+
+      await sleep(600);
+      assert.equal((await fetch(`${base}${url}`)).status, 404, 'the upload from a rejected post must still be swept');
+    } finally {
+      await sweepServer.stop();
+    }
+  });
+
+  test('a rejected Scorpture video create (missing title) leaves its uploads unclaimed and sweepable', async () => {
+    const sweepServer = await startTestServer(
+      { UPLOAD_CLAIM_GRACE_MS: '150', UPLOAD_SWEEP_INTERVAL_MS: '150' },
+      3202
+    );
+    try {
+      const base = `http://localhost:${sweepServer.port}`;
+      const signupRes = await fetch(`${base}/auth/signup`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'ScorpUploadReject', password: 'password123', email: 'scorpuploadreject@test.com' }),
+      });
+      const { token } = await signupRes.json();
+
+      const form = new FormData();
+      form.append('file', new Blob(['rejected scorpture video content'], { type: 'video/mp4' }), 'x.mp4');
+      const { url } = await (await fetch(`${base}/upload`, { method: 'POST', body: form })).json();
+
+      const res = await fetch(`${base}/api/scorpture/videos`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ title: '', videoUrl: url }),
+      });
+      assert.equal(res.status, 400, 'a missing title must be rejected');
+
+      await sleep(600);
+      assert.equal((await fetch(`${base}${url}`)).status, 404, 'the video upload from a rejected create must still be swept');
     } finally {
       await sweepServer.stop();
     }

@@ -395,7 +395,6 @@ app.post('/post-image', (req, res) => {
     ? rawMediaUrl
     : null;
   const prompt = String(req.body.prompt || '').slice(0, 500).trim();
-  claimUpload(mediaUrl);
   if (!code || !mediaUrl) return res.status(400).json({ error: 'Missing room code or image' });
   const room = rooms.get(code);
   if (!room) return res.status(404).json({ error: 'Room not found' });
@@ -410,6 +409,13 @@ app.post('/post-image', (req, res) => {
     return res.status(403).json({ error: 'You have been muted in this room' });
   }
   if (!roomPinOk(db.getRoom(code), req.body.pin)) return res.status(403).json({ error: 'Incorrect or missing room PIN' });
+  // Claimed only once every rejection above has already passed, not the moment the URL is parsed
+  // — a muted/banned user (or a stale room/PIN) is a routine, not just theoretical, way to hit one
+  // of those returns with a perfectly real, just-uploaded file already sitting in mediaUrl; claiming
+  // it before this point would have exempted it from the sweep for good, orphaning it on disk with
+  // no path left to ever clean it up (the exact "orphaned Scorpture-style upload" gap this app has
+  // flagged and deferred before — this is the same shape and finally gets it right).
+  claimUpload(mediaUrl);
 
   const entry = {
     type: 'message',
@@ -443,7 +449,6 @@ app.post('/post-media', (req, res) => {
   const mediaUrl = rawMediaUrl && rawMediaUrl.startsWith('/uploads/') ? rawMediaUrl : null;
   const mediaType = ['video', 'image', 'audio'].includes(req.body.mediaType) ? req.body.mediaType : null;
   const caption = String(req.body.caption || '').slice(0, 500).trim();
-  claimUpload(mediaUrl);
   if (!code || !mediaUrl || !mediaType) return res.status(400).json({ error: 'Missing room code or media' });
   const room = rooms.get(code);
   if (!room) return res.status(404).json({ error: 'Room not found' });
@@ -457,6 +462,9 @@ app.post('/post-media', (req, res) => {
     return res.status(403).json({ error: 'You have been muted in this room' });
   }
   if (!roomPinOk(db.getRoom(code), req.body.pin)) return res.status(403).json({ error: 'Incorrect or missing room PIN' });
+  // Claimed only after every rejection above — see the identical fix (and its full explanation)
+  // on /post-image just above.
+  claimUpload(mediaUrl);
 
   const entry = {
     type: 'message',
@@ -1283,9 +1291,13 @@ app.post('/api/scorpture/videos', (req, res) => {
     ? req.body.thumbnailUrl.slice(0, 2000)
     : null;
   const category = SCORPTURE_CATEGORIES.includes(req.body.category) ? req.body.category : null;
+  if (!title || !videoUrl.startsWith('/uploads/')) return res.status(400).json({ error: 'Missing title or video file' });
+  // Claimed only after the title/videoUrl check above — a missing title (a real, plausible client
+  // bug or user slip, not just a hypothetical) used to reject here *after* the video/thumbnail were
+  // already marked claimed, orphaning a genuinely-uploaded file on disk forever with no sweep able
+  // to reach it. Same fix as /post-image and /post-media above.
   claimUpload(videoUrl);
   claimUpload(thumbnailUrl);
-  if (!title || !videoUrl.startsWith('/uploads/')) return res.status(400).json({ error: 'Missing title or video file' });
   const id = crypto.randomUUID();
   db.insertScorptureVideo({
     id,
