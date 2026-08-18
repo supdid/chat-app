@@ -26,6 +26,7 @@ const healthNumEl = document.getElementById('health-num');
 const weaponHudEl = document.getElementById('weapon-hud');
 const killFeedEl = document.getElementById('kill-feed');
 const roundBannerEl = document.getElementById('round-banner');
+const soundToggleBtn = document.getElementById('sound-toggle-btn');
 const leaderboardBtn = document.getElementById('leaderboard-btn');
 const leaderboardOverlay = document.getElementById('leaderboard-overlay');
 const leaderboardCloseBtn = document.getElementById('leaderboard-close-btn');
@@ -57,7 +58,13 @@ if (roomCode) {
 
 // ==== Sound (synthesized, no asset files — same approach as Web Swing) ====
 let audioCtx = null;
-let soundOn = true;
+let soundOn = localStorage.getItem('firefight_sound_muted') !== '1';
+soundToggleBtn.textContent = soundOn ? '🔊' : '🔇';
+soundToggleBtn.addEventListener('click', () => {
+  soundOn = !soundOn;
+  localStorage.setItem('firefight_sound_muted', soundOn ? '0' : '1');
+  soundToggleBtn.textContent = soundOn ? '🔊' : '🔇';
+});
 function ensureAudio() {
   if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   return audioCtx;
