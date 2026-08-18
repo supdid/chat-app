@@ -1932,6 +1932,60 @@ describe('Firefight (1v1 duel shooter)', () => {
     a.close(); b.close();
   });
 
+  test('sniper deals its base damage normally and its higher headshot damage when flagged', async () => {
+    const code = 'FFHEADSHOT1';
+    const a = await fgConnect();
+    const b = await fgConnect();
+    send(a, { type: 'fg-join', code, name: 'FfHsA' });
+    await waitFor(a, (m) => m.type === 'fg-init');
+    send(b, { type: 'fg-join', code, name: 'FfHsB' });
+    await waitFor(b, (m) => m.type === 'fg-init');
+    send(a, { type: 'fg-select-weapon', weapon: 'sniper' });
+    send(a, { type: 'fg-start' });
+    await waitFor(a, (m) => m.type === 'fg-round-start');
+    await waitFor(b, (m) => m.type === 'fg-round-start');
+
+    // Non-headshot sniper hit: 150 max HP - 50 base damage = 100.
+    const hit1Promise = waitFor(b, (m) => m.type === 'fg-hit');
+    send(a, { type: 'fg-shoot' });
+    const hit1 = await hit1Promise;
+    assert.equal(hit1.health, 100, 'a non-headshot sniper hit must deal its base 50 damage');
+    assert.equal(hit1.headshot, false);
+
+    // Sniper's cooldown is 1300ms — wait it out before the next shot.
+    await sleep(1350);
+
+    // Headshot sniper hit: 100 - 150 headshot damage, clamped at 0 (this should also be the kill).
+    const deathPromise = waitFor(b, (m) => m.type === 'fg-death');
+    send(a, { type: 'fg-shoot', headshot: true });
+    const death = await deathPromise;
+    assert.equal(death.headshot, true, 'a headshot-flagged sniper shot must be reported as a headshot');
+
+    a.close(); b.close();
+  });
+
+  test('a headshot flag on a non-sniper weapon is ignored — base damage still applies', async () => {
+    const code = 'FFHEADSHOT2';
+    const a = await fgConnect();
+    const b = await fgConnect();
+    send(a, { type: 'fg-join', code, name: 'FfHs2A' });
+    await waitFor(a, (m) => m.type === 'fg-init');
+    send(b, { type: 'fg-join', code, name: 'FfHs2B' });
+    await waitFor(b, (m) => m.type === 'fg-init');
+    // Default weapon is pistol — deliberately not switching to sniper.
+    send(a, { type: 'fg-start' });
+    await waitFor(a, (m) => m.type === 'fg-round-start');
+    await waitFor(b, (m) => m.type === 'fg-round-start');
+
+    const hitPromise = waitFor(b, (m) => m.type === 'fg-hit');
+    send(a, { type: 'fg-shoot', headshot: true });
+    const hit = await hitPromise;
+    assert.equal(hit.health, 130, "a headshot flag on pistol must be ignored — 150 max HP minus pistol's 20 base damage");
+    assert.equal(hit.headshot, false, 'headshotDamage only exists on the sniper weapon definition');
+
+    a.close(); b.close();
+  });
+
   // fg.slotA/fg.slotB were only ever checked for truthiness ("is a slot open"), not "is this a
   // different connection" — a single connection sending fg-join twice used to claim both slots
   // for itself, collapsing the whole "genuine 1v1" model into fighting itself with guaranteed

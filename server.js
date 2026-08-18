@@ -1805,7 +1805,11 @@ const FG_MAX_HEALTH = 150;
 const FG_WEAPONS = {
   pistol: { damage: 20, cooldownMs: 220, range: 45 },
   rifle: { damage: 28, cooldownMs: 160, range: 55 },
-  sniper: { damage: 100, cooldownMs: 1300, range: 90 },
+  // headshotDamage only applies to a shot the client reports as a headshot (a raycast against the
+  // target's head hitbox, done client-side same as this game's own crosshair/aim already is) —
+  // same loose-trust model this whole file already uses for position/range, not real anti-cheat.
+  // Only the sniper has this; pistol/rifle ignore an incoming headshot flag entirely.
+  sniper: { damage: 50, headshotDamage: 150, cooldownMs: 1300, range: 90 },
 };
 const FG_DEFAULT_WEAPON = 'pistol';
 // Overridable via env, same pattern as several other constants in this file — lets the regression
@@ -3644,15 +3648,17 @@ wss.on('connection', (ws, req) => {
       const dx = attacker.x - target.x, dy = attacker.y - target.y, dz = attacker.z - target.z;
       if (Math.sqrt(dx * dx + dy * dy + dz * dz) > weapon.range) return;
 
-      target.health = Math.max(0, target.health - weapon.damage);
+      const headshot = !!msg.headshot && !!weapon.headshotDamage;
+      const damage = headshot ? weapon.headshotDamage : weapon.damage;
+      target.health = Math.max(0, target.health - damage);
       if (target.health > 0) {
-        broadcastFg(ws.fgRoom, { type: 'fg-hit', targetId: target.id, health: target.health, byId: attacker.id, weapon: attacker.weapon });
+        broadcastFg(ws.fgRoom, { type: 'fg-hit', targetId: target.id, health: target.health, byId: attacker.id, weapon: attacker.weapon, headshot });
         return;
       }
       target.alive = false;
       target.deaths += 1;
       attacker.kills += 1;
-      broadcastFg(ws.fgRoom, { type: 'fg-death', id: target.id, killedBy: attacker.id, weapon: attacker.weapon });
+      broadcastFg(ws.fgRoom, { type: 'fg-death', id: target.id, killedBy: attacker.id, weapon: attacker.weapon, headshot });
       endFgRound(ws.fgRoom, attackerSlot);
       return;
     }

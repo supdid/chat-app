@@ -83,6 +83,7 @@ function blip(kind) {
     hurt: { type: 'square', f0: 220, f1: 90, g: 0.15, dur: 0.16 },
     death: { type: 'sawtooth', f0: 480, f1: 60, g: 0.18, dur: 0.5 },
     jump: { type: 'square', f0: 220, f1: 440, g: 0.06, dur: 0.09 },
+    headshot: { type: 'triangle', f0: 1400, f1: 300, g: 0.22, dur: 0.14 },
   };
   const p = presets[kind];
   if (!p) return;
@@ -232,19 +233,19 @@ function makeAvatar(name) {
   group.add(head);
   group.add(makeNameSprite(name));
   scene.add(group);
-  return group;
+  return { group, head };
 }
 
-const remotePlayers = new Map(); // id -> { group, target: {x,y,z,yaw} }
+const remotePlayers = new Map(); // id -> { group, head, target: {x,y,z,yaw} }
 function addRemotePlayer(id, name, pos) {
   if (id === myId || remotePlayers.has(id)) return;
   const slot = id === slotAId ? 'a' : id === slotBId ? 'b' : null;
   if (!slot) return; // spectators aren't given a 3D presence
   const sp = pos || spawnFor(slot);
-  const group = makeAvatar(name);
+  const { group, head } = makeAvatar(name);
   group.position.set(sp.x, sp.y, sp.z);
   group.rotation.y = sp.yaw;
-  remotePlayers.set(id, { group, target: { x: sp.x, y: sp.y, z: sp.z, yaw: sp.yaw } });
+  remotePlayers.set(id, { group, head, target: { x: sp.x, y: sp.y, z: sp.z, yaw: sp.yaw } });
 }
 function removeRemotePlayer(id) {
   const rp = remotePlayers.get(id);
@@ -452,6 +453,24 @@ function updateWeaponHud() {
   weaponHudEl.textContent = player.weapon ? player.weapon[0].toUpperCase() + player.weapon.slice(1) : '';
 }
 
+// Reused across shots rather than allocated fresh each time — this only ever needs a straight
+// down-the-crosshair cast (screen center), never a per-pixel one.
+const shootRaycaster = new THREE.Raycaster();
+const CROSSHAIR_NDC = new THREE.Vector2(0, 0);
+
+// Sniper-only: a real raycast from the crosshair against every visible opponent's head hitbox,
+// same aim the player is actually looking at rather than a proximity guess. The server ultimately
+// decides whether the shot lands at all (range/cooldown/alive-state) — this only flags *which*
+// damage number to ask for if it does, same loose "trust the client's aim" model the rest of this
+// game's combat already uses.
+function computeHeadshot() {
+  if (player.weapon !== 'sniper') return false;
+  const heads = [...remotePlayers.values()].map((rp) => rp.head);
+  if (!heads.length) return false;
+  shootRaycaster.setFromCamera(CROSSHAIR_NDC, camera);
+  return shootRaycaster.intersectObjects(heads, false).length > 0;
+}
+
 function attemptShoot() {
   if (mySlot !== 'a' && mySlot !== 'b') return;
   if (phase !== 'active' || !player.alive) return;
@@ -460,11 +479,12 @@ function attemptShoot() {
   const now = performance.now();
   if (now - lastShotAt < w.cooldownMs) return;
   lastShotAt = now;
-  playSound(player.weapon === 'sniper' ? 'sniper' : 'shoot');
+  const headshot = computeHeadshot();
+  playSound(headshot ? 'headshot' : player.weapon === 'sniper' ? 'sniper' : 'shoot');
   crosshairEl.classList.remove('fired');
   void crosshairEl.offsetWidth;
   crosshairEl.classList.add('fired');
-  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'fg-shoot' }));
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'fg-shoot', headshot }));
 }
 
 // ==== HUD helpers ====
@@ -730,22 +750,26 @@ function handleMessage(data) {
         renderHealth();
         flashDamage();
         playSound('hurt');
+      } else if (data.byId === myId) {
+        playSound(data.headshot ? 'headshot' : 'hit');
+        if (data.headshot) addKillFeed('🎯 Headshot!');
       } else {
         playSound('hit');
       }
       break;
     }
     case 'fg-death': {
+      const hs = data.headshot ? ' (Headshot!)' : '';
       if (data.id === myId) {
         player.alive = false;
         player.health = 0;
         renderHealth();
-        addKillFeed(`💀 Eliminated by ${knownNames.get(data.killedBy) || 'your opponent'}`);
+        addKillFeed(`💀 Eliminated by ${knownNames.get(data.killedBy) || 'your opponent'}${hs}`);
         playSound('death');
       } else if (data.killedBy === myId) {
-        addKillFeed(`🎯 You eliminated ${knownNames.get(data.id) || 'your opponent'}!`);
+        addKillFeed(`🎯 You eliminated ${knownNames.get(data.id) || 'your opponent'}!${hs}`);
       } else {
-        addKillFeed(`${knownNames.get(data.killedBy) || 'Someone'} eliminated ${knownNames.get(data.id) || 'someone'}`);
+        addKillFeed(`${knownNames.get(data.killedBy) || 'Someone'} eliminated ${knownNames.get(data.id) || 'someone'}${hs}`);
       }
       break;
     }
