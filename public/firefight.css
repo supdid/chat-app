@@ -123,6 +123,99 @@ button.primary:disabled {
   filter: none;
 }
 
+/* Big green pill "Play" button — matches the CTA on a Roblox-Rivals-style lobby screen. */
+.play-btn {
+  width: 100%;
+  padding: 0.85rem 1.5rem;
+  margin-top: 0.6rem;
+  border: none;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #7bec5a, #35b83a);
+  color: #0d2a0a;
+  font-weight: 800;
+  font-size: 1.15rem;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  box-shadow: 0 4px 0 #1f7a22, 0 6px 14px rgba(53, 184, 58, 0.4);
+}
+
+.play-btn:hover {
+  filter: brightness(1.06);
+}
+
+.play-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+  filter: none;
+  box-shadow: none;
+}
+
+/* Compact always-visible ranking panel, styled like a lobby's live win-streak/leaderboard widget
+   rather than the full-screen leaderboard modal (#leaderboard-overlay), which stays for the
+   complete view. */
+#top-players-panel {
+  margin: 0 0 0.75rem;
+  padding: 0.5rem 0.7rem;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  text-align: left;
+}
+
+#top-players-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #cfe0f7;
+  margin-bottom: 0.3rem;
+}
+
+.live-dot {
+  font-size: 0.6rem;
+  font-weight: 800;
+  color: #ff5a5a;
+  background: rgba(255, 90, 90, 0.15);
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  letter-spacing: 0.05em;
+}
+
+#top-players-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+#top-players-list li {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.8rem;
+  color: #e7edf5;
+}
+
+#top-players-list .rank {
+  color: #a9b4c2;
+  margin-right: 0.4rem;
+}
+
+/* Progress callout toward the next locked weapon — the screenshot's "Unlock your new weapon!"
+   banner, wired to the real fg unlock system rather than a shop prompt. */
+#unlock-banner {
+  margin: 0 0 0.6rem;
+  padding: 0.5rem 0.8rem;
+  border-radius: 10px;
+  background: linear-gradient(90deg, #ff5a5a, #ff8a3c);
+  color: #2a0a04;
+  font-weight: 700;
+  font-size: 0.85rem;
+  text-align: center;
+}
+
 .panel-header {
   display: flex;
   align-items: center;

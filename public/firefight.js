@@ -12,6 +12,9 @@ const canvas = document.getElementById('game-canvas');
 const menuEl = document.getElementById('menu');
 const joinStatusEl = document.getElementById('join-status');
 const startBtn = document.getElementById('start-btn');
+const topPlayersPanel = document.getElementById('top-players-panel');
+const topPlayersListEl = document.getElementById('top-players-list');
+const unlockBannerEl = document.getElementById('unlock-banner');
 const weaponPickerEl = document.getElementById('weapon-picker');
 const weaponButtonsEl = document.getElementById('weapon-buttons');
 const spectatorBanner = document.getElementById('spectator-banner');
@@ -167,6 +170,7 @@ function initScene() {
   addObstacle(-16, 0, 1.4, coverH * 0.9, 6, coverColor);
   addObstacle(16, 0, 1.4, coverH * 0.9, 6, coverColor);
 
+  addLobbyDecor();
   window.addEventListener('resize', onResize);
 }
 
@@ -174,6 +178,85 @@ function onResize() {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+// ---- Lobby decoration — purely cosmetic (not in `obstacles`, so nothing here blocks movement or
+// shots). The plaza circle sits at the arena's origin, which is also where a fresh connection's
+// player.x/y/z starts before a round assigns a real spawn point, so duelists and spectators
+// naturally end up standing in/near it while waiting — no extra "walk to the lobby" logic needed.
+const balloons = []; // { mesh, baseY, phase } — bobbed each frame in the main loop
+
+function makePlaza() {
+  const plaza = new THREE.Mesh(
+    new THREE.CircleGeometry(6, 40),
+    new THREE.MeshStandardMaterial({ color: 0xbfe8f5, emissive: 0x1a3a44, emissiveIntensity: 0.12 })
+  );
+  plaza.rotation.x = -Math.PI / 2;
+  plaza.position.y = 0.02; // just above the ground plane, avoids z-fighting
+  scene.add(plaza);
+
+  const rim = new THREE.Mesh(
+    new THREE.RingGeometry(5.8, 6.3, 40),
+    new THREE.MeshStandardMaterial({ color: 0xffe9a8, side: THREE.DoubleSide })
+  );
+  rim.rotation.x = -Math.PI / 2;
+  rim.position.y = 0.03;
+  scene.add(rim);
+}
+
+function makePalmTree(x, z) {
+  const group = new THREE.Group();
+  const trunk = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.15, 0.25, 4, 6),
+    new THREE.MeshStandardMaterial({ color: 0x6b4a2f })
+  );
+  trunk.position.y = 2;
+  trunk.rotation.z = 0.08;
+  group.add(trunk);
+  const frondMat = new THREE.MeshStandardMaterial({ color: 0x3f9c4a });
+  for (let i = 0; i < 6; i++) {
+    const angle = (i / 6) * Math.PI * 2;
+    const frond = new THREE.Mesh(new THREE.ConeGeometry(0.5, 2.2, 4), frondMat);
+    frond.position.set(Math.cos(angle) * 0.6, 4.1, Math.sin(angle) * 0.6);
+    frond.rotation.x = Math.PI / 2.3;
+    frond.rotation.z = angle;
+    group.add(frond);
+  }
+  group.position.set(x, 0, z);
+  scene.add(group);
+}
+
+function makeBanner(x, z, rotY, color) {
+  const banner = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.3, 0.9),
+    new THREE.MeshStandardMaterial({ color, side: THREE.DoubleSide })
+  );
+  banner.position.set(x, 5, z);
+  banner.rotation.y = rotY;
+  scene.add(banner);
+}
+
+function makeBalloon(x, z, color) {
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.4, 12, 12), new THREE.MeshStandardMaterial({ color }));
+  const baseY = 5.4 + Math.random() * 0.6;
+  mesh.position.set(x, baseY, z);
+  scene.add(mesh);
+  balloons.push({ mesh, baseY, phase: Math.random() * Math.PI * 2 });
+}
+
+function addLobbyDecor() {
+  makePlaza();
+  [[-20, -20], [20, -20], [-20, 20], [20, 20]].forEach(([x, z]) => makePalmTree(x, z));
+  const bannerColors = [0xffcf4a, 0x3b7dff];
+  for (let i = 0; i < 8; i++) {
+    const angle = (i / 8) * Math.PI * 2;
+    makeBanner(Math.cos(angle) * (ARENA_HALF - 0.6), Math.sin(angle) * (ARENA_HALF - 0.6), angle + Math.PI / 2, bannerColors[i % 2]);
+  }
+  const balloonColors = [0xff5a5a, 0xffe066, 0x5ad1ff, 0x9dffc9];
+  for (let i = 0; i < 6; i++) {
+    const angle = (i / 6) * Math.PI * 2;
+    makeBalloon(Math.cos(angle) * (ARENA_HALF - 2), Math.sin(angle) * (ARENA_HALF - 2), balloonColors[i % balloonColors.length]);
+  }
 }
 
 // y is the player's current feet height — an obstacle only blocks horizontal movement while the
@@ -552,6 +635,34 @@ function renderLeaderboard(scores) {
     li.innerHTML = `<span>${escapeHtml(s.name)}</span><span>${s.score} kills</span>`;
     leaderboardListEl.appendChild(li);
   });
+  renderTopPlayersPanel(scores);
+}
+// The lobby's small always-visible panel — same data as the full leaderboard modal above, just
+// the top 3 and no click required to see it.
+function renderTopPlayersPanel(scores) {
+  topPlayersPanel.classList.remove('hidden');
+  topPlayersListEl.innerHTML = '';
+  if (!scores.length) {
+    topPlayersListEl.innerHTML = '<li>No scores yet — be the first!</li>';
+    return;
+  }
+  scores.slice(0, 3).forEach((s, i) => {
+    const li = document.createElement('li');
+    li.innerHTML = `<span><span class="rank">#${i + 1}</span>${escapeHtml(s.name)}</span><span>${s.score}</span>`;
+    topPlayersListEl.appendChild(li);
+  });
+}
+// The screenshot's "Unlock your new weapon!" callout, wired to the real progress from fg-init/
+// fg-unlock-progress rather than a shop prompt — shows the next still-locked weapon and how close
+// the player is, or hides entirely once everything is unlocked.
+function updateUnlockBanner() {
+  const order = ['pistol', 'rifle', 'sniper'];
+  const labels = { rifle: 'Rifle', sniper: 'Sniper' };
+  const next = order.find((key) => weapons[key] && !unlockedWeapons.includes(key));
+  if (!next) { unlockBannerEl.classList.add('hidden'); return; }
+  const need = weapons[next].unlockKills || 0;
+  unlockBannerEl.textContent = `🔓 Unlock ${labels[next] || next}: ${totalKills}/${need} kills`;
+  unlockBannerEl.classList.remove('hidden');
 }
 const knownNames = new Map();
 function updateScoreboardNames() {
@@ -565,6 +676,7 @@ function updateScoreboard() {
 }
 function refreshMenuForState() {
   weaponPickerEl.classList.remove('hidden');
+  updateUnlockBanner();
   if (mySlot === 'spectator') {
     joinStatusEl.textContent = 'Waiting for a duel slot to open…';
     startBtn.classList.add('hidden');
@@ -663,6 +775,9 @@ function handleMessage(data) {
       crosshairEl.classList.remove('hidden');
       updateScoreboard();
       refreshMenuForState();
+      // Populates the lobby's always-visible top-players panel without waiting for a click on the
+      // full leaderboard button — same request, renderLeaderboard() updates both from one result.
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'fg-leaderboard', code: roomCode }));
       break;
     }
     case 'fg-full': {
@@ -813,6 +928,7 @@ function handleMessage(data) {
       totalKills = data.totalKills;
       unlockedWeapons = data.unlockedWeapons || unlockedWeapons;
       buildWeaponButtons();
+      updateUnlockBanner();
       const labels = { rifle: 'Rifle', sniper: 'Sniper' };
       newlyUnlocked.forEach((w) => { if (labels[w]) addKillFeed(`🔓 ${labels[w]} unlocked!`); });
       break;
@@ -851,6 +967,7 @@ function loop(now) {
     rp.group.position.z += (rp.target.z - rp.group.position.z) * 0.25;
     rp.group.rotation.y += (rp.target.yaw - rp.group.rotation.y) * 0.25;
   }
+  for (const b of balloons) b.mesh.position.y = b.baseY + Math.sin(now / 1000 + b.phase) * 0.15;
 
   updateRoundTimer();
   renderer.render(scene, camera);

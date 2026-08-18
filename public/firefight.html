@@ -21,7 +21,12 @@
       <h1>Firefight</h1>
       <p class="tagline">A 1-on-1 duel arena, on foot only — no vehicles. Two players go head to head each round; anyone else who joins queues as a spectator and drops into the next open slot. First to win enough rounds takes the match.</p>
       <div id="join-status">Connecting&hellip;</div>
-      <button id="start-btn" class="primary hidden">Start Duel</button>
+      <div id="top-players-panel" class="hidden">
+        <div id="top-players-title">🏆 Top Players <span class="live-dot">LIVE</span></div>
+        <ol id="top-players-list"></ol>
+      </div>
+      <div id="unlock-banner" class="hidden"></div>
+      <button id="start-btn" class="play-btn hidden">▶ Play</button>
       <div id="weapon-picker" class="hidden">
         <p class="tagline" style="margin-bottom:0.5rem">Pick your loadout:</p>
         <div id="weapon-buttons"></div>
