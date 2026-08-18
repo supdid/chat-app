@@ -650,14 +650,34 @@ function handleMessage(data) {
       } else {
         addRemotePlayer(data.id, data.name);
       }
+      // This message only ever fires from server.js's leaveFg — a duelist just left, which always
+      // resets the match to 'waiting' server-side (win a real fight, so mid-round state can't
+      // carry over to whoever's newly paired up). Mirror that here and re-show the menu; without
+      // it, everyone still connected was stuck looking at a dead arena with the menu (and its
+      // Start button) hidden from the last round-start, no way to begin a new match short of a
+      // full page reload.
+      phase = 'waiting';
+      scoreA = 0; scoreB = 0; roundNumber = 0;
+      matchendOverlay.classList.add('hidden');
+      menuEl.classList.remove('hidden');
       updateScoreboard();
       refreshMenuForState();
       break;
     }
     case 'fg-player-left': {
+      // Checked before slotAId/slotBId are cleared below, since a promotion (fg-slot-filled,
+      // handled above) already reassigned them if a spectator was waiting to fill the gap — this
+      // still needs to catch the no-replacement-available case that fg-slot-filled never fires for.
+      const wasDuelist = data.id === slotAId || data.id === slotBId;
       removeRemotePlayer(data.id);
       if (data.id === slotAId) slotAId = null;
       if (data.id === slotBId) slotBId = null;
+      if (wasDuelist) {
+        phase = 'waiting';
+        scoreA = 0; scoreB = 0; roundNumber = 0;
+        matchendOverlay.classList.add('hidden');
+        menuEl.classList.remove('hidden');
+      }
       updateScoreboard();
       refreshMenuForState();
       break;
