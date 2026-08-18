@@ -281,13 +281,22 @@ app.get('/admin/patches', requireAdmin, (req, res) => {
   res.json({ patches: db.getPendingPatchProposals() });
 });
 
+// This app runs as more than one deployed copy on the same machine, each its own systemd user
+// service (chat-app itself on 3001, plus chat-app-dev on 3005 and chat-app-test on 3007 — see
+// their .service files) — 'chat-app' was hardcoded here regardless of which copy was actually
+// running it. Approving a self-patch on the dev or test sandbox would restart *production*
+// instead of the sandbox that actually owns the change: the sandbox's own patched file never
+// takes effect (its still-running old process is untouched), and production gets an unplanned,
+// unrelated restart. SYSTEMD_SERVICE_NAME is unset in production, so this defaults to the exact
+// previous behavior there; each sandbox's .service file should set it to its own unit name.
+const SYSTEMD_SERVICE_NAME = process.env.SYSTEMD_SERVICE_NAME || 'chat-app';
 app.post('/admin/patches/:id/approve', requireAdmin, (req, res) => {
   try {
     const result = patcher.applyProposal(req.params.id);
     res.json({ ok: true, ...result });
     if (result.restarted) {
       setTimeout(() => {
-        exec('systemctl --user restart chat-app', (err) => {
+        exec(`systemctl --user restart ${SYSTEMD_SERVICE_NAME}`, (err) => {
           if (err) console.error('[patcher] Restart failed:', err.message);
         });
       }, 500);
