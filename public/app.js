@@ -3286,9 +3286,23 @@ async function switchMicrophone(deviceId) {
   const oldTrack = localStream && localStream.getAudioTracks()[0];
   newTrack.enabled = oldTrack ? oldTrack.enabled : true;
 
-  for (const [, peer] of voicePeers) {
-    const sender = peer.pc.getSenders().find((s) => s.track && s.track.kind === 'audio');
-    if (sender) await sender.replaceTrack(newTrack);
+  try {
+    for (const [, peer] of voicePeers) {
+      const sender = peer.pc.getSenders().find((s) => s.track && s.track.kind === 'audio');
+      if (sender) await sender.replaceTrack(newTrack);
+    }
+  } catch (err) {
+    // Called fire-and-forget from the device picker's change listener — an uncaught throw here
+    // (e.g. InvalidStateError on a peer connection that closed mid-switch) would otherwise abort
+    // this loop partway through with no trace anywhere, silently skipping the cleanup below too
+    // (oldTrack never stops, localStream/localVoiceStop never update). Not stopping newTrack here:
+    // by the time this fires, some peers' senders may already have been switched onto it — killing
+    // it would silence audio for exactly the connections that *did* succeed, worse than leaving a
+    // harmless still-open mic handle around. Surfacing the failure is the goal, not a full rollback.
+    voiceErrorEl.textContent = 'Could not switch microphones — try again.';
+    voiceErrorEl.classList.remove('hidden');
+    reportClientError('switchMicrophone failed mid-switch: ' + err.message, err.stack);
+    return;
   }
 
   if (localVoiceStop) localVoiceStop();
