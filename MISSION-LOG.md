@@ -1,5 +1,18 @@
 ﻿# Valk work log
 
+## 2026-08-19: Block Battle + parked Web Swing passes shipped to GitHub — server pull pending
+
+`d4df9a4` commits Block Battle (`public/blockbattle.*`, menu link) and the parked Web Swing
+passes 14+; `69a025e` merges isaac's Firefight/PvP/security work (~100 commits). Conflicts were
+in `webswing.js`/`.html` (his PvP vs the polish passes — both kept, strike rows added to the
+redesigned controls list) and `CACHE_NAME` (v112 vs v137 → **v138**). All four harnesses green
+post-merge, `node --check` clean on webswing/blockbattle/sw.
+
+**To make it live** (isaac, on the box): `cd ~/chat-app && git pull && systemctl --user restart
+chat-app`. Live site still serves v87 — nothing since Aug 12 has been deployed. The deploy key
+from this laptop (`~/.ssh/id_ed25519_valk.pub`, see the Aug 15 note below) is still unadded; the
+box is behind cloudflared with no public SSH, so the address has to come from isaac too.
+
 ## ⚠️ Deploying now requires one extra step
 
 **Bump `CACHE_NAME` in `public/sw.js` on every deploy.** Changing that string is what makes the
