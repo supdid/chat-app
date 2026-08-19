@@ -557,6 +557,11 @@ function updateFov(dt) {
   camera.fov += (targetFov - camera.fov) * Math.min(1, dt * 8);
   camera.updateProjectionMatrix();
 }
+// Touch has no cursor/right-click affordance to make "this weapon doesn't aim" obvious the way
+// desktop's mouse button does, so the aim button dims instead for fists/grenade.
+function updateTouchAimAvailability() {
+  touchAimBtn.classList.toggle('unavailable', !ADS_FOV[player.weapon]);
+}
 
 function readKeyboardMove() {
   if (isTouchDevice) return;
@@ -720,6 +725,7 @@ function selectWeapon(key) {
   document.querySelectorAll('.weapon-btn').forEach((b) => b.classList.toggle('active', b.dataset.weapon === key));
   updateWeaponHud();
   updateViewmodelWeapon();
+  updateTouchAimAvailability();
   setAiming(aiming); // re-checks the scope overlay against the new weapon — a switch made mid-aim (number keys aren't gated to between-rounds) shouldn't leave a scope up on a weapon that doesn't have one
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'fg-select-weapon', weapon: key }));
 }
@@ -1287,6 +1293,7 @@ function handleMessage(data) {
       unlockedWeapons = data.unlockedWeapons || ['pistol'];
       if (!isUnlocked(player.weapon)) player.weapon = 'pistol';
       updateViewmodelWeapon();
+      updateTouchAimAvailability();
       // Every fresh fg-init — a first join or a reconnect — drops the player back in the lobby
       // plaza, not wherever they happened to be standing before. player.x/y/z is a module-level
       // var that otherwise survives a reconnect's fresh WebSocket, so without this a disconnect

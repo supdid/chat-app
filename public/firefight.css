@@ -727,3 +727,12 @@ button.primary:disabled {
 .touch-btn:active {
   background: rgba(255, 255, 255, 0.3);
 }
+
+/* Fists/grenade have no ADS at all (see ADS_FOV in firefight.js) — pressing the aim button while
+   either is equipped does nothing, which on a touch screen (no cursor/right-click affordance to
+   make that obvious the way desktop's mouse button does) reads as broken rather than "this weapon
+   just doesn't aim". Dimmed rather than hidden so the button doesn't jump around the layout on
+   every weapon switch. */
+#touch-aim.unavailable {
+  opacity: 0.35;
+}
