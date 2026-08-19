@@ -1,0 +1,419 @@
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #8a8a8a;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #eaf6ff;
+}
+
+#back-link {
+  position: fixed;
+  top: 0.75rem;
+  left: 0.75rem;
+  z-index: 30;
+  background: rgba(6, 14, 22, 0.65);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 999px;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.85rem;
+  color: #eaf6ff;
+  text-decoration: none;
+}
+
+#back-link:hover {
+  background: rgba(6, 14, 22, 0.85);
+}
+
+#map {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+}
+
+.hidden {
+  display: none !important;
+}
+
+#crosshair {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  width: 6px;
+  height: 6px;
+  margin: -3px 0 0 -3px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 0 3px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+  z-index: 10;
+  transition: transform 0.15s, background 0.15s;
+}
+
+#crosshair.hit {
+  background: #ffd54f;
+  transform: scale(1.8);
+}
+
+#crosshair.headshot {
+  background: #ff5252;
+  transform: scale(2.4);
+}
+
+#kill-counter {
+  position: fixed;
+  top: 0.75rem;
+  right: 0.75rem;
+  z-index: 10;
+  background: rgba(6, 14, 22, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 999px;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+#wave-counter {
+  position: fixed;
+  top: 0.75rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  background: rgba(6, 14, 22, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 999px;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+#wave-banner {
+  position: fixed;
+  top: 22%;
+  left: 0;
+  right: 0;
+  z-index: 12;
+  text-align: center;
+  font-size: 2.4rem;
+  font-weight: 700;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+  opacity: 0;
+}
+
+#wave-banner.show {
+  animation: wave-banner 1.8s ease-out forwards;
+}
+
+@keyframes wave-banner {
+  0% { opacity: 0; transform: scale(0.8); }
+  12% { opacity: 1; transform: scale(1.05); }
+  25% { transform: scale(1); }
+  75% { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1); }
+}
+
+#weapon-hud {
+  position: fixed;
+  right: 0.9rem;
+  bottom: 1.1rem;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.4rem;
+}
+
+#weapon-name {
+  font-size: 1.05rem;
+  font-weight: 700;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+}
+
+#ammo-count {
+  font-size: 0.85rem;
+  font-weight: 600;
+  opacity: 0.9;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+}
+
+#reload-wrap {
+  width: 130px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(6, 14, 22, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  overflow: hidden;
+}
+
+#reload-fill {
+  height: 100%;
+  width: 100%;
+  background: #4caf50;
+  border-radius: 999px;
+}
+
+#upgrade-btn {
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 999px;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #eaf6ff;
+  background: rgba(6, 14, 22, 0.65);
+  cursor: pointer;
+}
+
+#upgrade-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+#upgrade-btn:not(:disabled) {
+  background: #2fb6ac;
+  color: #04211e;
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+#save-btn {
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 999px;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #eaf6ff;
+  background: rgba(6, 14, 22, 0.65);
+  cursor: pointer;
+}
+
+#save-btn:hover {
+  background: rgba(6, 14, 22, 0.85);
+}
+
+#health-wrap {
+  position: fixed;
+  bottom: 1.2rem;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 240px;
+  height: 14px;
+  border-radius: 999px;
+  background: rgba(6, 14, 22, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  overflow: hidden;
+  z-index: 10;
+}
+
+#health-fill {
+  height: 100%;
+  width: 100%;
+  background: #4caf50;
+  border-radius: 999px;
+  transition: width 0.2s, background 0.2s;
+}
+
+#damage-flash {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, rgba(255, 0, 0, 0) 45%, rgba(200, 0, 0, 0.7) 100%);
+  opacity: 0;
+}
+
+/* Sniper scope: circular view with hairlines while right-click is held.
+   z-index 9 keeps the crosshair (10) visible as the center dot. */
+#scope-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9;
+  pointer-events: none;
+  background: radial-gradient(circle at center, rgba(0, 0, 0, 0) 31%, rgba(0, 0, 0, 0.92) 40%);
+}
+
+#scope-overlay::before,
+#scope-overlay::after {
+  content: '';
+  position: absolute;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+#scope-overlay::before {
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+}
+
+#scope-overlay::after {
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+}
+
+#death {
+  position: fixed;
+  inset: 0;
+  z-index: 25;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.8rem;
+  background: rgba(90, 0, 0, 0.5);
+  cursor: pointer;
+  text-align: center;
+}
+
+#death-title {
+  font-size: 3rem;
+  font-weight: 700;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);
+}
+
+#death-stats {
+  font-size: 1.15rem;
+  font-weight: 600;
+}
+
+#death-best {
+  font-size: 0.95rem;
+  opacity: 0.85;
+}
+
+#death-best:empty {
+  display: none;
+}
+
+#death-record {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #ffd54f;
+}
+
+#death-sub {
+  font-size: 1rem;
+  opacity: 0.9;
+}
+
+#hint {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  background: rgba(6, 14, 22, 0.45);
+  backdrop-filter: blur(3px);
+  cursor: pointer;
+  text-align: center;
+}
+
+#hint-name {
+  font-size: 3.4rem;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-shadow: 0 3px 12px rgba(0, 0, 0, 0.6);
+}
+
+#hint-title {
+  font-size: 2.2rem;
+  font-weight: 700;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+#hint-controls {
+  background: rgba(6, 14, 22, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 14px;
+  padding: 0.8rem 1.4rem;
+  font-size: 0.95rem;
+  line-height: 1.9;
+}
+
+/* Mode select sits above the hint (20) and death (25) screens, under the back link (30). */
+#mode-select {
+  position: fixed;
+  inset: 0;
+  z-index: 26;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  background: rgba(6, 14, 22, 0.72);
+  backdrop-filter: blur(4px);
+  text-align: center;
+}
+
+#mode-name {
+  font-size: 3.4rem;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-shadow: 0 3px 12px rgba(0, 0, 0, 0.6);
+}
+
+#mode-sub {
+  font-size: 1.05rem;
+  opacity: 0.9;
+}
+
+#mode-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  width: min(340px, 86vw);
+}
+
+.mode-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 14px;
+  padding: 0.8rem 1.2rem;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #eaf6ff;
+  background: rgba(6, 14, 22, 0.65);
+  cursor: pointer;
+}
+
+.mode-btn span {
+  font-size: 0.8rem;
+  font-weight: 500;
+  opacity: 0.8;
+}
+
+.mode-btn:hover:not(:disabled) {
+  background: #2fb6ac;
+  color: #04211e;
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.mode-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* A soft vignette over the 3D view (under the HUD) pulls focus to the center. */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+  background: radial-gradient(ellipse at center, transparent 58%, rgba(15, 25, 35, 0.35) 100%);
+}

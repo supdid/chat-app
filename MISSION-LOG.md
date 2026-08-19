@@ -1,4 +1,4 @@
-# Valk work log
+﻿# Valk work log
 
 ## ⚠️ Deploying now requires one extra step
 
@@ -165,6 +165,236 @@ guess which moment that was.
   The meter shows the window instead of making the player infer it. State is cached in
   `pumpMeterState` so classList isn't rewritten every frame, and the hint text is set from JS —
   `content:` does nothing on a real element, only on `::before`/`::after`.
+
+# 5-hour update shift — 2026-08-16, 14:41 → 19:43
+
+User instruction: "work on updates and sit on fixes for 5 hours." Interpreted and confirmed in the
+kickoff message as: additive improvements (not bug-hunting — pass 19 declared that well dry), and
+NOTHING commits/pushes/deploys — all work parks in the tree. Session/lives/fail-state redesign
+stays off-limits (still the user's open call).
+
+Infrastructure: recurring cron `c874f30c` hourly at :07; one-shot `ad7487e3` at 19:43 winds
+everything down (deletes the loop, restores `standby-timeout-ac 15`, stops keep-awake pid 37384);
+keep-awake self-releases ~20:17 regardless. `standby-timeout-ac` is 0 for the shift.
+
+**Update queue** (blind-safe, harness-friendly; pick from the top each fire):
+1. ~~Bonus orb~~ (done, pass 20)
+2. Landing roll: land at 20–32 m/s while holding forward → roll converts the fall into forward
+   speed instead of a dust-stop; the wipeout threshold above it is unchanged. Fills the dead zone
+   between "fine landing" and "crash" with a skill move. Fully harness-testable.
+3. Session-local stats: best air chain / top speed this visit, shown small in the menu on return.
+4. Deterministic per-day dusk tint (date-seeded, same for every player on the same day — city
+   geometry stays CITY_SEED-deterministic and untouched).
+5. Whatever a fresh look at the queue suggests — but additive only.
+
+**Pass 23 — 17:07, shift iteration 4: per-day dusk.**
+Queue item 4. Six authored palettes (sky gradient stops, fog, sun tint, clear color — geometry,
+orbs and physics untouched), picked by a hash of the **UTC** date: a room shares a *moment*, not a
+timezone, so two players in one room always see the same sky wherever they are. Palette 0 is the
+exact pre-existing look, kept in rotation; the other five (ember/violet/teal/rose/storm) stay in
+the dusk family the lighting was tuned for — weather, not a day/night cycle. The ×31 date-string
+hash happens to switch palettes literally every day (365/365 across 2026) with all six reached.
+harness4 §28: UTC key format + zero-padding, structural validation of every palette (a bad hex is
+an invisible black sky in production), determinism, legacy palette 0 pinned byte-for-byte, and the
+year-long rotation sweep. Honest limit: the five new palettes are color-reasoned, not eyeballed —
+they're one authored array to tweak if any day looks off. CACHE v109.
+
+Queue: open — additive only. Candidates for remaining fires: ghost name-tag polish is stub-bound
+(skip); a menu "today's sky" note tying the records row to the dusk name is trivial-but-nice;
+otherwise extend along the trip arc (bonus orb → roll → records).
+
+**Pass 22 — 16:07, shift iteration 3: personal records.**
+Queue item 3. The game kept a best *score* and threw away the two numbers players actually brag
+about: longest air chain and top speed. Both now persist (`webswing_best_chain`,
+`webswing_top_speed`) and greet the player in the menu — a quiet mono row above Start ("Personal
+best / score 120 · chain ×7 · 54 m/s"), hidden entirely on a first visit (no row of zeroes).
+Deliberately **not** toasts: a "new record!" popup would fire constantly through anyone's first
+session. Chain capture rides `setChainLabel()` so no increment site can miss it; speed rounds and
+clamps before comparing so localStorage sees at most ~55 writes ever, not one per frame.
+`recordsSummary()` is pure; harness4 §27 asserts capture/monotonicity/clamping and the exact
+summary copy for every combination (including "chain ×1 isn't worth printing"). 29/29 JS-queried
+ids verified in the HTML. CACHE v108.
+
+Queue remaining: date-seeded dusk tint, then open (additive only).
+
+**Pass 21 — 15:07, shift iteration 2: landing roll.**
+Queue item 2. The band just under the crash threshold (20–32 m/s) is now a skill window: hold
+forward as you touch down and the landing **rolls** — the air chain survives the touch (every other
+airborne landing still resets it), and `ROLL_CONVERT` (0.35) of the fall speed converts into
+forward speed along the current heading, capped at `MAX_SPEED`. Above the threshold nothing
+changes: the roll is window mastery, not a pardon. A held 0.4s tuck pose (`roll`, added to
+harness2's set with a knees-in/torso-forward assertion), soft `roll` sound, small dust, no input
+lockout — it's a reward, not a stun.
+
+Enabling refactor: the landing branch lived inside `groundCheck()` behind the raycast, which
+returns nothing under the stub harness — the rules were untestable in place. Extracted to
+`resolveLanding(groundY)`; `groundCheck` now just decides *whether* you landed, `resolveLanding`
+decides what the landing *means*. harness4 §26 drives the full rule matrix directly: roll
+(chain/boost/timer), plain landing, crash unaffected (roll can't save you past 32), below-window,
+both inclusive edges, heading preservation (exact ratio), the speed cap, the near-stationary case
+(chain kept, no boost), pose gating, and the already-grounded no-op. CACHE v107.
+One rare cyan prize on the map at a time — cyan against the reward palette's amber, so it reads as
+a different kind of thing from across the city. Spawns far from the player (tries for ≥80u
+horizontal, best-effort farthest-clear candidate otherwise, never inside geometry — reuses
+`randomOrbPosition` + `orbClearOfBuildings`), pays a flat +15, joins the air chain when taken
+airborne, blinks its last 5s as a leaving-soon warning, then relocates on a 45s cadence (first one
+~18s into a run). Client-local like all orbs; only scores sync. State lives in real variables
+(`bonusActive/bonusLife/bonusTimer/bonusPos`) precisely so the stub-THREE harness can assert the
+whole lifecycle: §25 covers timer→spawn, one-at-a-time (spawn timer frozen while active), 200
+placement spawns (200/200 met the 80u bar, all clear, all finite), expiry→retimer, airborne
+collection (+15, chain, deactivate, retimer), grounded collection (no chain), and no distant
+pickup. Menu rule row added to both lists. CACHE v106.
+
+**Pass 19 — 2026-08-15, iteration 17 — FINAL. Loop stopped by its own criterion.**
+
+Fresh line-by-line read of the last unexamined sections (renderer setup, texture makers, strand
+builder, touch pinch/look). Two finds, both small:
+
+- **Resize now re-applies `setPixelRatio`** (before `setSize`, which computes the drawing buffer
+  from the current ratio). Dragging the window between a 1x and 2x monitor fires resize but kept
+  the startup ratio — blurry on the way up, wasted fill-rate on the way down.
+- **The touch stick is analog now.** The wish vector was always renormalized to unit length, so a
+  10% deflection sprinted at full speed. It now normalizes only above unit length: keyboard
+  cardinals and diagonals are bit-identical (asserted: cardinal = RUN_SPEED closed-form, diagonal =
+  cardinal), and a partial stick deflection walks. The analog path itself is untestable under the
+  harness (isTouchDevice is a const, no touch in the sandbox) — reasoned, not proven.
+
+That the best a full read produces is two one-liners is the stop signal declared in pass 18.
+**Cron `fdb71861` deleted — no loop is running.** `standby-timeout-ac` restored to 15 min; the
+keep-awake process had already self-released at its 09:00 deadline. Restart the mission any time
+with `/loop 1h <the pass-14 prompt>`.
+
+**State at stop:** everything through v99 is committed and pushed (`a2dbb8a`). Passes 14-19
+(v100→v105: ghost liveness, frame-rate independence + score coercion, yaw seam + safe-area,
+chrome design pass, wind lifecycle, this pass) are **uncommitted in the working tree** per the
+loop's no-commit rule. Deploy to the live server has never happened — it still awaits the deploy
+key (`~/.ssh/id_ed25519_valk.pub`) being added on the box. Open items for a human: session
+structure (design decision), swing-constraint oscillation and the pass-17 chrome design (need
+eyes), a device check of the safe-area insets.
+
+**Pass 18 — 2026-08-15, iteration 16 (the wind droned forever in a hidden tab):**
+
+The frame loop is rAF-driven and rAF freezes in a hidden tab — but **WebAudio keeps running**.
+Hide the tab mid-dive and `updateWind()` never runs again, so the looped noise source kept playing
+at its last gain indefinitely while the user read another tab. Second hole in the same area: after
+the start click nothing ever calls `audioCtx.resume()` again, so an OS-suspended context (phone
+call, interruption — routine on iOS) left the game silent until a full reload.
+
+Fix: a `visibilitychange` handler (separate from the input-clearing one — input concerns stay in
+the input section) flips `windSuspended` and writes the gain directly — the one place it can be
+silenced once frames stop — and on return calls `resume()` if the context is suspended.
+`windTargetGain(spd)` is the extracted pure decision (`muted || suspended → 0, else the curve`),
+same pattern as `windParamsForSpeed`: the graph is unassertable under test, the decision isn't.
+harness4 §23 pins all three states plus exact agreement with the curve in the normal state.
+
+**Pass 17 — 2026-08-15, iteration 15 (design pass on the chrome, guided by frontend-design):**
+
+The user installed the frontend-design plugin mid-loop — read as a steer toward visual work. The
+least-designed surface was the DOM chrome: template glassmorphism panel, gradient title text, and a
+paragraph-length controls list. Direction chosen (skill's process, plan-then-critique):
+
+- **The subject designs the chrome.** The menu card now *hangs in a web* — two taut strands run
+  from the top screen corners and cross behind the panel (pseudo-elements on `#menu`, NOT `.panel`,
+  whose `overflow-y: auto` would clip them; deliberately asymmetric angles; each strand's gradient
+  brightens at its own anchor corner). Suit red/blue survive as a 2-line inset keyline on the
+  panel's top edge instead of gradient text.
+- **Amber = reward, red = risk, as a system.** The accent is the orb's own amber (the thing the
+  player chases); score pill, SWING in the title, Start button, rule markers, leaderboard scores.
+  The suit red appears exactly once in the copy system: the Wipeout line.
+- **Controls list → key map.** `<kbd>` chips + one job per line, then four labeled scoring rules
+  (three amber `gain`, one red `risk`). Same information, a fraction of the reading. Both lists'
+  ids (`controls-list-desktop`/`-touch`) unchanged — verified all 27 JS-queried ids survive.
+- **Monospace as the instrument voice**: score/speed/best readouts and leaderboard scores, tabular
+  numerals. Leaderboard rows get real rank numbers via CSS counters, gated with `li:has(span)` so
+  the empty state isn't numbered (no-`:has()` browsers just skip numbering).
+- **One orchestrated entrance** (panel settles, strands fade), inside
+  `prefers-reduced-motion: no-preference`. Cut in the restraint pass: halftone, ambient animation,
+  any second accent.
+
+Verified: all harnesses pass (JS untouched), 27/27 ids present, CSS braces balanced. Honest limit:
+this is the one pass whose result genuinely needs eyes — the geometry of the strands (36°/−41°)
+is reasoned, not seen. If it reads badly on screen, the strands are pure decoration and can be
+deleted as one block (`#menu::before/::after`) without touching anything else.
+
+**Pass 16 — 2026-08-15, iteration 14 (ghosts pirouetted at the ±π seam; notch-safe touch layout):**
+
+The yaw wrap flagged in pass 15, fixed. atan2 yaws live on a circle, but the ghost lerp treated
+them as plain numbers, so the ±π seam read as distance: a player reversing from +3.1 to −3.1 rad
+(a 0.083 rad turn through the seam) sent their ghost spinning ~6.2 rad the long way. In a game
+that's all direction reversals, every ghost pirouetted regularly.
+
+`angleDelta(from, to)` returns the shortest-path difference in (−π, π]; the ghost yaw ease now
+applies it. The **local** avatar snaps yaw by direct assignment (no lerp), so it never had the bug
+and is untouched. harness4 §22 pins the two seam crossings, a ~1500-pair sweep asserting range and
+`from + delta ≡ to (mod 2π)`, and a convergence sim showing easing across the seam travels ~0.083
+rad, not 6.2.
+
+CSS rider: the page opts into the full screen (`viewport-fit=cover`) but nothing consumed the
+safe-area insets, so on notched phones the joystick and buttons sat under the home-indicator bar
+and the HUD corner under the landscape sensor housing. All four anchored elements (joystick,
+buttons, back-link, HUD padding) now add `env(safe-area-inset-*)` using the double-declaration
+fallback pattern — browsers without `env()` keep the first declaration. Not harness-verifiable
+(CSS); the pattern is standard and degrades to the previous values.
+
+**Pass 15 — 2026-08-15, iteration 13 (the game played differently at 144Hz than at 60Hz):**
+
+Most physics integrates with `dt` correctly, but several smoothing factors were **per-frame
+constants**: ground accel `* 0.3`/frame, air control `* 0.06`/frame, ground friction `*= 0.8`/frame,
+camera + ghost lerps `* 0.25`/frame, dust drag `* 0.94`/frame. At 144Hz that's ~2.4x harder
+acceleration and per-second friction of 0.8^144 vs 0.8^60 — a high-refresh player and a 60Hz player
+were playing measurably different games, feeding the same leaderboard.
+
+Fix: `expBlend(rate, dt) = 1 - exp(-rate * dt)` everywhere, with rates calibrated so **60fps
+behavior reproduces the old per-frame factors exactly** (rate = 60·-ln(1-f), or 60·-ln(f) for decay
+multipliers): CAM/GHOST 17.3, GROUND_ACCEL 21.4, AIR_ACCEL 3.7, FRICTION 13.4, DUST 3.7. The
+already-dt-scaled Euler forms (shake 5.5, fov 4, trail 6, POSE_BLEND 11) were converted to the same
+exp form — Euler `dt*k` is only approximately rate-independent and drifts at 30Hz. The exponential
+recurrence has a closed form (v(T) = wish + (v0-wish)·e^(-kT)), so convergence is *exactly* the
+same at any rate, not just approximately.
+
+harness4 §20 pins three things: the composition property (two half-steps land exactly where one
+full step does, <1e-12), the 60fps calibration (old factors reproduced within 0.2%), and end-to-end
+physics — one simulated second of holding W (and one of friction decay) at 30/60/144Hz through the
+real `updateInputMove` must agree within 1e-9. §12's allocation test still passes (Math.exp
+allocates nothing), and harness2 still passes with the pose-blend form change.
+
+Rider: `sanitizeScore()` coerces leaderboard scores to a clamped integer before they cross
+`innerHTML`. The server already clamps (`server.js:2612`), so this is belt-and-braces against a
+future server regression becoming an XSS in every viewer's leaderboard — not a live hole. §21.
+
+Not touched, deliberately: the ghost yaw lerp's wrap-around at ±π (a ghost turning from +3.1 to
+-3.1 rad briefly spins the long way). Pre-existing, cosmetic, and orthogonal to rate independence.
+
+**Pass 14 — 2026-08-15, iteration 12 (stale ghosts — the parked item, unparked):**
+
+Context: everything through v99 was committed and pushed earlier today (`7361033` + merge
+`a2dbb8a`, which preserved supdid's voice-call work and kept CACHE_NAME at v99). Deploy to the
+server is still pending — isaac/Asher need to add the deploy key from `~/.ssh/id_ed25519_valk.pub`.
+This pass's work is uncommitted on top, per the loop rules.
+
+Pass 9 parked ghost pruning: "any timeout risks deleting a live player during a temporary stall,
+and a vanishing teammate is worse than a motionless one. That needs a real heartbeat, not a guess."
+Re-examined, the objection dissolves in two steps:
+
+1. **The heartbeat already exists.** `sendPosBroadcast()` streams sw-pos at ~10/s foregrounded and
+   ~1/s backgrounded (rAF throttling) regardless of movement. No packet for 15s = suspended or gone.
+2. **The real hazard was deletion, so don't delete — hide.** A phone resuming from its lock screen
+   keeps its socket and id, and the server never re-announces it; sw-pos for an unknown id is
+   dropped on the floor. A *deleted* ghost would therefore be invisible forever. A *hidden* one
+   snaps back on its next packet.
+
+Implementation: `GHOST_HIDE_MS` (15s) hides body + strand and skips the per-frame lerp/pose work;
+`touchRemotePlayer()` (receive-side) stamps `lastSeen` and revives; `GHOST_DROP_MS` (5 min) finally
+drops the slot so a long-lived room doesn't accumulate dead entries — far past any plausible
+suspend-and-resume, at which point the socket itself would be long dead. Strand re-show is free:
+`updateWebStrand` handles it the frame after revival, and is skipped while hidden so it can't
+re-show a hidden ghost's rope.
+
+harness4 §19 drives it with a controllable clock (`performance.now` is a sandbox global): fresh
+ghost visible → hides past 15s → **entry still in the map** → one packet revives → a 1Hz
+backgrounded sender never flickers hidden across 60s → drops at 5min → mid-iteration Map deletion
+leaves the other live ghost untouched. Assertions are on `rp.hidden`/`lastSeen`/map membership —
+real values, never the stubbed `group.visible`.
 
 **Pass 13 — 2026-08-15, iteration 11 (alt-tab mid-dive and you came back still diving):**
 
@@ -486,3 +716,99 @@ player pinned at `PLAYER_SCREEN_X`.
 levels you haven't beaten yet (the game only stores best *attempt count*, so unbeaten levels give no
 feedback on how far you got). This mirrors what was added to Geometry Wave. HTML hook would be
 `.progress-track` in `seince-jump.html:38`.
+
+# Block Battle (FPS) feature drop — 2026-08-17, evening
+
+Built on top of Asher's step-6 weapon ladder in `public/game.js` — renamed minutes later to
+`public/blockbattle.js` by the rename pass; everything below survived the move. Six features, all
+client-side. `CACHE_NAME` bumped v109 → v110 for the deploy.
+
+- **Sound** — all synthesized WebAudio (`playTone`/`playNoise` + a `GUN_SOUNDS` table), no audio
+  files. The context boots inside the "Click to play" click because browsers require a user gesture;
+  every sfx function no-ops until then, so pre-click sounds (wave 1's fanfare) are silently skipped
+  rather than erroring.
+- **Bot line of sight + AI states** — `lineOfSightClear()` samples the `occupied` column map every
+  fifth of a block, so tower walls are now real cover both ways. Bots wander blind → chase on sight
+  (orbit inside 4 blocks, `orbitSign` picks the direction per bot) → hunt the last seen position for
+  4s → give up. A bot whose fire timer expires without sight holds at 0.3–0.7s, so peeking gives you
+  a beat before the shot. They face where they walk now, only facing you when they see you — which
+  quietly telegraphs "I've been spotted".
+- **Waves replace respawns** — wave N is `min(1+N, 8)` bots, fire interval shrinks 0.35s/wave with a
+  1.8s floor. Dead bots are fully removed (`removeBot` cleans `meshToBot`/`botMeshes`, so raycasts
+  don't hit ghosts); empty field → "cleared" banner → 3s breather → next wave. Wave state freezes
+  while the player is dead.
+- **Best run in localStorage** — key `valk-fps-best`, `{wave, kills}`. Kills still carry across
+  deaths for the weapon ladder, so the scoreboard counts per-run kills via `killsAtRunStart`. Death
+  screen shows this run, the best, and a New Record line.
+- **Health packs** — every dead bot drops a spinning green cross: +25, despawns in 10s, blinks its
+  last 2s, and refuses to be consumed at full health so it's still there when you need it.
+- **Slide-jump** — Space mid-slide carries the slide's full velocity into the air (`airMom*`,
+  cleared on landing); input steers at 25% while airborne. Sprint-slide-jump chains are now the fast
+  way across the map. FOV boost applies during it.
+
+Not done (next up, big): **1v1 multiplayer** — Asher wants an invite sent inside Valk chat that the
+other player accepts. Needs server-side rooms + position/shot sync in `server.js`; plan before
+touching, the chat server is live.
+
+## Mode select — added 2026-08-17, late evening
+
+Block Battle now opens on a mode screen (`#mode-select`, z-26 — above hint/death, under the back
+link) with three choices:
+
+- **Wave Challenge** — the existing escalating-waves game, untouched.
+- **FS** — 4 enemies at all times (`FS_BOTS`), each respawning elsewhere 5s after dying
+  (`FS_RESPAWN_TIME`, the old pre-wave behavior, via a re-added `respawnBot`). Own best-kills
+  scoreboard under localStorage key `valk-fps-best-fs`; the death screen branches on mode.
+- **Online Play** — disabled placeholder ("Coming soon") until the 1v1-through-Valk-invites
+  feature is built.
+
+Wiring that matters: all wave logic is gated on `mode === 'wave'` so FS never triggers
+wave-cleared banners; `respawn()` and the dead-bot branch branch per mode; **the knife finisher's
+'launch' death also respawns in FS instead of `removeBot`** — without that, finisher kills would
+permanently shrink the FS field to zero bots. M on the death screen exits pointer lock and returns
+to the mode screen (works from the pause overlay too); mode buttons `stopPropagation` so the
+document-level dead-click respawn doesn't fire. The sim already starts paused until pointer lock,
+so nothing runs behind the mode screen. `sw.js` was already bumped to v111 for the next deploy —
+these changes ride along, no extra bump.
+
+## Wave-mode sidekicks — added 2026-08-17, late evening
+
+Wave Challenge now fields blue bots on the player's team: **one sidekick joins on wave 1, a second
+on wave 2, capped at `MAX_ALLIES = 2`** (Asher's ask: "two for each person, max two sidekicks").
+FS mode has none. How it hangs together:
+
+- **Roster** — `allies[]` next to `bots[]`. `startWave` sweeps out the dead, heals survivors to
+  `ALLY_MAX_HEALTH` (100), and tops up to `min(wave, MAX_ALLIES)`, so a fallen sidekick walks back
+  in with the next wave. They spawn on the first clear spot within ~1–3 blocks of the player.
+  `startMode` and `respawn` clear the roster with everything else.
+- **Sidekick AI** — mirror of the red-bot loop: pick the nearest living red (preferring one in
+  sight), chase it out of sight or past 5 blocks, strafe inside 3, hold-and-shoot in between, with
+  the same wedge-sidestep trick. No enemies → fall in ~2 blocks off the player's shoulder. Eyes
+  glow cyan when they have a target (the reds' red-eye tell, in team colors). Fire every
+  `ALLY_FIRE_INTERVAL` (1.5s) for `ALLY_DAMAGE` (10) — a sidekick needs 5 hits to drop a 50hp bot,
+  so they help without stealing the show.
+- **Red bots now pick targets** — `seesPlayer` became `seesTarget` + `tgtX/Y/Z`: each frame a bot
+  targets the nearest of {player, living sidekicks} it has line of sight to, and chases/faces/
+  shoots *that*. Sidekicks genuinely draw fire.
+- **One bullet system** — `fireBullet(ox, oz, tx, ty, tz, friendly)` serves both teams; friendly
+  bullets are blue (`allyBulletMat`) and only test red bots, hostile ones test the player then
+  sidekicks. `sfxBotShot` volume now keys off the shooter's distance to the *player* (the
+  listener), not to whatever it's aiming at.
+- **No score inflation** — `damageBot`'s `kills += killCredit || 1` became `kills += killCredit`;
+  sidekick hits pass 0, so ally kills still drop health packs and play the kill chime but don't
+  climb the weapon ladder or the per-run scoreboard. All player call sites already passed 1/2
+  explicitly.
+- **No friendly fire** — ally meshes are never added to the raycast list (player shots pass
+  through), friendly bullets skip the player, and RPG blasts/knife arcs only iterate `bots`.
+- Wave-clear still keys off `bots.length === 0` — allies live in their own array, so a surviving
+  sidekick doesn't stall the next wave. `sw.js` already sits at an uncommitted v112 bump for the
+  next deploy; these ride along, no extra bump (JS is network-first anyway).
+
+## Sniper scopes — added 2026-08-18
+
+Both snipers (`scope: true` in WEAPONS) zoom while right-click is held: FOV 70 → 42 (`SCOPE_ZOOM`
+0.6, a 40% zoom), mouse sensitivity scaled by the same factor, gun viewmodel hidden behind a CSS
+ring overlay (`#scope-overlay`, z-9 so the crosshair stays visible as the center dot). `scopedNow()`
+gates everything so right-click on non-snipers (or with the knife out, or dead) does nothing;
+`contextmenu` is suppressed page-wide. Scope releases on mouseup, blur, and is ignored while paused
+(mousedown requires pointer lock).

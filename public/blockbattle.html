@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Block Battle</title>
+<meta name="description" content="Block Battle — a free browser FPS on Valk. Fight through a blocky arena, rack up kills, and upgrade your weapons.">
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="blockbattle.css">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#aedcf0">
+<link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+</head>
+<body>
+
+  <a id="back-link" href="index.html">&larr; Back to chat</a>
+
+  <canvas id="map"></canvas>
+  <div id="crosshair"></div>
+  <div id="health-wrap"><div id="health-fill"></div></div>
+  <div id="kill-counter">Kills: 0</div>
+  <div id="wave-counter">Get ready&hellip;</div>
+  <div id="wave-banner"></div>
+  <div id="weapon-hud">
+    <div id="weapon-name">Glock</div>
+    <div id="ammo-count">1/1</div>
+    <div id="reload-wrap"><div id="reload-fill"></div></div>
+    <button id="upgrade-btn" type="button" disabled>Upgrade 🔒 0/5 kills</button>
+    <button id="save-btn" type="button">💾 Save (P)</button>
+  </div>
+  <div id="scope-overlay" class="hidden"></div>
+  <div id="damage-flash"></div>
+
+  <div id="death" class="hidden">
+    <div id="death-title">You died</div>
+    <div id="death-stats"></div>
+    <div id="death-best"></div>
+    <div id="death-record" class="hidden">🏆 New record!</div>
+    <div id="death-sub">Click to respawn &middot; M to change mode</div>
+  </div>
+
+  <div id="mode-select">
+    <div id="mode-name">BLOCK BATTLE</div>
+    <div id="mode-sub">Choose a mode</div>
+    <div id="mode-buttons">
+      <button class="mode-btn" type="button" data-mode="wave">🌊 Wave Challenge<span>Endless waves — blue sidekicks fight at your side</span></button>
+      <button class="mode-btn" type="button" data-mode="fs">⚔️ FS<span>4 enemies, back 5 seconds after they fall</span></button>
+      <button class="mode-btn" type="button" disabled>🌐 Online Play<span>Coming soon</span></button>
+    </div>
+  </div>
+
+  <div id="hint">
+    <div id="hint-name">BLOCK BATTLE</div>
+    <div id="hint-title">Click to play</div>
+    <div id="hint-controls">
+      Move: WASD or arrows &nbsp;&middot;&nbsp; Look: mouse &nbsp;&middot;&nbsp; Shoot: click (hold to spray) &nbsp;&middot;&nbsp; Jump: Space<br>
+      Sprint: hold L-Shift &nbsp;&middot;&nbsp; Crouch: Ctrl or C &nbsp;&middot;&nbsp; Slide: tap Ctrl while sprinting &nbsp;&middot;&nbsp; Slide-jump: Space mid-slide<br>
+      Reload: R &nbsp;&middot;&nbsp; Upgrade weapon: U (earn kills) &nbsp;&middot;&nbsp; Knife: Q &nbsp;&middot;&nbsp; Scope: hold right-click (snipers)<br>
+      Save game: P &nbsp;&middot;&nbsp; Pause: Esc
+    </div>
+  </div>
+
+  <script src="error-report.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="blockbattle.js"></script>
+  <script src="update-prompt.js"></script>
+</body>
+</html>
