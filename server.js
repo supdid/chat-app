@@ -2068,6 +2068,15 @@ function setRoomActivity(code, name, game) {
   if (!room.activity) room.activity = new Map();
   room.activity.set(name, { game, since: Date.now() });
   broadcastRoom(code, { type: 'room-activity', activity: roomActivityList(room) });
+  // Every minigame's own dedicated WebSocket (Build Craft, Geometry Wave, Web Swing, Firefight,
+  // Trivia, arcade games, Hangman, chess, tic-tac-toe/Connect Four, Pictionary, whiteboard — this
+  // function's every call site) never goes through the main chat page's join-room/message paths
+  // that normally refresh rooms.last_active_at. A room reached only via a bookmarked/shared
+  // minigame link — real, ongoing play, never a single chat message sent — would otherwise have
+  // last_active_at frozen at whatever it was on the room's first touch since the last server
+  // restart, and cleanupInactiveRooms' 90-day sweep (irreversible — no DB backup exists) would
+  // eventually delete an actively-played room's entire world/game state out from under it.
+  db.upsertRoom(code);
 }
 
 function clearRoomActivity(code, name) {

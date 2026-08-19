@@ -378,6 +378,45 @@ describe('/export', () => {
   });
 });
 
+describe('minigame activity keeps a room from looking abandoned', () => {
+  // Every minigame's own dedicated WebSocket (this test uses Build Craft, but setRoomActivity is
+  // the one shared call site for all of them) never touches the main chat's join-room/message
+  // paths that normally refresh rooms.last_active_at. A room reached only via a bookmarked
+  // minigame link — real ongoing play, zero chat messages ever sent — must not look "inactive"
+  // to cleanupInactiveRooms' 90-day sweep just because nobody ever opened the main chat page.
+  test('bc-join refreshes rooms.last_active_at even with no chat activity in the room', async () => {
+    const scratchDb = require(require('node:path').join(server.dir, 'db.js'));
+    const code = 'ACTIVITYFRESH1';
+
+    // First join establishes the room in the server's in-memory state — getOrCreateRoom's own
+    // upsertRoom call on first touch would otherwise mask what this test is actually checking.
+    const wsA = await connectWs();
+    send(wsA, { type: 'bc-join', code, name: 'ActivityFreshA' });
+    await waitFor(wsA, (m) => m.type === 'bc-init');
+
+    // Push last_active_at far into the past directly, simulating a room that's gone stale from
+    // the main chat's perspective but still has an ongoing minigame session.
+    const Database = require('better-sqlite3');
+    const rawDb = new Database(require('node:path').join(server.dir, 'valk.db'));
+    const staleTs = Date.now() - 91 * 24 * 60 * 60 * 1000;
+    rawDb.prepare('UPDATE rooms SET last_active_at = ? WHERE code = ?').run(staleTs, code);
+    rawDb.close();
+
+    const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
+    assert.ok(scratchDb.getInactiveRoomCodes(cutoff).includes(code), 'room should look inactive before more minigame activity, confirming the test setup');
+
+    // A second player joining the SAME already-in-memory room — getOrCreateRoom's own upsert
+    // doesn't fire here, isolating this to setRoomActivity's own fix.
+    const wsB = await connectWs();
+    send(wsB, { type: 'bc-join', code, name: 'ActivityFreshB' });
+    await waitFor(wsB, (m) => m.type === 'bc-init');
+    await sleep(200);
+
+    assert.ok(!scratchDb.getInactiveRoomCodes(cutoff).includes(code), 'a room with real minigame activity must no longer look inactive, even with zero chat messages');
+    wsA.close(); wsB.close();
+  });
+});
+
 describe('Build Craft land claims', () => {
   test('server enforces claims even without going through the client UI (bc-block)', async () => {
     const owner = await connectWs();
