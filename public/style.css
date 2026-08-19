@@ -1567,6 +1567,20 @@ button.danger:hover {
 
 .call-overlay.expanded .call-bar-actions {
   margin-left: auto;
+  /* voice-effect-select below forces itself onto its own line via flex-basis:100%,
+     which only breaks the row here if this container is allowed to wrap. */
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* Forces onto its own row right under mic-mute-btn (the item before it in DOM
+   order) instead of sitting inline with the rest of the button row. max-width
+   is overridden because .mic-device-select's 160px cap (sized for sitting
+   inline among small buttons) would otherwise let flex-basis:100% shrink back
+   down to fit the current line instead of forcing the wrap. */
+.call-overlay.expanded #voice-effect-select {
+  flex-basis: 100%;
+  max-width: none;
 }
 
 .call-overlay:not(.expanded) .call-bar-actions {
