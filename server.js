@@ -5309,6 +5309,14 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'read' && ws.room) {
       const messageId = String(msg.messageId || '');
       if (!messageId) return;
+      // A real DB write (setReadReceipt) plus a room-wide broadcast on every call, with no
+      // server-side throttle of its own — a raw WS client could hammer the DB with unbounded
+      // upserts. Uses the generous per-stroke gate rather than the standard 8/6s chat one: unlike
+      // 'typing' (bounded by one person's own input rate, already client-throttled to 1/2s), a
+      // legitimate 'read' fires once per *incoming* message — in a genuinely busy room that's
+      // bounded by the room's aggregate traffic across every sender, not any single person's rate,
+      // so the tighter gate risked dropping real read receipts during ordinary heavy chat activity.
+      if (isStrokeRateLimited(ws)) return;
       // Same room-ownership check every sibling handler (edit/delete/pin/vote/get-thread/react)
       // already has — this one was the one gap left. Practically low-risk on its own (ids are
       // unguessable random UUIDs, and the client only ever compares receipts by exact string

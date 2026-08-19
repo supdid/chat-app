@@ -74,6 +74,24 @@ describe('room chat', () => {
     assert.ok(count > 0 && count <= 8, `expected 1-8 typing broadcasts through, got ${count}`);
   });
 
+  // 'read' had no throttle at all despite doing a real DB write (setReadReceipt) plus a room-wide
+  // broadcast on every call. Uses the generous per-stroke gate (40/2s), not the standard 8/6s
+  // chat one — a legitimate 'read' fires once per *incoming* message, which in a busy room is
+  // bounded by the room's aggregate traffic, not any single sender's own rate.
+  test('flood of read receipts is rate-limited (generous per-stroke gate, not the tight chat one)', async () => {
+    const { ws: host, code } = await joinRoom('ReadFloodHost');
+    const other = await joinExistingRoom('ReadFloodWatcher', code);
+    send(host, { type: 'message', text: 'read me' });
+    const posted = await waitFor(host, (m) => m.type === 'message' && m.text === 'read me');
+    let count = 0;
+    const handler = (data) => { const m = JSON.parse(data); if (m.type === 'read-receipt') count++; };
+    other.on('message', handler);
+    for (let i = 0; i < 45; i++) send(host, { type: 'read', messageId: posted.id });
+    await sleep(500);
+    other.off('message', handler);
+    assert.ok(count > 0 && count <= 40, `expected 1-40 read-receipt broadcasts through (of 45 sent), got ${count}`);
+  });
+
   test('flood of set-name/set-status/set-avatar profile changes is rate-limited (shares the same gate)', async () => {
     const { ws } = await joinRoom('ProfileFloodHost');
     let updateCount = 0;
