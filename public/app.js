@@ -87,6 +87,7 @@ const callExpandBtn = document.getElementById('call-expand-btn');
 const micRetryBtn = document.getElementById('mic-retry-btn');
 const micMuteBtn = document.getElementById('mic-mute-btn');
 const micDeviceSelect = document.getElementById('mic-device-select');
+const voiceEffectSelect = document.getElementById('voice-effect-select');
 const callBar = document.getElementById('call-bar');
 const callDragHandle = document.getElementById('call-drag-handle');
 const callShareBtn = document.getElementById('call-share-btn');
@@ -384,6 +385,14 @@ let callAutoHangupTimer = null;
 const CALL_MAX_DURATION_MS = 32 * 60 * 60 * 1000; // 32 hours
 let localStream = null;
 let localVoiceStop = null; // stop function for the local speaking-ring detector
+// The raw, unprocessed getUserMedia() capture — kept separate from `localStream` (what's
+// actually sent to peers) once a voice effect is active, since `localStream` then becomes a
+// synthesized MediaStream built from this via Web Audio. Switching effects re-processes this
+// same raw capture rather than re-prompting for the microphone; switching microphones replaces
+// this (see switchMicrophone) and re-applies whatever effect was already selected.
+let rawMicStream = null;
+let voiceEffect = 'none';
+let voiceEffectCleanup = null; // tears down the current Web Audio graph; no-op when effect is 'none'
 let screenStream = null; // local outgoing screen-share stream, null when not sharing
 let screenShareStarting = false; // guards against a second getDisplayMedia() call racing the first while its OS picker is still up
 const voicePeers = new Map(); // sub -> { name, pc, audioEl, stopDetector }
@@ -2945,6 +2954,7 @@ async function startVoiceCall() {
   if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
     try {
       localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      rawMicStream = localStream; // a fresh call always starts with no effect applied (see hangUpVoiceCall)
     } catch (err) {
       localStream = null;
       voiceErrorEl.textContent = micErrorMessage(err);
@@ -2966,6 +2976,7 @@ async function startVoiceCall() {
   if (myCallGeneration !== voiceCallGeneration) {
     if (localStream) localStream.getTracks().forEach((t) => t.stop());
     localStream = null;
+    rawMicStream = null;
     return;
   }
 
@@ -2994,6 +3005,10 @@ async function startVoiceCall() {
 // normal mute button stays hidden and this just re-applies the current hold state.
 function updateMicMuteButton() {
   const track = localStream && localStream.getAudioTracks()[0];
+  // Same visibility condition as the mute button — a voice effect only makes sense once
+  // there's an actual outgoing mic track to process (matches this stream's own track being
+  // whatever the effect chain currently outputs, see applyVoiceEffect).
+  voiceEffectSelect.classList.toggle('hidden', !track);
   if (pttMode) {
     micMuteBtn.classList.add('hidden');
     if (track) track.enabled = pttActive;
@@ -3215,7 +3230,10 @@ async function retryEnableMicrophone() {
     newStream.getTracks().forEach((t) => t.stop());
     return;
   }
-  localStream = newStream;
+  rawMicStream = newStream;
+  const { stream: outgoing, cleanup } = buildOutgoingStream(newStream, voiceEffect);
+  localStream = outgoing;
+  voiceEffectCleanup = cleanup;
   voiceErrorEl.classList.add('hidden');
   micRetryBtn.classList.add('hidden');
   localVoiceStop = attachSpeakingDetector(localStream, (speaking) => setTileSpeaking('me', speaking));
@@ -3249,7 +3267,9 @@ async function populateMicDevices() {
     micDeviceSelect.classList.add('hidden');
     return;
   }
-  const currentTrack = localStream && localStream.getAudioTracks()[0];
+  // Reads rawMicStream, not localStream — while a voice effect is active, localStream's track is
+  // the effect chain's synthesized output, which has no real device identity to report here.
+  const currentTrack = rawMicStream && rawMicStream.getAudioTracks()[0];
   const currentId = currentTrack && currentTrack.getSettings().deviceId;
   micDeviceSelect.innerHTML = '';
   mics.forEach((mic, i) => {
@@ -3262,54 +3282,224 @@ async function populateMicDevices() {
   micDeviceSelect.classList.remove('hidden');
 }
 
-// Swaps the live track on every peer connection via replaceTrack — no renegotiation
-// needed, so switching mid-call doesn't cause a reconnect blip for anyone listening.
+// Swaps the outgoing track on every peer connection via replaceTrack — no renegotiation
+// needed, so switching mid-call doesn't cause a reconnect blip for anyone listening. Shared by
+// switchMicrophone and applyVoiceEffect, both of which need to push a freshly-built track (raw
+// device audio, or a voice-effect chain's output) out to every current peer the same way.
+// Returns true on full success; on a partial failure, some peers may already be on newTrack
+// (see the comment below) — the caller decides what to do about that.
+async function replaceOutgoingTrackAcrossPeers(newTrack) {
+  try {
+    for (const [, peer] of voicePeers) {
+      const sender = peer.pc.getSenders().find((s) => s.track && s.track.kind === 'audio');
+      if (sender) await sender.replaceTrack(newTrack);
+    }
+    return true;
+  } catch (err) {
+    // An uncaught throw here (e.g. InvalidStateError on a peer connection that closed mid-switch)
+    // would otherwise abort this loop partway through with no trace anywhere. Not stopping
+    // newTrack here: by the time this fires, some peers' senders may already have been switched
+    // onto it — killing it would silence audio for exactly the connections that *did* succeed,
+    // worse than leaving a harmless still-open track around. Surfacing the failure is the goal,
+    // not a full rollback.
+    reportClientError('replaceOutgoingTrackAcrossPeers failed mid-switch: ' + err.message, err.stack);
+    return false;
+  }
+}
+
+// ---- Voice effects: a small Web Audio processing chain applied to the mic before it's sent to
+// every peer. `localStream` (used everywhere else — peer connections for newly-joining peers,
+// mute/PTT, recording, the speaking-ring detector) always points at whatever this currently
+// outputs; `rawMicStream` is kept separately as the actual device capture so switching effects
+// mid-call re-processes the same input instead of re-prompting for microphone permission. ----
+
+// A simple granular pitch shifter: two overlapping "grains" read the recent input at `ratio`
+// speed (each periodically jumping back to a fresh spot near real time and crossfading via a
+// Hann window to hide the jump, the standard trick for keeping a resampling shifter in sync with
+// a live, indefinitely-long input rather than a fixed buffer). Real-time and dependency-free,
+// at the cost of a faint granular/robotic texture on top of the pitch shift — acceptable for a
+// fun call effect, not aiming for studio-quality pitch correction.
+function createGranularPitchShifter(ctx, ratio) {
+  const node = ctx.createScriptProcessor(2048, 1, 1);
+  const sampleRate = ctx.sampleRate;
+  const grainSamples = Math.floor(sampleRate * 0.08); // ~80ms grains
+  const ringSize = Math.floor(sampleRate * 0.5); // 500ms of history — plenty of headroom
+  const ring = new Float32Array(ringSize);
+  let writePos = 0;
+  let written = 0;
+  const grains = [
+    { readPos: 0, phase: 0 },
+    { readPos: 0, phase: 0.5 }, // offset half a cycle so one fades in as the other fades out
+  ];
+  let initialized = false;
+
+  function hann(x) {
+    const c = x < 0 ? 0 : x > 1 ? 1 : x;
+    return 0.5 - 0.5 * Math.cos(2 * Math.PI * c);
+  }
+  function readRing(pos) {
+    let i = Math.floor(pos) % ringSize;
+    if (i < 0) i += ringSize;
+    return ring[i];
+  }
+  function freshGrainStart() {
+    // A safety margin behind the write head so a fast-advancing (helium) grain never laps past
+    // what's actually been written yet before its next reset.
+    return (writePos - grainSamples * 2 + ringSize * 2) % ringSize;
+  }
+
+  node.onaudioprocess = (e) => {
+    const input = e.inputBuffer.getChannelData(0);
+    const output = e.outputBuffer.getChannelData(0);
+    for (let i = 0; i < input.length; i++) {
+      ring[writePos] = input[i];
+      writePos = (writePos + 1) % ringSize;
+      written++;
+    }
+    if (!initialized && written > grainSamples * 3) {
+      const start = freshGrainStart();
+      grains[0].readPos = start;
+      grains[1].readPos = (start + Math.floor(grainSamples / 2)) % ringSize;
+      initialized = true;
+    }
+    if (!initialized) { output.fill(0); return; }
+    for (let i = 0; i < output.length; i++) {
+      let sample = 0;
+      for (const g of grains) {
+        sample += readRing(g.readPos) * hann(g.phase);
+        g.readPos += ratio;
+        g.phase += 1 / grainSamples;
+        if (g.phase >= 1) {
+          g.phase -= 1;
+          g.readPos = freshGrainStart();
+        }
+      }
+      output[i] = sample; // two 50%-overlapped Hann windows sum to ~1 (constant-overlap-add), no extra gain needed
+    }
+  };
+  return node;
+}
+
+// Builds the stream actually sent to peers for a given raw capture + effect choice. 'none' is a
+// pure passthrough (the raw stream itself, zero Web Audio overhead) — everything else runs the
+// raw track through an AudioContext graph into a fresh MediaStream.
+function buildOutgoingStream(rawStream, effect) {
+  if (effect === 'none' || !rawStream) return { stream: rawStream, cleanup: () => {} };
+  const rawTrack = rawStream.getAudioTracks()[0];
+  if (!rawTrack) return { stream: rawStream, cleanup: () => {} };
+
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  if (!AudioCtx) return { stream: rawStream, cleanup: () => {} };
+  const ctx = new AudioCtx();
+  const source = ctx.createMediaStreamSource(rawStream);
+  const destination = ctx.createMediaStreamDestination();
+  const startedNodes = [];
+
+  if (effect === 'robot') {
+    // Ring modulation: multiply the voice by a low-frequency bipolar carrier — the classic cheap,
+    // artifact-free "robot" effect. Connecting the oscillator straight into the gain node's own
+    // .gain AudioParam modulates that gain between roughly -1 and +1 at the carrier frequency.
+    const carrier = ctx.createOscillator();
+    carrier.type = 'sine';
+    carrier.frequency.value = 35;
+    const ringGain = ctx.createGain();
+    ringGain.gain.value = 0;
+    carrier.connect(ringGain.gain);
+    source.connect(ringGain);
+    ringGain.connect(destination);
+    carrier.start();
+    startedNodes.push(carrier);
+  } else if (effect === 'deep' || effect === 'helium') {
+    const ratio = effect === 'deep' ? 0.7 : 1.5;
+    const shifter = createGranularPitchShifter(ctx, ratio);
+    source.connect(shifter);
+    shifter.connect(destination);
+  } else {
+    source.connect(destination);
+  }
+
+  const outStream = new MediaStream([destination.stream.getAudioTracks()[0]]);
+  return {
+    stream: outStream,
+    cleanup: () => {
+      for (const n of startedNodes) { try { n.stop(); } catch { /* already stopped */ } }
+      ctx.close().catch(() => {});
+    },
+  };
+}
+
+// Called on selecting a new voice effect mid-call, and internally whenever the raw mic itself
+// changes (switchMicrophone) so the currently-selected effect carries over to the new device.
+async function applyVoiceEffect(effect) {
+  if (!voiceActive || !rawMicStream) { voiceEffect = effect; return; }
+  const { stream: newOutgoing, cleanup: newCleanup } = buildOutgoingStream(rawMicStream, effect);
+  const newTrack = newOutgoing.getAudioTracks()[0];
+  const oldTrack = localStream && localStream.getAudioTracks()[0];
+  if (oldTrack) newTrack.enabled = oldTrack.enabled;
+
+  const ok = await replaceOutgoingTrackAcrossPeers(newTrack);
+  if (!ok) {
+    newCleanup();
+    voiceErrorEl.textContent = 'Could not switch voice effects — try again.';
+    voiceErrorEl.classList.remove('hidden');
+    voiceEffectSelect.value = voiceEffect; // roll the UI back to what's actually still playing
+    return;
+  }
+
+  if (localVoiceStop) localVoiceStop();
+  const oldCleanup = voiceEffectCleanup;
+  localStream = newOutgoing;
+  voiceEffect = effect;
+  voiceEffectCleanup = newCleanup;
+  localVoiceStop = attachSpeakingDetector(localStream, (speaking) => setTileSpeaking('me', speaking));
+  reconnectLocalTrackToCallRecording();
+  if (oldCleanup) oldCleanup(); // torn down last so there's no gap with nothing feeding `destination`
+}
+
+voiceEffectSelect.addEventListener('change', () => applyVoiceEffect(voiceEffectSelect.value));
+
 async function switchMicrophone(deviceId) {
   if (!voiceActive || !deviceId) return;
   // Same stale-attempt guard as startVoiceCall()/retryEnableMicrophone() — picking a device
   // right as the call ends would otherwise leave a hot mic track + speaking-detector loop
   // leaked with no UI left to stop them.
   const myCallGeneration = voiceCallGeneration;
-  let newStream;
+  let newRawStream;
   try {
-    newStream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: deviceId } } });
+    newRawStream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: deviceId } } });
   } catch (err) {
     voiceErrorEl.textContent = micErrorMessage(err);
     voiceErrorEl.classList.remove('hidden');
     return;
   }
   if (myCallGeneration !== voiceCallGeneration) {
-    newStream.getTracks().forEach((t) => t.stop());
+    newRawStream.getTracks().forEach((t) => t.stop());
     return;
   }
-  const newTrack = newStream.getAudioTracks()[0];
+  const { stream: newOutgoing, cleanup: newCleanup } = buildOutgoingStream(newRawStream, voiceEffect);
+  const newTrack = newOutgoing.getAudioTracks()[0];
   const oldTrack = localStream && localStream.getAudioTracks()[0];
   newTrack.enabled = oldTrack ? oldTrack.enabled : true;
 
-  try {
-    for (const [, peer] of voicePeers) {
-      const sender = peer.pc.getSenders().find((s) => s.track && s.track.kind === 'audio');
-      if (sender) await sender.replaceTrack(newTrack);
-    }
-  } catch (err) {
-    // Called fire-and-forget from the device picker's change listener — an uncaught throw here
-    // (e.g. InvalidStateError on a peer connection that closed mid-switch) would otherwise abort
-    // this loop partway through with no trace anywhere, silently skipping the cleanup below too
-    // (oldTrack never stops, localStream/localVoiceStop never update). Not stopping newTrack here:
-    // by the time this fires, some peers' senders may already have been switched onto it — killing
-    // it would silence audio for exactly the connections that *did* succeed, worse than leaving a
-    // harmless still-open mic handle around. Surfacing the failure is the goal, not a full rollback.
+  const ok = await replaceOutgoingTrackAcrossPeers(newTrack);
+  if (!ok) {
+    newCleanup();
+    newRawStream.getTracks().forEach((t) => t.stop());
     voiceErrorEl.textContent = 'Could not switch microphones — try again.';
     voiceErrorEl.classList.remove('hidden');
-    reportClientError('switchMicrophone failed mid-switch: ' + err.message, err.stack);
     return;
   }
 
   if (localVoiceStop) localVoiceStop();
-  if (oldTrack) oldTrack.stop();
-  localStream = newStream;
+  const oldRawStream = rawMicStream;
+  const oldCleanup = voiceEffectCleanup;
+  rawMicStream = newRawStream;
+  localStream = newOutgoing;
+  voiceEffectCleanup = newCleanup;
   localVoiceStop = attachSpeakingDetector(localStream, (speaking) => setTileSpeaking('me', speaking));
   reconnectLocalTrackToCallRecording();
+  if (oldCleanup) oldCleanup();
+  if (oldRawStream) oldRawStream.getTracks().forEach((t) => t.stop());
 }
 
 micDeviceSelect.addEventListener('change', () => switchMicrophone(micDeviceSelect.value));
@@ -3332,6 +3522,8 @@ function hangUpVoiceCall() {
   micRetryBtn.classList.add('hidden');
   micMuteBtn.classList.add('hidden');
   micDeviceSelect.classList.add('hidden');
+  voiceEffectSelect.classList.add('hidden');
+  voiceEffectSelect.value = 'none';
 
   stopCallRecording();
   setPttMode(false);
@@ -3342,8 +3534,18 @@ function hangUpVoiceCall() {
 
   if (localVoiceStop) localVoiceStop();
   localVoiceStop = null;
+  // localStream and rawMicStream are different MediaStream objects whenever a voice effect was
+  // active (localStream is then the effect chain's synthesized output) — both need stopping:
+  // localStream's track to stop feeding the (about to be torn down) Web Audio graph, and
+  // rawMicStream's track to actually release the microphone hardware, which stopping only the
+  // synthesized track never touches.
   if (localStream) localStream.getTracks().forEach((t) => t.stop());
+  if (rawMicStream && rawMicStream !== localStream) rawMicStream.getTracks().forEach((t) => t.stop());
   localStream = null;
+  rawMicStream = null;
+  if (voiceEffectCleanup) voiceEffectCleanup();
+  voiceEffectCleanup = null;
+  voiceEffect = 'none';
 
   for (const sub of [...voicePeers.keys()]) removeVoicePeer(sub);
 
