@@ -1253,6 +1253,27 @@ describe('thread replies', () => {
     assert.equal(thread.root.id, rootMsg.id);
     assert.ok(thread.replies.some((r) => r.text === 'a reply'));
   });
+
+  // Same "insert directly into the scratch server's own DB, in-process" approach as the DM-thread
+  // and group-DM window tests elsewhere in this file — posting 205 real replies through the flood
+  // gate would be far too slow for what's really a db.js query-shape question.
+  test('a thread past the 200-reply window shows the most recent replies, not the oldest', async () => {
+    const scratchDb = require(require('node:path').join(server.dir, 'db.js'));
+    const { ws: root, code } = await joinRoom('ThreadWindowRoot');
+    send(root, { type: 'message', text: 'root message' });
+    const rootMsg = await waitFor(root, (m) => m.type === 'message' && m.text === 'root message');
+    for (let i = 1; i <= 205; i++) {
+      scratchDb.insertMessage({
+        id: require('node:crypto').randomUUID(), roomCode: code, name: 'ThreadWindowRoot',
+        text: 'r' + i, mediaUrl: null, mediaType: null, replyToId: rootMsg.id, at: Date.now() + i, accountId: null,
+      });
+    }
+    send(root, { type: 'get-thread', messageId: rootMsg.id });
+    const thread = await waitFor(root, (m) => m.type === 'thread-result');
+    assert.equal(thread.replies.length, 200);
+    assert.equal(thread.replies[0].text, 'r6', 'the oldest reply kept should be the 6th (205 - 200 + 1), not r1');
+    assert.equal(thread.replies[thread.replies.length - 1].text, 'r205', 'the newest reply must be included');
+  });
 });
 
 describe('Scorpture watch-live and signal-relay rate limits', () => {

@@ -849,9 +849,14 @@ function getRoomMedia(code, limit = 200) {
 // ---- Threads (direct replies to a message — one level, not deeply nested) ----
 
 function getThreadReplies(code, messageId, limit = 200) {
+  // Same DESC + reverse fix as getDmThread/getGroupDmMessages elsewhere in this file — an
+  // ASC-ordered LIMIT kept only the oldest `limit` replies, so a thread past that count would be
+  // stuck reshowing its oldest replies on every open and never surfacing anything more recent
+  // (get-thread's result fully replaces the client's rendered thread each time, see renderThread).
   return db
-    .prepare('SELECT * FROM messages WHERE room_code = ? AND reply_to_id = ? ORDER BY at ASC LIMIT ?')
+    .prepare('SELECT * FROM messages WHERE room_code = ? AND reply_to_id = ? ORDER BY at DESC LIMIT ?')
     .all(code, messageId, limit)
+    .reverse()
     .map(rowToHistoryEntry);
 }
 
