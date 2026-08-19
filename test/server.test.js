@@ -491,6 +491,34 @@ describe('Web Swing PvP', () => {
     b.off('message', h3);
     assert.equal(duringGrace, false);
   });
+
+  // sw-score was the one leaderboard-writing message with no submission cooldown at all, unlike
+  // gw-complete/arcade-submit-score which both reuse ARCADE_SUBMIT_COOLDOWN_MS for exactly this.
+  test('sw-score submissions are cooldown-throttled like every other leaderboard write', async () => {
+    const ws = await connectWs();
+    send(ws, { type: 'sw-join', code: 'SWSCORE1', name: 'Swinger' });
+    await waitFor(ws, (m) => m.type === 'sw-init');
+
+    send(ws, { type: 'sw-score', score: 10 });
+    await sleep(100);
+    // Immediately try to overwrite with a higher score — must be dropped by the cooldown, not
+    // just naturally rejected for being lower (it's deliberately higher to isolate the cooldown).
+    send(ws, { type: 'sw-score', score: 20 });
+    await sleep(100);
+
+    send(ws, { type: 'sw-leaderboard', code: 'SWSCORE1' });
+    const afterSpam = await waitFor(ws, (m) => m.type === 'sw-leaderboard-result');
+    const entry = afterSpam.scores.find((s) => s.name === 'Swinger');
+    assert.equal(entry.score, 10, 'the second, cooldown-blocked submission must not have landed');
+
+    await sleep(2000); // past ARCADE_SUBMIT_COOLDOWN_MS (2000ms)
+    send(ws, { type: 'sw-score', score: 20 });
+    await sleep(100);
+    send(ws, { type: 'sw-leaderboard', code: 'SWSCORE1' });
+    const afterCooldown = await waitFor(ws, (m) => m.type === 'sw-leaderboard-result');
+    const entry2 = afterCooldown.scores.find((s) => s.name === 'Swinger');
+    assert.equal(entry2.score, 20, 'a submission after the cooldown window must land');
+  });
 });
 
 describe('Pictionary guess flood gate', () => {
@@ -918,6 +946,27 @@ describe('whiteboard stroke sanitization', () => {
     await sleep(300);
     b.off('message', h);
     assert.equal(sawStroke, false);
+  });
+
+  // wb-clear had no rate limit at all (unlike wb-stroke just above it, and unlike dg-clear which
+  // is at least drawer-only) — any participant could wipe the whole shared whiteboard, a real DB
+  // write plus a room-wide broadcast, as fast as the network allows.
+  test('wb-clear is rate-limited like every other content-creation/mutation path', async () => {
+    const a = await connectWs();
+    const b = await connectWs();
+    send(a, { type: 'wb-join', code: 'WBCLEAR1', name: 'Clearer' });
+    await waitFor(a, (m) => m.type === 'wb-init');
+    send(b, { type: 'wb-join', code: 'WBCLEAR1', name: 'Watcher' });
+    await waitFor(b, (m) => m.type === 'wb-init');
+    await sleep(150);
+
+    let clearCount = 0;
+    const h = (data) => { if (JSON.parse(data).type === 'wb-cleared') clearCount++; };
+    b.on('message', h);
+    for (let i = 0; i < 15; i++) send(a, { type: 'wb-clear' });
+    await sleep(500);
+    b.off('message', h);
+    assert.ok(clearCount > 0 && clearCount <= 8, `expected 1-8 of 15 wb-clear calls through, got ${clearCount}`);
   });
 });
 

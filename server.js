@@ -3593,6 +3593,12 @@ wss.on('connection', (ws, req) => {
       const p = room && room.sw && room.sw.players.get(ws);
       const score = Math.max(0, Math.min(100000, Math.floor(+msg.score || 0)));
       if (!p || !score) return;
+      // Fully client-computed like gw-complete/arcade-submit-score above — same submission-cooldown
+      // mitigation reused here; this was the one leaderboard-writing message left with no cooldown
+      // at all, letting a client hammer db.bumpLeaderboard with unbounded writes.
+      const nowSw = Date.now();
+      if (nowSw - (ws.lastSwSubmitAt || 0) < ARCADE_SUBMIT_COOLDOWN_MS) return;
+      ws.lastSwSubmitAt = nowSw;
       db.bumpLeaderboard(ws.swRoom, 'sw', p.name, score);
       return;
     }
@@ -4428,6 +4434,13 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'wb-clear' && ws.wbRoom) {
       const room = rooms.get(ws.wbRoom);
       if (!room || !room.wb) return;
+      // Unlike wb-stroke just above (rate-limited via isStrokeRateLimited, a generous per-stroke
+      // gate for legitimate drawing), this one had no gate at all — despite being the more
+      // impactful action: any participant (no drawer/host check either, unlike dg-clear's
+      // drawer-only gate) could wipe the whole room's whiteboard, a real DB write plus a broadcast
+      // to everyone, as fast as the network allows. The standard content-creation gate fits its
+      // "destructive room-wide action" weight better than the high-frequency stroke one.
+      if (isWsMsgRateLimited(ws)) return;
       room.wb.strokes = [];
       db.clearStrokes(ws.wbRoom);
       broadcastWb(ws.wbRoom, { type: 'wb-cleared' });
