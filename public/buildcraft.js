@@ -1194,9 +1194,17 @@ function bcMakeAvatar(name, shirtColor, armorTier) {
 // Avatar groups are fully rebuilt (bcMakeAvatar) on every color/armor change and on remove —
 // dispose the geometries/materials/nametag texture of the old group so GPU memory doesn't
 // grow unbounded in a busy or long-running room.
+//
+// The name-tag Sprite is deliberately excluded from geometry disposal: THREE.Sprite's geometry
+// is a single module-level PlaneGeometry shared by *every* sprite in the app — the sun/moon glow
+// sprites (see makeSkyGlow) included — not an instance owned by this one avatar's name tag. This
+// function used to call obj.geometry.dispose() unconditionally for every traversed object, which
+// disposed that shared geometry on every single color/armor change or player departure, not just
+// on removal; verified directly (monkeypatched sunGlow.geometry.dispose to confirm it was firing).
+// Only the sprite's own material (and the CanvasTexture that material uniquely owns) belong to it.
 function bcDisposeAvatarGroup(group) {
   group.traverse((obj) => {
-    if (obj.geometry) obj.geometry.dispose();
+    if (obj.isMesh && obj.geometry) obj.geometry.dispose();
     if (obj.material) {
       const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
       mats.forEach((mat) => {
@@ -1205,6 +1213,18 @@ function bcDisposeAvatarGroup(group) {
       });
     }
   });
+}
+
+// Item drops (see spawnDrop/objectForInventoryEntry) are the one case in this file where geometry
+// and material can't be disposed together: a dropped block-type item reuses materialFor(typeIndex)
+// — the SAME cached, texture-mapped material every block of that type in the entire visible world
+// is rendered with — while a dropped "item" (tool/ingot/stick) gets a fresh material of its own
+// via itemMat(). Since a dropped mesh doesn't carry which case it came from, disposing material
+// here at all risks nuking a world-block material out from under every other block of that type on
+// pickup. The geometry, by contrast, actually is always freshly allocated per drop in both cases
+// (materialFor is a material cache, not a geometry cache) — safe to dispose unconditionally.
+function disposeDropGeometry(mesh) {
+  mesh.traverse((obj) => { if (obj.isMesh && obj.geometry) obj.geometry.dispose(); });
 }
 
 function bcAddRemotePlayer(id, name, pos, color, armorTier) {
@@ -1744,6 +1764,8 @@ function updateFireworks(delta) {
     if (now - fw.spawnedAt > 900) {
       spawnFireworkBurst(fw.mesh.position.x, fw.mesh.position.y, fw.mesh.position.z);
       scene.remove(fw.mesh);
+      fw.mesh.geometry.dispose();
+      fw.mesh.material.dispose();
       fireworks.splice(i, 1);
     }
   }
@@ -1788,6 +1810,7 @@ function updateDrops(delta) {
       if (d.mesh.position.y <= restY) {
         if (d.groundY === null) {
           scene.remove(d.mesh);
+          disposeDropGeometry(d.mesh);
           drops.splice(i, 1);
           continue;
         }
@@ -1800,6 +1823,7 @@ function updateDrops(delta) {
     }
     if (d.mesh.position.distanceTo(playerPos) < PICKUP_RADIUS) {
       scene.remove(d.mesh);
+      disposeDropGeometry(d.mesh);
       drops.splice(i, 1);
       collectItem(d.typeIndex);
     }
@@ -3184,7 +3208,7 @@ function spawnOneMob() {
 }
 
 function spawnMobs() {
-  for (const mob of mobs) scene.remove(mob.group);
+  for (const mob of mobs) { scene.remove(mob.group); bcDisposeAvatarGroup(mob.group); }
   mobs.length = 0;
   for (let i = 0; i < MOB_MAX_COUNT; i++) spawnOneMob();
 }
@@ -3293,7 +3317,7 @@ function spawnOneVillager() {
 }
 
 function spawnVillagers() {
-  for (const v of villagers) scene.remove(v.group);
+  for (const v of villagers) { scene.remove(v.group); bcDisposeAvatarGroup(v.group); }
   villagers.length = 0;
   for (let i = 0; i < VILLAGER_MAX_COUNT; i++) spawnOneVillager();
 }
@@ -3413,7 +3437,7 @@ function spawnOneHorse() {
 }
 
 function spawnHorses() {
-  for (const h of horses) scene.remove(h.group);
+  for (const h of horses) { scene.remove(h.group); bcDisposeAvatarGroup(h.group); }
   horses.length = 0;
   for (let i = 0; i < HORSE_MAX_COUNT; i++) spawnOneHorse();
 }
