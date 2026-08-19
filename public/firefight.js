@@ -1571,6 +1571,13 @@ function loop(now) {
     p.mesh.position.y += Math.sin(t * Math.PI) * 1.6;
     p.mesh.rotation.x += 6 * dt;
     if (t >= 1) {
+      // A landed grenade always explodes here, hit or miss — showLandedShot's explosion only
+      // ever fires on a server-confirmed hit, so without this a throw that missed (out of range,
+      // opponent moved, crosshair wasn't quite on them) would just have its projectile vanish
+      // silently with no boom at all. activeProjectiles only ever holds the local player's own
+      // throws (nothing broadcasts a remote player's grenade until it's confirmed landed), so this
+      // never fires on someone else's behalf.
+      spawnExplosion(p.mesh.position);
       scene.remove(p.mesh);
       p.mesh.geometry.dispose();
       p.mesh.material.dispose();
