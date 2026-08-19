@@ -84,7 +84,6 @@ function blip(kind) {
   gain.connect(ctx.destination);
   const presets = {
     shoot: { type: 'square', f0: 620, f1: 180, g: 0.12, dur: 0.08 },
-    sniper: { type: 'sawtooth', f0: 900, f1: 120, g: 0.2, dur: 0.18 },
     hit: { type: 'triangle', f0: 500, f1: 900, g: 0.08, dur: 0.06 },
     hurt: { type: 'square', f0: 220, f1: 90, g: 0.15, dur: 0.16 },
     death: { type: 'sawtooth', f0: 480, f1: 60, g: 0.18, dur: 0.5 },
@@ -95,6 +94,9 @@ function blip(kind) {
     // machine-gun tick fast enough to be annoying.
     step: { type: 'triangle', f0: 130, f1: 95, g: 0.045, dur: 0.055 },
     step2: { type: 'triangle', f0: 105, f1: 78, g: 0.045, dur: 0.055 },
+    punch: { type: 'square', f0: 140, f1: 55, g: 0.16, dur: 0.09 },
+    throw: { type: 'sine', f0: 320, f1: 520, g: 0.07, dur: 0.12 },
+    explosion: { type: 'sawtooth', f0: 160, f1: 35, g: 0.28, dur: 0.45 },
   };
   const p = presets[kind];
   if (!p) return;
@@ -458,7 +460,7 @@ function removeRemotePlayer(id) {
 }
 
 // ==== Local player + input ====
-const player = { x: 0, y: 0, z: 0, yaw: 0, pitch: 0, vy: 0, grounded: true, health: 150, alive: false, weapon: 'pistol' };
+const player = { x: 0, y: 0, z: 0, yaw: 0, pitch: 0, vy: 0, grounded: true, health: 150, alive: false, weapon: 'assault_rifle' };
 const move = { f: 0, r: 0 };
 const keys = new Set();
 let pointerLocked = false;
@@ -466,11 +468,16 @@ let aiming = false;
 let lastShotAt = 0;
 
 // Single chokepoint for every place that sets `aiming`, rather than each call site touching the
-// overlay itself — the scope only makes sense for the sniper (rifle/pistol ADS is just the plain
-// FOV zoom in updateFov), and this is the one place that needs to know both facts at once.
+// overlay itself — the scope only makes sense for a weapon with headshotDamage (plain ranged ADS
+// is just the FOV zoom in updateFov), and this is the one place that needs to know both facts.
 function setAiming(v) {
   aiming = v;
-  scopeOverlayEl.classList.toggle('hidden', !(v && player.weapon === 'sniper'));
+  // Keyed off the weapon actually having headshotDamage, not a hardcoded weapon name — none of
+  // the current 4-slot loadout does, so the scope stays permanently hidden for now, but this
+  // reactivates automatically for any future high-precision weapon added to the loadout without
+  // needing this function touched again.
+  const w = weapons[player.weapon];
+  scopeOverlayEl.classList.toggle('hidden', !(v && w && w.headshotDamage));
 }
 
 // Tuned so the jump apex (vy0^2 / (2*g) ≈ 2.5 units) clears the arena's cover boxes (1.6-1.8
@@ -538,8 +545,11 @@ function updateCameraFromPlayer() {
   camera.rotation.z = myDeathAt ? Math.min(1, (performance.now() - myDeathAt) / 500) * 0.32 : 0;
 }
 
+// Per-weapon ADS zoom — no entry (fists, grenade) means aiming has no FOV effect at all, which is
+// the correct behavior for a melee/thrown weapon rather than a special case to opt out of.
+const ADS_FOV = { pistol: 50, assault_rifle: 42 };
 function updateFov(dt) {
-  const targetFov = aiming ? (player.weapon === 'sniper' ? 20 : 50) : BASE_FOV;
+  const targetFov = aiming && ADS_FOV[player.weapon] ? ADS_FOV[player.weapon] : BASE_FOV;
   camera.fov += (targetFov - camera.fov) * Math.min(1, dt * 8);
   camera.updateProjectionMatrix();
 }
@@ -559,8 +569,9 @@ window.addEventListener('blur', clearHeldInput);
 window.addEventListener('keydown', (e) => {
   keys.add(e.code);
   if (e.code === 'Digit1') selectWeapon('pistol');
-  if (e.code === 'Digit2') selectWeapon('rifle');
-  if (e.code === 'Digit3') selectWeapon('sniper');
+  if (e.code === 'Digit2') selectWeapon('assault_rifle');
+  if (e.code === 'Digit3') selectWeapon('fists');
+  if (e.code === 'Digit4') selectWeapon('grenade');
   if (e.code === 'Space') { e.preventDefault(); tryJump(); }
 });
 window.addEventListener('keyup', (e) => keys.delete(e.code));
@@ -653,31 +664,42 @@ if (isTouchDevice) {
 }
 
 // ==== Weapons ====
-let weapons = {}; // populated from fg-init: { pistol: {damage,cooldownMs,range,unlockKills}, ... }
+// Fixed 4-slot starting loadout — a ranged primary/secondary pair, a melee fallback, and a
+// grenade — all carried from the moment you join, no unlock progression gating any of them (see
+// server.js's FG_WEAPONS comment: unlockKills is still live infrastructure, just 0 for all four
+// right now). One shared order/label table instead of the three separate copies this used to have
+// (button list, unlock banner, kill-feed unlock text) — those all read from this now.
+const WEAPON_ORDER = ['pistol', 'assault_rifle', 'fists', 'grenade'];
+const WEAPON_META = {
+  pistol: { icon: '🔫', name: 'Pistol' },
+  assault_rifle: { icon: '🔫', name: 'Assault Rifle' },
+  fists: { icon: '👊', name: 'Fists' },
+  grenade: { icon: '💣', name: 'Grenade' },
+};
+let weapons = {}; // populated from fg-init: { pistol: {damage,cooldownMs,range,unlockKills,melee?,thrown?,headshotDamage?}, ... }
 let maxHealth = 150; // overwritten from fg-init's maxHealth once connected; this default only matters for the brief pre-connect render
 let totalKills = 0; // career total for this room (see fg_stats/bumpFgKills in server.js/db.js) — what weapon unlocks are keyed to, not this match's kill count
-let unlockedWeapons = ['pistol']; // server-computed from totalKills; also the real enforcement (see fg-select-weapon in server.js) — this is only used for the UI here
+let unlockedWeapons = [...WEAPON_ORDER]; // server-computed from totalKills; also the real enforcement (see fg-select-weapon in server.js) — this is only used for the UI here. Defaults to "everything" since the whole starting loadout ships unlocked; only matters once a locked weapon exists again.
 function isUnlocked(key) {
   return unlockedWeapons.includes(key);
 }
 function buildWeaponButtons() {
-  const order = ['pistol', 'rifle', 'sniper'];
-  const labels = { pistol: '🔫 Pistol', rifle: '🔫 Rifle', sniper: '🎯 Sniper' };
   [weaponButtonsEl, touchWeaponButtonsEl].forEach((container) => {
     container.innerHTML = '';
-    order.forEach((key) => {
+    WEAPON_ORDER.forEach((key) => {
       if (!weapons[key]) return;
       const unlocked = isUnlocked(key);
+      const meta = WEAPON_META[key];
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'weapon-btn' + (key === player.weapon ? ' active' : '') + (unlocked ? '' : ' locked');
       btn.dataset.weapon = key;
       const need = weapons[key].unlockKills || 0;
       btn.innerHTML = container === touchWeaponButtonsEl
-        ? `<span>${unlocked ? labels[key].split(' ')[0] : '🔒'}</span>`
+        ? `<span>${unlocked ? meta.icon : '🔒'}</span>`
         : unlocked
-        ? `<span>${labels[key]}</span><span>${weapons[key].damage} dmg</span>`
-        : `<span>${labels[key]}</span><span>🔒 ${need} kills (${totalKills}/${need})</span>`;
+        ? `<span>${meta.icon} ${meta.name}</span><span>${weapons[key].damage} dmg</span>`
+        : `<span>${meta.icon} ${meta.name}</span><span>🔒 ${need} kills (${totalKills}/${need})</span>`;
       btn.addEventListener('click', () => selectWeapon(key));
       container.appendChild(btn);
     });
@@ -689,11 +711,11 @@ function selectWeapon(key) {
   document.querySelectorAll('.weapon-btn').forEach((b) => b.classList.toggle('active', b.dataset.weapon === key));
   updateWeaponHud();
   updateViewmodelWeapon();
-  setAiming(aiming); // re-checks the scope overlay against the new weapon — a switch made mid-aim (Digit1/2/3 isn't gated to between-rounds) shouldn't leave a sniper scope up on a pistol
+  setAiming(aiming); // re-checks the scope overlay against the new weapon — a switch made mid-aim (number keys aren't gated to between-rounds) shouldn't leave a scope up on a weapon that doesn't have one
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'fg-select-weapon', weapon: key }));
 }
 function updateWeaponHud() {
-  weaponHudEl.textContent = player.weapon ? player.weapon[0].toUpperCase() + player.weapon.slice(1) : '';
+  weaponHudEl.textContent = WEAPON_META[player.weapon] ? WEAPON_META[player.weapon].name : '';
 }
 
 // ==== First-person weapon viewmodel ====
@@ -740,25 +762,41 @@ function buildViewmodels() {
     part(new THREE.BoxGeometry(0.07, 0.16, 0.08), dark, 0, -0.11, 0.02, 0.15, 0, 0),
   ], 0.34, -0.28, -0.6);
 
-  viewmodels.rifle = buildViewmodel([
+  viewmodels.assault_rifle = buildViewmodel([
     part(new THREE.BoxGeometry(0.08, 0.1, 0.55), metal, 0, 0, -0.22),
     part(new THREE.CylinderGeometry(0.02, 0.02, 0.3, 8), metal, 0, 0.01, -0.58, Math.PI / 2, 0, 0),
     part(new THREE.BoxGeometry(0.06, 0.15, 0.07), dark, 0, -0.1, 0.06, 0.15, 0, 0),
     part(new THREE.BoxGeometry(0.05, 0.18, 0.06), dark, 0, -0.15, -0.12, 0.35, 0, 0),
   ], 0.35, -0.29, -0.68);
 
-  viewmodels.sniper = buildViewmodel([
-    part(new THREE.BoxGeometry(0.07, 0.08, 0.7), metal, 0, 0, -0.26),
-    part(new THREE.CylinderGeometry(0.018, 0.018, 0.35, 8), metal, 0, 0, -0.7, Math.PI / 2, 0, 0),
-    part(new THREE.CylinderGeometry(0.032, 0.032, 0.24, 10), dark, 0, 0.09, -0.18, Math.PI / 2, 0, 0),
-    part(new THREE.BoxGeometry(0.06, 0.16, 0.07), dark, 0, -0.1, 0.08, 0.15, 0, 0),
-  ], 0.35, -0.3, -0.72);
+  const skin = new THREE.MeshStandardMaterial({ color: 0xd6a374 });
+  const sleeve = new THREE.MeshStandardMaterial({ color: 0x3a3f4a });
+  viewmodels.fists = buildViewmodel([
+    part(new THREE.BoxGeometry(0.16, 0.16, 0.16), skin, 0, 0, -0.08),
+    part(new THREE.BoxGeometry(0.14, 0.14, 0.22), sleeve, 0, -0.01, 0.14),
+  ], 0.3, -0.26, -0.42);
+
+  const olive = new THREE.MeshStandardMaterial({ color: 0x4a5a3a });
+  const pinCap = new THREE.MeshStandardMaterial({ color: 0x9a9a90 });
+  viewmodels.grenade = buildViewmodel([
+    part(new THREE.SphereGeometry(0.13, 10, 10), olive, 0, 0, -0.1),
+    part(new THREE.CylinderGeometry(0.03, 0.03, 0.08, 8), pinCap, 0, 0.14, -0.1),
+  ], 0.3, -0.25, -0.42);
 }
 
 let activeViewmodel = null;
 const viewmodelPos = new THREE.Vector3(); // the current lerped hip/ADS position — separate from the group's own .position so per-frame sway/recoil offsets (added on top in the render loop) never feed back into next frame's lerp target
-let recoilKick = 0; // decays each frame; pushes the weapon back toward the camera on fire
-let recoilTilt = 0; // decays each frame; muzzle-rise rotation on fire
+let recoilKick = 0; // decays each frame; +z pushes the weapon back toward the camera (gun recoil), -z thrusts it forward (a punch/throw's follow-through)
+let recoilTilt = 0; // decays each frame; rotation.x kick on fire
+// A gun kicks back toward the camera on fire; a punch or a throw instead thrusts forward (-z) and
+// springs back, since that's what the follow-through of an actual swing/throw looks like — the
+// same exponential decay toward 0 in the render loop works for either sign without changes.
+const RECOIL = {
+  pistol: { kick: 0.05, tilt: -0.13 },
+  assault_rifle: { kick: 0.04, tilt: -0.1 },
+  fists: { kick: -0.12, tilt: 0.2 },
+  grenade: { kick: -0.1, tilt: 0.28 },
+};
 function updateViewmodelWeapon() {
   if (activeViewmodel) activeViewmodel.visible = false;
   activeViewmodel = viewmodels[player.weapon] || null;
@@ -768,13 +806,13 @@ function updateViewmodelWeapon() {
   }
 }
 function kickViewmodel() {
-  recoilKick = player.weapon === 'sniper' ? 0.09 : 0.05;
-  recoilTilt = player.weapon === 'sniper' ? -0.22 : -0.13;
+  const r = RECOIL[player.weapon] || RECOIL.pistol;
+  recoilKick = r.kick;
+  recoilTilt = r.tilt;
 }
-// ADS target is centered and pulled in, rather than the hip offset to the right — pistol/rifle
-// ADS raises the gun to eye line; the sniper hides its own model entirely once aiming (see the
-// visibility line in the render loop) since the scope overlay covers the full screen by then and
-// a visible gun body under/around that reticle would look wrong.
+// ADS target is centered and pulled in, rather than the hip offset to the right — only pistol/
+// assault_rifle define an ADS_FOV (see updateFov), so this position only ever actually gets
+// reached by those two; fists/grenade's "aim" input is a no-op with nothing to raise to.
 const VIEWMODEL_ADS_POS = new THREE.Vector3(0, -0.05, -0.55);
 buildViewmodels();
 
@@ -822,7 +860,7 @@ function spawnTracer(from, to, color = 0xfff2b0) {
   scene.add(line);
   activeTracers.push({ line, bornAt: performance.now() });
 }
-const TRACER_COLOR = { pistol: 0xfff2b0, rifle: 0xfff2b0, sniper: 0xff6a3c };
+const TRACER_COLOR = { pistol: 0xfff2b0, assault_rifle: 0xfff2b0 }; // fists/grenade never draw a tracer at all (see attemptShoot/showLandedShot) — no entry needed
 
 const activeSparks = []; // { sprite, vel, bornAt }
 const SPARK_LIFE_MS = 380;
@@ -887,6 +925,41 @@ function spawnWallImpact(pos) {
   }
 }
 
+// A bigger, brighter version of a normal impact — reuses spawnImpactSpark's existing headshot-
+// sized burst (10 red-tinted particles) rather than a third particle-count variant, plus a real
+// PointLight+sprite flash from the same pool flashAt's remote-shot flashes already use, so no new
+// decay/cleanup code was needed for either half of this.
+function spawnExplosion(pos) {
+  spawnImpactSpark(pos, true);
+  const light = new THREE.PointLight(0xffb347, 8, 12, 2);
+  light.position.copy(pos);
+  scene.add(light);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ color: 0xffcf7a, transparent: true, opacity: 1, depthTest: false }));
+  sprite.scale.set(1.4, 1.4, 1);
+  sprite.position.copy(pos);
+  scene.add(sprite);
+  activeFlashes.push({ light, sprite });
+  playSound('explosion');
+}
+
+// The grenade's lobbed arc — a real flying object (unlike every other weapon's instant hitscan
+// tracer), purely cosmetic like the rest of this file's combat FX: damage still resolves the
+// instant fg-shoot reaches the server (see attemptShoot), this is just what it looks like while
+// that's in flight. Local-only, like the rest of this file — no server broadcast for a thrown-but-
+// not-yet-landed grenade exists, so nobody but the thrower ever sees the arc itself, only the
+// eventual explosion once fg-hit/fg-death confirms it (see GRENADE_FLIGHT_MS below).
+const activeProjectiles = []; // { mesh, from, to, bornAt }
+const GRENADE_FLIGHT_MS = 550;
+function spawnGrenadeThrow(from, to) {
+  const mesh = new THREE.Mesh(
+    new THREE.SphereGeometry(0.1, 8, 8),
+    new THREE.MeshStandardMaterial({ color: 0x4a5a3a })
+  );
+  mesh.position.copy(from);
+  scene.add(mesh);
+  activeProjectiles.push({ mesh, from: from.clone(), to: to.clone(), bornAt: performance.now() });
+}
+
 // Where a given player's torso/head currently is, in world space — used to anchor tracers/flashes
 // for shots the local client didn't fire itself (own position for the local id, interpolated
 // avatar group position for anyone else). Returns null only if a remote id's avatar hasn't been
@@ -899,19 +972,33 @@ function posForId(id) {
   return new THREE.Vector3(rp.group.position.x, rp.group.position.y + 1.4, rp.group.position.z);
 }
 
-// Fired from fg-hit/fg-death for every landed shot. The local shooter's own tracer+flash already
-// happened instantly in attemptShoot() (see computeShotRay/flashMuzzle there); this only adds the
-// parts that couldn't happen until the server confirmed it — the impact spark (needs the real
-// target position, not the shooter's raycast guess) always, and the full tracer+flash for anyone
-// else's shot (which otherwise had no visual representation at all).
+// A grenade's confirmed hit shows its (bigger) explosion only once the thrower's own local arc
+// would have landed, not instantly on fg-hit/fg-death — keeps the explosion visually in sync with
+// the lobbed projectile instead of appearing to detonate the moment it leaves the hand.
+const WEAPON_IMPACT_DELAY_MS = { grenade: GRENADE_FLIGHT_MS };
+
+// Fired from fg-hit/fg-death for every landed shot. The local shooter's own tracer+flash (guns) or
+// projectile (grenade) already happened instantly in attemptShoot(); this only adds the parts that
+// couldn't happen until the server confirmed it — the impact effect (needs the real target
+// position, not the shooter's raycast guess) always, and the full tracer+flash for anyone else's
+// gunshot (which otherwise had no visual representation at all). Melee and thrown weapons never
+// draw a tracer line at all — a punch has no bullet, and the grenade's arc is its own travel
+// visual, so a straight line on top of/instead of it would be redundant or wrong.
 function showLandedShot(byId, targetId, headshot, weapon) {
   const targetPos = posForId(targetId);
   if (!targetPos) return;
-  if (byId !== myId) {
-    const shooterPos = posForId(byId);
-    if (shooterPos) { spawnTracer(shooterPos, targetPos, TRACER_COLOR[weapon] || TRACER_COLOR.pistol); flashAt(shooterPos); }
-  }
-  spawnImpactSpark(targetPos, headshot);
+  const w = weapons[weapon];
+  const run = () => {
+    if (byId !== myId && w && !w.melee && !w.thrown) {
+      const shooterPos = posForId(byId);
+      if (shooterPos) { spawnTracer(shooterPos, targetPos, TRACER_COLOR[weapon] || TRACER_COLOR.pistol); flashAt(shooterPos); }
+    }
+    if (w && w.thrown) spawnExplosion(targetPos);
+    else spawnImpactSpark(targetPos, headshot);
+  };
+  const delay = WEAPON_IMPACT_DELAY_MS[weapon] || 0;
+  if (delay) setTimeout(run, delay);
+  else run();
 }
 
 // Reused across shots rather than allocated fresh each time — this only ever needs a straight
@@ -938,13 +1025,15 @@ function computeShotEnd(range) {
   return { point: camera.position.clone().addScaledVector(dir, range), hitEnvironment: false };
 }
 
-// Sniper-only: a real raycast from the crosshair against every visible opponent's head hitbox,
-// same aim the player is actually looking at rather than a proximity guess. The server ultimately
-// decides whether the shot lands at all (range/cooldown/alive-state) — this only flags *which*
-// damage number to ask for if it does, same loose "trust the client's aim" model the rest of this
-// game's combat already uses.
+// A real raycast from the crosshair against every visible opponent's head hitbox, same aim the
+// player is actually looking at rather than a proximity guess — gated on the weapon actually
+// having headshotDamage (none of the current 4-slot loadout does) rather than a hardcoded weapon
+// name, so this reactivates for free if a future weapon defines one. The server ultimately decides
+// whether the shot lands at all (range/cooldown/alive-state) — this only flags *which* damage
+// number to ask for if it does, same loose "trust the client's aim" model this game already uses.
 function computeHeadshot() {
-  if (player.weapon !== 'sniper') return false;
+  const w = weapons[player.weapon];
+  if (!w || !w.headshotDamage) return false;
   const heads = [...remotePlayers.values()].map((rp) => rp.head);
   if (!heads.length) return false;
   shootRaycaster.setFromCamera(CROSSHAIR_NDC, camera);
@@ -960,16 +1049,31 @@ function attemptShoot() {
   if (now - lastShotAt < w.cooldownMs) return;
   lastShotAt = now;
   const headshot = computeHeadshot();
-  playSound(headshot ? 'headshot' : player.weapon === 'sniper' ? 'sniper' : 'shoot');
-  flashMuzzle();
   kickViewmodel();
-  const muzzleWorldPos = muzzleFlashSprite.getWorldPosition(new THREE.Vector3());
-  const shot = computeShotEnd(w.range);
-  spawnTracer(muzzleWorldPos, shot.point, TRACER_COLOR[player.weapon] || TRACER_COLOR.pistol);
-  if (shot.hitEnvironment) spawnWallImpact(shot.point);
   crosshairEl.classList.remove('fired');
   void crosshairEl.offsetWidth;
   crosshairEl.classList.add('fired');
+
+  if (w.thrown) {
+    // Grenade: no muzzle flash/tracer (neither makes sense for a lob), just the arcing projectile
+    // — see spawnGrenadeThrow. Damage still resolves the instant fg-shoot reaches the server, same
+    // as every other weapon; only the *visual* explosion is delayed to roughly match the throw
+    // (see showLandedShot's per-weapon delay).
+    playSound('throw');
+    const muzzleWorldPos = muzzleFlashSprite.getWorldPosition(new THREE.Vector3());
+    spawnGrenadeThrow(muzzleWorldPos, computeShotEnd(w.range).point);
+  } else if (w.melee) {
+    // Fists: no muzzle flash/tracer either — a punch has no bullet to draw a line for.
+    playSound('punch');
+  } else {
+    playSound(headshot ? 'headshot' : 'shoot');
+    flashMuzzle();
+    const muzzleWorldPos = muzzleFlashSprite.getWorldPosition(new THREE.Vector3());
+    const shot = computeShotEnd(w.range);
+    spawnTracer(muzzleWorldPos, shot.point, TRACER_COLOR[player.weapon] || TRACER_COLOR.pistol);
+    if (shot.hitEnvironment) spawnWallImpact(shot.point);
+  }
+
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'fg-shoot', headshot }));
 }
 
@@ -1060,12 +1164,10 @@ function renderTopPlayersPanel(scores) {
 // fg-unlock-progress rather than a shop prompt — shows the next still-locked weapon and how close
 // the player is, or hides entirely once everything is unlocked.
 function updateUnlockBanner() {
-  const order = ['pistol', 'rifle', 'sniper'];
-  const labels = { rifle: 'Rifle', sniper: 'Sniper' };
-  const next = order.find((key) => weapons[key] && !unlockedWeapons.includes(key));
+  const next = WEAPON_ORDER.find((key) => weapons[key] && !unlockedWeapons.includes(key));
   if (!next) { unlockBannerEl.classList.add('hidden'); return; }
   const need = weapons[next].unlockKills || 0;
-  unlockBannerEl.textContent = `🔓 Unlock ${labels[next] || next}: ${totalKills}/${need} kills`;
+  unlockBannerEl.textContent = `🔓 Unlock ${WEAPON_META[next].name}: ${totalKills}/${need} kills`;
   unlockBannerEl.classList.remove('hidden');
 }
 const knownNames = new Map();
@@ -1359,8 +1461,7 @@ function handleMessage(data) {
       unlockedWeapons = data.unlockedWeapons || unlockedWeapons;
       buildWeaponButtons();
       updateUnlockBanner();
-      const labels = { rifle: 'Rifle', sniper: 'Sniper' };
-      newlyUnlocked.forEach((w) => { if (labels[w]) addKillFeed(`🔓 ${labels[w]} unlocked!`); });
+      newlyUnlocked.forEach((w) => { if (WEAPON_META[w]) addKillFeed(`🔓 ${WEAPON_META[w].name} unlocked!`); });
       break;
     }
   }
@@ -1404,8 +1505,12 @@ function loop(now) {
 
   viewmodelGroup.visible = mySlot === 'a' || mySlot === 'b';
   if (activeViewmodel) {
-    const adsIn = aiming && player.weapon !== 'sniper';
-    activeViewmodel.visible = !(aiming && player.weapon === 'sniper');
+    // Same headshotDamage-driven "has a scope" check as setAiming's scope-overlay toggle — kept
+    // in sync by definition rather than by two separate weapon-name checks that could drift.
+    const curWeapon = weapons[player.weapon];
+    const hasScope = !!(curWeapon && curWeapon.headshotDamage);
+    const adsIn = aiming && !!ADS_FOV[player.weapon];
+    activeViewmodel.visible = !(aiming && hasScope);
     const target = adsIn ? VIEWMODEL_ADS_POS : activeViewmodel.userData.hipPos;
     viewmodelPos.lerp(target, Math.min(1, dt * 10));
     recoilKick *= 0.8;
@@ -1440,6 +1545,22 @@ function loop(now) {
   if (fountainJet) {
     fountainJet.mesh.scale.y = 1 + Math.sin(now / 220) * 0.08;
     fountainJet.mesh.material.opacity = 0.45 + Math.sin(now / 180) * 0.1;
+  }
+
+  // Grenade arcs — simple parabola (a sine bump added on top of a straight lerp) rather than real
+  // projectile physics; this only ever needs to look right over ~half a second, not be simulated.
+  for (let i = activeProjectiles.length - 1; i >= 0; i--) {
+    const p = activeProjectiles[i];
+    const t = Math.min(1, (now - p.bornAt) / GRENADE_FLIGHT_MS);
+    p.mesh.position.lerpVectors(p.from, p.to, t);
+    p.mesh.position.y += Math.sin(t * Math.PI) * 1.6;
+    p.mesh.rotation.x += 6 * dt;
+    if (t >= 1) {
+      scene.remove(p.mesh);
+      p.mesh.geometry.dispose();
+      p.mesh.material.dispose();
+      activeProjectiles.splice(i, 1);
+    }
   }
 
   // Combat FX decay — exponential falloff needs no per-effect timer bookkeeping for the flash/

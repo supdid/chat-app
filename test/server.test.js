@@ -1771,12 +1771,8 @@ describe('Firefight (1v1 duel shooter)', () => {
       // FG_RESPAWN_GRACE_MS is 0 here (not just shrunk) — these tests fire their first shot within
       // a few ms of round-start, well inside even a small nonzero grace window, which would
       // silently reject that shot and throw off the exact hit-count math these tests depend on.
-      // The grace period's own behavior isn't what's under test here. Weapon unlocks are zeroed
-      // out too — this shared instance's players start every test at 0 career kills, and most
-      // tests here (e.g. the headshot ones) need to freely select rifle/sniper without earning
-      // them first; the unlock gate itself gets its own dedicated instance with real, small
-      // thresholds further down ("weapons must be unlocked with career kills...").
-      { FG_ROUND_MS: '2000', FG_INTERMISSION_MS: '150', FG_ROUNDS_TO_WIN: '2', FG_RESPAWN_GRACE_MS: '0', FG_RIFLE_UNLOCK_KILLS: '0', FG_SNIPER_UNLOCK_KILLS: '0' },
+      // The grace period's own behavior isn't what's under test here.
+      { FG_ROUND_MS: '2000', FG_INTERMISSION_MS: '150', FG_ROUNDS_TO_WIN: '2', FG_RESPAWN_GRACE_MS: '0' },
       3193
     );
     base = `http://localhost:${fgServer.port}`;
@@ -1819,6 +1815,9 @@ describe('Firefight (1v1 duel shooter)', () => {
     await waitFor(a, (m) => m.type === 'fg-init');
     send(b, { type: 'fg-join', code, name: 'FfDuelB' });
     await waitFor(b, (m) => m.type === 'fg-init');
+    // Selected explicitly rather than relying on whatever FG_DEFAULT_WEAPON happens to be — this
+    // test's hit-count math below is specifically tuned to pistol's damage/cooldown.
+    send(a, { type: 'fg-select-weapon', weapon: 'pistol' });
 
     const startPromiseA = waitFor(a, (m) => m.type === 'fg-round-start');
     const startPromiseB = waitFor(b, (m) => m.type === 'fg-round-start');
@@ -1828,9 +1827,9 @@ describe('Firefight (1v1 duel shooter)', () => {
 
     // FG_ROUNDS_TO_WIN=2 for this instance — play out two full rounds, A always winning.
     for (let round = 1; round <= 2; round++) {
-      // Pistol (the default weapon) deals 20 damage with a 220ms cooldown — 8 hits (140 of 150 HP,
-      // the 8th finishes it) kill. Both players are at the same default position (0,0,0), well
-      // within pistol's 45-unit range.
+      // Pistol deals 20 damage with a 220ms cooldown — 8 hits (140 of 150 HP, the 8th finishes it)
+      // kill. Both players are at the same default position (0,0,0), well within pistol's 45-unit
+      // range.
       //
       // Every waiter for this round's *entire* remaining sequence (death, then either the next
       // round-start or the match-end) is armed up front, before a single shot is fired — not
@@ -1907,6 +1906,9 @@ describe('Firefight (1v1 duel shooter)', () => {
     await waitFor(a, (m) => m.type === 'fg-init');
     send(b, { type: 'fg-join', code, name: 'FfCoolB' });
     await waitFor(b, (m) => m.type === 'fg-init');
+    // Selected explicitly (not relying on FG_DEFAULT_WEAPON) since the range assertion below is
+    // specifically checking pistol's 45-unit range.
+    send(a, { type: 'fg-select-weapon', weapon: 'pistol' });
     send(a, { type: 'fg-start' });
     await waitFor(a, (m) => m.type === 'fg-round-start');
     await waitFor(b, (m) => m.type === 'fg-round-start');
@@ -1936,7 +1938,11 @@ describe('Firefight (1v1 duel shooter)', () => {
     a.close(); b.close();
   });
 
-  test('sniper deals its base damage normally and its higher headshot damage when flagged', async () => {
+  // No weapon in the current fixed 4-slot loadout (pistol/assault_rifle/fists/grenade) defines
+  // headshotDamage — that mechanic is still fully wired server-side (see FG_WEAPONS' comment) for
+  // whenever a future weapon adds it, but nothing currently exercises the bonus-damage branch, so
+  // this only asserts the flag is a harmless no-op today rather than testing dead code paths.
+  test('a headshot flag has no effect on any current weapon — base damage always applies', async () => {
     const code = 'FFHEADSHOT1';
     const a = await fgConnect();
     const b = await fgConnect();
@@ -1944,39 +1950,7 @@ describe('Firefight (1v1 duel shooter)', () => {
     await waitFor(a, (m) => m.type === 'fg-init');
     send(b, { type: 'fg-join', code, name: 'FfHsB' });
     await waitFor(b, (m) => m.type === 'fg-init');
-    send(a, { type: 'fg-select-weapon', weapon: 'sniper' });
-    send(a, { type: 'fg-start' });
-    await waitFor(a, (m) => m.type === 'fg-round-start');
-    await waitFor(b, (m) => m.type === 'fg-round-start');
-
-    // Non-headshot sniper hit: 150 max HP - 50 base damage = 100.
-    const hit1Promise = waitFor(b, (m) => m.type === 'fg-hit');
-    send(a, { type: 'fg-shoot' });
-    const hit1 = await hit1Promise;
-    assert.equal(hit1.health, 100, 'a non-headshot sniper hit must deal its base 50 damage');
-    assert.equal(hit1.headshot, false);
-
-    // Sniper's cooldown is 1300ms — wait it out before the next shot.
-    await sleep(1350);
-
-    // Headshot sniper hit: 100 - 150 headshot damage, clamped at 0 (this should also be the kill).
-    const deathPromise = waitFor(b, (m) => m.type === 'fg-death');
-    send(a, { type: 'fg-shoot', headshot: true });
-    const death = await deathPromise;
-    assert.equal(death.headshot, true, 'a headshot-flagged sniper shot must be reported as a headshot');
-
-    a.close(); b.close();
-  });
-
-  test('a headshot flag on a non-sniper weapon is ignored — base damage still applies', async () => {
-    const code = 'FFHEADSHOT2';
-    const a = await fgConnect();
-    const b = await fgConnect();
-    send(a, { type: 'fg-join', code, name: 'FfHs2A' });
-    await waitFor(a, (m) => m.type === 'fg-init');
-    send(b, { type: 'fg-join', code, name: 'FfHs2B' });
-    await waitFor(b, (m) => m.type === 'fg-init');
-    // Default weapon is pistol — deliberately not switching to sniper.
+    send(a, { type: 'fg-select-weapon', weapon: 'pistol' });
     send(a, { type: 'fg-start' });
     await waitFor(a, (m) => m.type === 'fg-round-start');
     await waitFor(b, (m) => m.type === 'fg-round-start');
@@ -1985,7 +1959,72 @@ describe('Firefight (1v1 duel shooter)', () => {
     send(a, { type: 'fg-shoot', headshot: true });
     const hit = await hitPromise;
     assert.equal(hit.health, 130, "a headshot flag on pistol must be ignored — 150 max HP minus pistol's 20 base damage");
-    assert.equal(hit.headshot, false, 'headshotDamage only exists on the sniper weapon definition');
+    assert.equal(hit.headshot, false, 'no current weapon defines headshotDamage');
+
+    a.close(); b.close();
+  });
+
+  test('fists land at melee range but not at typical gun range', async () => {
+    const code = 'FFFISTS1';
+    const a = await fgConnect();
+    const b = await fgConnect();
+    send(a, { type: 'fg-join', code, name: 'FfFistsA' });
+    await waitFor(a, (m) => m.type === 'fg-init');
+    send(b, { type: 'fg-join', code, name: 'FfFistsB' });
+    await waitFor(b, (m) => m.type === 'fg-init');
+    send(a, { type: 'fg-select-weapon', weapon: 'fists' });
+    send(a, { type: 'fg-start' });
+    await waitFor(a, (m) => m.type === 'fg-round-start');
+    await waitFor(b, (m) => m.type === 'fg-round-start');
+
+    // Both start at (0,0,0) — well within fists' 2.4-unit range — so a swing should land.
+    const hitPromise = waitFor(b, (m) => m.type === 'fg-hit');
+    send(a, { type: 'fg-shoot' });
+    const hit = await hitPromise;
+    assert.equal(hit.health, 125, "a fists hit must deal fists' 25 damage (150 - 25)");
+
+    // Fists' cooldown is 500ms — wait it out, then move B out to pistol-viable range (10 units,
+    // comfortably inside pistol's 45-unit range) but well past fists' 2.4-unit reach.
+    await sleep(550);
+    send(b, { type: 'fg-pos', x: 10, y: 0, z: 0, yaw: 0 });
+    await sleep(150);
+    let hitCount = 0;
+    const h = (data) => { if (JSON.parse(data).type === 'fg-hit') hitCount++; };
+    b.on('message', h);
+    send(a, { type: 'fg-shoot' });
+    await sleep(300);
+    b.off('message', h);
+    assert.equal(hitCount, 0, 'a fists swing must not land at a distance well within gun range but outside melee range');
+
+    a.close(); b.close();
+  });
+
+  test('grenade deals its higher damage and enforces its long cooldown', async () => {
+    const code = 'FFGRENADE1';
+    const a = await fgConnect();
+    const b = await fgConnect();
+    send(a, { type: 'fg-join', code, name: 'FfGrenA' });
+    await waitFor(a, (m) => m.type === 'fg-init');
+    send(b, { type: 'fg-join', code, name: 'FfGrenB' });
+    await waitFor(b, (m) => m.type === 'fg-init');
+    send(a, { type: 'fg-select-weapon', weapon: 'grenade' });
+    send(a, { type: 'fg-start' });
+    await waitFor(a, (m) => m.type === 'fg-round-start');
+    await waitFor(b, (m) => m.type === 'fg-round-start');
+
+    const hitPromise = waitFor(b, (m) => m.type === 'fg-hit');
+    send(a, { type: 'fg-shoot' });
+    const hit = await hitPromise;
+    assert.equal(hit.health, 85, "a grenade hit must deal grenade's 65 damage (150 - 65)");
+
+    // Immediately throw again, well inside the 3200ms cooldown — must not land a second hit.
+    let hitCount = 0;
+    const h = (data) => { if (JSON.parse(data).type === 'fg-hit') hitCount++; };
+    b.on('message', h);
+    send(a, { type: 'fg-shoot' });
+    await sleep(300);
+    b.off('message', h);
+    assert.equal(hitCount, 0, "a second grenade thrown inside the weapon's cooldown must not also land");
 
     a.close(); b.close();
   });
@@ -2033,82 +2072,34 @@ describe('Firefight (1v1 duel shooter)', () => {
     a.close(); b.close();
   });
 
-  test('weapons must be unlocked with career kills before they can be selected', async () => {
-    // Own dedicated instance — FG_RIFLE_UNLOCK_KILLS/FG_SNIPER_UNLOCK_KILLS default to the real
-    // production values (5/15), far too slow to actually earn in a test; shrunk here to 1 and 2.
-    const unlockServer = await startTestServer(
-      {
-        FG_ROUND_MS: '3000', FG_INTERMISSION_MS: '100', FG_ROUNDS_TO_WIN: '5',
-        FG_RESPAWN_GRACE_MS: '0', FG_RIFLE_UNLOCK_KILLS: '1', FG_SNIPER_UNLOCK_KILLS: '2',
-      },
-      3210
+  // The unlock-gate *mechanism* (unlockKills, fgUnlockedWeapons, fg-select-weapon's enforcement
+  // check) is all still live in server.js — just every weapon in the current fixed loadout is
+  // unlockKills:0, so this asserts the loadout ships fully available rather than testing a gate
+  // that isn't currently closed on anything.
+  test('the full 4-weapon loadout is available immediately, no career kills required', async () => {
+    const code = 'FFLOADOUT1';
+    const a = await fgConnect();
+    const b = await fgConnect();
+    send(a, { type: 'fg-join', code, name: 'FfLoadoutA' });
+    const initA = await waitFor(a, (m) => m.type === 'fg-init');
+    assert.deepEqual(
+      [...initA.unlockedWeapons].sort(),
+      ['assault_rifle', 'fists', 'grenade', 'pistol'],
+      'a fresh player with 0 career kills must start with the entire loadout unlocked'
     );
-    try {
-      function unlockConnect() {
-        return new Promise((resolve) => {
-          const sock = new WebSocket(`ws://localhost:${unlockServer.port}`);
-          sock.on('open', () => resolve(sock));
-        });
-      }
-      const code = 'FFUNLOCK1';
-      const a = await unlockConnect();
-      const b = await unlockConnect();
-      send(a, { type: 'fg-join', code, name: 'FfUnlockA' });
-      const initA = await waitFor(a, (m) => m.type === 'fg-init');
-      assert.deepEqual(initA.unlockedWeapons, ['pistol'], 'a fresh player must start with only the pistol unlocked');
-      send(b, { type: 'fg-join', code, name: 'FfUnlockB' });
-      await waitFor(b, (m) => m.type === 'fg-init');
+    assert.equal(initA.totalKills, 0);
+    send(b, { type: 'fg-join', code, name: 'FfLoadoutB' });
+    await waitFor(b, (m) => m.type === 'fg-init');
 
-      // A locked weapon must not be selectable — no fg-weapon-changed broadcast at all.
-      let sawWeaponChange = false;
-      const h = (data) => { if (JSON.parse(data).type === 'fg-weapon-changed') sawWeaponChange = true; };
-      a.on('message', h);
-      send(a, { type: 'fg-select-weapon', weapon: 'rifle' });
-      await sleep(150);
-      a.off('message', h);
-      assert.equal(sawWeaponChange, false, 'selecting a locked weapon must be rejected');
-
-      send(a, { type: 'fg-start' });
-      await waitFor(a, (m) => m.type === 'fg-round-start');
-      await waitFor(b, (m) => m.type === 'fg-round-start');
-
-      // Pistol (still the only unlocked weapon) needs 8 hits to kill at 150 max HP / 20 damage.
-      const progressPromise = waitFor(a, (m) => m.type === 'fg-unlock-progress');
-      for (let i = 0; i < 8; i++) {
-        send(a, { type: 'fg-shoot' });
-        await sleep(230);
-      }
-      const progress = await progressPromise;
-      assert.equal(progress.totalKills, 1);
-      assert.deepEqual(progress.unlockedWeapons, ['pistol', 'rifle'], 'one kill must unlock exactly the rifle, not the sniper too');
-
-      // Rifle is now unlocked and selectable; sniper still isn't (needs 2 kills, only has 1).
-      const changePromise = waitFor(a, (m) => m.type === 'fg-weapon-changed' && m.weapon === 'rifle');
-      send(a, { type: 'fg-select-weapon', weapon: 'rifle' });
-      await changePromise;
-
-      let sawSniperChange = false;
-      const h2 = (data) => { const m = JSON.parse(data); if (m.type === 'fg-weapon-changed' && m.weapon === 'sniper') sawSniperChange = true; };
-      a.on('message', h2);
-      send(a, { type: 'fg-select-weapon', weapon: 'sniper' });
-      await sleep(150);
-      a.off('message', h2);
-      assert.equal(sawSniperChange, false, 'sniper must still be locked after only one kill');
-
-      // A fresh connection joining the SAME room under the same name (simulating a reconnect —
-      // it lands as a spectator here since both duelist slots are already taken, which doesn't
-      // matter for what's being checked) must report the same persisted unlock progress — career
-      // kills are per (room, name), not per session.
-      const c = await unlockConnect();
-      send(c, { type: 'fg-join', code, name: 'FfUnlockA' });
-      const initReconnect = await waitFor(c, (m) => m.type === 'fg-init');
-      assert.equal(initReconnect.totalKills, 1, 'career kills must persist across a fresh join, not reset');
-      assert.deepEqual(initReconnect.unlockedWeapons, ['pistol', 'rifle']);
-
-      a.close(); b.close(); c.close();
-    } finally {
-      await unlockServer.stop();
+    // Every slot must be immediately selectable, in any order, with zero kills earned.
+    for (const weapon of ['assault_rifle', 'fists', 'grenade', 'pistol']) {
+      const changePromise = waitFor(a, (m) => m.type === 'fg-weapon-changed' && m.weapon === weapon);
+      send(a, { type: 'fg-select-weapon', weapon });
+      const change = await changePromise;
+      assert.equal(change.weapon, weapon, `${weapon} must be selectable with no career kills`);
     }
+
+    a.close(); b.close();
   });
 });
 

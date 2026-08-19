@@ -1804,21 +1804,25 @@ const SW_RESPAWN_GRACE_MS = 500;
 const FG_MAX_HEALTH = 150;
 // unlockKills is a career total (see fg_stats/bumpFgKills in db.js — a running count, unlike the
 // generic leaderboard table's best-score-ever semantics), not a per-match one — earned kills carry
-// over between matches and reconnects, same as a real shooter's weapon-unlock progression. Env-
-// overridable (unset in production, no effect there) so the regression suite can unlock a weapon
-// after 1-2 scripted kills instead of the real thresholds.
-const FG_RIFLE_UNLOCK_KILLS = Number(process.env.FG_RIFLE_UNLOCK_KILLS ?? 5);
-const FG_SNIPER_UNLOCK_KILLS = Number(process.env.FG_SNIPER_UNLOCK_KILLS ?? 15);
+// over between matches and reconnects, same as a real shooter's weapon-unlock progression. Every
+// weapon in the current fixed starting loadout is unlockKills:0 (all four are just always
+// carried), but the field/enforcement stays live rather than being ripped out — it's exactly what
+// a future locked/earnable weapon (from the larger backlog this loadout was deliberately scoped
+// down from) would plug into without protocol changes.
 const FG_WEAPONS = {
   pistol: { damage: 20, cooldownMs: 220, range: 45, unlockKills: 0 },
-  rifle: { damage: 28, cooldownMs: 160, range: 55, unlockKills: FG_RIFLE_UNLOCK_KILLS },
-  // headshotDamage only applies to a shot the client reports as a headshot (a raycast against the
-  // target's head hitbox, done client-side same as this game's own crosshair/aim already is) —
-  // same loose-trust model this whole file already uses for position/range, not real anti-cheat.
-  // Only the sniper has this; pistol/rifle ignore an incoming headshot flag entirely.
-  sniper: { damage: 50, headshotDamage: 150, cooldownMs: 1300, range: 90, unlockKills: FG_SNIPER_UNLOCK_KILLS },
+  assault_rifle: { damage: 18, cooldownMs: 110, range: 55, unlockKills: 0 },
+  // Melee: no bullet, just a very short range — the existing distance-only hit check (no real
+  // raycast/occlusion server-side, see fg-shoot below) already means "close enough" is the entire
+  // requirement, so melee needed no new server logic at all, just a small range value.
+  fists: { damage: 25, cooldownMs: 500, range: 2.4, unlockKills: 0, melee: true },
+  // Thrown: resolves instantly server-side exactly like every other weapon here (same "trust the
+  // client's aim, check range/cooldown" model) — the lobbed-arc flight and delayed explosion are
+  // purely a client-side cosmetic layered on top, not an actual travel-time projectile. Its longer
+  // cooldown and higher damage-per-hit are the actual balance lever, not flight time.
+  grenade: { damage: 65, cooldownMs: 3200, range: 20, unlockKills: 0, thrown: true },
 };
-const FG_DEFAULT_WEAPON = 'pistol';
+const FG_DEFAULT_WEAPON = 'assault_rifle';
 function fgUnlockedWeapons(totalKills) {
   return Object.keys(FG_WEAPONS).filter((key) => totalKills >= FG_WEAPONS[key].unlockKills);
 }
