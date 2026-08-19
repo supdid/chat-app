@@ -2029,6 +2029,26 @@ function removeRemotePlayer(id) {
   if (!rp) return;
   scene.remove(rp.group);
   scene.remove(rp.strand);
+  // scene.remove() only detaches from the render graph — it never frees the underlying WebGL
+  // resources (geometry buffers, materials, the name sprite's CanvasTexture, the strand's own
+  // geometry+material), so every player who ever left this game permanently leaked that memory.
+  // Doesn't matter for a short session, but does over a long-running room with a lot of churn.
+  //
+  // Sprite geometry (the name tag) is deliberately excluded: THREE.Sprite's geometry is a single
+  // module-level PlaneGeometry shared by *every* sprite in the app, not an instance owned by this
+  // one avatar's name tag — disposing it would break every other sprite the next time any player
+  // left. Only its material (and the CanvasTexture that material uniquely owns) are this sprite's
+  // own.
+  rp.group.traverse((o) => {
+    if (!o.isMesh && !o.isSprite) return;
+    if (o.isMesh && o.geometry) o.geometry.dispose();
+    if (o.material) {
+      if (o.material.map) o.material.map.dispose();
+      o.material.dispose();
+    }
+  });
+  if (rp.strand.geometry) rp.strand.geometry.dispose();
+  if (rp.strand.material) rp.strand.material.dispose();
   remotePlayers.delete(id);
 }
 
