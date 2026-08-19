@@ -456,6 +456,26 @@ function removeRemotePlayer(id) {
   const rp = remotePlayers.get(id);
   if (!rp) return;
   scene.remove(rp.group);
+  // scene.remove() only detaches from the render graph — it never frees the underlying WebGL
+  // resources (geometry buffers, materials, and the name sprite's CanvasTexture), so every
+  // duelist/spectator who ever leaves and gets a fresh avatar built for them (a disconnect, a
+  // slot swap, a new join) permanently leaks that memory without this. Doesn't matter for a short
+  // match, but does over a long-running room with a lot of connection churn.
+  //
+  // Sprites (the name tag) are deliberately excluded from geometry disposal: THREE.Sprite's
+  // geometry is a single module-level PlaneGeometry shared by *every* sprite in the app — muzzle
+  // flashes, impact sparks, wall dust, all of it — not an instance owned by this one name tag.
+  // Disposing it here would have broken every other sprite effect in the game the next time any
+  // player left. Only its material (and the CanvasTexture that material uniquely owns) are this
+  // sprite's own.
+  rp.group.traverse((o) => {
+    if (!o.isMesh && !o.isSprite) return;
+    if (o.isMesh && o.geometry) o.geometry.dispose();
+    if (o.material) {
+      if (o.material.map) o.material.map.dispose();
+      o.material.dispose();
+    }
+  });
   remotePlayers.delete(id);
 }
 
