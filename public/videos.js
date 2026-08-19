@@ -1525,28 +1525,37 @@ async function flushPendingCandidates(pc) {
 }
 
 async function handleSignal(data) {
-  if (broadcastState && data.viewerId) {
-    const pc = broadcastState.peers.get(data.viewerId);
-    if (!pc) return;
-    if (data.signal.kind === 'answer') {
-      await pc.setRemoteDescription({ type: 'answer', sdp: data.signal.sdp });
-      await flushPendingCandidates(pc);
-    } else if (data.signal.kind === 'ice') {
-      queueOrAddIceCandidate(pc, data.signal.candidate);
+  try {
+    if (broadcastState && data.viewerId) {
+      const pc = broadcastState.peers.get(data.viewerId);
+      if (!pc) return;
+      if (data.signal.kind === 'answer') {
+        await pc.setRemoteDescription({ type: 'answer', sdp: data.signal.sdp });
+        await flushPendingCandidates(pc);
+      } else if (data.signal.kind === 'ice') {
+        queueOrAddIceCandidate(pc, data.signal.candidate);
+      }
+      return;
     }
-    return;
-  }
-  if (watchState) {
-    const pc = watchState.pc;
-    if (data.signal.kind === 'offer') {
-      await pc.setRemoteDescription({ type: 'offer', sdp: data.signal.sdp });
-      await flushPendingCandidates(pc);
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      wsSend({ type: 'scorpture-signal', signal: { kind: 'answer', sdp: pc.localDescription.sdp } });
-    } else if (data.signal.kind === 'ice') {
-      queueOrAddIceCandidate(pc, data.signal.candidate);
+    if (watchState) {
+      const pc = watchState.pc;
+      if (data.signal.kind === 'offer') {
+        await pc.setRemoteDescription({ type: 'offer', sdp: data.signal.sdp });
+        await flushPendingCandidates(pc);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        wsSend({ type: 'scorpture-signal', signal: { kind: 'answer', sdp: pc.localDescription.sdp } });
+      } else if (data.signal.kind === 'ice') {
+        queueOrAddIceCandidate(pc, data.signal.candidate);
+      }
     }
+  } catch (err) {
+    // Called fire-and-forget from the WS message handler (never awaited) — a thrown error here
+    // (a stale/malformed SDP after a viewer or broadcaster left mid-negotiation, etc.) would
+    // otherwise become a silent unhandled rejection with no trace anywhere, leaving that
+    // connection's audio/video broken with nothing to explain why. Same fix as app.js's
+    // handleVoiceSignal for the identical bug class.
+    reportClientError('handleSignal failed (' + (data.signal && data.signal.kind) + '): ' + err.message, err.stack);
   }
 }
 

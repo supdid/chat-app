@@ -3828,9 +3828,16 @@ function addBcVoicePeer(id, name) {
 async function makeBcVoiceOffer(id) {
   const peer = bcVoicePeers.get(id);
   if (!peer) return;
-  const offer = await peer.pc.createOffer();
-  await peer.pc.setLocalDescription(offer);
-  bcSocket.send(JSON.stringify({ type: 'bc-voice-signal', to: id, signal: { type: 'offer', sdp: peer.pc.localDescription } }));
+  try {
+    const offer = await peer.pc.createOffer();
+    await peer.pc.setLocalDescription(offer);
+    bcSocket.send(JSON.stringify({ type: 'bc-voice-signal', to: id, signal: { type: 'offer', sdp: peer.pc.localDescription } }));
+  } catch (err) {
+    // Called fire-and-forget (bc-voice-peers' peer list forEach, never awaited) — a thrown error
+    // here would otherwise silently leave that peer's tile with no audio forever. Same fix as
+    // app.js's makeVoiceOffer/handleVoiceSignal for the identical bug class.
+    reportClientError('makeBcVoiceOffer failed for ' + id + ': ' + err.message, err.stack);
+  }
 }
 
 async function handleBcVoiceSignal(from, signal) {
@@ -3840,18 +3847,24 @@ async function handleBcVoiceSignal(from, signal) {
     bcVoicePeers.set(from, peer);
   }
   if (!peer) return;
-  if (signal.type === 'offer') {
-    await peer.pc.setRemoteDescription(signal.sdp);
-    for (const c of peer.pendingCandidates) await peer.pc.addIceCandidate(c);
-    peer.pendingCandidates = [];
-    const answer = await peer.pc.createAnswer();
-    await peer.pc.setLocalDescription(answer);
-    bcSocket.send(JSON.stringify({ type: 'bc-voice-signal', to: from, signal: { type: 'answer', sdp: peer.pc.localDescription } }));
-  } else if (signal.type === 'answer') {
-    await peer.pc.setRemoteDescription(signal.sdp);
-  } else if (signal.type === 'ice') {
-    if (peer.pc.remoteDescription) await peer.pc.addIceCandidate(signal.candidate);
-    else peer.pendingCandidates.push(signal.candidate);
+  try {
+    if (signal.type === 'offer') {
+      await peer.pc.setRemoteDescription(signal.sdp);
+      for (const c of peer.pendingCandidates) await peer.pc.addIceCandidate(c);
+      peer.pendingCandidates = [];
+      const answer = await peer.pc.createAnswer();
+      await peer.pc.setLocalDescription(answer);
+      bcSocket.send(JSON.stringify({ type: 'bc-voice-signal', to: from, signal: { type: 'answer', sdp: peer.pc.localDescription } }));
+    } else if (signal.type === 'answer') {
+      await peer.pc.setRemoteDescription(signal.sdp);
+    } else if (signal.type === 'ice') {
+      if (peer.pc.remoteDescription) await peer.pc.addIceCandidate(signal.candidate);
+      else peer.pendingCandidates.push(signal.candidate);
+    }
+  } catch (err) {
+    // Called fire-and-forget from the WS message handler (never awaited) — same fix as
+    // app.js's handleVoiceSignal for the identical bug class.
+    reportClientError('handleBcVoiceSignal failed for ' + from + ' (' + signal.type + '): ' + err.message, err.stack);
   }
 }
 
