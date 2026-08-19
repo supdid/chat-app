@@ -465,7 +465,11 @@ const move = { f: 0, r: 0 };
 const keys = new Set();
 let pointerLocked = false;
 let aiming = false;
-let lastShotAt = 0;
+// Keyed per weapon, not one shared timestamp — mirrors the identical fix (and its full
+// explanation) on server.js's attacker.lastShotAt. Without this, firing the grenade locally would
+// block attemptShoot() for every other weapon too for the next 3200ms, well before the server's
+// own per-weapon check ever got a chance to weigh in.
+const lastShotAt = {};
 
 // Single chokepoint for every place that sets `aiming`, rather than each call site touching the
 // overlay itself — the scope only makes sense for a weapon with headshotDamage (plain ranged ADS
@@ -670,9 +674,14 @@ if (isTouchDevice) {
 // right now). One shared order/label table instead of the three separate copies this used to have
 // (button list, unlock banner, kill-feed unlock text) — those all read from this now.
 const WEAPON_ORDER = ['pistol', 'assault_rifle', 'fists', 'grenade'];
+// touchIcon is only used on the touch weapon bar, which (unlike the desktop menu/HUD) shows the
+// icon alone with no name text next to it — pistol and assault_rifle share the same 🔫 icon
+// (there's no widely-supported distinct "rifle" emoji), which reads fine everywhere the name is
+// also visible but is genuinely ambiguous icon-only, so assault_rifle gets a short text fallback
+// there instead.
 const WEAPON_META = {
   pistol: { icon: '🔫', name: 'Pistol' },
-  assault_rifle: { icon: '🔫', name: 'Assault Rifle' },
+  assault_rifle: { icon: '🔫', name: 'Assault Rifle', touchIcon: 'AR' },
   fists: { icon: '👊', name: 'Fists' },
   grenade: { icon: '💣', name: 'Grenade' },
 };
@@ -696,7 +705,7 @@ function buildWeaponButtons() {
       btn.dataset.weapon = key;
       const need = weapons[key].unlockKills || 0;
       btn.innerHTML = container === touchWeaponButtonsEl
-        ? `<span>${unlocked ? meta.icon : '🔒'}</span>`
+        ? `<span>${unlocked ? (meta.touchIcon || meta.icon) : '🔒'}</span>`
         : unlocked
         ? `<span>${meta.icon} ${meta.name}</span><span>${weapons[key].damage} dmg</span>`
         : `<span>${meta.icon} ${meta.name}</span><span>🔒 ${need} kills (${totalKills}/${need})</span>`;
@@ -803,6 +812,12 @@ function updateViewmodelWeapon() {
   if (activeViewmodel) {
     activeViewmodel.visible = true;
     viewmodelPos.copy(activeViewmodel.userData.hipPos);
+    // A switch mid-recoil (now that switching mid-fight is the whole point of the loadout) would
+    // otherwise hand the newly-selected weapon's viewmodel whatever kick/tilt the *previous*
+    // weapon was still decaying from — e.g. a fists punch's forward thrust still playing out on
+    // the freshly-equipped pistol a frame later.
+    recoilKick = 0;
+    recoilTilt = 0;
   }
 }
 function kickViewmodel() {
@@ -1046,8 +1061,8 @@ function attemptShoot() {
   const w = weapons[player.weapon];
   if (!w) return;
   const now = performance.now();
-  if (now - lastShotAt < w.cooldownMs) return;
-  lastShotAt = now;
+  if (now - (lastShotAt[player.weapon] || 0) < w.cooldownMs) return;
+  lastShotAt[player.weapon] = now;
   const headshot = computeHeadshot();
   kickViewmodel();
   crosshairEl.classList.remove('fired');

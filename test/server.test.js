@@ -2029,6 +2029,53 @@ describe('Firefight (1v1 duel shooter)', () => {
     a.close(); b.close();
   });
 
+  // lastShotAt used to be one shared timestamp per player regardless of weapon — firing the
+  // grenade (3200ms cooldown) would then leave *every other weapon* looking like it had just been
+  // fired too, blocking them all for up to 3200ms. That defeats the entire point of a switchable
+  // mid-fight loadout, so each weapon's cooldown must be tracked independently.
+  test('switching weapons mid-fight does not carry one weapon\'s cooldown onto another', async () => {
+    const code = 'FFSWITCHCOOLDOWN1';
+    const a = await fgConnect();
+    const b = await fgConnect();
+    send(a, { type: 'fg-join', code, name: 'FfSwitchA' });
+    await waitFor(a, (m) => m.type === 'fg-init');
+    send(b, { type: 'fg-join', code, name: 'FfSwitchB' });
+    await waitFor(b, (m) => m.type === 'fg-init');
+    send(a, { type: 'fg-start' });
+    await waitFor(a, (m) => m.type === 'fg-round-start');
+    await waitFor(b, (m) => m.type === 'fg-round-start');
+
+    // Fire pistol (220ms cooldown), then immediately switch to grenade and fire — the grenade
+    // must land right away. Under the old bug, pistol's very-recent shot would look (from a
+    // shared timestamp) like the grenade itself had *just* been fired, wrongly blocking it for
+    // most of its 3200ms cooldown even though this grenade was never actually thrown before.
+    send(a, { type: 'fg-select-weapon', weapon: 'pistol' });
+    const pistolHitPromise = waitFor(b, (m) => m.type === 'fg-hit');
+    send(a, { type: 'fg-shoot' });
+    const pistolHit = await pistolHitPromise;
+    assert.equal(pistolHit.health, 130, "150 max HP minus pistol's 20 damage");
+
+    // grenade has never been fired yet in this match — under the old shared-timestamp bug, the
+    // pistol shot just above would make the grenade look like it had *also* just been fired,
+    // blocking it for most of its 3200ms cooldown even though this is its first-ever throw.
+    send(a, { type: 'fg-select-weapon', weapon: 'grenade' });
+    const grenadeHitPromise = waitFor(b, (m) => m.type === 'fg-hit');
+    send(a, { type: 'fg-shoot' });
+    const grenadeHit = await grenadeHitPromise;
+    assert.equal(grenadeHit.health, 65, "grenade must fire immediately after a pistol shot (130 - grenade's 65 damage), unaffected by pistol's cooldown");
+
+    // Reverse direction: switch to assault_rifle (never fired yet in this test, so this is a
+    // clean check with no self-cooldown of its own to confound it) immediately after the grenade
+    // throw — it must land right away too, unaffected by grenade's 3200ms cooldown.
+    send(a, { type: 'fg-select-weapon', weapon: 'assault_rifle' });
+    const rifleHitPromise = waitFor(b, (m) => m.type === 'fg-hit');
+    send(a, { type: 'fg-shoot' });
+    const rifleHit = await rifleHitPromise;
+    assert.equal(rifleHit.health, 47, "assault_rifle must fire immediately after a grenade throw (65 - 18), unaffected by the grenade's cooldown");
+
+    a.close(); b.close();
+  });
+
   // fg.slotA/fg.slotB were only ever checked for truthiness ("is a slot open"), not "is this a
   // different connection" — a single connection sending fg-join twice used to claim both slots
   // for itself, collapsing the whole "genuine 1v1" model into fighting itself with guaranteed

@@ -3576,7 +3576,11 @@ wss.on('connection', (ws, req) => {
       const id = crypto.randomUUID();
       ws.fgRoom = code;
       ws.fgId = id;
-      const entry = { id, name, x: 0, y: 0, z: 0, yaw: 0, health: FG_MAX_HEALTH, alive: false, weapon: FG_DEFAULT_WEAPON, kills: 0, deaths: 0, lastShotAt: 0, respawnedAt: 0 };
+      // lastShotAt is keyed per weapon, not one shared timestamp — the whole point of the 4-slot
+      // loadout (see FG_WEAPONS) is switching mid-fight, and a single shared timestamp meant
+      // firing the grenade (3200ms cooldown) used to lock out every *other* weapon for 3200ms too,
+      // and firing anything else left the grenade still on someone else's cooldown clock.
+      const entry = { id, name, x: 0, y: 0, z: 0, yaw: 0, health: FG_MAX_HEALTH, alive: false, weapon: FG_DEFAULT_WEAPON, kills: 0, deaths: 0, lastShotAt: {}, respawnedAt: 0 };
       fg.players.set(ws, entry);
       // First two players to ever join a fresh session become the duelists; everyone after that
       // queues as a spectator until a slot opens (see leaveFg's promotion logic).
@@ -3651,12 +3655,12 @@ wss.on('connection', (ws, req) => {
       if (!attacker || !attacker.alive) return;
       const weapon = FG_WEAPONS[attacker.weapon] || FG_WEAPONS[FG_DEFAULT_WEAPON];
       const now = Date.now();
-      if (now - (attacker.lastShotAt || 0) < weapon.cooldownMs) return;
+      if (now - (attacker.lastShotAt[attacker.weapon] || 0) < weapon.cooldownMs) return;
       // Set right after the cooldown check clears, not only on a landed hit — see the identical
       // fix (and its full explanation) on bc-punch above; a shot that misses (dead target,
       // respawn grace, out of range) used to cost nothing, leaving this cooldown check trivially
       // bypassable by spamming fg-shoot at a target known to be out of range.
-      attacker.lastShotAt = now;
+      attacker.lastShotAt[attacker.weapon] = now;
 
       const targetWs = attackerSlot === 'a' ? fg.slotB : fg.slotA;
       // Defense in depth alongside fg-join's own guard above (which is what actually prevents
