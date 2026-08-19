@@ -1007,7 +1007,18 @@ async function handleViewerJoined(viewerId) {
     if (!e.candidate) return;
     wsSend({ type: 'scorpture-signal', viewerId, signal: { kind: 'ice', candidate: iceToJson(e.candidate) } });
   };
-  await renegotiatePeer(pc, viewerId);
+  try {
+    await renegotiatePeer(pc, viewerId);
+  } catch (err) {
+    // Called fire-and-forget from the WS message handler (never awaited) — unlike
+    // switchGoLiveSource's own call to renegotiatePeer, which is already inside that function's
+    // try/catch. A thrown createOffer/setLocalDescription here would otherwise silently leave
+    // this viewer's connection stuck with a peer entry but no working offer ever sent.
+    broadcastState.peers.delete(viewerId);
+    pc.close();
+    reportClientError('handleViewerJoined failed for ' + viewerId + ': ' + err.message, err.stack);
+    return;
+  }
   updateViewerCountUI();
 }
 
