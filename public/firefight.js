@@ -41,6 +41,7 @@ const crosshairEl = document.getElementById('crosshair');
 const hitMarkerEl = document.getElementById('hit-marker');
 const scopeOverlayEl = document.getElementById('scope-overlay');
 const damageFlashEl = document.getElementById('damage-flash');
+const lowHealthVignetteEl = document.getElementById('low-health-vignette');
 const touchControlsEl = document.getElementById('touch-controls');
 const touchWeaponButtonsEl = document.getElementById('touch-weapon-buttons');
 const touchAimBtn = document.getElementById('touch-aim');
@@ -864,6 +865,28 @@ function spawnLandingDust(pos) {
   }
 }
 
+// A shot that hits a wall/pillar rather than a player — same activeSparks pool as everything else
+// here, but a small stone-colored puff instead of the wide blood-yellow combat spark, and only
+// ever from the local shooter's own raycast (see computeShotEnd's hitEnvironment flag); there's no
+// server broadcast for a miss, so nobody else ever sees where someone else's shot actually struck.
+function spawnWallImpact(pos) {
+  const n = 5;
+  for (let i = 0; i < n; i++) {
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ color: 0xd8cdb0, transparent: true, opacity: 1, depthTest: false }));
+    sprite.scale.set(0.08, 0.08, 1);
+    sprite.position.copy(pos);
+    scene.add(sprite);
+    const theta = Math.random() * Math.PI * 2, phi = Math.random() * Math.PI;
+    const speed = 0.6 + Math.random() * 1.2;
+    const vel = new THREE.Vector3(
+      Math.sin(phi) * Math.cos(theta),
+      Math.cos(phi) * 0.5,
+      Math.sin(phi) * Math.sin(theta)
+    ).multiplyScalar(speed);
+    activeSparks.push({ sprite, vel, bornAt: performance.now() });
+  }
+}
+
 // Where a given player's torso/head currently is, in world space — used to anchor tracers/flashes
 // for shots the local client didn't fire itself (own position for the local id, interpolated
 // avatar group position for anyone else). Returns null only if a remote id's avatar hasn't been
@@ -900,15 +923,19 @@ const CROSSHAIR_NDC = new THREE.Vector2(0, 0);
 // plus every known remote avatar's body/head meshes, capped to the weapon's range so a shot into
 // open sky doesn't draw a tracer to nowhere. This is a rendering-only guess, purely for the
 // shooter's own instant feedback; the server alone decides whether the shot actually deals damage.
+// Returns where the shot's tracer ends AND whether that was real arena geometry rather than an
+// avatar or open air — a wall/pillar hit gets its own small impact puff (see spawnWallImpact);
+// hitting a player already gets its spark from showLandedShot once the server confirms the shot
+// landed, and a shot into open sky obviously has nothing to kick up dust from.
 function computeShotEnd(range) {
   shootRaycaster.setFromCamera(CROSSHAIR_NDC, camera);
   shootRaycaster.far = range;
   const avatarMeshes = [...remotePlayers.values()].flatMap((rp) => rp.group.children.filter((c) => c.isMesh));
   const hits = shootRaycaster.intersectObjects([...collidableMeshes, ...avatarMeshes], false);
-  if (hits.length) return hits[0].point;
+  if (hits.length) return { point: hits[0].point, hitEnvironment: !avatarMeshes.includes(hits[0].object) };
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
-  return camera.position.clone().addScaledVector(dir, range);
+  return { point: camera.position.clone().addScaledVector(dir, range), hitEnvironment: false };
 }
 
 // Sniper-only: a real raycast from the crosshair against every visible opponent's head hitbox,
@@ -937,7 +964,9 @@ function attemptShoot() {
   flashMuzzle();
   kickViewmodel();
   const muzzleWorldPos = muzzleFlashSprite.getWorldPosition(new THREE.Vector3());
-  spawnTracer(muzzleWorldPos, computeShotEnd(w.range), TRACER_COLOR[player.weapon] || TRACER_COLOR.pistol);
+  const shot = computeShotEnd(w.range);
+  spawnTracer(muzzleWorldPos, shot.point, TRACER_COLOR[player.weapon] || TRACER_COLOR.pistol);
+  if (shot.hitEnvironment) spawnWallImpact(shot.point);
   crosshairEl.classList.remove('fired');
   void crosshairEl.offsetWidth;
   crosshairEl.classList.add('fired');
@@ -951,6 +980,10 @@ function renderHealth() {
   healthFillEl.style.width = pct + '%';
   healthFillEl.classList.toggle('low', pct <= 30);
   healthNumEl.textContent = Math.round(hp);
+  // Same 30% threshold the health bar itself already turns red at, and off entirely at 0 — once
+  // you're dead the kill-feed/death-tilt are doing the "you're in danger" job, a pulsing vignette
+  // on top of a screen you can no longer act in would just be noise.
+  lowHealthVignetteEl.classList.toggle('show', pct > 0 && pct <= 30);
 }
 function flashDamage() {
   damageFlashEl.classList.remove('show');

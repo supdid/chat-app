@@ -475,6 +475,28 @@ button.primary:disabled {
   100% { opacity: 0; }
 }
 
+/* Held (not one-shot like #damage-flash above) urgency cue while health is low — toggled by
+   renderHealth() in firefight.js at the same 30% threshold the health bar itself already turns
+   red at, so the two read as one consistent "you're in danger" signal rather than two thresholds
+   a player would have to learn separately. */
+#low-health-vignette {
+  position: fixed;
+  inset: 0;
+  z-index: 14;
+  pointer-events: none;
+  background: radial-gradient(circle, rgba(190, 20, 20, 0) 60%, rgba(190, 20, 20, 0.5) 100%);
+  opacity: 0;
+}
+
+#low-health-vignette.show {
+  animation: low-health-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes low-health-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.75; }
+}
+
 .icon-btn {
   background: rgba(255, 255, 255, 0.1);
   border: none;
