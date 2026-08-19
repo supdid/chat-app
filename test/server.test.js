@@ -1652,6 +1652,83 @@ describe('orphaned upload sweep', () => {
     }
   });
 
+  test('a rejected WS chat message (empty text + invalid mediaType) leaves its upload unclaimed and sweepable', async () => {
+    const sweepServer = await startTestServer(
+      { UPLOAD_CLAIM_GRACE_MS: '150', UPLOAD_SWEEP_INTERVAL_MS: '150' },
+      3203
+    );
+    try {
+      const base = `http://localhost:${sweepServer.port}`;
+      const form = new FormData();
+      form.append('file', new Blob(['rejected chat message content'], { type: 'image/png' }), 'x.png');
+      const { url } = await (await fetch(`${base}/upload`, { method: 'POST', body: form })).json();
+
+      const ws = new WebSocket(`ws://localhost:${sweepServer.port}`);
+      await new Promise((resolve) => ws.on('open', resolve));
+      ws.send(JSON.stringify({ type: 'join-server', username: 'MsgUploadReject' }));
+      await new Promise((resolve) => {
+        const h = (data) => { if (JSON.parse(data).type === 'joined-server') { ws.off('message', h); resolve(); } };
+        ws.on('message', h);
+      });
+      ws.send(JSON.stringify({ type: 'create-room' }));
+      await new Promise((resolve) => {
+        const h = (data) => { if (JSON.parse(data).type === 'joined-room') { ws.off('message', h); resolve(); } };
+        ws.on('message', h);
+      });
+
+      // A real uploaded file, but an invalid mediaType and no text — the handler must silently
+      // drop this (no 'message' broadcast) rather than post it.
+      let sawMessage = false;
+      const h = (data) => { if (JSON.parse(data).type === 'message') sawMessage = true; };
+      ws.on('message', h);
+      ws.send(JSON.stringify({ type: 'message', text: '', mediaUrl: url, mediaType: 'not-a-real-type' }));
+      await sleep(300);
+      ws.off('message', h);
+      assert.equal(sawMessage, false, 'a message with an invalid mediaType and no text must be dropped, not posted');
+
+      await sleep(600);
+      assert.equal((await fetch(`${base}${url}`)).status, 404, 'the upload from a dropped message must still be swept');
+      ws.close();
+    } finally {
+      await sweepServer.stop();
+    }
+  });
+
+  test('a rejected Scorpture overlays save (one invalid item) leaves every image in the list unclaimed and sweepable', async () => {
+    const sweepServer = await startTestServer(
+      { UPLOAD_CLAIM_GRACE_MS: '150', UPLOAD_SWEEP_INTERVAL_MS: '150' },
+      3204
+    );
+    try {
+      const base = `http://localhost:${sweepServer.port}`;
+      const signupRes = await fetch(`${base}/auth/signup`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'OverlayUploadReject', password: 'password123', email: 'overlayuploadreject@test.com' }),
+      });
+      const { token } = await signupRes.json();
+
+      const form = new FormData();
+      form.append('file', new Blob(['rejected overlay content'], { type: 'image/png' }), 'ov.png');
+      const { url } = await (await fetch(`${base}/upload`, { method: 'POST', body: form })).json();
+
+      // The valid image overlay comes FIRST in the list — the bug claimed it during the loop
+      // before ever reaching the second, invalid (empty content) item that aborts the whole save.
+      const res = await fetch(`${base}/api/scorpture/overlays`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ overlays: [
+          { type: 'image', content: url, position: 'top-left' },
+          { type: 'text', content: '', position: 'top-left' },
+        ] }),
+      });
+      assert.equal(res.status, 400, 'an overlay with empty content must be rejected');
+
+      await sleep(600);
+      assert.equal((await fetch(`${base}${url}`)).status, 404, 'the earlier valid image\'s upload must still be swept since the whole save was rejected');
+    } finally {
+      await sweepServer.stop();
+    }
+  });
+
   // AI Studio's gallery is entirely client-side (localStorage, no server row at all) and
   // explicitly meant to keep a captioned meme's uploaded composite around indefinitely (it has
   // its own "remove from gallery" control — a real managed collection, not a throwaway). Without

@@ -1584,8 +1584,16 @@ app.post('/api/scorpture/overlays', (req, res) => {
     if (type === 'image' && !content.startsWith('/uploads/')) {
       return res.status(400).json({ error: 'Image overlays must reference an uploaded file' });
     }
-    if (type === 'image') claimUpload(content);
     overlays.push({ id: crypto.randomUUID(), type, content, position });
+  }
+  // Claimed only once every overlay in the list has passed validation — claiming inside the loop
+  // above (as this used to) left earlier images in the list permanently claimed (exempt from the
+  // orphan sweep forever) whenever a later item's validation failure aborted the whole request
+  // before any of them were actually saved to setScorptureOverlays below. Same "claim only after
+  // every rejection has already passed" ordering /post-image's fix elsewhere in this file already
+  // established — this loop just hadn't gotten it.
+  for (const o of overlays) {
+    if (o.type === 'image') claimUpload(o.content);
   }
   db.setScorptureOverlays(account.id, overlays);
   res.json({ overlays });
@@ -5133,9 +5141,15 @@ wss.on('connection', (ws, req) => {
       const mediaUrl = typeof msg.mediaUrl === 'string' && (mediaType === 'poll' ? msg.mediaUrl === 'poll' : msg.mediaUrl.startsWith('/uploads/'))
         ? msg.mediaUrl
         : null;
-      claimUpload(mediaUrl);
       if (!text && !(mediaUrl && mediaType)) return;
       if (mediaType === 'poll' && !isValidPollText(text)) return;
+      // Claimed only after both rejections above — a raw WS client sending a real /uploads/
+      // mediaUrl alongside an empty text and an invalid/missing mediaType used to get this file
+      // claimed here and then the whole message silently dropped by the very next line, leaving a
+      // genuinely-uploaded file marked "claimed" (exempt from the orphan sweep) forever despite
+      // never actually being attached to any message. Same ordering fix as /post-image and the
+      // Scorpture overlays route elsewhere in this file.
+      claimUpload(mediaUrl);
 
       let replyToId = null;
       let replyPreview = null;
