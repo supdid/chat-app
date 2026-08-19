@@ -754,6 +754,43 @@ describe('voice call signaling requires the sender to actually be on the call', 
     const legit = await legitPromise;
     assert.equal(legit.signal.legit, true);
   });
+
+  // leaveVoice(ws) used to look up the voice.Map entry via ws.profile.sub at disconnect time —
+  // but join-server can fire again on an already-open connection (the client does this when
+  // signing into an account mid-session, see app.js's own comment on that call site) and
+  // unconditionally hands out a fresh crypto.randomUUID() sub every time. A voice-join that
+  // happened under the *old* sub before that reassignment became permanently unreachable: the
+  // entry stayed in the map forever, the disconnect never told anyone else the person had left,
+  // and every future joiner kept seeing a dead "peer" that could never actually connect.
+  test('a mid-session join-server (e.g. signing in) does not orphan an existing voice-join on disconnect', async () => {
+    const { ws: a, code } = await joinRoom('VoiceOrphanHost');
+    send(a, { type: 'voice-join' });
+    await waitFor(a, (m) => m.type === 'voice-peers');
+
+    const b = await joinExistingRoom('VoiceOrphanB', code);
+    send(b, { type: 'voice-join' });
+    const bJoinedPromise = waitFor(a, (m) => m.type === 'voice-peer-joined');
+    const bJoined = await bJoinedPromise;
+    const oldSub = bJoined.sub;
+
+    // Simulate a mid-session sign-in: the same still-open connection sends join-server again.
+    send(b, { type: 'join-server', username: 'VoiceOrphanB' });
+    const reInit = await waitFor(b, (m) => m.type === 'joined-server');
+    assert.notEqual(reInit.profile.sub, oldSub, 'join-server must actually reassign a fresh sub for this test to mean anything');
+
+    const leftPromise = waitFor(a, (m) => m.type === 'voice-peer-left');
+    b.close();
+    const left = await leftPromise;
+    assert.equal(left.sub, oldSub, 'the departure notice must reference the sub A actually knows B by, not the reassigned one A never saw');
+
+    // The real user-facing symptom of the orphan: a fresh joiner must not see a dead leftover peer.
+    const c = await joinExistingRoom('VoiceOrphanC', code);
+    send(c, { type: 'voice-join' });
+    const cPeers = await waitFor(c, (m) => m.type === 'voice-peers');
+    assert.ok(!cPeers.peers.some((p) => p.sub === oldSub), 'no orphaned peer entry should remain for the disconnected connection');
+
+    a.close(); c.close();
+  });
 });
 
 describe('whiteboard stroke sanitization', () => {

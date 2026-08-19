@@ -2073,8 +2073,21 @@ function leaveVoice(ws) {
   if (!code || !ws.profile) return;
   const voice = voiceRoom(code, false);
   if (!voice) return;
-  const sub = ws.profile.sub;
-  if (!voice.has(sub)) return;
+  // Found by ws identity, not by trusting the connection's *current* ws.profile.sub as the map
+  // key — join-server can fire again on an already-open connection (signing into an account
+  // mid-session, see app.js's "Covers signing into an account after the WebSocket already sent
+  // its (accountless) join-server" comment) and unconditionally assigns a fresh
+  // crypto.randomUUID() sub every time. If a voice-join happened under the old sub before that
+  // reassignment, voice.get(ws.profile.sub) here would miss it entirely — the entry stays in the
+  // map forever under a sub value this connection no longer reports, a permanent orphan that
+  // still shows up as a "participant" (and a dead signaling target) to everyone who joins the
+  // call afterward. Searching by the actual ws reference finds it regardless of which sub it was
+  // filed under.
+  let sub = null, entry = null;
+  for (const [s, e] of voice) {
+    if (e.ws === ws) { sub = s; entry = e; break; }
+  }
+  if (!entry) return;
   voice.delete(sub);
   for (const peer of voice.values()) send(peer.ws, { type: 'voice-peer-left', sub });
   if (voice.size === 0) {
