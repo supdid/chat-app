@@ -198,6 +198,8 @@ function initScene() {
   scene.add(camera);
   camera.add(muzzleFlashSprite);
   camera.add(muzzleFlashLight);
+  camera.add(viewmodelGroup);
+  updateViewmodelWeapon();
 
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(ARENA_HALF * 2, ARENA_HALF * 2),
@@ -274,6 +276,44 @@ function makePlaza() {
   scene.add(rim);
 }
 
+// The actual fountain centerpiece — LOBBY_SPAWN's own comment ("just south of the fountain,
+// facing north toward it") already described this, but until now the plaza was just a flat pool
+// floor with no raised centerpiece to actually be a fountain. Purely decorative like the rest of
+// addLobbyDecor(), same as the palm trees/banners/balloons: not in `obstacles`, so it never blocks
+// movement or shots — it only ever matters near the lobby, far from either duel spawn point.
+let fountainJet = null; // { mesh } — shimmered each frame in the main loop, same pattern as `balloons`
+function makeFountain() {
+  const pedestal = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.9, 1.1, 0.5, 16),
+    new THREE.MeshStandardMaterial({ color: 0xffe9a8 })
+  );
+  pedestal.position.y = 0.25;
+  pedestal.castShadow = true;
+  pedestal.receiveShadow = true;
+  scene.add(pedestal);
+
+  const basin = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.75, 0.75, 0.08, 16),
+    new THREE.MeshStandardMaterial({ color: 0xdff3fb, transparent: true, opacity: 0.85 })
+  );
+  basin.position.y = 0.52;
+  scene.add(basin);
+
+  // Hollow open-ended cylinder rather than a solid one, so it reads as a jet of water rather than
+  // a solid glass rod — needs THREE.DoubleSide since a single-sided hollow tube is invisible from
+  // the inside half of the view.
+  const jet = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.05, 0.1, 1.1, 10, 1, true),
+    new THREE.MeshStandardMaterial({
+      color: 0xeaf7ff, transparent: true, opacity: 0.5, side: THREE.DoubleSide,
+      emissive: 0xbfe8ff, emissiveIntensity: 0.4,
+    })
+  );
+  jet.position.y = 0.52 + 0.55;
+  scene.add(jet);
+  fountainJet = { mesh: jet };
+}
+
 function makePalmTree(x, z) {
   const group = new THREE.Group();
   const trunk = new THREE.Mesh(
@@ -316,6 +356,7 @@ function makeBalloon(x, z, color) {
 
 function addLobbyDecor() {
   makePlaza();
+  makeFountain();
   const cornerOffset = ARENA_HALF - 6; // scales with ARENA_HALF, not hardcoded to the old 24-unit arena
   [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([sx, sz]) => makePalmTree(sx * cornerOffset, sz * cornerOffset));
   const bannerColors = [0xffcf4a, 0x3b7dff];
@@ -630,12 +671,95 @@ function selectWeapon(key) {
   player.weapon = key;
   document.querySelectorAll('.weapon-btn').forEach((b) => b.classList.toggle('active', b.dataset.weapon === key));
   updateWeaponHud();
+  updateViewmodelWeapon();
   setAiming(aiming); // re-checks the scope overlay against the new weapon — a switch made mid-aim (Digit1/2/3 isn't gated to between-rounds) shouldn't leave a sniper scope up on a pistol
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'fg-select-weapon', weapon: key }));
 }
 function updateWeaponHud() {
   weaponHudEl.textContent = player.weapon ? player.weapon[0].toUpperCase() + player.weapon.slice(1) : '';
 }
+
+// ==== First-person weapon viewmodel ====
+// There was previously no gun visible on screen at all — just a crosshair. Built from the same
+// primitive-shape language the rest of the arena already uses (boxes/cylinders, flat
+// MeshStandardMaterial, no textures), one group per weapon, all parented to the camera like the
+// muzzle flash already is. Only the active weapon's group is visible at a time.
+const viewmodelGroup = new THREE.Group();
+const viewmodels = {}; // weapon key -> THREE.Group, each with its own baked-in hip position in userData.hipPos
+
+// mesh.position/.rotation must be mutated via their own .set() (or .copy()), never replaced with a
+// fresh Vector3/Euler via Object.assign or `mesh.rotation = new THREE.Euler(...)` — Object3D wires
+// an internal onChange listener on the *original* rotation/position instances that keeps
+// mesh.quaternion in sync, and updateMatrix() reads the quaternion, not the Euler angles directly.
+// Replacing the instance drops that listener, so the mesh would silently render unrotated.
+function part(geo, mat, x, y, z, rx = 0, ry = 0, rz = 0) {
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(x, y, z);
+  mesh.rotation.set(rx, ry, rz);
+  return mesh;
+}
+function buildViewmodel(parts, hx, hy, hz) {
+  const group = new THREE.Group();
+  parts.forEach((mesh) => group.add(mesh));
+  // At ~0.5 units from the camera, an unscaled part this size (built at roughly real-world scale
+  // to sit right next to a similarly-real-scale avatar body) subtends nearly half the screen
+  // height at this game's 75deg FOV — confirmed by an actual rendered screenshot during testing,
+  // not just checking the numbers, since the angular-size math is easy to eyeball wrong. Scaling
+  // the whole group down is simpler than rescaling every individual part.
+  group.scale.setScalar(0.55);
+  group.userData.hipPos = new THREE.Vector3(hx, hy, hz);
+  group.position.copy(group.userData.hipPos);
+  group.visible = false;
+  group.traverse((o) => { if (o.isMesh) o.castShadow = false; }); // first-person-only geometry; shadows from it would be visible to nobody and cost real render time
+  viewmodelGroup.add(group);
+  return group;
+}
+function buildViewmodels() {
+  const metal = new THREE.MeshStandardMaterial({ color: 0x2b2f36 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x17191d });
+
+  viewmodels.pistol = buildViewmodel([
+    part(new THREE.BoxGeometry(0.09, 0.09, 0.32), metal, 0, 0, -0.12),
+    part(new THREE.BoxGeometry(0.07, 0.16, 0.08), dark, 0, -0.11, 0.02, 0.15, 0, 0),
+  ], 0.34, -0.28, -0.6);
+
+  viewmodels.rifle = buildViewmodel([
+    part(new THREE.BoxGeometry(0.08, 0.1, 0.55), metal, 0, 0, -0.22),
+    part(new THREE.CylinderGeometry(0.02, 0.02, 0.3, 8), metal, 0, 0.01, -0.58, Math.PI / 2, 0, 0),
+    part(new THREE.BoxGeometry(0.06, 0.15, 0.07), dark, 0, -0.1, 0.06, 0.15, 0, 0),
+    part(new THREE.BoxGeometry(0.05, 0.18, 0.06), dark, 0, -0.15, -0.12, 0.35, 0, 0),
+  ], 0.35, -0.29, -0.68);
+
+  viewmodels.sniper = buildViewmodel([
+    part(new THREE.BoxGeometry(0.07, 0.08, 0.7), metal, 0, 0, -0.26),
+    part(new THREE.CylinderGeometry(0.018, 0.018, 0.35, 8), metal, 0, 0, -0.7, Math.PI / 2, 0, 0),
+    part(new THREE.CylinderGeometry(0.032, 0.032, 0.24, 10), dark, 0, 0.09, -0.18, Math.PI / 2, 0, 0),
+    part(new THREE.BoxGeometry(0.06, 0.16, 0.07), dark, 0, -0.1, 0.08, 0.15, 0, 0),
+  ], 0.35, -0.3, -0.72);
+}
+
+let activeViewmodel = null;
+const viewmodelPos = new THREE.Vector3(); // the current lerped hip/ADS position — separate from the group's own .position so per-frame sway/recoil offsets (added on top in the render loop) never feed back into next frame's lerp target
+let recoilKick = 0; // decays each frame; pushes the weapon back toward the camera on fire
+let recoilTilt = 0; // decays each frame; muzzle-rise rotation on fire
+function updateViewmodelWeapon() {
+  if (activeViewmodel) activeViewmodel.visible = false;
+  activeViewmodel = viewmodels[player.weapon] || null;
+  if (activeViewmodel) {
+    activeViewmodel.visible = true;
+    viewmodelPos.copy(activeViewmodel.userData.hipPos);
+  }
+}
+function kickViewmodel() {
+  recoilKick = player.weapon === 'sniper' ? 0.09 : 0.05;
+  recoilTilt = player.weapon === 'sniper' ? -0.22 : -0.13;
+}
+// ADS target is centered and pulled in, rather than the hip offset to the right — pistol/rifle
+// ADS raises the gun to eye line; the sniper hides its own model entirely once aiming (see the
+// visibility line in the render loop) since the scope overlay covers the full screen by then and
+// a visible gun body under/around that reticle would look wrong.
+const VIEWMODEL_ADS_POS = new THREE.Vector3(0, -0.05, -0.55);
+buildViewmodels();
 
 // ==== Combat FX — muzzle flash, tracers, impact sparks ====
 // All purely cosmetic and client-local: the server never tells anyone a shot was *fired*, only
@@ -673,14 +797,15 @@ function flashAt(pos) {
 
 const activeTracers = []; // { line, bornAt }
 const TRACER_LIFE_MS = 140;
-function spawnTracer(from, to) {
+function spawnTracer(from, to, color = 0xfff2b0) {
   const geo = new THREE.BufferGeometry().setFromPoints([from, to]);
-  const mat = new THREE.LineBasicMaterial({ color: 0xfff2b0, transparent: true, opacity: 0.9 });
+  const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.9 });
   const line = new THREE.Line(geo, mat);
   line.renderOrder = 998;
   scene.add(line);
   activeTracers.push({ line, bornAt: performance.now() });
 }
+const TRACER_COLOR = { pistol: 0xfff2b0, rifle: 0xfff2b0, sniper: 0xff6a3c };
 
 const activeSparks = []; // { sprite, vel, bornAt }
 const SPARK_LIFE_MS = 380;
@@ -740,12 +865,12 @@ function posForId(id) {
 // parts that couldn't happen until the server confirmed it — the impact spark (needs the real
 // target position, not the shooter's raycast guess) always, and the full tracer+flash for anyone
 // else's shot (which otherwise had no visual representation at all).
-function showLandedShot(byId, targetId, headshot) {
+function showLandedShot(byId, targetId, headshot, weapon) {
   const targetPos = posForId(targetId);
   if (!targetPos) return;
   if (byId !== myId) {
     const shooterPos = posForId(byId);
-    if (shooterPos) { spawnTracer(shooterPos, targetPos); flashAt(shooterPos); }
+    if (shooterPos) { spawnTracer(shooterPos, targetPos, TRACER_COLOR[weapon] || TRACER_COLOR.pistol); flashAt(shooterPos); }
   }
   spawnImpactSpark(targetPos, headshot);
 }
@@ -794,8 +919,9 @@ function attemptShoot() {
   const headshot = computeHeadshot();
   playSound(headshot ? 'headshot' : player.weapon === 'sniper' ? 'sniper' : 'shoot');
   flashMuzzle();
+  kickViewmodel();
   const muzzleWorldPos = muzzleFlashSprite.getWorldPosition(new THREE.Vector3());
-  spawnTracer(muzzleWorldPos, computeShotEnd(w.range));
+  spawnTracer(muzzleWorldPos, computeShotEnd(w.range), TRACER_COLOR[player.weapon] || TRACER_COLOR.pistol);
   crosshairEl.classList.remove('fired');
   void crosshairEl.offsetWidth;
   crosshairEl.classList.add('fired');
@@ -994,6 +1120,7 @@ function handleMessage(data) {
       totalKills = data.totalKills || 0;
       unlockedWeapons = data.unlockedWeapons || ['pistol'];
       if (!isUnlocked(player.weapon)) player.weapon = 'pistol';
+      updateViewmodelWeapon();
       // Every fresh fg-init — a first join or a reconnect — drops the player back in the lobby
       // plaza, not wherever they happened to be standing before. player.x/y/z is a module-level
       // var that otherwise survives a reconnect's fresh WebSocket, so without this a disconnect
@@ -1110,7 +1237,7 @@ function handleMessage(data) {
       break;
     }
     case 'fg-hit': {
-      showLandedShot(data.byId, data.targetId, data.headshot);
+      showLandedShot(data.byId, data.targetId, data.headshot, data.weapon);
       if (data.targetId === myId) {
         player.health = data.health;
         renderHealth();
@@ -1126,7 +1253,7 @@ function handleMessage(data) {
       break;
     }
     case 'fg-death': {
-      showLandedShot(data.killedBy, data.id, data.headshot);
+      showLandedShot(data.killedBy, data.id, data.headshot, data.weapon);
       const hs = data.headshot ? ' (Headshot!)' : '';
       if (data.id === myId) {
         player.alive = false;
@@ -1213,6 +1340,25 @@ function loop(now) {
   updateFov(dt);
   sendPos(false);
 
+  viewmodelGroup.visible = mySlot === 'a' || mySlot === 'b';
+  if (activeViewmodel) {
+    const adsIn = aiming && player.weapon !== 'sniper';
+    activeViewmodel.visible = !(aiming && player.weapon === 'sniper');
+    const target = adsIn ? VIEWMODEL_ADS_POS : activeViewmodel.userData.hipPos;
+    viewmodelPos.lerp(target, Math.min(1, dt * 10));
+    recoilKick *= 0.8;
+    recoilTilt *= 0.8;
+    // Idle sway is added on top of viewmodelPos rather than folded into it — see viewmodelPos's
+    // own declaration comment for why the two have to stay separate.
+    const sway = canMove && (move.f || move.r) ? 1 : 0.35; // a livelier sway while actually moving, a slow idle breathe otherwise
+    activeViewmodel.position.set(
+      viewmodelPos.x + Math.sin(now / 450) * 0.004 * sway,
+      viewmodelPos.y + Math.cos(now / 650) * 0.003 * sway - recoilKick * 0.15,
+      viewmodelPos.z + recoilKick
+    );
+    activeViewmodel.rotation.x = recoilTilt;
+  }
+
   for (const rp of remotePlayers.values()) {
     rp.group.position.x += (rp.target.x - rp.group.position.x) * 0.25;
     rp.group.position.y += (rp.target.y - rp.group.position.y) * 0.25;
@@ -1229,6 +1375,10 @@ function loop(now) {
     }
   }
   for (const b of balloons) b.mesh.position.y = b.baseY + Math.sin(now / 1000 + b.phase) * 0.15;
+  if (fountainJet) {
+    fountainJet.mesh.scale.y = 1 + Math.sin(now / 220) * 0.08;
+    fountainJet.mesh.material.opacity = 0.45 + Math.sin(now / 180) * 0.1;
+  }
 
   // Combat FX decay — exponential falloff needs no per-effect timer bookkeeping for the flash/
   // light, just a per-frame multiply; tracers and sparks age against a hard lifetime instead since
