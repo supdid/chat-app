@@ -228,7 +228,6 @@ let roundActive = false;
 let dgIAmDrawer = false;
 let dgMyId = null;
 let roundEndsAt = null;
-let timerInterval = null;
 let guessedAlready = false;
 let myIsSpectator = false;
 
