@@ -3507,25 +3507,34 @@ async function handleVoiceSignal(from, signal) {
   }
   if (!peer) return;
 
-  if (signal.type === 'offer') {
-    await peer.pc.setRemoteDescription(signal.sdp);
-    for (const c of peer.pendingCandidates) await peer.pc.addIceCandidate(c);
-    peer.pendingCandidates = [];
-    const answer = await peer.pc.createAnswer();
-    await peer.pc.setLocalDescription(answer);
-    ws.send(JSON.stringify({ type: 'voice-signal', to: from, signal: { type: 'answer', sdp: peer.pc.localDescription } }));
-    // A screen share already added to this connection (see makePeerConnection) can't ride
-    // along in this initial answer — an SDP answer can't add m-lines the offer didn't
-    // request — so immediately renegotiate with a follow-up offer to actually deliver it.
-    if (screenStream) await makeVoiceOffer(from);
-  } else if (signal.type === 'answer') {
-    await peer.pc.setRemoteDescription(signal.sdp);
-  } else if (signal.type === 'ice') {
-    if (peer.pc.remoteDescription) {
-      await peer.pc.addIceCandidate(signal.candidate);
-    } else {
-      peer.pendingCandidates.push(signal.candidate);
+  try {
+    if (signal.type === 'offer') {
+      await peer.pc.setRemoteDescription(signal.sdp);
+      for (const c of peer.pendingCandidates) await peer.pc.addIceCandidate(c);
+      peer.pendingCandidates = [];
+      const answer = await peer.pc.createAnswer();
+      await peer.pc.setLocalDescription(answer);
+      ws.send(JSON.stringify({ type: 'voice-signal', to: from, signal: { type: 'answer', sdp: peer.pc.localDescription } }));
+      // A screen share already added to this connection (see makePeerConnection) can't ride
+      // along in this initial answer — an SDP answer can't add m-lines the offer didn't
+      // request — so immediately renegotiate with a follow-up offer to actually deliver it.
+      if (screenStream) await makeVoiceOffer(from);
+    } else if (signal.type === 'answer') {
+      await peer.pc.setRemoteDescription(signal.sdp);
+    } else if (signal.type === 'ice') {
+      if (peer.pc.remoteDescription) {
+        await peer.pc.addIceCandidate(signal.candidate);
+      } else {
+        peer.pendingCandidates.push(signal.candidate);
+      }
     }
+  } catch (err) {
+    // Same reasoning as makeVoiceOffer's own try/catch: called fire-and-forget from the WS
+    // message handler (never awaited), so a thrown error here — a malformed/stale SDP after a
+    // fast peer rejoin, addIceCandidate racing a connection that already closed, etc. — would
+    // otherwise become a silent unhandled rejection that never reaches this app's own
+    // error-reporting pipeline, leaving that peer's audio broken with nothing to explain why.
+    reportClientError('handleVoiceSignal failed for ' + from + ' (' + signal.type + '): ' + err.message, err.stack);
   }
 }
 
