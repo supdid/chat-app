@@ -158,7 +158,17 @@ process.on('unhandledRejection', (reason) => {
 
 process.on('uncaughtException', (err) => {
   console.error('Uncaught exception:', err);
-  reportError('server', err, { fatal: true });
+  // Same reasoning as the unhandledRejection handler just above, and even more important here:
+  // if reportError itself throws (e.g. a synchronous DB write failing — disk full, locked/
+  // corrupted DB), letting that escape a listener already running inside 'uncaughtException'
+  // is fatal to Node in an uncontrolled way — it terminates the process immediately without
+  // ever reaching process.exit(1) below, skipping the clean, intentional shutdown systemd's
+  // Restart=on-failure is built around.
+  try {
+    reportError('server', err, { fatal: true });
+  } catch {
+    // Deliberately swallowed — see above.
+  }
   process.exit(1);
 });
 
