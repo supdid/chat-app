@@ -64,6 +64,16 @@ const liveChatInput = document.getElementById('live-chat-input');
 let currentAccount = null; // { username } | null
 let pendingUpload = null; // { file, thumbnailBlob }
 
+// Bumped on every route() dispatch (a hashchange, or a redirect like renderWatch's "no id"
+// bailout to renderHome). Each async render function captures the value at its own start and
+// re-checks it after every await that precedes a DOM write — without this, clicking from one
+// video/channel to another before the first page's fetch finishes lets the stale response land
+// after the new page is already showing, silently overwriting it with the wrong video/channel/
+// comments, or throwing when it wires up listeners for element ids the new page never rendered
+// (this app's other pages — see app.js's viewToken, aistudio.js's viewToken — already guard
+// against exactly this same race for their own async loads).
+let routeToken = 0;
+
 function getToken() {
   return localStorage.getItem(ACCOUNT_TOKEN_KEY) || '';
 }
@@ -177,6 +187,7 @@ function parseHash() {
 window.addEventListener('hashchange', route);
 
 async function route() {
+  routeToken++;
   const { route: name, params } = parseHash();
   window.scrollTo(0, 0);
   // Leaving the watch-live page (navigating anywhere else) should tear down the viewer
@@ -259,6 +270,7 @@ function categoryPillsHtml(categories, query, activeCategory) {
 }
 
 async function renderHome(query, category) {
+  const myToken = routeToken;
   searchInput.value = query || '';
   appEl.innerHTML = `<div class="state-msg">Loading videos…</div>`;
   try {
@@ -268,6 +280,7 @@ async function renderHome(query, category) {
     if (category) params.set('category', category);
     const url = `/api/scorpture/videos${params.toString() ? `?${params.toString()}` : ''}`;
     const [data, liveData] = await Promise.all([api(url), query || category ? Promise.resolve({ streams: [] }) : api('/api/scorpture/live').catch(() => ({ streams: [] }))]);
+    if (myToken !== routeToken) return;
 
     let html = categoryPillsHtml(categories, query, category);
     if (liveData.streams.length) {
@@ -282,15 +295,18 @@ async function renderHome(query, category) {
     wireVideoCards();
     wireLiveCards();
   } catch (err) {
+    if (myToken !== routeToken) return;
     appEl.innerHTML = `<div class="state-msg">Couldn't load videos: ${escapeHtml(err.message)}</div>`;
   }
 }
 
 // ---------- Live browse page (#/live) ----------
 async function renderLive() {
+  const myToken = routeToken;
   appEl.innerHTML = `<div class="state-msg">Loading live streams…</div>`;
   try {
     const data = await api('/api/scorpture/live');
+    if (myToken !== routeToken) return;
     if (!data.streams.length) {
       appEl.innerHTML = `<div class="state-msg">Nobody's live right now.</div>`;
       return;
@@ -298,6 +314,7 @@ async function renderLive() {
     appEl.innerHTML = `<div class="video-grid">${data.streams.map(liveCardHtml).join('')}</div>`;
     wireLiveCards();
   } catch (err) {
+    if (myToken !== routeToken) return;
     appEl.innerHTML = `<div class="state-msg">Couldn't load live streams: ${escapeHtml(err.message)}</div>`;
   }
 }
@@ -305,9 +322,11 @@ async function renderLive() {
 // ---------- Subscriptions feed (#/subscriptions) ----------
 async function renderSubscriptionsFeed() {
   if (!requireAccount()) { location.hash = '#/'; return; }
+  const myToken = routeToken;
   appEl.innerHTML = `<div class="state-msg">Loading your subscriptions…</div>`;
   try {
     const data = await api('/api/scorpture/subscriptions/feed');
+    if (myToken !== routeToken) return;
     if (!data.videos.length) {
       appEl.innerHTML = `<div class="state-msg">No videos yet from channels you're subscribed to.</div>`;
       return;
@@ -315,6 +334,7 @@ async function renderSubscriptionsFeed() {
     appEl.innerHTML = `<div class="video-grid">${data.videos.map(videoCardHtml).join('')}</div>`;
     wireVideoCards();
   } catch (err) {
+    if (myToken !== routeToken) return;
     appEl.innerHTML = `<div class="state-msg">Couldn't load your subscriptions: ${escapeHtml(err.message)}</div>`;
   }
 }
@@ -322,14 +342,17 @@ async function renderSubscriptionsFeed() {
 // ---------- Watch page ----------
 async function renderWatch(id) {
   if (!id) return renderHome('');
+  const myToken = routeToken;
   appEl.innerHTML = `<div class="state-msg">Loading video…</div>`;
   let video;
   try {
     video = await api(`/api/scorpture/videos/${encodeURIComponent(id)}`);
   } catch (err) {
+    if (myToken !== routeToken) return;
     appEl.innerHTML = `<div class="state-msg">Couldn't load this video: ${escapeHtml(err.message)}</div>`;
     return;
   }
+  if (myToken !== routeToken) return;
 
   appEl.innerHTML = `
     <div class="watch-layout">
@@ -509,6 +532,7 @@ function wireCommentEditButtons(videoId) {
 // ---------- Channel page ----------
 async function renderChannel(username) {
   if (!username) return renderHome('');
+  const myToken = routeToken;
   appEl.innerHTML = `<div class="state-msg">Loading channel…</div>`;
   let channel, videos;
   try {
@@ -517,9 +541,11 @@ async function renderChannel(username) {
       api(`/api/scorpture/videos?channel=${encodeURIComponent(username)}`),
     ]);
   } catch (err) {
+    if (myToken !== routeToken) return;
     appEl.innerHTML = `<div class="state-msg">Couldn't load this channel: ${escapeHtml(err.message)}</div>`;
     return;
   }
+  if (myToken !== routeToken) return;
 
   appEl.innerHTML = `
     <div class="channel-banner${channel.bannerUrl ? '' : ' empty'}" id="channel-banner"${channel.bannerUrl ? ` style="background-image:url('${escapeHtml(channel.bannerUrl)}')"` : ''}>
@@ -635,15 +661,18 @@ function overlayRowHtml(o) {
 
 async function renderOverlaysPage() {
   if (!requireAccount()) { location.hash = '#/'; return; }
+  const myToken = routeToken;
   appEl.innerHTML = `<div class="state-msg">Loading overlays…</div>`;
   let overlays;
   try {
     const data = await api('/api/scorpture/overlays');
     overlays = data.overlays;
   } catch (err) {
+    if (myToken !== routeToken) return;
     appEl.innerHTML = `<div class="state-msg">Couldn't load overlays: ${escapeHtml(err.message)}</div>`;
     return;
   }
+  if (myToken !== routeToken) return;
 
   appEl.innerHTML = `
     <div class="overlays-page">
