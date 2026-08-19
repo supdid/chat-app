@@ -89,6 +89,11 @@ function blip(kind) {
     death: { type: 'sawtooth', f0: 480, f1: 60, g: 0.18, dur: 0.5 },
     jump: { type: 'square', f0: 220, f1: 440, g: 0.06, dur: 0.09 },
     headshot: { type: 'triangle', f0: 1400, f1: 300, g: 0.22, dur: 0.14 },
+    // Two alternating presets (left/right foot) rather than one repeated exactly — walking is the
+    // most-repeated sound in the whole game, and a single identical blip on every step reads as a
+    // machine-gun tick fast enough to be annoying.
+    step: { type: 'triangle', f0: 130, f1: 95, g: 0.045, dur: 0.055 },
+    step2: { type: 'triangle', f0: 105, f1: 78, g: 0.045, dur: 0.055 },
   };
   const p = presets[kind];
   if (!p) return;
@@ -511,8 +516,19 @@ function tryJump() {
   playSound('jump');
 }
 
+let damageShakeAt = 0; // performance.now() of the local player's last incoming hit, or 0
 function updateCameraFromPlayer() {
   camera.position.set(player.x, player.y + EYE_HEIGHT, player.z);
+  // A brief, decaying random jitter on top of the real eye position when a shot just landed on
+  // you — separate from the death-tilt below (that's a deliberate held pose; this is a quick
+  // startle that has to be fully gone by the time the next hit could land, or a fast weapon like
+  // the rifle would stack shakes into a constant blur instead of discrete hits).
+  const shakeAge = performance.now() - damageShakeAt;
+  if (shakeAge < 180) {
+    const s = (1 - shakeAge / 180) * 0.05;
+    camera.position.x += (Math.random() - 0.5) * s;
+    camera.position.y += (Math.random() - 0.5) * s;
+  }
   camera.rotation.x = player.pitch;
   camera.rotation.y = player.yaw;
   // A slow head-lean on your own death rather than snapping mouse-look away from the player —
@@ -1243,6 +1259,7 @@ function handleMessage(data) {
         renderHealth();
         flashDamage();
         playSound('hurt');
+        damageShakeAt = performance.now();
       } else if (data.byId === myId) {
         playSound(data.headshot ? 'headshot' : 'hit');
         showHitMarker(data.headshot);
@@ -1262,6 +1279,7 @@ function handleMessage(data) {
         addKillFeed(`💀 Eliminated by ${knownNames.get(data.killedBy) || 'your opponent'}${hs}`);
         playSound('death');
         myDeathAt = performance.now();
+        damageShakeAt = performance.now(); // the fatal hit is still a hit — same brief jolt as any other incoming shot, on top of the held death-tilt
       } else if (data.killedBy === myId) {
         addKillFeed(`🎯 You eliminated ${knownNames.get(data.id) || 'your opponent'}!${hs}`);
         showHitMarker(data.headshot);
@@ -1327,6 +1345,9 @@ function sendPos(force) {
 
 // ==== Main loop ====
 let lastFrame = performance.now();
+let lastStepAt = 0;
+let stepToggle = false;
+const STEP_INTERVAL_MS = 320;
 function loop(now) {
   requestAnimationFrame(loop);
   const dt = Math.min(0.1, (now - lastFrame) / 1000);
@@ -1335,6 +1356,14 @@ function loop(now) {
   readKeyboardMove();
   const canMove = mySlot === 'spectator' || phase !== 'active' || player.alive;
   if (canMove) tickMovement(dt);
+  // Grounded + actually holding a move input, not just "not blocked" — canMove alone is also true
+  // while standing still. Client-local only, like every other cosmetic here: this only ever plays
+  // for your own footsteps, never anyone else's (no fg-pos field for "is this player walking").
+  if (canMove && player.grounded && (move.f || move.r) && now - lastStepAt > STEP_INTERVAL_MS) {
+    playSound(stepToggle ? 'step' : 'step2');
+    stepToggle = !stepToggle;
+    lastStepAt = now;
+  }
   tickVertical(dt);
   updateCameraFromPlayer();
   updateFov(dt);
