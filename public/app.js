@@ -28,7 +28,13 @@ const renameRoomForm = document.getElementById('rename-room-form');
 const renameRoomInput = document.getElementById('rename-room-input');
 const myAvatarBtn = document.getElementById('my-avatar-btn');
 const avatarFileInput = document.getElementById('avatar-file-input');
+const myNameInput = document.getElementById('my-name-input');
+const myNameError = document.getElementById('my-name-error');
 const myStatusInput = document.getElementById('my-status-input');
+const accountUsernameToggleBtn = document.getElementById('account-username-toggle-btn');
+const accountUsernameForm = document.getElementById('account-username-form');
+const accountUsernameFormInput = document.getElementById('account-username-form-input');
+const accountUsernameError = document.getElementById('account-username-error');
 const recentRoomsSection = document.getElementById('recent-rooms-section');
 const recentRoomsList = document.getElementById('recent-rooms-list');
 const leaveRoomBtn = document.getElementById('leave-room-btn');
@@ -53,6 +59,7 @@ const buildcraftLink = document.getElementById('buildcraft-link');
 const geometrywaveLink = document.getElementById('geometrywave-link');
 const seincejumpLink = document.getElementById('seincejump-link');
 const fighterplaneLink = document.getElementById('fighterplane-link');
+const firefightLink = document.getElementById('firefight-link');
 const pictionaryLink = document.getElementById('pictionary-link');
 const triviaLink = document.getElementById('trivia-link');
 const tictactoeLink = document.getElementById('tictactoe-link');
@@ -136,6 +143,27 @@ const friendDmCloseBtn = document.getElementById('friend-dm-close-btn');
 const friendDmTargetName = document.getElementById('friend-dm-target-name');
 const friendDmForm = document.getElementById('friend-dm-form');
 const friendDmInput = document.getElementById('friend-dm-input');
+const groupsOpenBtn = document.getElementById('groups-open-btn');
+const groupsMenuBtn = document.getElementById('groups-menu-btn');
+const groupsOverlay = document.getElementById('groups-overlay');
+const groupsCloseBtn = document.getElementById('groups-close-btn');
+const groupsSignedOutMsg = document.getElementById('groups-signed-out-msg');
+const groupsSignedInContent = document.getElementById('groups-signed-in-content');
+const groupNewBtn = document.getElementById('group-new-btn');
+const groupNewForm = document.getElementById('group-new-form');
+const groupNameInput = document.getElementById('group-name-input');
+const groupFriendPicker = document.getElementById('group-friend-picker');
+const groupNewError = document.getElementById('group-new-error');
+const groupCreateBtn = document.getElementById('group-create-btn');
+const groupsListEl = document.getElementById('groups-list');
+const groupsEmptyMsg = document.getElementById('groups-empty-msg');
+const groupDmOverlay = document.getElementById('group-dm-overlay');
+const groupDmCloseBtn = document.getElementById('group-dm-close-btn');
+const groupDmTitleEl = document.getElementById('group-dm-title');
+const groupDmMembersEl = document.getElementById('group-dm-members');
+const groupDmMessagesEl = document.getElementById('group-dm-messages');
+const groupDmForm = document.getElementById('group-dm-form');
+const groupDmInput = document.getElementById('group-dm-input');
 const exportLink = document.getElementById('export-link');
 const savedBtn = document.getElementById('saved-btn');
 const savedOverlay = document.getElementById('saved-overlay');
@@ -211,14 +239,18 @@ let activeReactionPopover = null;
 
 // --- Minigame activity badges ---
 const roomActivity = new Map(); // name -> game code ('bc'|'gw'|'dg')
-const ACTIVITY_BADGES = { bc: '🏝️', gw: '🔺', dg: '🖍️', wb: '🖌️', tv: '❓', tt: '⭕', ch: '♟️', hm: '🪢', sk: '🐍', tf: '🔢', fp: '🛩️' };
+const ACTIVITY_BADGES = { bc: '🏝️', gw: '🔺', dg: '🖍️', wb: '🖌️', tv: '❓', tt: '⭕', ch: '♟️', hm: '🪢', sk: '🐍', tf: '🔢', fp: '🛩️', sw: '🕸️', fg: '🔫' };
 let lastRoomUsers = [];
 
 // --- Saved messages — purely client-side (localStorage), stores a content snapshot (not just
 // an id) so a saved message still shows something even if the original is later deleted or the
 // room it came from isn't the one currently open. ---
 const SAVED_KEY = 'valk-saved-messages';
-let savedMessages = JSON.parse(localStorage.getItem(SAVED_KEY) || '[]');
+let savedMessages = [];
+try {
+  const parsed = JSON.parse(localStorage.getItem(SAVED_KEY) || '[]');
+  if (Array.isArray(parsed)) savedMessages = parsed;
+} catch {}
 
 function isSaved(id) {
   return savedMessages.some((m) => m.id === id);
@@ -267,6 +299,7 @@ function renderSavedList() {
       media.src = m.mediaUrl;
       media.className = 'saved-media';
       if (m.mediaType === 'video') media.controls = true;
+      else media.alt = 'shared image';
       li.appendChild(media);
     }
     if (m.text) {
@@ -305,7 +338,12 @@ function renderSavedList() {
 // --- Personal block/mute — purely client-side (localStorage), no server involvement at all,
 // since this only affects what *you* see, unlike host moderation (kick/mute) which is shared. ---
 const BLOCKED_KEY = 'valk-blocked-users';
-const blockedNames = new Set(JSON.parse(localStorage.getItem(BLOCKED_KEY) || '[]'));
+let blockedNamesInit = [];
+try {
+  const parsed = JSON.parse(localStorage.getItem(BLOCKED_KEY) || '[]');
+  if (Array.isArray(parsed)) blockedNamesInit = parsed;
+} catch {}
+const blockedNames = new Set(blockedNamesInit);
 function toggleBlockUser(name) {
   if (blockedNames.has(name)) blockedNames.delete(name); else blockedNames.add(name);
   localStorage.setItem(BLOCKED_KEY, JSON.stringify([...blockedNames]));
@@ -338,11 +376,16 @@ let unreadCount = 0;
 
 // --- Voice call state ---
 let voiceActive = false;
+// Bumped by hangUpVoiceCall so a startVoiceCall() still awaiting the mic permission prompt can
+// tell, once it resolves, whether the call was torn down in the meantime (e.g. a WS drop/
+// reconnect while the browser's native permission dialog was still up — see startVoiceCall).
+let voiceCallGeneration = 0;
 let callAutoHangupTimer = null;
 const CALL_MAX_DURATION_MS = 32 * 60 * 60 * 1000; // 32 hours
 let localStream = null;
 let localVoiceStop = null; // stop function for the local speaking-ring detector
 let screenStream = null; // local outgoing screen-share stream, null when not sharing
+let screenShareStarting = false; // guards against a second getDisplayMedia() call racing the first while its OS picker is still up
 const voicePeers = new Map(); // sub -> { name, pc, audioEl, stopDetector }
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 let pttMode = false;
@@ -351,6 +394,7 @@ let handRaised = false;
 let callRecorder = null;
 let callRecordDest = null; // MediaStreamAudioDestinationNode mixing all call audio
 let callRecordCtx = null;
+let recordedRemoteStreams = null; // Set of remote MediaStreams already mixed into the current recording — avoids double-mixing the same peer's audio if their track re-negotiates mid-recording
 let muteAllNoticeTimer = null;
 
 // --- Dark / light theme ---
@@ -648,6 +692,24 @@ function handleServerMessage(data) {
       typingTimers.clear();
       renderTypingIndicator();
       clearReplyingTo();
+      // A visible @mention dropdown's matches come from the OLD room's lastRoomUsers — left open
+      // across a room switch, it kept showing suggestions from a member list that no longer
+      // applies to where the composer now actually posts.
+      mentionDropdownEl.classList.add('hidden');
+      mentionHighlightIndex = -1;
+      // A thread left open while switching rooms kept pointing at the old room's root message —
+      // the server silently drops the reply link for a cross-room id (room_code mismatch), so a
+      // reply typed there posted as an ordinary top-level message with no error shown.
+      threadOverlay.classList.add('hidden');
+      currentThreadRootId = null;
+      // Same class of bug as the thread overlay above, just never applied here: room DMs are
+      // explicitly room-scoped (send-dm resolves the recipient by scanning the *current* room's
+      // connected clients), but nothing closed dmOverlay on a room switch. Left open, it kept
+      // showing the old room's thread — and since display names aren't globally unique, sending
+      // from it could silently DM an unrelated same-named person in the new room instead of
+      // erroring, or (if nobody by that name is present) just leave the stale panel open forever.
+      dmOverlay.classList.add('hidden');
+      currentDmWithName = null;
       seedReactions(data.reactions);
       seedActivity(data.activity);
       pinnedMessages = data.pins || [];
@@ -677,7 +739,6 @@ function handleServerMessage(data) {
       renameRoomInput.value = currentRoomName || '';
       renderOnlineList(data.users);
       updateGameLinks();
-      exportLink.href = `/export?code=${encodeURIComponent(data.code)}&pin=${encodeURIComponent(currentRoomPin)}`;
       saveRecentRoom(data.code, currentRoomName);
       showScreen(chatScreen);
       messageInput.focus();
@@ -715,6 +776,13 @@ function handleServerMessage(data) {
       voiceCallBanner.classList.add('hidden');
       unreadCount = 0;
       updateUnreadBadge();
+      // Same room-scoped-DM/thread staleness this session already fixed for the joined-room path
+      // — leaving a room entirely (not just switching to another) is an even more direct case of
+      // "this room's context no longer applies."
+      threadOverlay.classList.add('hidden');
+      currentThreadRootId = null;
+      dmOverlay.classList.add('hidden');
+      currentDmWithName = null;
       showScreen(roomSelectScreen);
       break;
 
@@ -801,11 +869,82 @@ function handleServerMessage(data) {
       showAppToast(`💬 DM sent to ${data.toUsername}`);
       break;
 
+    case 'group-dm-threads':
+      lastLoadedThreads = data.threads;
+      renderGroupThreads(data.threads);
+      break;
+
+    case 'group-dm-created':
+      showAppToast(`💬 Group DM ${data.thread.name ? `"${data.thread.name}"` : 'started'}`);
+      if (groupsOverlay && !groupsOverlay.classList.contains('hidden')) loadGroupThreads();
+      break;
+
+    case 'group-dm-member-left':
+      if (currentGroupDmId === data.groupId) {
+        currentGroupDmMemberNames = currentGroupDmMemberNames.filter((n) => n !== data.username);
+        groupDmMembersEl.textContent = currentGroupDmMemberNames.length ? `With ${currentGroupDmMemberNames.join(', ')}` : '';
+        showAppToast(`👋 ${data.username} left the group`);
+      }
+      break;
+
+    case 'group-dm-messages':
+      if (currentGroupDmId === data.groupId) {
+        groupDmMessagesEl.innerHTML = '';
+        if (!data.messages.length) {
+          groupDmMessagesEl.innerHTML = '<p class="search-status">No messages yet — say hi!</p>';
+        } else {
+          data.messages.forEach(renderGroupDmMessage);
+          groupDmMessagesEl.scrollTop = groupDmMessagesEl.scrollHeight;
+        }
+      }
+      break;
+
+    case 'group-dm-sent':
+      if (currentGroupDmId === data.message.groupId) {
+        const empty = groupDmMessagesEl.querySelector('.search-status');
+        if (empty) groupDmMessagesEl.innerHTML = '';
+        renderGroupDmMessage(data.message);
+        groupDmMessagesEl.scrollTop = groupDmMessagesEl.scrollHeight;
+      }
+      break;
+
+    // A group DM landing live from someone else — same "live if connected, push if not" delivery
+    // as friend-dm above, just fanned out to every member instead of one recipient.
+    case 'group-dm':
+      if (currentGroupDmId === data.groupId && groupDmOverlay && !groupDmOverlay.classList.contains('hidden')) {
+        const empty = groupDmMessagesEl.querySelector('.search-status');
+        if (empty) groupDmMessagesEl.innerHTML = '';
+        renderGroupDmMessage(data);
+        groupDmMessagesEl.scrollTop = groupDmMessagesEl.scrollHeight;
+      } else {
+        showAppToast(`💬 ${data.fromName} (group): ${data.text}`);
+        playNotifySound();
+      }
+      break;
+
     case 'announcement-updated':
       currentAnnouncement = data.text || null;
       renderAnnouncementBanner();
       if (isHost) announcementInput.value = currentAnnouncement || '';
       break;
+
+    case 'name-updated': {
+      const previousName = myProfile ? myProfile.name : null;
+      if (myProfile) myProfile.name = data.name;
+      myUsername = data.name;
+      if (previousName && previousName !== data.name) {
+        roomProfiles.set(data.name, roomProfiles.get(previousName) || { avatarUrl: myProfile && myProfile.avatarUrl, status: myProfile && myProfile.status });
+        // pushNewMessage (server.js) skips a push to whoever's *live* in the room already, keyed
+        // by their current connected name — but the stored subscription row still had the old
+        // name until the next room join re-subscribed. Renaming mid-session (no rejoin) left that
+        // filter mismatched, so a user got a real OS push for every message in the room —
+        // including their own — until they next switched/rejoined. Re-subscribing here keeps the
+        // row's name current immediately instead of waiting on that indirect trigger.
+        subscribeToPush();
+      }
+      renderMyProfile();
+      break;
+    }
 
     case 'profile-updated':
       roomProfiles.set(data.name, { avatarUrl: data.avatarUrl, status: data.status });
@@ -827,6 +966,7 @@ function handleServerMessage(data) {
       if (textEl) {
         const fresh = document.createElement('span');
         fresh.className = 'text';
+        fresh.dataset.rawText = data.text;
         fresh.appendChild(renderTextWithMentions(data.text));
         textEl.replaceWith(fresh);
       }
@@ -1091,6 +1231,11 @@ function renderMessage(data, opts = {}) {
   if (data.text && data.mediaType !== 'poll') {
     const text = document.createElement('span');
     text.className = 'text';
+    // renderTextWithMentions turns **bold**/*italic*/`code` into real elements, so .textContent
+    // on this span never contains the original markdown delimiters — startEditingMessage needs
+    // the actual raw source text (not the rendered/stripped version) to edit without silently
+    // destroying the formatting the moment Save or Cancel is clicked.
+    text.dataset.rawText = data.text;
     text.appendChild(renderTextWithMentions(data.text));
     bubble.appendChild(text);
     if (!data.mediaUrl) {
@@ -1188,12 +1333,25 @@ function currentMentionQuery() {
   return match ? match[1] : null;
 }
 
+// Tracks which dropdown row is keyboard-highlighted (see the messageInput keydown handler
+// below) — reset to 0 (the first match pre-highlighted, matching the usual chat-app UX where
+// Enter alone picks the top suggestion) every time the match list is rebuilt, since the old
+// index otherwise silently refers to a different row after a keystroke changes the filter.
+let mentionHighlightIndex = -1;
+
+function highlightMentionItem(index) {
+  const items = [...mentionDropdownEl.children];
+  mentionHighlightIndex = items.length ? Math.max(0, Math.min(index, items.length - 1)) : -1;
+  items.forEach((item, i) => item.classList.toggle('active', i === mentionHighlightIndex));
+}
+
 function updateMentionDropdown() {
   const query = currentMentionQuery();
   let matches = query === null ? [] : lastRoomUsers.filter((u) => u.name.toLowerCase().startsWith(query.toLowerCase())).slice(0, 5);
   if (query !== null && 'everyone'.startsWith(query.toLowerCase())) matches = [{ name: 'everyone' }, ...matches].slice(0, 5);
   if (!matches.length) {
     mentionDropdownEl.classList.add('hidden');
+    mentionHighlightIndex = -1;
     return;
   }
   mentionDropdownEl.innerHTML = '';
@@ -1209,6 +1367,7 @@ function updateMentionDropdown() {
     mentionDropdownEl.appendChild(item);
   });
   mentionDropdownEl.classList.remove('hidden');
+  highlightMentionItem(0);
 }
 
 function insertMention(name) {
@@ -1217,6 +1376,13 @@ function insertMention(name) {
   const before = value.slice(0, cursor).replace(/@(\S*)$/, `@${name} `);
   messageInput.value = before + value.slice(cursor);
   mentionDropdownEl.classList.add('hidden');
+  mentionHighlightIndex = -1;
+  // Assigning .value resets the caret to the end of the whole string, not just past what was
+  // inserted — with no follow-up here, picking a mention mid-message (e.g. "hi @al there" →
+  // "alice") left the caret after the rest of the message instead of right after the mention,
+  // so anything typed next landed in the wrong place.
+  const caretPos = before.length;
+  messageInput.setSelectionRange(caretPos, caretPos);
   messageInput.focus();
 }
 
@@ -1320,7 +1486,12 @@ function startEditingMessage(messageId) {
   const bubble = document.querySelector(`#msg-${messageId} .bubble`);
   const textEl = bubble && bubble.querySelector('.text');
   if (!bubble || !textEl) return;
-  const originalText = textEl.textContent;
+  // .textContent would give the *rendered* text with markdown delimiters already stripped by
+  // renderTextWithMentions (e.g. "important" instead of "**important**") — dataset.rawText (set
+  // in renderMessage/message-edited) holds the actual source. Fall back to textContent only for
+  // a message rendered before this fix shipped and never re-rendered since (page reload picks up
+  // the fix on every message going forward).
+  const originalText = textEl.dataset.rawText ?? textEl.textContent;
 
   const editForm = document.createElement('form');
   editForm.className = 'edit-message-form';
@@ -1344,7 +1515,8 @@ function startEditingMessage(messageId) {
   const restore = () => {
     const freshText = document.createElement('span');
     freshText.className = 'text';
-    freshText.textContent = originalText;
+    freshText.dataset.rawText = originalText;
+    freshText.appendChild(renderTextWithMentions(originalText));
     editForm.replaceWith(freshText);
   };
   cancelBtn.addEventListener('click', restore);
@@ -1795,6 +1967,29 @@ async function subscribeToPush() {
   }
 }
 
+// Called on sign-out so this device's push subscription (an app.js:711 joined-room, still
+// tied to the account they just signed out of, doesn't silently keep receiving that account's
+// friend-DM/@mention pushes. Deliberately narrower than subscribeToPush(): only re-links an
+// *existing* subscription as anonymous (server-side account_id -> null, same UPSERT either
+// path already goes through) — never creates a fresh subscription or prompts for permission,
+// since sign-out isn't the moment to ask someone who never opted into push to opt in.
+async function unlinkPushFromAccount() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+  if (Notification.permission !== 'granted') return;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const subscription = await reg.pushManager.getSubscription();
+    if (!subscription || !myProfile) return;
+    await fetch('/push/subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ roomCode: currentRoomCode || '', name: myProfile.name, subscription }),
+    });
+  } catch (err) {
+    console.error('Push unlink failed:', err);
+  }
+}
+
 function notify(name, text, options = {}) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   // Only interrupt with an OS notification when the tab isn't already being looked at — the
@@ -1898,6 +2093,7 @@ function updateGameLinks() {
   geometrywaveLink.href = `geometrywave.html${params}`;
   seincejumpLink.href = `seince-jump.html${params}`;
   fighterplaneLink.href = `fighterplane.html${params}`;
+  firefightLink.href = `firefight.html${params}`;
   pictionaryLink.href = `pictionary.html${params}`;
   triviaLink.href = `trivia.html${params}`;
   tictactoeLink.href = `tictactoe.html${params}`;
@@ -2076,10 +2272,23 @@ function signOutAccount() {
   if (accountToken) {
     fetch('/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${accountToken}` } }).catch(() => {});
   }
+  unlinkPushFromAccount();
   accountToken = null;
   accountUsername = null;
   localStorage.removeItem(ACCOUNT_TOKEN_KEY);
   localStorage.removeItem(ACCOUNT_USERNAME_KEY);
+  // Account-scoped overlays (friends/DMs/group DMs) were otherwise left open showing the
+  // signed-out-out account's data — if a different account then signed in in the same tab,
+  // stale friend/DM state could persist on screen until the next explicit fetch.
+  friendsOverlay.classList.add('hidden');
+  dmOverlay.classList.add('hidden');
+  currentDmWithName = null;
+  groupDmOverlay.classList.add('hidden');
+  currentGroupDmId = null;
+  // closeFriendsPanel() already does this when the panel is closed normally — signing out while
+  // it happens to be open skipped that, leaving the 8s poll interval running forever (harmless
+  // since loadFriends() itself no-ops with no accountToken, but a permanent stray timer).
+  clearInterval(friendsPollInterval);
   renderAccountState();
 }
 accountSignoutBtn.addEventListener('click', signOutAccount);
@@ -2361,6 +2570,151 @@ friendDmForm.addEventListener('submit', (e) => {
   friendDmInput.value = '';
 });
 
+// --- Group DMs: persisted multi-person threads among friends, account-based (works across
+// rooms/devices, unlike the room-scoped 1:1 dm-overlay above). ---
+let currentGroupDmId = null;
+let currentGroupDmMemberNames = [];
+let lastLoadedFriends = [];
+let lastLoadedThreads = [];
+
+function renderGroupDmMessage(data) {
+  const el = document.createElement('div');
+  el.className = 'thread-message' + (myProfile && data.fromName === myProfile.name ? ' own' : '');
+  const meta = document.createElement('span');
+  meta.className = 'meta';
+  const time = new Date(data.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  meta.textContent = `${data.fromName} · ${time}`;
+  el.appendChild(meta);
+  const text = document.createElement('div');
+  text.appendChild(renderTextWithMentions(data.text));
+  el.appendChild(text);
+  groupDmMessagesEl.appendChild(el);
+}
+
+function groupThreadLabel(thread) {
+  if (thread.name) return thread.name;
+  return thread.members.map((m) => m.username).filter((u) => u !== accountUsername).join(', ') || 'Group DM';
+}
+
+function renderGroupThreads(threads) {
+  groupsListEl.innerHTML = '';
+  groupsEmptyMsg.classList.toggle('hidden', threads.length !== 0);
+  threads.forEach((thread) => {
+    const li = document.createElement('li');
+    li.className = 'friend-row';
+    li.dataset.groupId = thread.id;
+    // .title is a plain DOM property (not parsed as HTML), so it takes the raw text —
+    // unlike the innerHTML below, which needs the escaped version.
+    const preview = thread.lastMessage ? `${thread.lastMessage.from_name}: ${thread.lastMessage.text}` : 'No messages yet';
+    li.innerHTML = `<span class="friend-name">${escapeHtml(groupThreadLabel(thread))}</span><span class="friend-actions"><button type="button" class="friend-action-btn" data-group-id="${thread.id}">Open</button></span>`;
+    li.title = preview;
+    groupsListEl.appendChild(li);
+  });
+}
+
+function loadGroupThreads() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'get-group-dm-threads' }));
+}
+
+function openGroupDm(groupId, thread) {
+  currentGroupDmId = groupId;
+  currentGroupDmMemberNames = thread ? thread.members.map((m) => m.username) : [];
+  groupDmTitleEl.textContent = thread ? groupThreadLabel(thread) : 'Group';
+  groupDmMembersEl.textContent = currentGroupDmMemberNames.length ? `With ${currentGroupDmMemberNames.join(', ')}` : '';
+  groupDmMessagesEl.innerHTML = '<p class="search-status">Loading…</p>';
+  groupsOverlay.classList.add('hidden');
+  groupDmOverlay.classList.remove('hidden');
+  ws.send(JSON.stringify({ type: 'get-group-dm-messages', groupId }));
+  groupDmInput.focus();
+}
+
+function renderGroupFriendPicker() {
+  groupFriendPicker.innerHTML = '';
+  lastLoadedFriends.forEach((f) => {
+    const li = document.createElement('li');
+    li.className = 'friend-row';
+    li.innerHTML = `<label class="friend-name"><input type="checkbox" value="${escapeHtml(f.username)}"> ${escapeHtml(f.username)}</label>`;
+    groupFriendPicker.appendChild(li);
+  });
+}
+
+function openGroupsPanel() {
+  const signedIn = !!accountToken;
+  groupsSignedOutMsg.classList.toggle('hidden', signedIn);
+  groupsSignedInContent.classList.toggle('hidden', !signedIn);
+  groupNewForm.classList.add('hidden');
+  groupsOverlay.classList.remove('hidden');
+  if (signedIn) loadGroupThreads();
+}
+
+function closeGroupsPanel() {
+  groupsOverlay.classList.add('hidden');
+}
+
+groupsOpenBtn.addEventListener('click', openGroupsPanel);
+groupsMenuBtn.addEventListener('click', () => {
+  closeMenu();
+  openGroupsPanel();
+});
+groupsCloseBtn.addEventListener('click', closeGroupsPanel);
+groupsOverlay.addEventListener('click', (e) => {
+  if (e.target === groupsOverlay) closeGroupsPanel();
+});
+
+groupsListEl.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-group-id]');
+  if (!btn) return;
+  const groupId = btn.dataset.groupId;
+  const thread = lastLoadedThreads.find((t) => t.id === groupId) || null;
+  openGroupDm(groupId, thread);
+});
+
+groupNewBtn.addEventListener('click', async () => {
+  groupNewError.classList.add('hidden');
+  groupNewForm.classList.toggle('hidden');
+  if (!groupNewForm.classList.contains('hidden')) {
+    // Friends list is fetched fresh each time the composer opens rather than trusting whatever
+    // was last rendered into the friends overlay (which may never have been opened this session).
+    try {
+      const res = await fetch('/friends', { headers: { Authorization: `Bearer ${accountToken}` } });
+      const data = await res.json();
+      lastLoadedFriends = data.friends || [];
+      renderGroupFriendPicker();
+    } catch {
+      groupNewError.textContent = 'Could not load your friends list';
+      groupNewError.classList.remove('hidden');
+    }
+  }
+});
+
+groupCreateBtn.addEventListener('click', () => {
+  groupNewError.classList.add('hidden');
+  const memberUsernames = [...groupFriendPicker.querySelectorAll('input[type="checkbox"]:checked')].map((c) => c.value);
+  if (memberUsernames.length < 2) {
+    groupNewError.textContent = 'Pick at least 2 friends';
+    groupNewError.classList.remove('hidden');
+    return;
+  }
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'create-group-dm', name: groupNameInput.value.trim(), memberUsernames }));
+  groupNewForm.classList.add('hidden');
+  groupNameInput.value = '';
+});
+
+groupDmCloseBtn.addEventListener('click', () => { groupDmOverlay.classList.add('hidden'); currentGroupDmId = null; });
+groupDmOverlay.addEventListener('click', (e) => {
+  if (e.target === groupDmOverlay) { groupDmOverlay.classList.add('hidden'); currentGroupDmId = null; }
+});
+
+groupDmForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const text = groupDmInput.value.trim();
+  if (!text || !currentGroupDmId || !ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'send-group-dm', groupId: currentGroupDmId, text }));
+  groupDmInput.value = '';
+});
+
 renameRoomForm.addEventListener('submit', (e) => {
   e.preventDefault();
   if (!currentRoomCode || ws.readyState !== WebSocket.OPEN) return;
@@ -2379,10 +2733,10 @@ roomPinForm.addEventListener('submit', (e) => {
   const newPin = roomPinFormInput.value.trim();
   ws.send(JSON.stringify({ type: 'set-room-pin', pin: newPin }));
   // Optimistic — the host is the one setting it, so there's no real risk of this being wrong;
-  // keeps /search, /export, and the game-page links (see updateGameLinks) working with the new
-  // PIN immediately rather than only after some other event happens to refresh them.
+  // keeps /search, the export button (reads currentRoomPin live at click time), and the
+  // game-page links (see updateGameLinks) working with the new PIN immediately rather than
+  // only after some other event happens to refresh them.
   currentRoomPin = newPin;
-  exportLink.href = `/export?code=${encodeURIComponent(currentRoomCode)}&pin=${encodeURIComponent(currentRoomPin)}`;
   updateGameLinks();
 });
 
@@ -2469,6 +2823,7 @@ function renderMyProfile() {
     myAvatarBtn.textContent = initials(myProfile.name);
     myAvatarBtn.style.background = avatarColor(myProfile.name);
   }
+  myNameInput.value = myProfile.name;
   myStatusInput.value = myProfile.status || '';
 }
 
@@ -2497,6 +2852,58 @@ function sendStatusUpdate() {
 myStatusInput.addEventListener('blur', sendStatusUpdate);
 myStatusInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') { e.preventDefault(); myStatusInput.blur(); }
+});
+
+// Display-name rename — works for guests and signed-in accounts alike, since both use
+// ws.profile.name as their in-room identity (see 'set-name' in server.js). A signed-in
+// account's separate login username is changed via the account-username-form below instead.
+function sendNameUpdate() {
+  myNameError.classList.add('hidden');
+  if (!myProfile || !ws || ws.readyState !== WebSocket.OPEN) return;
+  const newName = myNameInput.value.trim();
+  if (!newName) {
+    myNameInput.value = myProfile.name;
+    return;
+  }
+  if (newName === myProfile.name) return;
+  ws.send(JSON.stringify({ type: 'set-name', name: newName }));
+}
+myNameInput.addEventListener('blur', sendNameUpdate);
+myNameInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); myNameInput.blur(); }
+});
+
+accountUsernameToggleBtn.addEventListener('click', () => {
+  accountUsernameError.classList.add('hidden');
+  accountUsernameForm.classList.toggle('hidden');
+  if (!accountUsernameForm.classList.contains('hidden')) {
+    accountUsernameFormInput.value = accountUsername || '';
+    accountUsernameFormInput.focus();
+  }
+});
+
+accountUsernameForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  accountUsernameError.classList.add('hidden');
+  const username = accountUsernameFormInput.value.trim();
+  if (!username || !accountToken) return;
+  try {
+    const res = await fetch('/account/username', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accountToken}` },
+      body: JSON.stringify({ username }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Something went wrong');
+    accountUsername = data.username;
+    localStorage.setItem(ACCOUNT_USERNAME_KEY, accountUsername);
+    accountSignedInName.textContent = accountUsername;
+    accountUsernameForm.classList.add('hidden');
+    showAppToast(`✏️ Username changed to ${accountUsername}`);
+  } catch (err) {
+    accountUsernameError.textContent = err.message;
+    accountUsernameError.classList.remove('hidden');
+  }
 });
 
 // --- Voice call ---
@@ -2528,6 +2935,7 @@ async function startVoiceCall() {
   // Set before the getUserMedia await below, not after — otherwise a double-click/double-tap
   // before the prompt resolves passes this guard twice and creates a duplicate call join.
   voiceActive = true;
+  const myCallGeneration = voiceCallGeneration;
   voiceCallBanner.classList.add('hidden');
   voiceErrorEl.classList.add('hidden');
   micRetryBtn.classList.add('hidden');
@@ -2549,6 +2957,16 @@ async function startVoiceCall() {
     voiceErrorEl.textContent = 'Joined without a microphone — this browser can’t access one here (voice calls need HTTPS or localhost).';
     voiceErrorEl.classList.remove('hidden');
     setCallExpanded(true);
+  }
+
+  // hangUpVoiceCall() ran while the mic permission prompt was still up (voiceActive is already
+  // reset to false in that case, e.g. a WS drop-and-reconnect happening mid-prompt) — resurrecting
+  // the call here would leave voiceActive/the Hang Up button permanently out of sync with a live
+  // mic capture and no way to stop it. Abandon this stale attempt instead.
+  if (myCallGeneration !== voiceCallGeneration) {
+    if (localStream) localStream.getTracks().forEach((t) => t.stop());
+    localStream = null;
+    return;
   }
 
   voicecallBtn.textContent = '📞 In call';
@@ -2646,6 +3064,28 @@ document.addEventListener('keyup', (e) => {
   if (e.code === 'Space' && pttMode) pttStop();
 });
 
+// --- Escape closes whichever slide-out overlay is open ---
+// Every overlay already supports click-outside-to-close, but none had a keyboard equivalent —
+// a keyboard/screen-reader user had to Tab all the way to the ✕ button to get out. Clicking each
+// overlay's own close button (rather than just toggling .hidden here) reuses whatever extra
+// cleanup it already does — e.g. thread/dm/group-dm close buttons also null out the
+// currentThreadRootId/currentDmWithName/currentGroupDmId tracking variables, the same state a
+// stale room-switch bug (fixed earlier this session) showed is easy to forget. callOverlay is
+// deliberately excluded: Escape hanging up an active voice/video call would be surprising and
+// hard to undo.
+const ESCAPE_CLOSABLE = [
+  [menuOverlay, menuCloseBtn], [searchOverlay, searchCloseBtn], [galleryOverlay, galleryCloseBtn],
+  [friendsOverlay, friendsCloseBtn], [friendDmOverlay, friendDmCloseBtn], [groupsOverlay, groupsCloseBtn],
+  [groupDmOverlay, groupDmCloseBtn], [savedOverlay, savedCloseBtn], [qrOverlay, qrCloseBtn],
+  [threadOverlay, threadCloseBtn], [dmOverlay, dmCloseBtn], [pollOverlay, pollCloseBtn],
+];
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  for (const [overlay, closeBtn] of ESCAPE_CLOSABLE) {
+    if (overlay && closeBtn && !overlay.classList.contains('hidden')) closeBtn.click();
+  }
+});
+
 // --- Raise hand / "ask everyone to mute" ---
 // Both are *requests*, not server-enforced — this app has no roles/auth, so nothing
 // should ever force-mute someone else's mic against their will.
@@ -2674,19 +3114,43 @@ function setTileHandRaised(sub, raised) {
 // --- Call recording (client-side, audio-only) ---
 // Mixes the local mic and every remote peer's incoming audio into one MediaRecorder via
 // a shared AudioContext — recording never touches the server, it's a pure local download.
+// Mixes one more remote peer's stream into the in-progress recording, if there is one — called
+// both from startCallRecording() (for peers already on the call) and from the peer-connection
+// 'track' handler (for anyone whose audio arrives, or re-negotiates, after recording began).
+// Without this, a call recording silently excluded any peer who joined mid-recording: the
+// MediaRecorder graph was only ever wired up once, at the moment Record was clicked.
+function addStreamToCallRecording(stream) {
+  if (!callRecordCtx || !callRecordDest || !stream || recordedRemoteStreams.has(stream)) return;
+  recordedRemoteStreams.add(stream);
+  callRecordCtx.createMediaStreamSource(stream).connect(callRecordDest);
+}
+
+// Reconnects the current local mic track into an in-progress recording — called after
+// startVoiceCall/retryEnableMicrophone/switchMicrophone replace `localStream`. Without this, the
+// recording's local-audio source stayed wired to whichever MediaStreamTrack existed at the moment
+// Record was clicked; once that track was stopped (mic switch, or the initial permission grant
+// happening after Record was already running) the recording lost the local side of the
+// conversation for its entire remainder with no indication anything was wrong.
+function reconnectLocalTrackToCallRecording() {
+  if (!callRecordCtx || !callRecordDest) return;
+  const track = localStream && localStream.getAudioTracks()[0];
+  if (track) callRecordCtx.createMediaStreamSource(new MediaStream([track])).connect(callRecordDest);
+}
+
 function startCallRecording() {
   if (callRecorder || !window.MediaRecorder) return;
   const AudioCtx = window.AudioContext || window.webkitAudioContext;
   if (!AudioCtx) return;
   callRecordCtx = new AudioCtx();
   callRecordDest = callRecordCtx.createMediaStreamDestination();
+  recordedRemoteStreams = new Set();
 
   if (localStream && localStream.getAudioTracks()[0]) {
     callRecordCtx.createMediaStreamSource(new MediaStream([localStream.getAudioTracks()[0]])).connect(callRecordDest);
   }
   for (const peer of voicePeers.values()) {
     if (peer.audioEl && peer.audioEl.srcObject) {
-      callRecordCtx.createMediaStreamSource(peer.audioEl.srcObject).connect(callRecordDest);
+      addStreamToCallRecording(peer.audioEl.srcObject);
     }
   }
 
@@ -2709,6 +3173,7 @@ function startCallRecording() {
     if (callRecordCtx) callRecordCtx.close();
     callRecordCtx = null;
     callRecordDest = null;
+    recordedRemoteStreams = null;
   });
   callRecorder.start();
   callRecordBtn.classList.add('active', 'recording');
@@ -2734,17 +3199,28 @@ callRecordBtn.addEventListener('click', () => {
 // block (or plugged in a mic) start being heard mid-call instead of rejoining.
 async function retryEnableMicrophone() {
   if (!voiceActive || localStream) return;
+  // Same stale-attempt guard as startVoiceCall() — if the call ends while this permission
+  // prompt is still up, resurrecting it here would leak a hot mic track + speaking-detector
+  // loop with no UI left to stop them.
+  const myCallGeneration = voiceCallGeneration;
+  let newStream;
   try {
-    localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    newStream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (err) {
     voiceErrorEl.textContent = micErrorMessage(err);
     voiceErrorEl.classList.remove('hidden');
     return;
   }
+  if (myCallGeneration !== voiceCallGeneration) {
+    newStream.getTracks().forEach((t) => t.stop());
+    return;
+  }
+  localStream = newStream;
   voiceErrorEl.classList.add('hidden');
   micRetryBtn.classList.add('hidden');
   localVoiceStop = attachSpeakingDetector(localStream, (speaking) => setTileSpeaking('me', speaking));
   updateMicMuteButton();
+  reconnectLocalTrackToCallRecording();
 
   const track = localStream.getAudioTracks()[0];
   for (const [sub, peer] of voicePeers) {
@@ -2790,12 +3266,20 @@ async function populateMicDevices() {
 // needed, so switching mid-call doesn't cause a reconnect blip for anyone listening.
 async function switchMicrophone(deviceId) {
   if (!voiceActive || !deviceId) return;
+  // Same stale-attempt guard as startVoiceCall()/retryEnableMicrophone() — picking a device
+  // right as the call ends would otherwise leave a hot mic track + speaking-detector loop
+  // leaked with no UI left to stop them.
+  const myCallGeneration = voiceCallGeneration;
   let newStream;
   try {
     newStream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: deviceId } } });
   } catch (err) {
     voiceErrorEl.textContent = micErrorMessage(err);
     voiceErrorEl.classList.remove('hidden');
+    return;
+  }
+  if (myCallGeneration !== voiceCallGeneration) {
+    newStream.getTracks().forEach((t) => t.stop());
     return;
   }
   const newTrack = newStream.getAudioTracks()[0];
@@ -2811,6 +3295,7 @@ async function switchMicrophone(deviceId) {
   if (oldTrack) oldTrack.stop();
   localStream = newStream;
   localVoiceStop = attachSpeakingDetector(localStream, (speaking) => setTileSpeaking('me', speaking));
+  reconnectLocalTrackToCallRecording();
 }
 
 micDeviceSelect.addEventListener('change', () => switchMicrophone(micDeviceSelect.value));
@@ -2825,6 +3310,7 @@ if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
 function hangUpVoiceCall() {
   if (!voiceActive) return;
   voiceActive = false;
+  voiceCallGeneration++;
   clearTimeout(callAutoHangupTimer);
   callAutoHangupTimer = null;
   voicecallBtn.textContent = '📞 Start Voice Call';
@@ -2930,6 +3416,22 @@ function makePeerConnection(sub) {
     }
   });
 
+  // Nothing previously watched connection health at all — a genuine ICE failure for this one
+  // peer pair (the WS itself, and every other peer's connection, can stay perfectly fine) left a
+  // dead RTCPeerConnection and a permanently frozen call tile with no indication anything was
+  // wrong; only a full hangup ever cleared it. 'failed' is the terminal state (unlike
+  // 'disconnected', which is often transient and can recover on its own) — tear down just this
+  // one peer on it, same as if they'd left, so the rest of the call isn't affected and the user
+  // gets an honest signal instead of a tile that looks connected but isn't.
+  pc.addEventListener('iceconnectionstatechange', () => {
+    if (pc.iceConnectionState === 'failed') {
+      const peer = voicePeers.get(sub);
+      const name = peer && peer.name;
+      removeVoicePeer(sub);
+      showAppToast(`📵 Lost connection to ${name || 'a participant'}`);
+    }
+  });
+
   pc.addEventListener('track', (e) => {
     const peer = voicePeers.get(sub);
     if (!peer) return;
@@ -2948,6 +3450,7 @@ function makePeerConnection(sub) {
     peer.audioEl.srcObject = e.streams[0];
     if (peer.stopDetector) peer.stopDetector();
     peer.stopDetector = attachSpeakingDetector(e.streams[0], (speaking) => setTileSpeaking(sub, speaking));
+    addStreamToCallRecording(e.streams[0]);
   });
 
   return pc;
@@ -2978,9 +3481,18 @@ function addVoicePeer(sub, name) {
 async function makeVoiceOffer(sub) {
   const peer = voicePeers.get(sub);
   if (!peer) return;
-  const offer = await peer.pc.createOffer();
-  await peer.pc.setLocalDescription(offer);
-  ws.send(JSON.stringify({ type: 'voice-signal', to: sub, signal: { type: 'offer', sdp: peer.pc.localDescription } }));
+  try {
+    const offer = await peer.pc.createOffer();
+    await peer.pc.setLocalDescription(offer);
+    ws.send(JSON.stringify({ type: 'voice-signal', to: sub, signal: { type: 'offer', sdp: peer.pc.localDescription } }));
+  } catch (err) {
+    // Every call site either fires this without awaiting (voice-peers) or awaits it inside a
+    // for-loop over multiple peers (startScreenShare/toggleMicMute-equivalent re-offer paths) —
+    // letting one peer's failure (e.g. its connection was already torn down by a fast leave/
+    // rejoin) throw uncaught would silently leave that peer's tile with no audio/screen-share
+    // forever, and in the loop cases would abort processing every peer after it too.
+    reportClientError('makeVoiceOffer failed for ' + sub + ': ' + err.message, err.stack);
+  }
 }
 
 async function handleVoiceSignal(from, signal) {
@@ -3043,16 +3555,24 @@ async function toggleScreenShare() {
 }
 
 async function startScreenShare() {
+  // Without this, clicking twice before the OS share picker even appears (nothing disables the
+  // button in the meantime) fires two independent getDisplayMedia() calls; whichever resolves
+  // second silently overwrites `screenStream`, leaking the first capture — its track is never
+  // stopped, so the browser's native "sharing this tab/screen" indicator for it never clears.
+  if (screenShareStarting || screenStream) return;
   if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
     voiceErrorEl.textContent = 'This browser can’t share your screen.';
     voiceErrorEl.classList.remove('hidden');
     return;
   }
+  screenShareStarting = true;
 
   try {
     screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
   } catch (err) {
     return; // user cancelled the share picker
+  } finally {
+    screenShareStarting = false;
   }
 
   const track = screenStream.getVideoTracks()[0];
@@ -3146,6 +3666,20 @@ function setLoginPending(pending) {
   loginSubmitBtn.textContent = pending ? 'Connecting…' : loginSubmitLabel;
 }
 
+// Shared by the manual submit handler below and the two auto-continue paths (rejoin-from-
+// minigame-link, auto-signed-in-account) further down this file — those two used to call
+// setLoginPending(true) with no timeout armed at all, so an outage during either of them left
+// the submit button stuck reading "Connecting…"/"Rejoining…" indefinitely with zero feedback,
+// unlike a manual submit which already told the user something was wrong after 8 seconds.
+function armLoginTimeout() {
+  clearTimeout(loginTimeoutId);
+  loginTimeoutId = setTimeout(() => {
+    setLoginPending(false);
+    loginErrorEl.textContent = "Couldn't connect. Check your connection and try again.";
+    loginErrorEl.classList.remove('hidden');
+  }, 8000);
+}
+
 loginForm.addEventListener('submit', (e) => {
   e.preventDefault();
   const name = usernameInput.value.trim();
@@ -3156,12 +3690,7 @@ loginForm.addEventListener('submit', (e) => {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'join-server', username: myUsername, accountToken: accountToken || undefined }));
   }
-  clearTimeout(loginTimeoutId);
-  loginTimeoutId = setTimeout(() => {
-    setLoginPending(false);
-    loginErrorEl.textContent = "Couldn't connect. Check your connection and try again.";
-    loginErrorEl.classList.remove('hidden');
-  }, 8000);
+  armLoginTimeout();
 });
 
 // --- Room select ---
@@ -3217,6 +3746,35 @@ messageForm.addEventListener('submit', (e) => {
   ws.send(JSON.stringify(payload));
   messageInput.value = '';
   clearReplyingTo();
+  // The dropdown could still be showing stale matches from the just-sent text (e.g. the message
+  // ended with an unfinished "@al") — previously nothing here hid it, so it stayed visible over
+  // the now-empty composer until the next keystroke.
+  mentionDropdownEl.classList.add('hidden');
+  mentionHighlightIndex = -1;
+});
+
+// Selection only ever worked via mouse click before this — there was no keyboard path at all,
+// so pressing Enter while the dropdown was open just submitted the literal "@al" text instead of
+// picking a match, and Escape didn't close it either.
+messageInput.addEventListener('keydown', (e) => {
+  if (mentionDropdownEl.classList.contains('hidden')) return;
+  const items = [...mentionDropdownEl.children];
+  if (!items.length) return;
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    highlightMentionItem(mentionHighlightIndex + 1);
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    highlightMentionItem(mentionHighlightIndex - 1);
+  } else if (e.key === 'Enter' || e.key === 'Tab') {
+    e.preventDefault();
+    const label = items[mentionHighlightIndex] && items[mentionHighlightIndex].querySelector('span');
+    if (label) insertMention(label.textContent);
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    mentionDropdownEl.classList.add('hidden');
+    mentionHighlightIndex = -1;
+  }
 });
 
 messageInput.addEventListener('input', () => {
@@ -3466,6 +4024,35 @@ qrOverlay.addEventListener('click', (e) => {
   if (e.target === qrOverlay) qrOverlay.classList.add('hidden');
 });
 
+// POST + blob download rather than a plain <a href> navigation — the room PIN has to travel in
+// the request somehow, and a GET query string leaks it into browser history/Referer headers
+// (same concern already fixed for /search). Same fetch-then-synthetic-click pattern AI Studio's
+// own download button already uses.
+exportLink.addEventListener('click', async () => {
+  if (!currentRoomCode) return;
+  const original = exportLink.textContent;
+  exportLink.disabled = true;
+  try {
+    const res = await fetch('/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: currentRoomCode, pin: currentRoomPin }),
+    });
+    if (!res.ok) throw new Error();
+    const blob = await res.blob();
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `valk-${currentRoomCode}.txt`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  } catch {
+    exportLink.textContent = '❌ Export failed';
+    setTimeout(() => { exportLink.textContent = original; }, 2000);
+  } finally {
+    exportLink.disabled = false;
+  }
+});
+
 function renderGallery(media) {
   galleryGridEl.innerHTML = '';
   if (!media.length) {
@@ -3478,6 +4065,7 @@ function renderGallery(media) {
     const el = m.mediaType === 'video' ? document.createElement('video') : document.createElement('img');
     el.src = m.mediaUrl;
     if (m.mediaType === 'video') el.muted = true;
+    else el.alt = 'shared image';
     item.appendChild(el);
     item.addEventListener('click', () => {
       if (document.getElementById(`msg-${m.id}`)) {
@@ -3690,7 +4278,14 @@ searchForm.addEventListener('submit', async (e) => {
   if (!q || !currentRoomCode) return;
   searchResultsEl.innerHTML = '<li class="search-status">Searching…</li>';
   try {
-    const res = await fetch(`/search?code=${encodeURIComponent(currentRoomCode)}&q=${encodeURIComponent(q)}&pin=${encodeURIComponent(currentRoomPin)}`);
+    // POST, not a query string — a room PIN in the URL would end up in browser history and any
+    // Referer header sent by the page (the /post-image /post-media routes already made this same
+    // call via POST body for the same reason; this brings /search in line with that pattern).
+    const res = await fetch('/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: currentRoomCode, q, pin: currentRoomPin }),
+    });
     const data = await res.json();
     renderSearchResults(data.results || []);
   } catch {
@@ -3804,6 +4399,7 @@ if (rejoinRoom) {
     usernameInput.value = myUsername;
     document.querySelector('#login-screen .subtitle').textContent = 'Rejoining your room…';
     setLoginPending(true);
+    armLoginTimeout();
   } else {
     // A room code with no name means someone scanned a room's QR code — they still need to
     // type their own name and submit normally, but land straight in that room afterward.
@@ -3824,6 +4420,7 @@ if (!myUsername && accountToken && accountUsername) {
     document.querySelector('#login-screen .subtitle').textContent = `Signing in as ${myUsername}…`;
   }
   setLoginPending(true);
+  armLoginTimeout();
 }
 
 connect();

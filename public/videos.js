@@ -922,6 +922,12 @@ const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 
 let ws = null;
 let broadcastState = null; // { localStream, screenStream, peers: Map<viewerId, RTCPeerConnection>, title }
+// True only during the async window between clicking "Go live" and broadcastState being set —
+// guards against a double-click (or clicking camera then screen before the first permission
+// prompt resolves) racing two concurrent startGoLive() calls, which would otherwise leak the
+// loser's camera/mic stream and requestAnimationFrame loop forever (nothing else ever references
+// them once broadcastState is overwritten by whichever call finishes last).
+let goLiveStarting = false;
 let watchState = null; // { pc, username }
 
 function connectWs() {
@@ -972,10 +978,17 @@ async function handleViewerJoined(viewerId) {
     if (!e.candidate) return;
     wsSend({ type: 'scorpture-signal', viewerId, signal: { kind: 'ice', candidate: iceToJson(e.candidate) } });
   };
+  await renegotiatePeer(pc, viewerId);
+  updateViewerCountUI();
+}
+
+// Shared by the initial join above and switchGoLiveSource's mid-stream audio-track add below —
+// the viewer side already handles an incoming 'offer' the same way whether it's the first one or
+// a renegotiation (see handleSignal), so no separate protocol path is needed for this.
+async function renegotiatePeer(pc, viewerId) {
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
   wsSend({ type: 'scorpture-signal', viewerId, signal: { kind: 'offer', sdp: pc.localDescription.sdp } });
-  updateViewerCountUI();
 }
 
 function handleViewerLeft(viewerId) {
@@ -1046,6 +1059,8 @@ function drawOverlaysOnCanvas(ctx, canvasWidth, canvasHeight, overlays) {
 }
 
 async function startGoLive(useScreen) {
+  if (broadcastState || goLiveStarting) return;
+  goLiveStarting = true;
   const title = goLiveTitleInput.value.trim() || 'Untitled stream';
   goLiveStatusEl.textContent = 'Requesting camera/mic access…';
   try {
@@ -1120,7 +1135,22 @@ async function startGoLive(useScreen) {
       try {
         const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus') ? 'video/webm;codecs=vp9,opus' : 'video/webm';
         const recorder = new MediaRecorder(compositedStream, { mimeType });
-        recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) recordedChunks.push(e.data); };
+        // A recording that grows past the shared /upload endpoint's size cap doesn't get
+        // truncated — it fails to upload *at all* when the stream finally ends, silently losing
+        // the entire recording (see saveRecordingAsVideo's own fallback below for when that
+        // still happens some other way). Stop recording proactively before that point instead;
+        // the live stream itself is unaffected, only further footage stops being captured.
+        const MAX_RECORDING_BYTES = 280 * 1024 * 1024; // stay safely under the shared 300MB cap
+        let recordedBytes = 0;
+        recorder.ondataavailable = (e) => {
+          if (!e.data || e.data.size === 0) return;
+          recordedChunks.push(e.data);
+          recordedBytes += e.data.size;
+          if (recordedBytes >= MAX_RECORDING_BYTES && recorder.state !== 'inactive') {
+            recorder.stop();
+            showToast("Recording stopped automatically (max size reached) — you're still live, but further footage won't be saved.");
+          }
+        };
         recorder.start(1000);
         broadcastState.recorder = recorder;
       } catch {
@@ -1129,22 +1159,47 @@ async function startGoLive(useScreen) {
     }
   } catch (err) {
     goLiveStatusEl.textContent = `Couldn't start: ${err.message}`;
+  } finally {
+    goLiveStarting = false;
   }
 }
 
 // Switching source now just points the hidden sourceVideo at a new raw stream — the canvas
 // track being broadcast never changes, so there's no RTCRtpSender.replaceTrack/renegotiation
 // needed at all, unlike before overlays existed.
+// Same reentrancy concern startGoLive() already guards against with goLiveStarting — without
+// this, two rapid clicks on the switch-source buttons raced two concurrent getDisplayMedia/
+// getUserMedia calls: whichever finished last overwrote broadcastState.rawStream, leaking the
+// other's captured stream (webcam light / "sharing your screen" indicator stuck on with nothing
+// left to stop it), and both could call pc.createOffer()/setLocalDescription() on the same
+// RTCPeerConnection concurrently, throwing signaling-state glare for that viewer.
+let switchingGoLiveSource = false;
 async function switchGoLiveSource(useScreen) {
-  if (!broadcastState) return;
+  if (!broadcastState || switchingGoLiveSource) return;
+  switchingGoLiveSource = true;
   try {
     const newRawStream = useScreen
       ? await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
       : await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-    // Audio keeps coming from the original source (the mic) the whole time — only the video feed
-    // powering the compositing canvas changes — so the fresh audio track this request also
-    // grabbed is unused; stop it immediately rather than leaving an extra live capture open.
-    for (const track of newRawStream.getAudioTracks()) track.stop();
+    // Audio normally keeps coming from the original source (the mic) the whole time — only the
+    // video feed powering the compositing canvas changes — so the fresh audio track this request
+    // also grabbed is usually unused. *Except*: if the session went live with no audio track at
+    // all (e.g. started via "Share screen" without opting into "share system audio", the common
+    // case since that's an extra checkbox in the OS/browser picker), there's nothing to keep
+    // coming from, and the broadcast would otherwise stay silent for its entire remaining
+    // duration even after switching to a source — like the camera — that does provide audio.
+    const newAudioTracks = newRawStream.getAudioTracks();
+    if (broadcastState.localStream.getAudioTracks().length === 0 && newAudioTracks.length > 0) {
+      const [audioTrack, ...extraAudioTracks] = newAudioTracks;
+      broadcastState.localStream.addTrack(audioTrack);
+      for (const [viewerId, pc] of broadcastState.peers) {
+        pc.addTrack(audioTrack, broadcastState.localStream);
+        await renegotiatePeer(pc, viewerId);
+      }
+      for (const track of extraAudioTracks) track.stop();
+    } else {
+      for (const track of newAudioTracks) track.stop();
+    }
     for (const track of broadcastState.rawStream.getVideoTracks()) track.stop();
     broadcastState.rawStream = newRawStream;
     broadcastState.sourceVideo.srcObject = newRawStream;
@@ -1154,6 +1209,8 @@ async function switchGoLiveSource(useScreen) {
     newRawStream.getVideoTracks()[0].addEventListener('ended', () => { if (broadcastState) endGoLive(); });
   } catch (err) {
     showToast(`Couldn't switch source: ${err.message}`);
+  } finally {
+    switchingGoLiveSource = false;
   }
 }
 
@@ -1195,8 +1252,23 @@ async function saveRecordingAsVideo(chunks, title) {
     });
     showToast('Your stream was saved to your channel as a video!');
   } catch (err) {
-    showToast(`Couldn't save the recording: ${err.message}`);
+    // The recording only ever existed in this tab's memory — if saving it to the server failed
+    // for any reason (hit the shared /upload size cap, a network hiccup, whatever), that's the
+    // only copy anywhere. Offer a local download instead of silently losing it outright.
+    offerRecordingDownload(blob, title);
+    showToast("Couldn't save to your channel — downloading it to this device instead.");
   }
+}
+
+function offerRecordingDownload(blob, title) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${(title || 'stream').replace(/[^a-z0-9-_]+/gi, '_').slice(0, 60) || 'stream'}.webm`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 // ---- Viewer side ----
@@ -1387,13 +1459,16 @@ function appendLiveChatMessage(data) {
 }
 
 function handleWatchAck(data) {
-  const titleEl = document.getElementById('live-title');
-  if (!titleEl) return;
-  titleEl.textContent = data.live ? data.title : `${watchState ? watchState.username : 'This channel'} isn't live right now.`;
+  // Peer-connection cleanup must not depend on this DOM lookup succeeding — decoupled so a
+  // future refactor of the watch page's markup can't silently reintroduce a leaked RTCPeerConnection.
+  const offlineUsername = watchState ? watchState.username : 'This channel';
   if (!data.live && watchState) {
     watchState.pc.close();
     watchState = null;
   }
+  const titleEl = document.getElementById('live-title');
+  if (!titleEl) return;
+  titleEl.textContent = data.live ? data.title : `${offlineUsername} isn't live right now.`;
 }
 
 // Offer/answer and ICE candidates travel over the same ordered WebSocket, but that doesn't
@@ -1564,6 +1639,20 @@ scorptureAdminSaveBtn.addEventListener('click', async () => {
   } finally {
     scorptureAdminSaveBtn.disabled = false;
   }
+});
+
+// --- Escape closes whichever modal/panel is open --- (same fix already applied to the main chat
+// page's overlays this session — this page had none of its own until now). goLiveModal goes
+// through hideGoLiveModal() specifically, not a plain classList toggle — that function is what
+// makes "closing" safe once you're actually live (tucks into the mini widget instead of ending
+// the stream), so Escape gets that same safe behavior rather than a raw hide.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (!uploadModal.classList.contains('hidden')) uploadCloseBtn.click();
+  if (!editVideoModal.classList.contains('hidden')) editCloseBtn.click();
+  if (!goLiveModal.classList.contains('hidden')) goLiveCloseBtn.click();
+  if (!scorptureAdminModal.classList.contains('hidden')) scorptureAdminCloseBtn.click();
+  if (!liveChatWidget.classList.contains('hidden')) liveChatWidgetCloseBtn.click();
 });
 
 // ---------- Boot ----------

@@ -594,6 +594,15 @@ if (typeof document !== 'undefined') {
       running = false;
       dying = false;
       stopMusic();
+      // Without this, a player who finishes/dies out and returns to the menu (rather than
+      // immediately picking another level, which is the only other path that closes gwSocket —
+      // see gwConnect) stayed registered in that level's server-side session and kept appearing
+      // as a frozen ghost to everyone still playing it, until they eventually picked a level again
+      // or closed the tab. Closing here triggers the server's own leaveGw cleanup via the socket's
+      // close event, same as a real disconnect.
+      if (gwSocket) { gwSocket.close(); gwSocket = null; }
+      gwConnectedLevel = null;
+      gwRemotePlayers.clear();
       menuEl.classList.remove('hidden');
       hudEl.classList.add('hidden');
       completeEl.classList.add('hidden');
@@ -662,11 +671,22 @@ if (typeof document !== 'undefined') {
           leaderboardOverlay.classList.remove('hidden');
           if (gwSocket && gwSocket.readyState === WebSocket.OPEN) {
             gwSocket.send(JSON.stringify({ type: 'gw-leaderboard', code: mpRoomCode, level: currentLevelKey }));
+          } else {
+            // Previously silently did nothing here (e.g. after a gw-full rejection nulled out
+            // gwSocket) — the overlay opened but stayed permanently empty with no explanation.
+            leaderboardListEl.innerHTML = '';
+            const li = document.createElement('li');
+            li.textContent = "Can't reach the leaderboard right now — try again in a moment.";
+            leaderboardListEl.appendChild(li);
           }
         });
         leaderboardCloseBtn.addEventListener('click', () => leaderboardOverlay.classList.add('hidden'));
         leaderboardOverlay.addEventListener('click', (e) => {
           if (e.target === leaderboardOverlay) leaderboardOverlay.classList.add('hidden');
+        });
+        // Same Escape-to-close fix already applied to every other overlay in this app this session.
+        document.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape' && !leaderboardOverlay.classList.contains('hidden')) leaderboardCloseBtn.click();
         });
       }
     }
@@ -682,6 +702,13 @@ if (typeof document !== 'undefined') {
     window.addEventListener('keyup', (e) => {
       if (e.code === 'Space' || e.code === 'ArrowUp') setHolding(false);
     });
+    // A key/mouse/touch released while the window doesn't have focus never delivers its up event,
+    // so `holding` stays stuck true — same bug already fixed in webswing.js/fighterplane.js this
+    // session. requestAnimationFrame pauses while hidden, so nothing happens until the player
+    // returns to the tab, at which point the ship rockets straight up into the ceiling with no
+    // input from them.
+    window.addEventListener('blur', () => setHolding(false));
+    document.addEventListener('visibilitychange', () => { if (document.hidden) setHolding(false); });
 
     function draw() {
       if (!bgGradient) {

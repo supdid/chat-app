@@ -80,6 +80,10 @@ playersCloseBtn.addEventListener('click', () => playersOverlay.classList.add('hi
 playersOverlay.addEventListener('click', (e) => {
   if (e.target === playersOverlay) playersOverlay.classList.add('hidden');
 });
+// Same Escape-to-close fix already applied to every other overlay in this app this session.
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !playersOverlay.classList.contains('hidden')) playersCloseBtn.click();
+});
 
 const ALPHABET = 'abcdefghijklmnopqrstuvwxyz'.split('');
 function buildKeyboard() {
@@ -226,6 +230,11 @@ function handleMessage(data) {
 
     case 'hm-round-end':
       roundActive = false;
+      // The letter-box row was left at whatever partial reveal the last hm-letter-result set —
+      // on a loss that's still full of blanks for every unguessed letter, even though the status
+      // text above already spells out the answer. data.word is the full plain word, so this just
+      // reveals every box to match.
+      renderWord([...data.word]);
       roundStatusEl.textContent = data.won
         ? `🎉 Solved it! The word was "${data.word}"`
         : `💀 Out of guesses! The word was "${data.word}"`;

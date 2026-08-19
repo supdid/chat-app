@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Firefight</title>
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="firefight.css">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0c0f14">
+<link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+</head>
+<body>
+
+  <a id="back-link" href="index.html">&larr; Back to chat</a>
+
+  <div id="menu">
+    <div class="panel">
+      <h1>Firefight</h1>
+      <p class="tagline">A 1-on-1 duel arena, on foot only — no vehicles. Two players go head to head each round; anyone else who joins queues as a spectator and drops into the next open slot. First to win enough rounds takes the match.</p>
+      <div id="join-status">Connecting&hellip;</div>
+      <div id="top-players-panel" class="hidden">
+        <div id="top-players-title">🏆 Top Players <span class="live-dot">LIVE</span></div>
+        <ol id="top-players-list"></ol>
+      </div>
+      <div id="unlock-banner" class="hidden"></div>
+      <button id="start-btn" class="play-btn hidden">▶ Play</button>
+      <div id="weapon-picker" class="hidden">
+        <p class="tagline" style="margin-bottom:0.5rem">Pick your loadout:</p>
+        <div id="weapon-buttons"></div>
+      </div>
+      <ul class="controls-list" id="controls-list-desktop">
+        <li><strong>WASD</strong> to move, <strong>Mouse</strong> to look (click the arena to lock your cursor)</li>
+        <li><strong>Space</strong> jumps &mdash; clears the arena's cover with room to spare, or land on top of it</li>
+        <li><strong>Left click</strong> fires your current weapon &mdash; each weapon has its own damage, range, and cooldown</li>
+        <li><strong>Right click (hold)</strong> aims down sights for a tighter zoom, especially useful with the sniper</li>
+        <li><strong>1 / 2 / 3</strong> switches between Pistol, Rifle, and Sniper between rounds &mdash; Rifle and Sniper start locked and unlock permanently once you've earned enough career kills in this room</li>
+        <li>The sniper deals extra damage on a headshot &mdash; line the crosshair up with your opponent's head, not just their body</li>
+        <li>Win a round by eliminating your opponent before the round timer runs out; first to enough round wins takes the match</li>
+      </ul>
+      <ul class="controls-list hidden" id="controls-list-touch">
+        <li>The joystick moves you, dragging the screen looks around</li>
+        <li><strong>⤒</strong> jumps &mdash; clears the arena's cover with room to spare, or land on top of it</li>
+        <li><strong>🔫</strong> fires your current weapon, <strong>🎯 (hold)</strong> aims down sights</li>
+        <li>The weapon buttons switch your loadout between rounds &mdash; Rifle and Sniper start locked and unlock permanently once you've earned enough career kills in this room</li>
+        <li>Win a round by eliminating your opponent before the timer runs out; first to enough round wins takes the match</li>
+      </ul>
+    </div>
+  </div>
+
+  <div id="spectator-banner" class="hidden">👀 Spectating — you'll drop into the next open slot</div>
+
+  <div id="hud" class="hidden">
+    <div id="hud-top">
+      <div id="scoreboard">
+        <span id="score-name-a">A</span>
+        <span id="score-a">0</span>
+        <span id="score-sep">&ndash;</span>
+        <span id="score-b">0</span>
+        <span id="score-name-b">B</span>
+      </div>
+      <div id="round-timer">&ndash;</div>
+      <button id="sound-toggle-btn" class="icon-btn" aria-label="Toggle sound">🔊</button>
+      <button id="leaderboard-btn" class="icon-btn" aria-label="Leaderboard">🏆</button>
+    </div>
+    <div id="health-wrap">
+      <div id="health-bar"><div id="health-fill"></div></div>
+      <span id="health-num">150</span>
+    </div>
+    <div id="weapon-hud"></div>
+    <div id="kill-feed"></div>
+  </div>
+
+  <div id="round-banner" class="hidden"></div>
+
+  <div id="leaderboard-overlay" class="hidden">
+    <div class="panel">
+      <div class="panel-header">
+        <h2>🏆 Leaderboard</h2>
+        <button id="leaderboard-close-btn" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+      <ul id="leaderboard-list" class="controls-list"></ul>
+    </div>
+  </div>
+
+  <div id="matchend-overlay" class="hidden">
+    <div class="panel">
+      <h2 id="matchend-text">Match over!</h2>
+      <button id="rematch-btn" class="primary">Play Again</button>
+    </div>
+  </div>
+
+  <div id="crosshair" class="hidden"></div>
+  <div id="damage-flash"></div>
+
+  <canvas id="game-canvas" class="hidden"></canvas>
+
+  <div id="touch-controls" class="hidden">
+    <div id="touch-joystick"><div id="touch-joystick-knob"></div></div>
+    <div id="touch-weapon-buttons"></div>
+    <div id="touch-fire-buttons">
+      <button id="touch-aim" class="touch-btn" aria-label="Aim down sights (hold)">🎯</button>
+      <button id="touch-fire" class="touch-btn" aria-label="Fire">🔫</button>
+    </div>
+    <button id="touch-jump" class="touch-btn" aria-label="Jump">⤒</button>
+  </div>
+
+  <script src="error-report.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="firefight.js"></script>
+  <script src="update-prompt.js"></script>
+</body>
+</html>

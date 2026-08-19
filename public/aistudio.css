@@ -482,3 +482,12 @@ button.link-btn {
   align-items: center;
   justify-content: center;
 }
+
+/* Same touch-target bump the main chat page applies to its own icon buttons — this was the one
+   icon-only control on this page under the ~44px WCAG/HIG touch-target recommendation. */
+@media (pointer: coarse) {
+  .gallery-item .gallery-remove {
+    width: 44px;
+    height: 44px;
+  }
+}

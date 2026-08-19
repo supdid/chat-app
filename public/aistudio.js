@@ -248,24 +248,33 @@ function drawCaption(ctx, text, canvasW, canvasH, position) {
 // response or the load fails outright — only worth that risk when we actually need
 // to read the pixels back out (canvas, for meme captions). A plain picture should
 // never be held to that stricter standard.
+// Pollinations is a free, unauthenticated third-party API with no uptime guarantee — a stalled
+// connection (accepted but never completed) would otherwise leave onload/onerror both silent
+// forever, hanging the loading screen and the disabled Generate button with no way out short of
+// reloading the page.
+const IMAGE_LOAD_TIMEOUT_MS = 25000;
 function loadImage(url, needsCors) {
   return new Promise((resolve, reject) => {
     const img = new Image();
+    const timer = setTimeout(() => reject(new Error('Timed out waiting for the image')), IMAGE_LOAD_TIMEOUT_MS);
     if (needsCors) img.crossOrigin = 'anonymous';
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('image failed to load'));
+    img.onload = () => { clearTimeout(timer); resolve(img); };
+    img.onerror = () => { clearTimeout(timer); reject(new Error('image failed to load')); };
     img.src = url;
   });
 }
 
 // Loads the generated background; if it's a meme with caption text, composites the
 // text onto a canvas and uploads the result (via the existing /upload endpoint) so it
-// gets a real, shareable URL instead of a giant data: URL.
+// gets a real, shareable URL instead of a giant data: URL. Returns { url, captioned } rather
+// than a bare url — every fallback path below still shows *a* picture rather than failing the
+// whole generation, but the caller needs to know when captions were silently dropped so it can
+// tell the user instead of claiming full success on a picture their typed captions never reached.
 async function loadAndMaybeComposite(bgUrl, topText, bottomText) {
   const needsComposite = !!(topText || bottomText);
   if (!needsComposite) {
     await loadImage(bgUrl, false);
-    return bgUrl;
+    return { url: bgUrl, captioned: false };
   }
 
   let img;
@@ -276,7 +285,7 @@ async function loadAndMaybeComposite(bgUrl, topText, bottomText) {
     // time) — fall back to a plain load without captions rather than failing the whole
     // generation over a picture that would otherwise have displayed just fine.
     await loadImage(bgUrl, false);
-    return bgUrl;
+    return { url: bgUrl, captioned: false };
   }
 
   try {
@@ -288,18 +297,25 @@ async function loadAndMaybeComposite(bgUrl, topText, bottomText) {
     if (topText) drawCaption(ctx, topText, canvas.width, canvas.height, 'top');
     if (bottomText) drawCaption(ctx, bottomText, canvas.width, canvas.height, 'bottom');
     const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92));
-    if (!blob) return bgUrl;
+    if (!blob) return { url: bgUrl, captioned: false };
     const formData = new FormData();
     formData.append('file', blob, 'meme.jpg');
     const res = await fetch('/upload', { method: 'POST', body: formData });
     const data = await res.json();
-    return res.ok && data.url ? data.url : bgUrl;
+    return res.ok && data.url ? { url: data.url, captioned: true } : { url: bgUrl, captioned: false };
   } catch {
-    return bgUrl; // canvas blocked, or the upload failed — fall back to the plain picture
+    return { url: bgUrl, captioned: false }; // canvas blocked, or the upload failed — fall back to the plain picture
   }
 }
 
+// Bumped on every generate() call *and* every gallery click (see addToGallery's click handler)
+// so a still-in-flight generate() can tell, once it finally resolves, whether the user has since
+// navigated to a different view (a gallery item) — without this, a slow Pollinations response
+// would silently overwrite whatever the user is currently looking at moments later.
+let viewToken = 0;
+
 async function generate(prompt, seed, topText, bottomText) {
+  const myToken = ++viewToken;
   errorEl.classList.add('hidden');
   resultCard.classList.remove('hidden');
   resultLoading.classList.remove('hidden');
@@ -312,7 +328,19 @@ async function generate(prompt, seed, topText, bottomText) {
   const bgUrl = buildImageUrl(styledPrompt, seed);
 
   try {
-    const finalUrl = await loadAndMaybeComposite(bgUrl, topText, bottomText);
+    const { url: finalUrl, captioned } = await loadAndMaybeComposite(bgUrl, topText, bottomText);
+    addToGallery(finalUrl, prompt);
+    generateBtn.disabled = false;
+    regenerateBtn.disabled = false;
+    // Always clear these regardless of staleness below — if the user has since browsed to a
+    // gallery item (bumping viewToken with no new generate() call to clean up after this one),
+    // nothing else will ever clear this call's own progress-bar intervals, and they'd otherwise
+    // tick forever in the background. stopLoadingAnimation() further down (which also snaps the
+    // progress bar to 100%, a visible effect) stays gated behind the staleness check below, since
+    // that visual change should only ever apply to whatever the user is currently looking at.
+    clearInterval(progressTimer);
+    clearInterval(messageTimer);
+    if (myToken !== viewToken) return; // user has since browsed to a different view — result still saved above, just don't yank the display out from under them
     currentPrompt = prompt;
     currentUrl = finalUrl;
     resultImg.src = finalUrl;
@@ -323,10 +351,21 @@ async function generate(prompt, seed, topText, bottomText) {
       resultLoading.classList.add('hidden');
       resultImg.classList.remove('hidden');
     }, 200);
+    if (topText || bottomText) {
+      if (captioned) {
+        errorEl.classList.add('hidden');
+      } else {
+        errorEl.textContent = "Picture generated, but the captions couldn't be added this time — here's the plain picture instead.";
+        errorEl.classList.remove('hidden');
+      }
+    }
+  } catch {
     generateBtn.disabled = false;
     regenerateBtn.disabled = false;
-    addToGallery(finalUrl, prompt);
-  } catch {
+    // Same unconditional interval cleanup as the success path above, for the same reason.
+    clearInterval(progressTimer);
+    clearInterval(messageTimer);
+    if (myToken !== viewToken) return;
     stopLoadingAnimation(false);
     resultLoading.classList.add('hidden');
     // If a previous generation is still showing (this was a Regenerate attempt), keep it
@@ -337,8 +376,6 @@ async function generate(prompt, seed, topText, bottomText) {
     } else {
       resultCard.classList.add('hidden');
     }
-    generateBtn.disabled = false;
-    regenerateBtn.disabled = false;
     errorEl.textContent = 'Could not generate a picture — the free service may be busy. Try again in a moment.';
     errorEl.classList.remove('hidden');
   }
@@ -387,9 +424,12 @@ sendChatBtn.addEventListener('click', async () => {
   sendChatBtn.disabled = true;
   const original = sendChatBtn.textContent;
   try {
+    const accountToken = localStorage.getItem('valk-account-token');
+    const headers = { 'Content-Type': 'application/json' };
+    if (accountToken) headers.Authorization = `Bearer ${accountToken}`;
     const res = await fetch('/post-image', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ code: roomCode, name: myName, pin: roomPin, mediaUrl: currentUrl, prompt: currentPrompt }),
     });
     if (!res.ok) throw new Error();
@@ -410,7 +450,12 @@ const GALLERY_LIMIT = 40;
 
 function loadGallery() {
   try {
-    return JSON.parse(localStorage.getItem(GALLERY_KEY) || '[]');
+    const parsed = JSON.parse(localStorage.getItem(GALLERY_KEY) || '[]');
+    // Only the JSON-parse failure was guarded before — a value that parses fine but isn't an
+    // array (manual tampering, or a future format change) flowed straight through, and every
+    // caller assumes an array (addToGallery's .filter(), renderGallery's for...of), throwing and
+    // breaking generation/gallery rendering entirely rather than just losing the saved gallery.
+    return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
   }
@@ -437,6 +482,20 @@ function renderGallery() {
   const items = loadGallery();
   gallerySection.classList.toggle('hidden', items.length === 0);
   galleryGrid.innerHTML = '';
+  // The gallery is entirely client-side (localStorage) with no server-side record at all — a
+  // captioned meme's uploaded composite (see loadAndMaybeComposite's own /upload call) only ever
+  // gets "claimed" server-side by actually posting it to a room. Without this, keeping one in the
+  // gallery without ever posting it would let the server's orphaned-upload sweep delete the file
+  // out from under it. Fire-and-forget: a failure here just means this item stays vulnerable to
+  // the sweep until the next render, not a user-visible error worth surfacing.
+  for (const item of items) {
+    if (item.url && item.url.startsWith('/uploads/')) {
+      fetch('/claim-upload', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: item.url }),
+      }).catch(() => {});
+    }
+  }
   for (const item of items) {
     const cell = document.createElement('div');
     cell.className = 'gallery-item';
@@ -445,7 +504,13 @@ function renderGallery() {
     img.src = item.url;
     img.alt = item.prompt;
     img.loading = 'lazy';
-    img.addEventListener('click', () => {
+    // tabindex + role + Enter/Space handler — a plain <img> with only a click listener is
+    // invisible to keyboard navigation; a keyboard-only user could Tab to the "Remove" button
+    // next to it but never open the image itself.
+    img.tabIndex = 0;
+    img.setAttribute('role', 'button');
+    const openGalleryItem = () => {
+      viewToken++; // invalidate any still-in-flight generate() so it can't overwrite this view later
       currentPrompt = item.prompt;
       currentUrl = item.url;
       promptInput.value = item.prompt;
@@ -456,6 +521,10 @@ function renderGallery() {
       resultImg.alt = item.prompt;
       resultPrompt.textContent = `"${item.prompt}"`;
       resultCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    };
+    img.addEventListener('click', openGalleryItem);
+    img.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openGalleryItem(); }
     });
 
     const removeBtn = document.createElement('button');

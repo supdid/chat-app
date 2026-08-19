@@ -26,7 +26,7 @@
   <div id="key-gate">
     <h1>Admin key required</h1>
     <p style="color:#8a8f99;font-size:13px;">Find it in the server console log, or <code>~/chat-app/admin-key.json</code>.</p>
-    <input id="key-input" placeholder="Paste admin key">
+    <input id="key-input" placeholder="Paste admin key" aria-label="Admin key">
   </div>
   <div id="panel" style="display:none;">
     <h1>Self-healing panel</h1>
@@ -79,13 +79,39 @@ function esc(s) {
   return String(s || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 }
 
+// Shared by every approve/reject/resolve/dismiss button below — a network failure (offline, or
+// the server restarting mid-request, which approving a patch can itself trigger) used to leave
+// three of the four action handlers with no try/catch at all: the fetch's rejection escaped the
+// async handler entirely, so btn.disabled = true was never undone and the button stayed stuck
+// forever with no feedback until a manual page reload. Only cleanup-btn had this guard.
+async function adminPost(url) {
+  try {
+    const res = await fetch(url, { method: 'POST', headers: headers() });
+    let data = {};
+    try { data = await res.json(); } catch { /* no JSON body, e.g. a 204 */ }
+    return { ok: res.ok, data };
+  } catch {
+    return { ok: false, data: { error: 'Network error — check your connection and try again' } };
+  }
+}
+
 async function refresh() {
-  const [patchesRes, errorsRes, reportsRes, scorptureReportsRes] = await Promise.all([
-    fetch('/admin/patches', { headers: headers() }),
-    fetch('/admin/errors', { headers: headers() }),
-    fetch('/admin/reports', { headers: headers() }),
-    fetch('/admin/scorpture-reports', { headers: headers() }),
-  ]);
+  let patchesRes, errorsRes, reportsRes, scorptureReportsRes;
+  try {
+    [patchesRes, errorsRes, reportsRes, scorptureReportsRes] = await Promise.all([
+      fetch('/admin/patches', { headers: headers() }),
+      fetch('/admin/errors', { headers: headers() }),
+      fetch('/admin/reports', { headers: headers() }),
+      fetch('/admin/scorpture-reports', { headers: headers() }),
+    ]);
+  } catch {
+    alert('Could not reach the server — check your connection and try again.');
+    return;
+  }
+  if (!patchesRes.ok || !errorsRes.ok || !reportsRes.ok || !scorptureReportsRes.ok) {
+    alert('One of the admin endpoints returned an error — your key may have expired. Try reloading the page.');
+    return;
+  }
   const { patches } = await patchesRes.json();
   const { errors } = await errorsRes.json();
   const { reports } = await reportsRes.json();
@@ -109,7 +135,8 @@ async function refresh() {
   scorptureReportsEl.querySelectorAll('button').forEach((btn) => {
     btn.addEventListener('click', async () => {
       btn.disabled = true;
-      await fetch(`/admin/scorpture-reports/${btn.dataset.id}/${btn.dataset.action}`, { method: 'POST', headers: headers() });
+      const { ok, data } = await adminPost(`/admin/scorpture-reports/${btn.dataset.id}/${btn.dataset.action}`);
+      if (!ok) { alert(data.error || 'Failed'); btn.disabled = false; return; }
       refresh();
     });
   });
@@ -133,7 +160,8 @@ async function refresh() {
   reportsEl.querySelectorAll('button').forEach((btn) => {
     btn.addEventListener('click', async () => {
       btn.disabled = true;
-      await fetch(`/admin/reports/${btn.dataset.id}/${btn.dataset.action}`, { method: 'POST', headers: headers() });
+      const { ok, data } = await adminPost(`/admin/reports/${btn.dataset.id}/${btn.dataset.action}`);
+      if (!ok) { alert(data.error || 'Failed'); btn.disabled = false; return; }
       refresh();
     });
   });
@@ -156,9 +184,8 @@ async function refresh() {
   patchesEl.querySelectorAll('button').forEach((btn) => {
     btn.addEventListener('click', async () => {
       btn.disabled = true;
-      const res = await fetch(`/admin/patches/${btn.dataset.id}/${btn.dataset.action}`, { method: 'POST', headers: headers() });
-      const data = await res.json();
-      if (!res.ok) { alert(data.error || 'Failed'); btn.disabled = false; return; }
+      const { ok, data } = await adminPost(`/admin/patches/${btn.dataset.id}/${btn.dataset.action}`);
+      if (!ok) { alert(data.error || 'Failed'); btn.disabled = false; return; }
       if (data.restarted) alert('Applied — server is restarting to pick up the change.');
       refresh();
     });

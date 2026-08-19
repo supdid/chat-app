@@ -149,6 +149,13 @@ button.small-btn {
   color: inherit;
   padding: 0.25rem 0.5rem;
   border-radius: 6px;
+  /* Same 44px touch target fighterplane.css/geometrywave.css already bake into their own
+     .icon-btn — this one was padding-sized (~24-28px), under the WCAG/HIG recommendation. */
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .icon-btn:hover {

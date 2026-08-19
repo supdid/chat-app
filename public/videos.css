@@ -112,6 +112,18 @@ a { color: inherit; text-decoration: none; }
   padding: 0.3rem 0.5rem;
 }
 
+/* Same touch-target bump the main chat page applies to its own .icon-btn — this one is
+   padding-sized (~27px tall), under the ~44px WCAG/HIG touch-target recommendation. */
+@media (pointer: coarse) {
+  .icon-btn {
+    min-width: 44px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+}
+
 /* ---------- Main / layout ---------- */
 #app {
   max-width: 1400px;

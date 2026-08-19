@@ -139,8 +139,33 @@ const CLAIM_RADIUS = 8;
 // blocks generally, just gated on a shared fact instead of purely local state.
 let bcClaims = [];
 
+// A stable per-browser id, independent of display name, so two players sharing a name (plausible
+// with the default "Player") no longer treat each other's claims as their own. Sent alongside
+// name on bc-join; claims made before this existed have no ownerId and fall back to the old
+// name-based check server-side (see bcClaimOwnedBy in server.js) and here on the client.
+const BC_PLAYER_ID_KEY = 'valk-bc-player-id';
+// Some browsers/modes (Safari private browsing historically, storage-blocking extensions) throw
+// on localStorage access rather than just returning null — this runs at top-level module scope,
+// so an uncaught throw here would abort the rest of buildcraft.js and break the whole game for
+// that user. Same try/catch convention every other localStorage access in this file already uses
+// (see ACHIEVEMENTS_KEY below). Degrades to a fresh in-memory-only id for this session rather than
+// a hard crash — claims still work for the duration of the session, they just won't be recognized
+// as "mine" after a reload.
+let bcPlayerId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+try {
+  const stored = localStorage.getItem(BC_PLAYER_ID_KEY);
+  if (stored) {
+    bcPlayerId = stored;
+  } else {
+    localStorage.setItem(BC_PLAYER_ID_KEY, bcPlayerId);
+  }
+} catch { /* no-op — fall back to the fresh in-memory id generated above */ }
+
 function isCellClaimedByOther(x, z) {
-  return bcClaims.some((c) => c.owner !== mpPlayerName && Math.hypot(x - c.x, z - c.z) <= c.radius);
+  return bcClaims.some((c) => {
+    const mine = c.ownerId ? c.ownerId === bcPlayerId : c.owner === mpPlayerName;
+    return !mine && Math.hypot(x - c.x, z - c.z) <= c.radius;
+  });
 }
 
 function blockColor(typeIndex) {
@@ -1254,7 +1279,7 @@ function connectBc(code, name) {
   bcSocket = new WebSocket(`${protocol}//${location.host}`);
 
   bcSocket.addEventListener('open', () => {
-    bcSocket.send(JSON.stringify({ type: 'bc-join', code, name, color: myShirtColor }));
+    bcSocket.send(JSON.stringify({ type: 'bc-join', code, name, color: myShirtColor, playerId: bcPlayerId }));
   });
 
   bcSocket.addEventListener('message', (event) => {
@@ -1283,8 +1308,9 @@ function connectBc(code, name) {
     } else if (data.type === 'bc-block') {
       data.changes.forEach((c) => bcApplyChange(c.x, c.y, c.z, c.t));
     } else if (data.type === 'bc-claim-added') {
-      bcClaims.push({ x: data.x, z: data.z, radius: data.radius, owner: data.owner });
-      if (data.owner !== mpPlayerName) showToast(`🚩 ${data.owner} claimed some land nearby`);
+      bcClaims.push({ x: data.x, z: data.z, radius: data.radius, owner: data.owner, ownerId: data.ownerId || null });
+      const claimIsMine = data.ownerId ? data.ownerId === bcPlayerId : data.owner === mpPlayerName;
+      if (!claimIsMine) showToast(`🚩 ${data.owner} claimed some land nearby`);
     } else if (data.type === 'bc-claim-denied') {
       showToast('🚩 You already have the maximum number of claims');
     } else if (data.type === 'bc-player-joined') {
@@ -1910,8 +1936,26 @@ function skipToMorningLocal() {
   showToast('☀️ Morning!');
 }
 
+// Right-clicking the bed again while already sleeping cancels it — previously the only way out
+// of "waiting for everyone else" was the server's own bc-skip-night broadcast, which required
+// everyone still connected to also be sleeping. If anyone else just never came to bed (or the
+// server-side consensus check somehow didn't fire — see checkBcSleepConsensus's own fix for the
+// disconnect case), a sleeping player had zero way to back out short of reloading the page. The
+// server already had a bc-wake handler for this; the client just never sent it.
+function cancelSleep() {
+  isSleeping = false;
+  if (bcSocket && bcSocket.readyState === WebSocket.OPEN) {
+    bcSocket.send(JSON.stringify({ type: 'bc-wake' }));
+  }
+  showToast('🛌 Got up');
+}
+
 function trySleep() {
-  if (isDead || isSleeping) return;
+  if (isDead) return;
+  if (isSleeping) {
+    cancelSleep();
+    return;
+  }
   if (!isNightPhase()) {
     showToast('☀️ You can only sleep at night');
     return;
@@ -1919,7 +1963,7 @@ function trySleep() {
   if (bcSocket && bcSocket.readyState === WebSocket.OPEN) {
     isSleeping = true;
     bcSocket.send(JSON.stringify({ type: 'bc-sleep' }));
-    showToast('💤 Sleeping... waiting for everyone else');
+    showToast('💤 Sleeping... right-click the bed again to get up, or wait for everyone else');
   } else {
     skipToMorningLocal();
   }
@@ -2048,7 +2092,7 @@ function toggleBoat() {
     showToast('🚤 Boarded the boat (G to exit)');
   } else {
     ridingBoat = false;
-    if (boatMesh) { yawObject.remove(boatMesh); boatMesh = null; }
+    if (boatMesh) { yawObject.remove(boatMesh); bcDisposeAvatarGroup(boatMesh); boatMesh = null; }
     if (gameMode === 'survival') collectItem(BOAT_ITEM, 1); // pick the boat back up, Minecraft-style
     showToast('🚤 Left the boat');
   }
@@ -2103,7 +2147,7 @@ function toggleMinecart() {
     showToast('🛒 Boarded the minecart (G to exit)');
   } else {
     ridingMinecart = false;
-    if (minecartMesh) { yawObject.remove(minecartMesh); minecartMesh = null; }
+    if (minecartMesh) { yawObject.remove(minecartMesh); bcDisposeAvatarGroup(minecartMesh); minecartMesh = null; }
     if (gameMode === 'survival') collectItem(MINECART_ITEM, 1);
     showToast('🛒 Left the minecart');
   }
@@ -2138,11 +2182,18 @@ function carveCave(cx, cy, cz) {
   const R = 7;
   const changes = new Map();
   const record = (x, y, z, t) => changes.set(`${x},${y},${z}`, { x, y, z, t });
+  // Unlike every direct break/place action, this fires from a dig-streak RNG roll with no
+  // per-cell UI to gate on — without this check a cave-in could delete a 7-radius sphere of
+  // someone else's claimed build just by a third party mining nearby.
+  const claimGuard = bcMultiplayerActive
+    ? (x, z) => isCellClaimedByOther(x, z)
+    : () => false;
   for (let dx = -R; dx <= R; dx++) {
     for (let dy = -R; dy <= R; dy++) {
       for (let dz = -R; dz <= R; dz++) {
         if (dx * dx + dy * dy + dz * dz <= R * R) {
           const x = cx + dx, y = cy + dy, z = cz + dz;
+          if (claimGuard(x, z)) continue;
           if (removeBlockAt(x, y, z) !== null) record(x, y, z, null);
         }
       }
@@ -2157,6 +2208,7 @@ function carveCave(cx, cy, cz) {
         const distSq = dx * dx + dy * dy + dz * dz;
         if (distSq <= shellMinSq || distSq > shellMaxSq) continue;
         const x = cx + dx, y = cy + dy, z = cz + dz;
+        if (claimGuard(x, z)) continue;
         if (!world.has(keyOf(x, y, z))) continue;
         const ore = rollCaveOre();
         if (ore === null) continue;
@@ -2166,10 +2218,12 @@ function carveCave(cx, cy, cz) {
       }
     }
   }
-  removeBlockAt(cx, cy + R - 2, cz);
-  const lantern = indexOf('Sea Lantern');
-  addBlock(cx, cy + R - 2, cz, lantern);
-  record(cx, cy + R - 2, cz, lantern);
+  if (!claimGuard(cx, cz)) {
+    removeBlockAt(cx, cy + R - 2, cz);
+    const lantern = indexOf('Sea Lantern');
+    addBlock(cx, cy + R - 2, cz, lantern);
+    record(cx, cy + R - 2, cz, lantern);
+  }
   bcSendChanges(changes);
   showToast('⛏️ You found a wide cave, glittering with ore!');
 }
@@ -2270,7 +2324,11 @@ function doPlace() {
   if (!hit) return;
   const gx = hit.x + hit.normal.x, gy = hit.y + hit.normal.y, gz = hit.z + hit.normal.z;
 
-  if (bcMultiplayerActive && isCellClaimedByOther(hit.x, hit.z)) {
+  // Claim check must use the cell the new block actually lands in (gx/gz), not the cell being
+  // looked at (hit.x/hit.z) — those differ by one cell along the face normal, which let a player
+  // standing just outside a claim place a block one cell inside it by aiming at their own
+  // unclaimed block's face.
+  if (bcMultiplayerActive && isCellClaimedByOther(gx, gz)) {
     showToast('🚧 This area is claimed by someone else');
     return;
   }
@@ -3141,6 +3199,7 @@ function hitMob(mob) {
   setTimeout(() => mob.group.scale.setScalar(1), 80);
   if (mob.health <= 0) {
     scene.remove(mob.group);
+    bcDisposeAvatarGroup(mob.group);
     const idx = mobs.indexOf(mob);
     if (idx !== -1) mobs.splice(idx, 1);
     playMobDeathSfx();
@@ -3388,7 +3447,7 @@ function mountHorse(horse) {
 
 function dismountHorse() {
   ridingHorse = false;
-  if (horseMesh) { yawObject.remove(horseMesh); horseMesh = null; }
+  if (horseMesh) { yawObject.remove(horseMesh); bcDisposeAvatarGroup(horseMesh); horseMesh = null; }
   if (mountedHorse) {
     mountedHorse.group.position.copy(yawObject.position);
     mountedHorse.group.position.y -= EYE_HEIGHT;

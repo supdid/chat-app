@@ -24,6 +24,7 @@
       <button id="start-btn" class="primary">Start swinging</button>
       <ul class="controls-list" id="controls-list-desktop">
         <li class="ctl"><kbd>E</kbd><span>shoot web / let go &middot; aim near a roof to zip onto it</span></li>
+        <li class="ctl"><kbd>F</kbd><span>web strike &middot; three close-range hits eliminate a player &mdash; they respawn, you score</span></li>
         <li class="ctl"><kbd>WASD</kbd><span>run &middot; reel the rope (W/S) &middot; pump the swing (A/D)</span></li>
         <li class="ctl"><kbd>Space</kbd><span>jump &middot; hold on a web to climb the strand</span></li>
         <li class="ctl"><kbd>Shift</kbd><span>dive &mdash; trade height for speed, steered by aim</span></li>
@@ -37,6 +38,7 @@
       </ul>
       <ul class="controls-list hidden" id="controls-list-touch">
         <li class="ctl"><kbd>🕸️</kbd><span>shoot web / let go &middot; aim near a roof to zip onto it</span></li>
+        <li class="ctl"><kbd>👊</kbd><span>web strike &middot; three close-range hits eliminate a player &mdash; they respawn, you score</span></li>
         <li class="ctl"><kbd>&#10514;</kbd><span>jump &middot; hold on a web to climb the strand</span></li>
         <li class="ctl"><kbd>&#10515;</kbd><span>dive &mdash; trade height for speed, steered by aim</span></li>
         <li class="ctl"><kbd>Stick</kbd><span>run &middot; reel &amp; pump the swing &middot; crawl walls</span></li>
@@ -63,6 +65,11 @@
       <button id="leaderboard-btn" class="icon-btn" aria-label="Leaderboard">🏆</button>
     </div>
   </div>
+
+  <!-- Only shown once in a multiplayer room (health has no meaning solo, since there's no one
+       to strike you) — same "only your own hearts render" convention as Build Craft. -->
+  <div id="health-bar" class="hidden"></div>
+  <div id="damage-flash"></div>
 
   <div id="leaderboard-overlay" class="hidden">
     <div class="panel">
@@ -91,6 +98,7 @@
       <button id="touch-jump" class="touch-btn" aria-label="Jump">⤒</button>
       <button id="touch-dive" class="touch-btn" aria-label="Dive">⤓</button>
       <button id="touch-web" class="touch-btn" aria-label="Shoot web / let go">🕸️</button>
+      <button id="touch-strike" class="touch-btn" aria-label="Web strike">👊</button>
     </div>
   </div>
 

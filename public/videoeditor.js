@@ -84,7 +84,16 @@ if (localStorage.getItem('valk-account-token')) sendScorptureBtn.classList.remov
 
 // --- State ---
 let clips = [];       // { id, file, name, url, duration, width, height, trimStart, trimEnd, speed, volume, thumb }
-let overlays = [];    // { id, text, start, end, pos, color }  -- times are in project (global) seconds
+// { id, text, start, end, pos, color, clipId, localStart, localEnd } -- start/end are in project
+// (global) seconds, but those are *derived*: they shift whenever a clip before this overlay is
+// reordered, trimmed, split, or deleted, since every clip's global start position depends on
+// every earlier clip's current length. clipId/localStart/localEnd (offsets from that clip's own
+// global start, at the time the overlay was last placed/edited — see reanchorOverlay) are the
+// actual source of truth for "where this caption belongs relative to the footage"; start/end get
+// recomputed from them via syncOverlaysToClips() after any clip-structure change, so a caption
+// stays over the same footage instead of silently drifting onto whatever now occupies its old
+// absolute-time slot.
+let overlays = [];
 let music = null;     // { file, name, volume, url }
 let musicAudioEl = null;
 let resultBlob = null;
@@ -94,6 +103,13 @@ let selected = { type: null, id: null }; // type: 'clip' | 'title' | 'music'
 let playheadTime = 0;
 let isPlaying = false;
 let loadedClipId = null;
+// Tracks the one-shot 'loadedmetadata' listener seekTo() attaches below, so a fresh seek that
+// reassigns previewVideo.src before the previous load finished (rapid scrubbing across clip
+// boundaries) removes the stale listener instead of leaving it attached forever — an aborted
+// load never fires 'loadedmetadata', so the self-removing `once` pattern alone doesn't clean it
+// up, and it can occasionally still fire late (e.g. a cached load) and snap the preview to a
+// stale time after the user has already moved on.
+let pendingSeekListener = null;
 let dragCtx = null;
 
 const PX_PER_SEC = 55;
@@ -152,6 +168,26 @@ function loadClipMeta(file) {
       resolve({ url, duration: v.duration, width: v.videoWidth, height: v.videoHeight, thumb });
     };
     v.addEventListener('loadedmetadata', () => {
+      // Some containers (older/malformed webm, some screen recordings) report duration ===
+      // Infinity until an explicit seek resolves it. Left unguarded, that Infinity flowed into
+      // trimEnd/totalDuration()/timeToPx(), producing a `width: Infinitypx` timeline and a ruler
+      // loop that never terminates. Seeking near the end forces Chromium/Firefox to compute and
+      // fix the real duration on `durationchange` — fall back to that before proceeding.
+      if (!Number.isFinite(v.duration)) {
+        const onDurationFixed = () => {
+          v.removeEventListener('durationchange', onDurationFixed);
+          if (!Number.isFinite(v.duration)) { finish(null); return; }
+          seekAndCapture();
+        };
+        v.addEventListener('durationchange', onDurationFixed);
+        v.currentTime = 1e7; // seek far past any real video's end to force a duration fix
+        setTimeout(() => { v.removeEventListener('durationchange', onDurationFixed); if (!settled) finish(null); }, 3000);
+        return;
+      }
+      seekAndCapture();
+    }, { once: true });
+
+    function seekAndCapture() {
       try {
         v.currentTime = Math.min(0.15, Math.max(0, v.duration - 0.05));
       } catch {
@@ -176,7 +212,7 @@ function loadClipMeta(file) {
         }));
       }, { once: true });
       setTimeout(() => finish(null), 3000);
-    }, { once: true });
+    }
     v.addEventListener('error', () => reject(new Error('Could not read that video file')));
   });
 }
@@ -221,6 +257,7 @@ addTitleBtn.addEventListener('click', () => {
   const start = Math.min(playheadTime, Math.max(0, total - 2));
   const end = Math.min(total, start + 2);
   const ov = { id: uid(), text: 'Title', start, end, pos: 'bottom', color: '#ffffff' };
+  reanchorOverlay(ov);
   overlays.push(ov);
   renderTimeline();
   selectItem('title', ov.id);
@@ -236,6 +273,13 @@ function ensureMusicEl() {
   if (!musicAudioEl) {
     musicAudioEl = new Audio();
     musicAudioEl.preload = 'auto';
+    // The export always loops the music track for the full timeline duration (-stream_loop -1,
+    // see renderVideo below) — without this, any track shorter than the timeline (several of the
+    // built-in options are only 16-20s) would audibly just stop partway through live preview
+    // playback while the export keeps looping it for the full length, a real preview/export
+    // divergence. seekTo's own `t % dur` scrubbing logic still handles jumping to an arbitrary
+    // point correctly; this only covers continuous playback running past the track's own end.
+    musicAudioEl.loop = true;
   }
   return musicAudioEl;
 }
@@ -603,6 +647,7 @@ deleteSelectedBtn.addEventListener('click', () => {
       // already-loaded clip never self-heals).
       const stillReferenced = clips.some((c) => c.url === clip.url);
       if (!stillReferenced) URL.revokeObjectURL(clip.url);
+      syncOverlaysToClips();
     }
   } else if (selected.type === 'title') {
     overlays = overlays.filter((o) => o.id !== selected.id);
@@ -654,6 +699,7 @@ function renderInspector() {
       let v = parseFloat(startInput.value) || 0;
       v = Math.max(0, Math.min(v, clip.trimEnd - 0.1));
       clip.trimStart = v;
+      syncOverlaysToClips();
       renderTimeline();
       refreshPreviewForEdits();
     });
@@ -671,6 +717,7 @@ function renderInspector() {
       let v = parseFloat(endInput.value) || 0;
       v = Math.max(clip.trimStart + 0.1, Math.min(v, clip.duration));
       clip.trimEnd = v;
+      syncOverlaysToClips();
       renderTimeline();
       refreshPreviewForEdits();
     });
@@ -688,6 +735,12 @@ function renderInspector() {
     });
     speedSelect.addEventListener('change', () => {
       clip.speed = parseFloat(speedSelect.value);
+      // Every other structural edit (trim, reorder, split, delete) calls this — speed was the
+      // one mutation left out. Overlay start/end are cached, not recomputed live from
+      // clipGlobalStarts(), and changing any clip's speed shifts every later clip's true global
+      // start — without this, a caption's cached timing silently drifts out of sync with the
+      // footage in both the live preview and the actual rendered export.
+      syncOverlaysToClips();
       renderTimeline();
       refreshPreviewForEdits();
     });
@@ -746,6 +799,7 @@ function renderInspector() {
       let v = parseFloat(startInput.value) || 0;
       v = Math.max(0, Math.min(v, ov.end - 0.2));
       ov.start = v;
+      reanchorOverlay(ov);
       renderTimeline();
       updateCaptions(playheadTime);
     });
@@ -762,6 +816,7 @@ function renderInspector() {
       let v = parseFloat(endInput.value) || 0;
       v = Math.max(ov.start + 0.2, Math.min(v, totalDuration()));
       ov.end = v;
+      reanchorOverlay(ov);
       renderTimeline();
       updateCaptions(playheadTime);
     });
@@ -973,6 +1028,7 @@ function onClipDragMove(e) {
   if (targetIdx !== idx) {
     const [moved] = clips.splice(idx, 1);
     clips.splice(targetIdx, 0, moved);
+    syncOverlaysToClips();
     renderTimeline();
   }
   const block = trackVideo.querySelector(`[data-clip-id="${dragCtx.clipId}"]`);
@@ -1010,6 +1066,7 @@ function onTrimMove(e) {
     v = Math.max(clip.trimStart + 0.1, Math.min(v, clip.duration));
     clip.trimEnd = v;
   }
+  syncOverlaysToClips();
   renderTimeline();
 }
 
@@ -1057,6 +1114,8 @@ function onTitleDragMove(e) {
 function onTitleDragEnd() {
   window.removeEventListener('pointermove', onTitleDragMove);
   window.removeEventListener('pointerup', onTitleDragEnd);
+  const ov = dragCtx && dragCtx.type === 'title' ? overlays.find((o) => o.id === dragCtx.titleId) : null;
+  if (ov) reanchorOverlay(ov);
   dragCtx = null;
   renderInspector();
   updateCaptions(playheadTime);
@@ -1106,6 +1165,45 @@ function findClipAt(t) {
     if (t >= starts[i] - 1e-6) return { index: i, clip: clips[i], clipStart: starts[i] };
   }
   return { index: 0, clip: clips[0], clipStart: 0 };
+}
+
+// Re-establishes an overlay's clip anchor from its current absolute start — called whenever the
+// user directly places/moves/resizes a title (creation, drag, or the inspector's start/end
+// fields), so the *next* clip-structure change has a fresh, correct anchor to recompute from.
+function reanchorOverlay(ov) {
+  const found = findClipAt(ov.start);
+  if (!found) return;
+  ov.clipId = found.clip.id;
+  ov.localStart = ov.start - found.clipStart;
+  ov.localEnd = ov.end - found.clipStart;
+}
+
+// Recomputes every overlay's absolute start/end from its clip anchor — call after any edit that
+// changes clip order, trim, or count (reorder, trim, split, delete), since those all shift where
+// "this clip's global start" actually is. An overlay whose anchor clip no longer exists (that
+// clip was deleted) is dropped rather than left pointing at whatever footage now occupies its
+// stale absolute-time slot.
+function syncOverlaysToClips() {
+  const starts = clipGlobalStarts();
+  overlays = overlays.filter((ov) => {
+    const idx = clips.findIndex((c) => c.id === ov.clipId);
+    if (idx === -1) return false;
+    const clip = clips[idx];
+    const dur = Math.max(0, clip.trimEnd - clip.trimStart) / clip.speed;
+    // A trim (dragging a handle) or a split+delete can shrink the clip out from under an overlay
+    // anchored further into it — without clamping, localEnd (or even localStart) could point past
+    // the clip's new, shorter duration, and the caption would silently bleed onto whatever clip
+    // now immediately follows, in both the live preview and the actual export filter, with no
+    // error anywhere.
+    const localStart = Math.min(ov.localStart, dur);
+    const localEnd = Math.min(ov.localEnd, dur);
+    if (localEnd <= localStart) return false; // nothing of the overlay's anchored span survived
+    ov.localStart = localStart;
+    ov.localEnd = localEnd;
+    ov.start = starts[idx] + localStart;
+    ov.end = starts[idx] + localEnd;
+    return true;
+  });
 }
 
 function updateTimeReadout() {
@@ -1189,6 +1287,7 @@ function splitAtPlayhead() {
   const firstPart = { ...clip, trimEnd: localSplitTime };
   const secondPart = { ...clip, id: uid(), trimStart: localSplitTime };
   clips.splice(idx, 1, firstPart, secondPart);
+  syncOverlaysToClips();
 
   renderTimeline();
   selectItem('clip', secondPart.id);
@@ -1230,10 +1329,13 @@ function seekTo(t, opts = {}) {
     previewVideo.src = found.clip.url;
     previewVideo.playbackRate = found.clip.speed;
     previewVideo.volume = clamp01(found.clip.volume / 100);
-    previewVideo.addEventListener('loadedmetadata', function onReady() {
+    if (pendingSeekListener) previewVideo.removeEventListener('loadedmetadata', pendingSeekListener);
+    pendingSeekListener = function onReady() {
       previewVideo.currentTime = localTime;
       previewVideo.removeEventListener('loadedmetadata', onReady);
-    });
+      pendingSeekListener = null;
+    };
+    previewVideo.addEventListener('loadedmetadata', pendingSeekListener);
   } else {
     previewVideo.currentTime = localTime;
     previewVideo.playbackRate = found.clip.speed;
@@ -1278,13 +1380,19 @@ function advanceToNextClip() {
   const next = clips[idx + 1];
   loadedClipId = next.id;
   previewVideo.src = next.url;
-  previewVideo.addEventListener('loadedmetadata', function onReady() {
+  // Same stale-listener risk as seekTo() above (this fires on every clip-to-clip transition
+  // during normal playback, so it's the more likely everyday trigger of the two) — reuses the
+  // same tracking variable since both mutate previewVideo.src the same way.
+  if (pendingSeekListener) previewVideo.removeEventListener('loadedmetadata', pendingSeekListener);
+  pendingSeekListener = function onReady() {
     previewVideo.currentTime = next.trimStart;
     previewVideo.playbackRate = next.speed;
     previewVideo.volume = clamp01(next.volume / 100);
     previewVideo.play().catch(() => {});
     previewVideo.removeEventListener('loadedmetadata', onReady);
-  });
+    pendingSeekListener = null;
+  };
+  previewVideo.addEventListener('loadedmetadata', pendingSeekListener);
 }
 
 previewVideo.addEventListener('timeupdate', () => {
@@ -1392,6 +1500,24 @@ let stepIndex = 0;
 let totalSteps = 1;
 let probingAudio = false;
 
+// A stalled connection (accepted but never completing — plausible on a flaky connection or an
+// unpkg hiccup) leaves both toBlobURL's fetch and ffmpeg.load()'s own internal setup with no
+// error to catch, so without a hard ceiling the loading banner and disabled workspace would sit
+// there indefinitely with no way out short of reloading the page.
+const FFMPEG_LOAD_TIMEOUT_MS = 45000;
+// ffmpeg.wasm's single-threaded core is known to occasionally hang (not throw) on malformed or
+// unusual inputs — without a ceiling on each exec() call too, a hang left renderStatus frozen and
+// exportBtn disabled forever, with no recovery short of reloading the page and losing every edit
+// (render state is in-memory only). Generous since real encodes of multi-clip/high-res timelines
+// can legitimately take a while.
+const FFMPEG_STEP_TIMEOUT_MS = 120000;
+function withTimeout(promise, ms, message) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms)),
+  ]);
+}
+
 async function initFfmpeg() {
   try {
     const { FFmpeg } = FFmpegWASM;
@@ -1404,10 +1530,13 @@ async function initFfmpeg() {
       renderProgressFill.style.width = `${Math.round(overall * 100)}%`;
     });
     const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
-    await ffmpeg.load({
-      coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-      wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-    });
+    await withTimeout((async () => {
+      const [coreURL, wasmURL] = await Promise.all([
+        toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+        toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+      ]);
+      await ffmpeg.load({ coreURL, wasmURL });
+    })(), FFMPEG_LOAD_TIMEOUT_MS, 'Timed out loading the video engine — check your internet connection and reload the page.');
     ffmpegReady = true;
     loadBanner.classList.add('hidden');
     workspace.classList.remove('hidden');
@@ -1459,7 +1588,7 @@ async function clipHasAudio(inputName) {
   ffmpeg.on('log', logListener);
   probingAudio = true;
   try {
-    await ffmpeg.exec(['-i', inputName, '-t', '0.1', '-f', 'null', '-']);
+    await withTimeout(ffmpeg.exec(['-i', inputName, '-t', '0.1', '-f', 'null', '-']), FFMPEG_STEP_TIMEOUT_MS, 'Timed out probing the clip.');
   } catch {
     // ffmpeg exits nonzero here if there's no video stream either, but we
     // only care whether the audio-stream line showed up in the log.
@@ -1520,7 +1649,7 @@ async function renderVideo() {
         '-c:a', 'aac', '-b:a', '160k',
         outputName,
       );
-      await ffmpeg.exec(args);
+      await withTimeout(ffmpeg.exec(args), FFMPEG_STEP_TIMEOUT_MS, 'Timed out preparing a clip.');
       await ffmpeg.deleteFile(inputName);
       clipOutputs.push(track(outputName));
       stepIndex++;
@@ -1533,7 +1662,7 @@ async function renderVideo() {
       const listText = clipOutputs.map((f) => `file '${f}'`).join('\n');
       await ffmpeg.writeFile('list.txt', new TextEncoder().encode(listText));
       combined = 'combined.mp4';
-      await ffmpeg.exec(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', combined]);
+      await withTimeout(ffmpeg.exec(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', combined]), FFMPEG_STEP_TIMEOUT_MS, 'Timed out combining clips.');
       track(combined);
       for (const f of clipOutputs) await ffmpeg.deleteFile(f);
       await ffmpeg.deleteFile('list.txt');
@@ -1564,14 +1693,14 @@ async function renderVideo() {
       });
       filter = filter.slice(0, -1);
       withText = 'withtext.mp4';
-      await ffmpeg.exec([
+      await withTimeout(ffmpeg.exec([
         ...args,
         '-filter_complex', filter,
         '-map', '[outv]', '-map', '0:a?',
         '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
         '-c:a', 'copy',
         withText,
-      ]);
+      ]), FFMPEG_STEP_TIMEOUT_MS, 'Timed out adding text overlays.');
       track(withText);
       await ffmpeg.deleteFile(combined);
       for (const n of overlayNames) await ffmpeg.deleteFile(n);
@@ -1587,7 +1716,7 @@ async function renderVideo() {
       const total = totalDuration();
       finalName = 'final.mp4';
       const musicVol = (music.volume / 100).toFixed(2);
-      await ffmpeg.exec([
+      await withTimeout(ffmpeg.exec([
         '-i', withText,
         '-stream_loop', '-1', '-i', musicName,
         '-filter_complex',
@@ -1595,7 +1724,7 @@ async function renderVideo() {
         '-map', '0:v', '-map', '[aout]',
         '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k',
         finalName,
-      ]);
+      ]), FFMPEG_STEP_TIMEOUT_MS, 'Timed out mixing music.');
       track(finalName);
       await ffmpeg.deleteFile(withText);
       await ffmpeg.deleteFile(musicName);
@@ -1615,10 +1744,27 @@ async function renderVideo() {
     renderStatus.textContent = 'Done!';
     await ffmpeg.deleteFile(finalName);
   } catch (err) {
-    errorEl.textContent = 'Rendering failed — try shorter clips, or check that every clip has audio.';
+    const wasTimeout = !!(err && typeof err.message === 'string' && err.message.startsWith('Timed out'));
+    errorEl.textContent = wasTimeout
+      ? 'Rendering timed out and the video engine has been reset — your edits are still here, try exporting again.'
+      : 'Rendering failed — try shorter clips, or check that every clip has audio.';
     errorEl.classList.remove('hidden');
-    for (const f of written) {
-      try { await ffmpeg.deleteFile(f); } catch {}
+    if (wasTimeout) {
+      // A genuine ffmpeg.wasm hang (what the per-step timeout above is guarding against) means
+      // the single worker thread that every future writeFile/exec/deleteFile call goes through is
+      // wedged — the "graceful" cleanup loop below would itself hang forever queued behind the
+      // stuck job, since the core processes one command at a time. That silently defeated the
+      // whole point of the timeout: the UI never actually recovered, it just looked like it might.
+      // terminate() kills the worker outright instead of waiting on it; a fresh instance is loaded
+      // in the background so the next export attempt has something responsive to talk to. Timeline/
+      // clip/overlay state lives in plain JS variables untouched by this, so nothing is lost.
+      try { ffmpeg.terminate(); } catch {}
+      ffmpegReady = false;
+      initFfmpeg();
+    } else {
+      for (const f of written) {
+        try { await ffmpeg.deleteFile(f); } catch {}
+      }
     }
   } finally {
     refreshExportButton();
@@ -1648,9 +1794,12 @@ sendChatBtn.addEventListener('click', async () => {
     const uploadRes = await fetch('/upload', { method: 'POST', body: formData });
     const uploadData = await uploadRes.json();
     if (!uploadRes.ok || !uploadData.url) throw new Error();
+    const accountToken = localStorage.getItem('valk-account-token');
+    const postHeaders = { 'Content-Type': 'application/json' };
+    if (accountToken) postHeaders.Authorization = `Bearer ${accountToken}`;
     const postRes = await fetch('/post-media', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: postHeaders,
       body: JSON.stringify({ code: roomCode, name: myName, pin: roomPin, mediaUrl: uploadData.url, mediaType: 'video', caption: '🎬 Edited video' }),
     });
     if (!postRes.ok) throw new Error();
@@ -1738,6 +1887,14 @@ scorpturePublishSubmit.addEventListener('click', async () => {
   } finally {
     scorpturePublishSubmit.disabled = false;
   }
+});
+
+// --- Escape closes whichever overlay is open --- (same fix already applied to the main chat
+// page's overlays this session — this page had none of its own until now)
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (!musicPickerOverlay.classList.contains('hidden')) musicPickerCloseBtn.click();
+  if (!scorptureOverlay.classList.contains('hidden')) scorptureCloseBtn.click();
 });
 
 // --- Initial render ---

@@ -17,7 +17,32 @@ const app = express();
 // loopback address for every request, collapsing every visitor into one shared rate-limit bucket.
 app.set('trust proxy', 'loopback');
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
+// ws defaults to a 100MiB maxPayload when unset — any connected client (getting one just needs an
+// open WS connection, no auth) could send a single message up to that size, which the server
+// fully buffers and JSON.parses before any of this file's own per-field size checks (e.g.
+// bc-block's 2000-change cap, bc-blueprint-save's 20000-block cap) ever get a chance to run. The
+// largest legitimate incoming payload is a maximal Build Craft blueprint save (20,000 blocks,
+// well under 1MB in practice) — 4MB leaves generous headroom for that while still being a ~25x
+// reduction from the default, closing off the bulk of the DoS risk from an oversized frame.
+const WS_MAX_PAYLOAD_BYTES = 4 * 1024 * 1024;
+const wss = new WebSocketServer({ server, maxPayload: WS_MAX_PAYLOAD_BYTES });
+// Same reasoning as the per-connection ws.on('error', ...) handler further down (see its comment
+// for the full unhandled-'error'-event-crashes-the-process mechanism this guards against) — this
+// one is at the WebSocketServer level itself, for anything that could go wrong before an
+// individual connection even exists (e.g. during the upgrade handshake). Manual testing against a
+// scratch server found the specific handshake-malformation cases actually tried degrade gracefully
+// on their own (ws responds with a normal HTTP 400, no crash) rather than reaching this — but
+// costs nothing to have as defense-in-depth against whatever wasn't tried.
+wss.on('error', (err) => {
+  // See the matching try/catch on the per-connection ws.on('error', ...) handler further down for
+  // why this is wrapped: a failure inside reportError itself (a synchronous DB write) must never
+  // become the very crash this handler exists to prevent.
+  try {
+    reportError('server', err, { wssError: true });
+  } catch {
+    // Deliberately swallowed.
+  }
+});
 // Registered this early so every route below — including the self-healing routes, which are
 // defined before the rest of the app's routes — can read req.body on POST requests.
 app.use(express.json());
@@ -29,6 +54,19 @@ app.use(express.json());
 const vapidKeys = require('./vapid-keys.json');
 webpush.setVapidDetails('mailto:admin@example.com', vapidKeys.publicKey, vapidKeys.privateKey);
 
+// The webpush.sendNotification(...).catch(404/410 cleanup) pattern was copy-pasted verbatim at
+// every call site that needed it over many sessions — extracted once. onGone defaults to the
+// regular per-device subscription table; the admin-notifications path is the one caller that
+// passes a different one (db.removeAdminPushSubscription).
+function sendPushToSubs(subs, payload, onGone = (endpoint) => db.removePushSubscription(endpoint)) {
+  const body = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  for (const sub of subs) {
+    webpush.sendNotification(sub.subscription, body).catch((err) => {
+      if (err.statusCode === 404 || err.statusCode === 410) onGone(sub.endpoint);
+    });
+  }
+}
+
 // Sends a push to everyone subscribed in a room except the sender. Only bothers with
 // subscribers who aren't currently an open WS client in that room — if they're connected,
 // they already got the message live plus the in-tab Notification, so a system push on top
@@ -39,12 +77,7 @@ function pushNewMessage(code, entry) {
   const subs = db.getPushSubscriptionsForRoom(code);
   const body = entry.text || (entry.mediaType ? `sent a${entry.mediaType === 'image' ? 'n' : ''} ${entry.mediaType}` : '');
   const payload = JSON.stringify({ title: entry.name, body, roomCode: code, messageId: entry.id });
-  for (const sub of subs) {
-    if (sub.name === entry.name || connectedNames.has(sub.name)) continue;
-    webpush.sendNotification(sub.subscription, payload).catch((err) => {
-      if (err.statusCode === 404 || err.statusCode === 410) db.removePushSubscription(sub.endpoint);
-    });
-  }
+  sendPushToSubs(subs.filter((sub) => sub.name !== entry.name && !connectedNames.has(sub.name)), payload);
 }
 
 // Matches an email address typed inline in a chat message, e.g. "jondoe@gmail.com" — used to
@@ -68,17 +101,12 @@ function pushMentionNotifications(code, entry) {
     for (const account of accounts) {
       const subs = db.getPushSubscriptionsForAccount(account.id);
       if (!subs.length) continue;
-      const payload = JSON.stringify({
+      sendPushToSubs(subs, {
         title: `${entry.name} mentioned you`,
         body: entry.text,
         roomCode: code,
         messageId: entry.id,
       });
-      for (const sub of subs) {
-        webpush.sendNotification(sub.subscription, payload).catch((err) => {
-          if (err.statusCode === 404 || err.statusCode === 410) db.removePushSubscription(sub.endpoint);
-        });
-      }
     }
   }
 }
@@ -89,16 +117,11 @@ function pushMentionNotifications(code, entry) {
 function pushAdminOnNewReport(roomCode, reporterName, targetName) {
   const subs = db.getAdminPushSubscriptions();
   if (!subs.length) return;
-  const payload = JSON.stringify({
+  sendPushToSubs(subs, {
     title: 'New report',
     body: `${reporterName} reported ${targetName} in room ${roomCode}`,
     adminReport: true,
-  });
-  for (const sub of subs) {
-    webpush.sendNotification(sub.subscription, payload).catch((err) => {
-      if (err.statusCode === 404 || err.statusCode === 410) db.removeAdminPushSubscription(sub.endpoint);
-    });
-  }
+  }, (endpoint) => db.removeAdminPushSubscription(endpoint));
 }
 
 // ---- Self-healing: error capture + AI-drafted patch proposals (see patcher.js) ----
@@ -122,7 +145,15 @@ function reportError(source, err, context = {}) {
 process.on('unhandledRejection', (reason) => {
   const err = reason instanceof Error ? reason : new Error(String(reason));
   console.error('Unhandled rejection:', err);
-  reportError('server', err, { fatal: false });
+  // If reportError itself throws (a synchronous DB write failing), letting that escape this
+  // listener would very likely resurface as another uncaughtException with nothing to distinguish
+  // it from a real fatal one — this is meant to stay non-fatal (see the comment above), so a
+  // failure to *log* the original error must never escalate it into an exit.
+  try {
+    reportError('server', err, { fatal: false });
+  } catch {
+    // Deliberately swallowed.
+  }
 });
 
 process.on('uncaughtException', (err) => {
@@ -178,6 +209,7 @@ function requireAdmin(req, res, next) {
 
 // Public — clients report their own uncaught errors here (window.onerror / unhandledrejection).
 app.post('/errors/report', (req, res) => {
+  if (isErrorReportRateLimited(req)) return res.status(429).json({ error: 'Too many reports too quickly' });
   // req.body can be undefined if the request didn't carry a JSON content-type (e.g. a stale
   // service-worker-cached client), which used to throw here and get logged as a server error
   // by the very endpoint meant to capture errors — guard against that instead of assuming.
@@ -249,13 +281,22 @@ app.get('/admin/patches', requireAdmin, (req, res) => {
   res.json({ patches: db.getPendingPatchProposals() });
 });
 
+// This app runs as more than one deployed copy on the same machine, each its own systemd user
+// service (chat-app itself on 3001, plus chat-app-dev on 3005 and chat-app-test on 3007 — see
+// their .service files) — 'chat-app' was hardcoded here regardless of which copy was actually
+// running it. Approving a self-patch on the dev or test sandbox would restart *production*
+// instead of the sandbox that actually owns the change: the sandbox's own patched file never
+// takes effect (its still-running old process is untouched), and production gets an unplanned,
+// unrelated restart. SYSTEMD_SERVICE_NAME is unset in production, so this defaults to the exact
+// previous behavior there; each sandbox's .service file should set it to its own unit name.
+const SYSTEMD_SERVICE_NAME = process.env.SYSTEMD_SERVICE_NAME || 'chat-app';
 app.post('/admin/patches/:id/approve', requireAdmin, (req, res) => {
   try {
     const result = patcher.applyProposal(req.params.id);
     res.json({ ok: true, ...result });
     if (result.restarted) {
       setTimeout(() => {
-        exec('systemctl --user restart chat-app', (err) => {
+        exec(`systemctl --user restart ${SYSTEMD_SERVICE_NAME}`, (err) => {
           if (err) console.error('[patcher] Restart failed:', err.message);
         });
       }, 500);
@@ -317,6 +358,15 @@ const upload = multer({
   },
 });
 
+// Defense-in-depth for /uploads: the upload filter already derives the saved extension from a
+// fixed mimetype map rather than trusting the client (see SAFE_UPLOAD_EXT above), so this isn't
+// closing a live hole through the UI itself — but nosniff stops a browser from ever second-
+// guessing a served file's declared Content-Type based on its bytes, which is the standard
+// defense against a crafted direct request landing a mismatched file in /uploads/.
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  next();
+});
 app.use(express.static(path.join(__dirname, 'public')));
 
 // The WS join-room handler is the only place that used to check a room's PIN — these four plain
@@ -326,19 +376,55 @@ function roomPinOk(dbRoom, suppliedPin) {
   return !dbRoom || !dbRoom.pin_required || String(suppliedPin || '').trim() === dbRoom.pin_required;
 }
 
+// A message row's account_id (see insertMessage) is a much sturdier ownership check than its
+// display name when it's set — names have no persistent identity, so someone who reconnects
+// under a name a signed-in account previously posted under could otherwise edit/delete that
+// account's messages just by matching the name. Anonymous messages (account_id null) fall back
+// to the original name-only check, unchanged.
+function ownsMessage(target, ws) {
+  if (target.account_id) return target.account_id === ws.accountId;
+  return target.name === ws.profile.name;
+}
+
 // Lets the AI Studio page (its own tab, no live WebSocket/presence session) drop a
 // generated image into a room's chat without going through the join-server/join-room
 // flow — which would spuriously fire "X joined the room" for a tab that isn't really
 // sitting in the room.
 app.post('/post-image', (req, res) => {
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many posts too quickly — slow down a bit.' });
   const code = String(req.body.code || '').toUpperCase().trim();
   const name = String(req.body.name || 'Someone').slice(0, 30).trim() || 'Someone';
-  const mediaUrl = typeof req.body.mediaUrl === 'string' ? req.body.mediaUrl.slice(0, 2000) : null;
+  // Every other "attach media" path in this app (the WS 'message' handler, /post-media below,
+  // scorpture uploads) requires a real /uploads/ URL, closing off arbitrary external URLs that'd
+  // auto-load in every room member's browser as a classic IP/UA-grabbing tracker link. AI Studio's
+  // own uncaptioned-image flow legitimately posts a direct image.pollinations.ai URL (only
+  // captioned memes get uploaded first) — that's the one external host allowed here.
+  const rawMediaUrl = typeof req.body.mediaUrl === 'string' ? req.body.mediaUrl.slice(0, 2000) : null;
+  const mediaUrl = rawMediaUrl && (rawMediaUrl.startsWith('/uploads/') || rawMediaUrl.startsWith('https://image.pollinations.ai/'))
+    ? rawMediaUrl
+    : null;
   const prompt = String(req.body.prompt || '').slice(0, 500).trim();
   if (!code || !mediaUrl) return res.status(400).json({ error: 'Missing room code or image' });
   const room = rooms.get(code);
   if (!room) return res.status(404).json({ error: 'Room not found' });
+  // Unlike the WS 'message'/'join-room' paths, this route has no live session to gate on — a
+  // banned/muted user could otherwise keep posting images into a room forever just by hitting
+  // this endpoint directly, bypassing moderation entirely.
+  const postImageAccount = getAccountFromReq(req);
+  if (db.isBannedFromRoom(code, postImageAccount ? postImageAccount.id : null, name)) {
+    return res.status(403).json({ error: "You've been banned from this room" });
+  }
+  if (room.muted && room.muted.has(name)) {
+    return res.status(403).json({ error: 'You have been muted in this room' });
+  }
   if (!roomPinOk(db.getRoom(code), req.body.pin)) return res.status(403).json({ error: 'Incorrect or missing room PIN' });
+  // Claimed only once every rejection above has already passed, not the moment the URL is parsed
+  // — a muted/banned user (or a stale room/PIN) is a routine, not just theoretical, way to hit one
+  // of those returns with a perfectly real, just-uploaded file already sitting in mediaUrl; claiming
+  // it before this point would have exempted it from the sweep for good, orphaning it on disk with
+  // no path left to ever clean it up (the exact "orphaned Scorpture-style upload" gap this app has
+  // flagged and deferred before — this is the same shape and finally gets it right).
+  claimUpload(mediaUrl);
 
   const entry = {
     type: 'message',
@@ -352,7 +438,7 @@ app.post('/post-image', (req, res) => {
   };
   room.history.push(entry);
   if (room.history.length > HISTORY_LIMIT) room.history.shift();
-  db.insertMessage({ id: entry.id, roomCode: code, name: entry.name, text: entry.text, mediaUrl: entry.mediaUrl, mediaType: entry.mediaType, at: entry.at });
+  db.insertMessage({ id: entry.id, roomCode: code, name: entry.name, text: entry.text, mediaUrl: entry.mediaUrl, mediaType: entry.mediaType, at: entry.at, accountId: postImageAccount ? postImageAccount.id : null });
   db.upsertRoom(code);
   broadcastRoom(code, entry);
   pushNewMessage(code, entry);
@@ -362,15 +448,32 @@ app.post('/post-image', (req, res) => {
 // Same "own tab, no live WebSocket session" case as /post-image, but generic over
 // mediaType so the Video Editor can drop a finished render into the room's chat.
 app.post('/post-media', (req, res) => {
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many posts too quickly — slow down a bit.' });
   const code = String(req.body.code || '').toUpperCase().trim();
   const name = String(req.body.name || 'Someone').slice(0, 30).trim() || 'Someone';
-  const mediaUrl = typeof req.body.mediaUrl === 'string' ? req.body.mediaUrl.slice(0, 2000) : null;
+  // Same tracker-link concern as /post-image above — this route's only real client (Video
+  // Editor's "Send to chat") always uploads first and passes a real /uploads/ URL, so no
+  // external-host exception is needed here.
+  const rawMediaUrl = typeof req.body.mediaUrl === 'string' ? req.body.mediaUrl.slice(0, 2000) : null;
+  const mediaUrl = rawMediaUrl && rawMediaUrl.startsWith('/uploads/') ? rawMediaUrl : null;
   const mediaType = ['video', 'image', 'audio'].includes(req.body.mediaType) ? req.body.mediaType : null;
   const caption = String(req.body.caption || '').slice(0, 500).trim();
   if (!code || !mediaUrl || !mediaType) return res.status(400).json({ error: 'Missing room code or media' });
   const room = rooms.get(code);
   if (!room) return res.status(404).json({ error: 'Room not found' });
+  // Same moderation-bypass concern as /post-image above — this route also has no live WS
+  // session to check ban/mute status on otherwise.
+  const postMediaAccount = getAccountFromReq(req);
+  if (db.isBannedFromRoom(code, postMediaAccount ? postMediaAccount.id : null, name)) {
+    return res.status(403).json({ error: "You've been banned from this room" });
+  }
+  if (room.muted && room.muted.has(name)) {
+    return res.status(403).json({ error: 'You have been muted in this room' });
+  }
   if (!roomPinOk(db.getRoom(code), req.body.pin)) return res.status(403).json({ error: 'Incorrect or missing room PIN' });
+  // Claimed only after every rejection above — see the identical fix (and its full explanation)
+  // on /post-image just above.
+  claimUpload(mediaUrl);
 
   const entry = {
     type: 'message',
@@ -384,7 +487,7 @@ app.post('/post-media', (req, res) => {
   };
   room.history.push(entry);
   if (room.history.length > HISTORY_LIMIT) room.history.shift();
-  db.insertMessage({ id: entry.id, roomCode: code, name: entry.name, text: entry.text, mediaUrl: entry.mediaUrl, mediaType: entry.mediaType, at: entry.at });
+  db.insertMessage({ id: entry.id, roomCode: code, name: entry.name, text: entry.text, mediaUrl: entry.mediaUrl, mediaType: entry.mediaType, at: entry.at, accountId: postMediaAccount ? postMediaAccount.id : null });
   db.upsertRoom(code);
   broadcastRoom(code, entry);
   pushNewMessage(code, entry);
@@ -394,23 +497,37 @@ app.post('/post-media', (req, res) => {
 // Full-history search (unlike the 50-message in-memory window) — this is why SQLite
 // persistence was built first, since search over just the last 50 messages wouldn't
 // be very useful.
-app.get('/search', (req, res) => {
-  const code = String(req.query.code || '').toUpperCase().trim();
-  const q = String(req.query.q || '').trim();
+app.post('/search', (req, res) => {
+  // No throttle at all before this — real DB query cost per call, and (like /export below) an
+  // oracle for brute-forcing a PIN-protected room's PIN if the code is already known. The PIN
+  // check itself is documented elsewhere as "not real security", but a rate limit still raises
+  // the practical cost of automated guessing for free, same as every other content route in this
+  // file that got this treatment.
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many requests too quickly' });
+  const body = req.body || {};
+  const code = String(body.code || '').toUpperCase().trim();
+  const q = String(body.q || '').trim();
   if (!code || !q) return res.json({ results: [] });
   const dbRoom = db.getRoom(code);
   if (!rooms.has(code) && !dbRoom) return res.status(404).json({ error: 'Room not found' });
-  if (!roomPinOk(dbRoom, req.query.pin)) return res.status(403).json({ error: 'Incorrect or missing room PIN' });
+  if (!roomPinOk(dbRoom, body.pin)) return res.status(403).json({ error: 'Incorrect or missing room PIN' });
   res.json({ results: db.searchMessages(code, q, 50) });
 });
 
 // Plain-text transcript download — reuses the same room-existence check as /search,
 // and reads full history from SQLite rather than the in-memory 50-message window.
-app.get('/export', (req, res) => {
-  const code = String(req.query.code || '').toUpperCase().trim();
+// POST, not GET — a room PIN traveling in a query string (the old /export?code=&pin= shape)
+// leaks into browser history and any Referer header, same concern already fixed for /search.
+// Kept as a real download (Content-Disposition), just reached via fetch()+blob from the client
+// now instead of a plain <a href> navigation, since a GET-only <a> can't carry a POST body.
+app.post('/export', (req, res) => {
+  // Same PIN-oracle/no-throttle reasoning as /search above — this one also dumps a room's entire
+  // message history per call, real DB read cost on top of the PIN-guessing concern.
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many requests too quickly' });
+  const code = String(req.body.code || '').toUpperCase().trim();
   const dbRoom = db.getRoom(code);
   if (!code || (!rooms.has(code) && !dbRoom)) return res.status(404).json({ error: 'Room not found' });
-  if (!roomPinOk(dbRoom, req.query.pin)) return res.status(403).json({ error: 'Incorrect or missing room PIN' });
+  if (!roomPinOk(dbRoom, req.body.pin)) return res.status(403).json({ error: 'Incorrect or missing room PIN' });
   const messages = db.getAllMessagesForExport(code);
   const roomLabel = dbRoom && dbRoom.name ? `${dbRoom.name} (${code})` : code;
   const lines = [`Valk chat export — ${roomLabel}`, `Exported ${new Date().toISOString()}`, ''];
@@ -437,6 +554,11 @@ app.get('/export', (req, res) => {
 // on the join screen with the room pre-filled, same deep-link param the rejoin-on-reload flow
 // already reads (?room=).
 app.get('/room-qr/:code', async (req, res) => {
+  // Unlike every other content-serving route in this file, this had no throttle at all — cheap
+  // per call, but still a real CPU-amplification vector for anyone who already knows one valid
+  // room code (repeated requests to a fixed URL are trivial to script). Same shared per-IP gate
+  // every other previously-unprotected route this session got.
+  if (isPostMediaRateLimited(req)) return res.status(429).end();
   const code = String(req.params.code || '').toUpperCase().trim();
   if (!code || (!rooms.has(code) && !db.getRoom(code))) return res.status(404).end();
   const url = `${req.protocol}://${req.get('host')}/?room=${encodeURIComponent(code)}`;
@@ -508,6 +630,13 @@ function decodeHtmlEntities(str) {
 }
 
 app.get('/link-preview', async (req, res) => {
+  // Unlike every other route that reaches out to a client-chosen resource, this had no throttle
+  // at all — worse than most, since it's not just cheap-per-call like /room-qr: this makes the
+  // SERVER issue an outbound fetch (up to 5s) to a URL of the caller's choosing, unauthenticated,
+  // no prior knowledge needed (no room code, no anything). Varying the URL bypasses the existing
+  // per-URL cache entirely, so an attacker could turn this into an open outbound-request relay or
+  // just tie up server resources with many concurrent slow fetches. Same shared per-IP gate.
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many requests too quickly' });
   const url = String(req.query.url || '');
   let parsed;
   try {
@@ -566,7 +695,30 @@ app.get('/link-preview', async (req, res) => {
   }
 });
 
+// /upload is the single shared, public, unauthenticated endpoint every "attach media" feature in
+// this app funnels through — but nothing ever required the returned URL to actually get used for
+// anything. A file uploaded and never attached to a message/video/avatar/etc. was invisible to
+// cleanupInactiveRooms below (which only ever finds files by walking messages/videos that
+// reference them) and lived on disk forever, with no size quota anywhere: an anonymous script
+// hitting POST /upload in a loop — rate-limited to 8 requests/6s, but each one can be up to the
+// existing 300MB cap — could fill this app's disk in minutes from a single IP with zero login and
+// zero further action. Tracks every upload's URL + timestamp; claimUpload() (called from every
+// route below that actually persists a client-supplied /uploads/ URL somewhere real) removes the
+// entry, and sweepOrphanedUploads() near cleanupInactiveRooms deletes anything still unclaimed
+// after a generous grace period. In-memory only (resets on restart) — same "simple bound, not
+// perfect accounting" tradeoff this file's other in-memory rate-limit maps already make; the
+// worst case on a restart is a handful of pre-restart orphans going unswept, not a new hole.
+const pendingUploads = new Map(); // url -> uploadedAt
+function claimUpload(url) {
+  if (typeof url === 'string') pendingUploads.delete(url);
+}
+
 app.post('/upload', (req, res) => {
+  // Unlike every other HTTP room-content route, this had zero throttling and needs no auth/room
+  // membership — a scripted burst (up to the existing 300MB-per-file cap, no login required)
+  // could fill disk fast. Checked before multer touches the request so a rate-limited call never
+  // even gets as far as writing a file to disk.
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many uploads too quickly — slow down a bit.' });
   upload.single('file')(req, res, (err) => {
     if (err) return res.status(400).json({ error: err.message });
     if (!req.file) return res.status(400).json({ error: 'No file' });
@@ -575,8 +727,32 @@ app.post('/upload', (req, res) => {
       : req.file.mimetype.startsWith('audio/')
       ? 'audio'
       : 'image';
-    res.json({ url: `/uploads/${req.file.filename}`, mediaType });
+    const url = `/uploads/${req.file.filename}`;
+    pendingUploads.set(url, Date.now());
+    // Same crude bound every other in-memory rate-limit Map in this file already has — normal
+    // use never comes close (each upload is itself rate-limited, and every entry is removed
+    // within a grace+sweep-interval window at most), but a large-scale sustained attack from many
+    // distinct IPs could otherwise grow this unboundedly between sweeps. Clearing wholesale rather
+    // than partially evicting "fails open" (some currently-pending uploads lose tracking and
+    // become un-sweepable, i.e. safe by accident) rather than risking a more complex eviction bug.
+    if (pendingUploads.size > 10000) pendingUploads.clear();
+    res.json({ url, mediaType });
   });
+});
+
+// Lets a client keep an uploaded file alive without ever attaching it to a message/video/avatar/
+// etc. — needed for AI Studio's gallery, which is entirely client-side (localStorage, no server
+// row at all) and explicitly meant to keep a captioned meme's uploaded composite around
+// indefinitely (it has its own "remove from gallery" control, so it's a real managed collection,
+// not a throwaway). Without this, a gallery-only image (generated, kept locally, never posted to
+// a room) would silently 404 once sweepOrphanedUploads caught up to it — a real regression this
+// endpoint exists specifically to prevent. Harmless to call on a URL that was never pending (a
+// raw Pollinations.ai URL, or one already claimed) — claimUpload no-ops either way.
+app.post('/claim-upload', (req, res) => {
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many requests too quickly' });
+  const url = typeof req.body.url === 'string' ? req.body.url.slice(0, 500) : '';
+  if (url.startsWith('/uploads/')) claimUpload(url);
+  res.json({ ok: true });
 });
 
 // Reads `Authorization: Bearer <token>`, returns the account row or null — never throws, so
@@ -597,6 +773,10 @@ app.get('/push/vapid-public-key', (req, res) => {
 // roomCode is optional — an account-only subscribe (not currently in any room, e.g. right after
 // sign-in) still needs a row so friend-DM push notifications below have somewhere to deliver to.
 app.post('/push/subscribe', (req, res) => {
+  // Unauthenticated (works with no account) row-creating route with no throttle — each call
+  // upserts a push_subscriptions row, an unbounded-growth vector otherwise unlike the toggle/
+  // single-row-per-account routes elsewhere in this file.
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many requests too quickly' });
   const roomCode = String(req.body.roomCode || '').toUpperCase().trim();
   const name = String(req.body.name || '').slice(0, 30).trim();
   const subscription = req.body.subscription;
@@ -654,6 +834,102 @@ function isAuthRateLimited(req) {
   return false;
 }
 
+// isAuthRateLimited above only throttles per-IP — a distributed attacker (many IPs/a botnet) can
+// brute-force one specific account's password at unlimited aggregate rate with that alone, since
+// nothing tracks failures *per account*. This does, but deliberately doesn't fully lock the
+// account out at the threshold — an attacker could otherwise cheaply deny a real user service
+// just by feeding wrong passwords for their username from anywhere, with no password of their own
+// needed. A generous threshold instead: only kicks in under genuine sustained/distributed brute-
+// forcing, never affects a real user who fat-fingers their password a few times. Only failed
+// attempts count — a successful login never touches this.
+const usernameFailLimits = new Map();
+const USERNAME_FAIL_WINDOW_MS = 10 * 60 * 1000;
+// Overridable via env, same as the upload-sweep timers above, so the regression suite can verify
+// this fires without needing 20 real requests (which would trip the stricter per-IP auth limiter
+// first, since every test request comes from the same IP). Unset in production, no effect there.
+const USERNAME_FAIL_MAX = Number(process.env.USERNAME_FAIL_MAX) || 20;
+function isUsernameFailRateLimited(username) {
+  const key = username.toLowerCase();
+  const now = Date.now();
+  const timestamps = (usernameFailLimits.get(key) || []).filter((t) => now - t < USERNAME_FAIL_WINDOW_MS);
+  return timestamps.length >= USERNAME_FAIL_MAX;
+}
+function recordUsernameFail(username) {
+  const key = username.toLowerCase();
+  const now = Date.now();
+  const timestamps = (usernameFailLimits.get(key) || []).filter((t) => now - t < USERNAME_FAIL_WINDOW_MS);
+  timestamps.push(now);
+  usernameFailLimits.set(key, timestamps);
+  if (usernameFailLimits.size > 10000) usernameFailLimits.clear(); // crude bound on worst-case memory, same pattern as authRateLimits
+}
+
+// /post-image and /post-media are the only two ways to create a chat message that don't go
+// through a WebSocket connection (AI Studio / Video Editor posting from their own tab), so they
+// never hit the ws.msgTimestamps flood gate every other message-creation path shares (see
+// RATE_LIMIT_WINDOW_MS/RATE_LIMIT_MAX_MESSAGES below, and the 'send-group-dm'/'scorpture-live-chat'
+// fixes earlier tonight that closed the same gap elsewhere) — each call is a synchronous DB write
+// plus a room-wide broadcast plus a push notification to every offline subscriber, all
+// unthrottled otherwise. Same per-IP Map pattern as isAuthRateLimited above.
+const postMediaRateLimits = new Map();
+function isPostMediaRateLimited(req) {
+  const ip = req.ip || 'unknown';
+  const now = Date.now();
+  const timestamps = (postMediaRateLimits.get(ip) || []).filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+  if (timestamps.length >= RATE_LIMIT_MAX_MESSAGES) {
+    postMediaRateLimits.set(ip, timestamps);
+    return true;
+  }
+  timestamps.push(now);
+  postMediaRateLimits.set(ip, timestamps);
+  if (postMediaRateLimits.size > 10000) postMediaRateLimits.clear();
+  return false;
+}
+
+// /errors/report is public/unauthenticated by necessity (anonymous clients need to report their
+// own errors) — unlike every other public route, though, it had no rate limit at all, and a
+// message/stack/url that resolves to a real source file triggers a real (billed) Anthropic API
+// call in patcher.js. Without this, a scripted loop could both run up real API cost and spam
+// attacker-authored text into the self-healing pipeline's prompt at unlimited speed. Same
+// per-IP Map pattern as the limiters above, just its own bucket/window.
+const errorReportRateLimits = new Map();
+const ERROR_REPORT_WINDOW_MS = 60000;
+const ERROR_REPORT_MAX = 10; // generous for a real client hitting several distinct bugs in a minute
+function isErrorReportRateLimited(req) {
+  const ip = req.ip || 'unknown';
+  const now = Date.now();
+  const timestamps = (errorReportRateLimits.get(ip) || []).filter((t) => now - t < ERROR_REPORT_WINDOW_MS);
+  if (timestamps.length >= ERROR_REPORT_MAX) {
+    errorReportRateLimits.set(ip, timestamps);
+    return true;
+  }
+  timestamps.push(now);
+  errorReportRateLimits.set(ip, timestamps);
+  if (errorReportRateLimits.size > 10000) errorReportRateLimits.clear();
+  return false;
+}
+
+// /friends/* actions require a signed-in account but were otherwise unthrottled — unlike
+// /auth/signup itself, accounts are cheap and self-service, so this was still reachable at full
+// speed. Each 404-vs-non-404 response is also a fast username-enumeration oracle; this doesn't
+// close that (would need a uniform response either way, a bigger behavior change), just stops it
+// from being queried at unlimited speed. Same per-IP Map pattern as the limiters above.
+const friendsActionRateLimits = new Map();
+const FRIENDS_ACTION_WINDOW_MS = 60000;
+const FRIENDS_ACTION_MAX = 20;
+function isFriendsActionRateLimited(req) {
+  const ip = req.ip || 'unknown';
+  const now = Date.now();
+  const timestamps = (friendsActionRateLimits.get(ip) || []).filter((t) => now - t < FRIENDS_ACTION_WINDOW_MS);
+  if (timestamps.length >= FRIENDS_ACTION_MAX) {
+    friendsActionRateLimits.set(ip, timestamps);
+    return true;
+  }
+  timestamps.push(now);
+  friendsActionRateLimits.set(ip, timestamps);
+  if (friendsActionRateLimits.size > 10000) friendsActionRateLimits.clear();
+  return false;
+}
+
 app.post('/auth/signup', (req, res) => {
   if (isAuthRateLimited(req)) return res.status(429).json({ error: 'Too many attempts — try again in a minute' });
   const username = String(req.body.username || '').trim();
@@ -681,8 +957,12 @@ app.post('/auth/login', (req, res) => {
   if (isAuthRateLimited(req)) return res.status(429).json({ error: 'Too many attempts — try again in a minute' });
   const username = String(req.body.username || '').trim();
   const password = String(req.body.password || '');
+  if (username && isUsernameFailRateLimited(username)) {
+    return res.status(429).json({ error: 'Too many attempts — try again in a few minutes' });
+  }
   const account = db.getAccountByUsername(username);
   if (!account || !verifyPassword(password, account.salt, account.password_hash)) {
+    if (username) recordUsernameFail(username);
     return res.status(401).json({ error: 'Wrong username or password' });
   }
   const token = crypto.randomUUID();
@@ -713,6 +993,10 @@ function uniqueUsernameFrom(seed) {
 }
 
 app.post('/auth/google', async (req, res) => {
+  // Its siblings /auth/signup and /auth/login both share this same gate — this route does real
+  // cryptographic verification work (verifyIdToken) per call and had no throttle of its own,
+  // inconsistent with the rest of the auth surface.
+  if (isAuthRateLimited(req)) return res.status(429).json({ error: 'Too many attempts — try again in a minute' });
   if (!googleClient) return res.status(400).json({ error: 'Google sign-in is not configured on this server' });
   const credential = String(req.body.credential || '');
   if (!credential) return res.status(400).json({ error: 'Missing credential' });
@@ -726,7 +1010,14 @@ app.post('/auth/google', async (req, res) => {
   }
 
   const googleId = payload.sub;
-  const email = payload.email || null;
+  // verifyIdToken only proves the token was really issued by Google for this app — it does NOT
+  // mean Google itself has confirmed the holder controls this email address (Google's own
+  // documented guidance is that callers must check email_verified themselves before trusting the
+  // address for anything security-sensitive). Without this check, an attacker who can obtain a
+  // legitimately-signed token carrying an unverified victim email (possible via some federated-
+  // IdP-backed or admin-provisioned Google accounts) could get it silently linked to the victim's
+  // existing password account below — full account takeover, no password needed.
+  const email = payload.email_verified ? payload.email || null : null;
 
   let account = db.getAccountByGoogleId(googleId);
   if (!account && email) {
@@ -778,6 +1069,24 @@ app.post('/account/recent-rooms', (req, res) => {
   res.json({ ok: true });
 });
 
+// Changing an account's login username. Friends/friend-DMs/push are all account-id based (see
+// db.js friendships/group_dm_members) so nothing there needs migrating — this only affects future
+// lookups by username (sign-in, friend requests, @mentions of the new name). Past content that
+// denormalized the old username at write time (chat messages, Scorpture uploads/comments) keeps
+// showing it, same as a room display-name rename leaves old messages alone.
+app.post('/account/username', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  const username = String(req.body.username || '').trim();
+  if (!USERNAME_RE.test(username)) {
+    return res.status(400).json({ error: 'Username must be 3-20 letters, numbers, or underscores' });
+  }
+  const existing = db.getAccountByUsername(username);
+  if (existing && existing.id !== account.id) return res.status(409).json({ error: 'That username is taken' });
+  db.updateAccountUsername(account.id, username);
+  res.json({ username });
+});
+
 // ---- Friends (account-only — an anonymous per-room display name isn't a stable enough
 // identity to hang a friends list off of) ----
 
@@ -792,11 +1101,32 @@ app.get('/friends', (req, res) => {
   });
 });
 
-app.post('/friends/request', (req, res) => {
+// Rate-limit + auth + target-lookup preamble shared by every /friends/* action below (request,
+// accept, remove, block, unblock) — was copy-pasted verbatim at all five call sites. Sends the
+// appropriate error response itself and returns null when any check fails, so callers just do
+// `const r = resolveFriendsAction(req, res); if (!r) return;`.
+function resolveFriendsAction(req, res) {
+  if (isFriendsActionRateLimited(req)) {
+    res.status(429).json({ error: 'Too many attempts — try again in a minute' });
+    return null;
+  }
   const account = getAccountFromReq(req);
-  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  if (!account) {
+    res.status(401).json({ error: 'Not signed in' });
+    return null;
+  }
   const target = db.getAccountByUsername(String(req.body.username || '').trim());
-  if (!target) return res.status(404).json({ error: 'No account with that username' });
+  if (!target) {
+    res.status(404).json({ error: 'No account with that username' });
+    return null;
+  }
+  return { account, target };
+}
+
+app.post('/friends/request', (req, res) => {
+  const r = resolveFriendsAction(req, res);
+  if (!r) return;
+  const { account, target } = r;
   if (target.id === account.id) return res.status(400).json({ error: "You can't add yourself" });
   if (db.isBlockedBetween(account.id, target.id)) {
     return res.status(403).json({ error: 'Unable to send a friend request to this user' });
@@ -813,10 +1143,9 @@ app.post('/friends/request', (req, res) => {
 });
 
 app.post('/friends/accept', (req, res) => {
-  const account = getAccountFromReq(req);
-  if (!account) return res.status(401).json({ error: 'Not signed in' });
-  const target = db.getAccountByUsername(String(req.body.username || '').trim());
-  if (!target) return res.status(404).json({ error: 'No account with that username' });
+  const r = resolveFriendsAction(req, res);
+  if (!r) return;
+  const { account, target } = r;
   const existing = db.getFriendshipBetween(account.id, target.id);
   if (!existing || existing.status !== 'pending' || existing.requester_id !== target.id) {
     return res.status(400).json({ error: 'No pending request from that user' });
@@ -828,29 +1157,26 @@ app.post('/friends/accept', (req, res) => {
 // Also used to decline an incoming request and to cancel one you sent — same "remove whatever
 // relationship exists" operation either way.
 app.post('/friends/remove', (req, res) => {
-  const account = getAccountFromReq(req);
-  if (!account) return res.status(401).json({ error: 'Not signed in' });
-  const target = db.getAccountByUsername(String(req.body.username || '').trim());
-  if (!target) return res.status(404).json({ error: 'No account with that username' });
+  const r = resolveFriendsAction(req, res);
+  if (!r) return;
+  const { account, target } = r;
   db.removeFriendship(account.id, target.id);
   res.json({ ok: true });
 });
 
 app.post('/friends/block', (req, res) => {
-  const account = getAccountFromReq(req);
-  if (!account) return res.status(401).json({ error: 'Not signed in' });
-  const target = db.getAccountByUsername(String(req.body.username || '').trim());
-  if (!target) return res.status(404).json({ error: 'No account with that username' });
+  const r = resolveFriendsAction(req, res);
+  if (!r) return;
+  const { account, target } = r;
   if (target.id === account.id) return res.status(400).json({ error: "You can't block yourself" });
   db.setBlocked(account.id, target.id);
   res.json({ ok: true });
 });
 
 app.post('/friends/unblock', (req, res) => {
-  const account = getAccountFromReq(req);
-  if (!account) return res.status(401).json({ error: 'Not signed in' });
-  const target = db.getAccountByUsername(String(req.body.username || '').trim());
-  if (!target) return res.status(404).json({ error: 'No account with that username' });
+  const r = resolveFriendsAction(req, res);
+  if (!r) return;
+  const { account, target } = r;
   db.unblock(account.id, target.id);
   res.json({ ok: true });
 });
@@ -956,12 +1282,7 @@ app.get('/api/scorpture/videos/:id', (req, res) => {
 function notifyScorptureSubscribers(channelId, payload) {
   const subscriberIds = db.getScorptureSubscriberIds(channelId);
   for (const subscriberId of subscriberIds) {
-    const subs = db.getPushSubscriptionsForAccount(subscriberId);
-    for (const sub of subs) {
-      webpush.sendNotification(sub.subscription, JSON.stringify(payload)).catch((err) => {
-        if (err.statusCode === 404 || err.statusCode === 410) db.removePushSubscription(sub.endpoint);
-      });
-    }
+    sendPushToSubs(db.getPushSubscriptionsForAccount(subscriberId), payload);
   }
 }
 
@@ -971,9 +1292,21 @@ app.post('/api/scorpture/videos', (req, res) => {
   const title = String(req.body.title || '').slice(0, 100).trim();
   const description = String(req.body.description || '').slice(0, 2000).trim();
   const videoUrl = typeof req.body.videoUrl === 'string' ? req.body.videoUrl.slice(0, 2000) : '';
-  const thumbnailUrl = typeof req.body.thumbnailUrl === 'string' ? req.body.thumbnailUrl.slice(0, 2000) : null;
+  // Same /uploads/ prefix requirement the PUT (edit) route already enforces below and every
+  // other "store this URL" route in the app (banner, avatar) enforces — this create route was
+  // the one place a thumbnail could be set to an arbitrary external URL, letting an uploaded
+  // video silently act as a tracking pixel against everyone who ever sees it listed.
+  const thumbnailUrl = typeof req.body.thumbnailUrl === 'string' && req.body.thumbnailUrl.startsWith('/uploads/')
+    ? req.body.thumbnailUrl.slice(0, 2000)
+    : null;
   const category = SCORPTURE_CATEGORIES.includes(req.body.category) ? req.body.category : null;
   if (!title || !videoUrl.startsWith('/uploads/')) return res.status(400).json({ error: 'Missing title or video file' });
+  // Claimed only after the title/videoUrl check above — a missing title (a real, plausible client
+  // bug or user slip, not just a hypothetical) used to reject here *after* the video/thumbnail were
+  // already marked claimed, orphaning a genuinely-uploaded file on disk forever with no sweep able
+  // to reach it. Same fix as /post-image and /post-media above.
+  claimUpload(videoUrl);
+  claimUpload(thumbnailUrl);
   const id = crypto.randomUUID();
   db.insertScorptureVideo({
     id,
@@ -1005,6 +1338,7 @@ app.put('/api/scorpture/videos/:id', (req, res) => {
   const thumbnailUrl = typeof req.body.thumbnailUrl === 'string' && req.body.thumbnailUrl.startsWith('/uploads/')
     ? req.body.thumbnailUrl.slice(0, 2000)
     : video.thumbnail_url;
+  claimUpload(thumbnailUrl);
   db.updateScorptureVideo(video.id, { title, description, category, thumbnailUrl });
   res.json({ ok: true, title, description, category, thumbnailUrl });
 });
@@ -1016,6 +1350,11 @@ app.delete('/api/scorpture/videos/:id', (req, res) => {
   if (!video) return res.status(404).json({ error: 'Video not found' });
   if (video.uploader_id !== account.id) return res.status(403).json({ error: 'Not your video' });
   db.deleteScorptureVideo(video.id);
+  // deleteScorptureVideo only removes the DB rows — without this, the actual video/thumbnail
+  // files stay in public/uploads/ forever (an easy unbounded disk-fill: upload near the 300MB
+  // cap, delete, repeat). Same deleteUploadFile() helper the room-retention cleanup job uses.
+  deleteUploadFile(video.video_url);
+  deleteUploadFile(video.thumbnail_url);
   res.json({ ok: true });
 });
 
@@ -1026,6 +1365,10 @@ app.get('/api/scorpture/videos/:id/comments', (req, res) => {
 app.post('/api/scorpture/videos/:id/comments', (req, res) => {
   const account = getAccountFromReq(req);
   if (!account) return res.status(401).json({ error: 'Not signed in' });
+  // Same missing-flood-gate class of bug as /post-image /post-media above — a plain HTTP route
+  // with no WebSocket, so it never hit the ws.msgTimestamps limiter every other message-creation
+  // path shares.
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many comments too quickly — slow down a bit.' });
   const video = db.getScorptureVideo(req.params.id);
   if (!video) return res.status(404).json({ error: 'Video not found' });
   const text = String(req.body.text || '').slice(0, 1000).trim();
@@ -1066,6 +1409,9 @@ app.post('/api/scorpture/videos/:id/like', (req, res) => {
 app.post('/api/scorpture/videos/:id/report', (req, res) => {
   const account = getAccountFromReq(req);
   if (!account) return res.status(401).json({ error: 'Not signed in' });
+  // Unlike its sibling /like just above (a toggle — one row per account, bounded), every call
+  // here inserts a brand-new report row with no cap, an unbounded-growth/admin-queue-spam vector.
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many reports too quickly' });
   const video = db.getScorptureVideo(req.params.id);
   if (!video) return res.status(404).json({ error: 'Video not found' });
   db.insertScorptureReport({
@@ -1145,6 +1491,7 @@ app.post('/api/scorpture/banner', (req, res) => {
   const account = getAccountFromReq(req);
   if (!account) return res.status(401).json({ error: 'Not signed in' });
   const bannerUrl = typeof req.body.bannerUrl === 'string' ? req.body.bannerUrl.slice(0, 2000) : '';
+  claimUpload(bannerUrl);
   if (!bannerUrl.startsWith('/uploads/')) return res.status(400).json({ error: 'Missing banner image' });
   db.setScorptureBanner(account.id, bannerUrl);
   res.json({ ok: true, bannerUrl });
@@ -1156,6 +1503,7 @@ app.post('/api/scorpture/avatar', (req, res) => {
   const account = getAccountFromReq(req);
   if (!account) return res.status(401).json({ error: 'Not signed in' });
   const avatarUrl = typeof req.body.avatarUrl === 'string' ? req.body.avatarUrl.slice(0, 2000) : '';
+  claimUpload(avatarUrl);
   if (!avatarUrl.startsWith('/uploads/')) return res.status(400).json({ error: 'Missing avatar image' });
   db.setScorptureAvatar(account.id, avatarUrl);
   res.json({ ok: true, avatarUrl });
@@ -1215,6 +1563,7 @@ app.post('/api/scorpture/overlays', (req, res) => {
     if (type === 'image' && !content.startsWith('/uploads/')) {
       return res.status(400).json({ error: 'Image overlays must reference an uploaded file' });
     }
+    if (type === 'image') claimUpload(content);
     overlays.push({ id: crypto.randomUUID(), type, content, position });
   }
   db.setScorptureOverlays(account.id, overlays);
@@ -1279,6 +1628,7 @@ function endScorptureLive(accountId) {
     send(viewerWs, { type: 'scorpture-stream-ended' });
     viewerWs.scorptureStreamerAccountId = null;
     viewerWs.scorptureViewerId = null;
+    viewerWs._scorptureViewerIp = null;
   }
 }
 
@@ -1289,8 +1639,14 @@ function leaveScorptureLive(ws) {
   const stream = liveStreams.get(ws.scorptureStreamerAccountId);
   if (stream && ws.scorptureViewerId) {
     stream.viewers.delete(ws.scorptureViewerId);
+    if (stream.viewerIps && ws._scorptureViewerIp) {
+      const n = (stream.viewerIps.get(ws._scorptureViewerIp) || 1) - 1;
+      if (n <= 0) stream.viewerIps.delete(ws._scorptureViewerIp);
+      else stream.viewerIps.set(ws._scorptureViewerIp, n);
+    }
     send(stream.ws, { type: 'scorpture-viewer-left', viewerId: ws.scorptureViewerId });
   }
+  ws._scorptureViewerIp = null;
   ws.scorptureStreamerAccountId = null;
   ws.scorptureViewerId = null;
 }
@@ -1318,17 +1674,80 @@ function sendFriendDm(fromName, targetAccountId, text) {
       if (c.readyState === c.OPEN) c.send(livePayload);
     }
   }
-  const subs = db.getPushSubscriptionsForAccount(targetAccountId);
-  const pushPayload = JSON.stringify({ title: `${fromName} sent you a DM`, body: text, friendDm: true, fromUsername: fromName });
-  for (const sub of subs) {
-    webpush.sendNotification(sub.subscription, pushPayload).catch((err) => {
-      if (err.statusCode === 404 || err.statusCode === 410) db.removePushSubscription(sub.endpoint);
-    });
+  sendPushToSubs(db.getPushSubscriptionsForAccount(targetAccountId), { title: `${fromName} sent you a DM`, body: text, friendDm: true, fromUsername: fromName });
+}
+
+// Group DMs are persisted (unlike friend-dm above) since membership needs to survive everyone
+// being offline. Delivery still reuses the same two-part pattern: live push over accountConnections
+// for anyone currently connected, plus unconditional real push so offline members get notified too.
+function sendGroupDm(groupId, fromAccountId, fromName, text, excludeWs) {
+  const memberIds = db.getGroupDmMemberIds(groupId);
+  const livePayload = JSON.stringify({ type: 'group-dm', groupId, fromAccountId, fromName, text, at: Date.now() });
+  for (const accountId of memberIds) {
+    // Blocking someone was a no-op inside a shared group DM (block only ever touched the
+    // `friendships` table, and group-DM fan-out here never consulted it) — the blocked party
+    // could keep posting and the blocker kept receiving their messages live + as real pushes,
+    // completely defeating the point of blocking them. Skip delivery to a blocked pair (in
+    // either direction) without touching group membership itself, so the rest of the group is
+    // unaffected. Never true for accountId === fromAccountId (no self-block path exists), so
+    // this doesn't interfere with the sender's own other-device sync below.
+    if (db.isBlockedBetween(fromAccountId, accountId)) continue;
+    const liveConnections = accountConnections.get(accountId);
+    if (liveConnections) {
+      for (const c of liveConnections) {
+        if (c !== excludeWs && c.readyState === c.OPEN) c.send(livePayload);
+      }
+    }
+    if (accountId === fromAccountId) continue;
+    sendPushToSubs(db.getPushSubscriptionsForAccount(accountId), { title: `${fromName} (group)`, body: text, groupDm: true, groupId });
   }
 }
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I
 const HISTORY_LIMIT = 50;
 const MAX_GAME_PLAYERS = 20;
+const MAX_SCORPTURE_VIEWERS = 500;
+const MAX_SCORPTURE_VIEWERS_PER_IP = 8;
+
+// Whiteboard/Pictionary points are only ever meant to be small {x, y} pixel coordinates on a
+// 900x600 canvas (see BOARD_W/BOARD_H in whiteboard.js) — the existing .slice(0, 500) only
+// capped the *count* of points, not their shape/size, so a client could send up to 500 points
+// each an arbitrarily large string/object, broadcast verbatim to every room member and (for
+// whiteboard specifically) persisted to SQLite forever. This keeps only well-formed, small,
+// in-range numeric pairs.
+const STROKE_COORD_MIN = -2000;
+const STROKE_COORD_MAX = 2000;
+function sanitizeStrokePoints(rawPoints) {
+  if (!Array.isArray(rawPoints)) return [];
+  const out = [];
+  for (const p of rawPoints.slice(0, 500)) {
+    if (!p || typeof p !== 'object') continue;
+    const x = +p.x;
+    const y = +p.y;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    if (x < STROKE_COORD_MIN || x > STROKE_COORD_MAX || y < STROKE_COORD_MIN || y > STROKE_COORD_MAX) continue;
+    out.push({ x, y });
+  }
+  return out;
+}
+
+// A poll message's `text` is JSON `{question, options}` (see the pollCreateForm handler in
+// app.js) — nothing server-side ever checked it parses that way. A crafted `message` with
+// mediaType:'poll' and arbitrary text (trivial via devtools/raw WS, no UI needed) reached
+// renderPoll() client-side unguarded and threw, and since room history is rendered in one
+// forEach with no per-item try/catch, that one bad poll permanently broke rendering of every
+// message *after* it in that room's history for every future joiner.
+const POLL_MAX_OPTIONS = 20;
+function isValidPollText(text) {
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return false;
+  }
+  if (!parsed || typeof parsed.question !== 'string' || !parsed.question.trim()) return false;
+  if (!Array.isArray(parsed.options) || parsed.options.length < 2 || parsed.options.length > POLL_MAX_OPTIONS) return false;
+  return parsed.options.every((o) => typeof o === 'string' && o.trim());
+}
 const BC_MAX_HEALTH = 10;
 const BC_ARMOR_TIERS = ['Wooden', 'Stone', 'Iron', 'Gold', 'Diamond']; // must match ARMOR_REDUCTION's keys on the client
 const BC_PUNCH_RANGE = 4.5; // a little slack beyond the client's own reach check, not authoritative geometry
@@ -1337,6 +1756,13 @@ const BC_REGEN_INTERVAL_MS = 4000; // +1 heart every 4s once eligible
 const BC_REGEN_DAMAGE_COOLDOWN_MS = 5000; // must go this long without taking damage before regen starts
 const BC_CLAIM_RADIUS = 8; // must match CLAIM_RADIUS on the client
 const BC_MAX_CLAIMS_PER_PLAYER = 3;
+// A claim is "owned by" a player if their stable per-browser id matches (see bc-join) — falls
+// back to comparing display name for claims placed before that id existed (owner_id is NULL) or
+// if a connection somehow has no stableId of its own, so nothing already placed loses protection.
+function bcClaimOwnedBy(claim, player) {
+  if (claim.ownerId) return !!player.stableId && claim.ownerId === player.stableId;
+  return claim.owner === player.name;
+}
 // Sanity bound on a block-change's type index — BLOCK_TYPES (public/buildcraft.js) is currently
 // ~180 entries; comfortably above that with room to grow, bump if that catalog ever exceeds it.
 // Without this, a client sending an out-of-range type (e.g. via raw WebSocket, no UI needed)
@@ -1347,19 +1773,150 @@ const BC_MAX_BLOCK_TYPE = 300;
 // client-reported position by design, see comments elsewhere), just enough to stop a client from
 // broadcasting coordinates so large they break other players' rendering/camera math.
 const BC_MAX_COORD = 10000;
+// ---- Web Swing PvP (web strikes) — small integer health scale, same convention as
+// BC_MAX_HEALTH, since a strike (like a punch) is always worth exactly 1 point.
+const SW_MAX_HEALTH = 3;
+const SW_STRIKE_COOLDOWN_MS = 700;
+// Positions here are broadcast at ~10/sec (see sendPosBroadcast's 100ms throttle) while players
+// can move at up to MAX_SPEED=55 units/sec — up to ~5.5 units of staleness between updates on
+// top of normal network latency, so this needs more slack than BC_PUNCH_RANGE's tight building-
+// scale check. Loose sanity check, not authoritative geometry, same as everywhere else position
+// is trust-the-client in this app.
+const SW_STRIKE_RANGE = 30;
+const SW_KILL_SCORE_BONUS = 20;
+// Brief invulnerability after death/respawn. Fixes two related races found on independent review:
+// (1) a freshly-respawned player's x/y/z aren't reset server-side (spawnPlatform is deterministic
+// client-side, so the server has no coordinate to reset to) — they hold the death-location
+// coordinates until their next ~100ms-throttled sw-pos update, so a second nearby attacker could
+// land a "hit" using stale position data in that window; (2) two attackers' sw-strike messages
+// landing back-to-back on a 1-health target both connect — the first kills (health resets to
+// max), the second then lands a real hit on the "freshly alive" player, producing a spurious
+// post-death damage flash/hurt sound right after the elimination toast. Both close once any
+// strike attempt against a just-died target is rejected outright for a short window.
+const SW_RESPAWN_GRACE_MS = 500;
+// ---- Firefight — round-based 1v1 duel shooter (Rivals/tactical-shooter-inspired), on foot only,
+// no vehicles. Exactly two active duelists (slotA/slotB) at a time; anyone else who joins queues
+// as a spectator until a slot opens. Health/damage use a plain 0-150 scale (not the small-int
+// convention SW/BC combat above use) since weapons deal varied, granular damage rather than
+// always exactly 1 point. Same "trust the client's reported position, server just validates
+// cooldown/range/alive-state before applying damage" model as bc-punch/sw-strike — not real
+// anti-cheat, a loose sanity check.
+const FG_MAX_HEALTH = 150;
+// unlockKills is a career total (see fg_stats/bumpFgKills in db.js — a running count, unlike the
+// generic leaderboard table's best-score-ever semantics), not a per-match one — earned kills carry
+// over between matches and reconnects, same as a real shooter's weapon-unlock progression. Env-
+// overridable (unset in production, no effect there) so the regression suite can unlock a weapon
+// after 1-2 scripted kills instead of the real thresholds.
+const FG_RIFLE_UNLOCK_KILLS = Number(process.env.FG_RIFLE_UNLOCK_KILLS ?? 5);
+const FG_SNIPER_UNLOCK_KILLS = Number(process.env.FG_SNIPER_UNLOCK_KILLS ?? 15);
+const FG_WEAPONS = {
+  pistol: { damage: 20, cooldownMs: 220, range: 45, unlockKills: 0 },
+  rifle: { damage: 28, cooldownMs: 160, range: 55, unlockKills: FG_RIFLE_UNLOCK_KILLS },
+  // headshotDamage only applies to a shot the client reports as a headshot (a raycast against the
+  // target's head hitbox, done client-side same as this game's own crosshair/aim already is) —
+  // same loose-trust model this whole file already uses for position/range, not real anti-cheat.
+  // Only the sniper has this; pistol/rifle ignore an incoming headshot flag entirely.
+  sniper: { damage: 50, headshotDamage: 150, cooldownMs: 1300, range: 90, unlockKills: FG_SNIPER_UNLOCK_KILLS },
+};
+const FG_DEFAULT_WEAPON = 'pistol';
+function fgUnlockedWeapons(totalKills) {
+  return Object.keys(FG_WEAPONS).filter((key) => totalKills >= FG_WEAPONS[key].unlockKills);
+}
+// Overridable via env, same pattern as several other constants in this file — lets the regression
+// suite exercise a full round/intermission/match cycle in milliseconds instead of real minutes.
+// Unset in production, no effect there.
+const FG_ROUND_MS = Number(process.env.FG_ROUND_MS) || 90 * 1000;
+const FG_INTERMISSION_MS = Number(process.env.FG_INTERMISSION_MS) || 6 * 1000;
+const FG_ROUNDS_TO_WIN = Number(process.env.FG_ROUNDS_TO_WIN) || 4;
+// Same reasoning as SW_RESPAWN_GRACE_MS — a freshly-respawned/round-reset player's position isn't
+// updated server-side until their next ~100ms-throttled fg-pos, so without this a shot fired in
+// that window could land using stale position data against someone who should be safe.
+// `?? ` (not `||`) — a real test wants to override this down to a genuine 0, and 0 is falsy, so
+// `Number(...) || 500` would have silently ignored that override and kept the 500ms default.
+const FG_RESPAWN_GRACE_MS = Number(process.env.FG_RESPAWN_GRACE_MS ?? 500);
 // ---- Single-player arcade games (Snake, 2048) — no shared room state to speak of, just a
 // per-room best-score leaderboard reusing the same generic `leaderboard` table every other
 // game already uses. One handler pair covers both instead of duplicating near-identical code.
 const ARCADE_LEADERBOARD_KEY = { snake: 'snake', '2048': 'g2048', fighterplane: 'fighterplane' };
 const ARCADE_ACTIVITY_CODE = { snake: 'sk', '2048': 'tf', fighterplane: 'fp' };
+// arcade-submit-score is fully client-computed (flagged in review as a known, accepted, low-
+// severity gap — a real fix needs server-side gameplay simulation, out of scope) but had no
+// throttle at all, unlike every score/message-creation path elsewhere in this app. These two
+// checks don't make cheating impossible, just cheaper to deter: a submission cooldown (matching
+// the flood-gate convention everywhere else) and a minimum time since arcade-join (blocks the
+// trivial "join then immediately submit 100000" case without needing real anti-cheat).
+const ARCADE_SUBMIT_COOLDOWN_MS = 2000;
+const ARCADE_SUBMIT_MIN_SESSION_MS = 3000;
 const RATE_LIMIT_WINDOW_MS = 6000;
 const RATE_LIMIT_MAX_MESSAGES = 8; // generous for real typing/conversation, tight enough to stop a flood
+// Every isWsMsgRateLimited/isStrokeRateLimited flood gate in this file (there are many — chat
+// messages, reactions, typing, dg-guess, create-group-dm, bc-fall-damage, scorpture-signal,
+// whiteboard strokes, and more) is tracked on the `ws` connection object itself
+// (ws.msgTimestamps/ws.strokeTimestamps). That's fine against a client sending too fast on one
+// connection, but nothing capped how fast a client could open brand-new connections — and a fresh
+// connection means a fresh object with no timestamps yet. Without this, every one of those flood
+// gates was trivially bypassable by just reconnecting whenever the limit was hit, no slower than
+// the WS handshake itself allows: open a connection, burst up to the limit, disconnect, repeat.
+// This closes that off at the root (new-connection rate, not each gate's own per-message rate) —
+// generous enough that no legitimate reconnect pattern (a network blip, a page reload, several
+// tabs) comes close, since this app's client only ever holds one WS connection open per tab and
+// only reconnects on an actual drop.
+// Deliberately generous — this app runs behind shared NAT often enough (a household, a LAN
+// party, a small office) that several genuinely distinct people can share one apparent IP and all
+// reasonably reconnect around the same time (e.g. right after a server restart). Even at this
+// generous a cap, a reconnect-cycling attacker goes from literally unbounded to a hard ceiling —
+// a real improvement — without meaningfully risking false positives against legitimate bursts.
+// Overridable via env (see below) so the regression suite can verify the mechanism with a small
+// number of connections instead of needing hundreds; unset in production, no effect there.
+const WS_CONNECT_LIMIT_WINDOW_MS = Number(process.env.WS_CONNECT_LIMIT_WINDOW_MS) || 60 * 1000;
+const WS_CONNECT_LIMIT_MAX = Number(process.env.WS_CONNECT_LIMIT_MAX) || 60;
+const wsConnectRateLimits = new Map();
+function isWsConnectRateLimited(ip) {
+  const now = Date.now();
+  const timestamps = (wsConnectRateLimits.get(ip) || []).filter((t) => now - t < WS_CONNECT_LIMIT_WINDOW_MS);
+  if (timestamps.length >= WS_CONNECT_LIMIT_MAX) {
+    wsConnectRateLimits.set(ip, timestamps);
+    return true;
+  }
+  timestamps.push(now);
+  wsConnectRateLimits.set(ip, timestamps);
+  if (wsConnectRateLimits.size > 10000) wsConnectRateLimits.clear(); // crude bound on worst-case memory
+  return false;
+}
+// The ws.msgTimestamps flood-gate check (filter/compare/push) was copy-pasted verbatim at every
+// call site that adopted it over many sessions — extracted once, same pattern isStrokeRateLimited
+// below already uses for its own per-connection limiter.
+function isWsMsgRateLimited(ws) {
+  const now = Date.now();
+  ws.msgTimestamps = (ws.msgTimestamps || []).filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+  if (ws.msgTimestamps.length >= RATE_LIMIT_MAX_MESSAGES) return true;
+  ws.msgTimestamps.push(now);
+  return false;
+}
+// Whiteboard/Pictionary strokes are far more frequent than chat messages by nature (the client
+// already throttles its own sends to one per STROKE_FLUSH_MS=80ms, ~12.5/sec) and each one does
+// a synchronous better-sqlite3 write — unlike RATE_LIMIT_MAX_MESSAGES above, this cap only needs
+// to catch a raw-WS flood well past normal drawing speed, not slow down real use.
+const STROKE_LIMIT_WINDOW_MS = 2000;
+const STROKE_LIMIT_MAX = 40;
+function isStrokeRateLimited(ws) {
+  const now = Date.now();
+  ws.strokeTimestamps = (ws.strokeTimestamps || []).filter((t) => now - t < STROKE_LIMIT_WINDOW_MS);
+  if (ws.strokeTimestamps.length >= STROKE_LIMIT_MAX) return true;
+  ws.strokeTimestamps.push(now);
+  return false;
+}
 const ROOM_CREATE_WINDOW_MS = 60000;
 const ROOM_CREATE_MAX = 5; // one connection shouldn't need more than a handful of rooms a minute
 const REPORT_WINDOW_MS = 300000;
 const REPORT_MAX = 5; // real abuse reporting is rare enough that 5/5min is generous, not restrictive
 const AUTH_LIMIT_WINDOW_MS = 60000;
-const AUTH_LIMIT_MAX = 8; // signup/login call scryptSync (CPU-bound, synchronous) — cheap to flood without this
+// Overridable via env, same as WS_CONNECT_LIMIT_MAX above — the regression suite's shared test
+// instance runs many distinct signups/logins across dozens of unrelated describe blocks within
+// this window (they all come from one loopback IP, simulating many real, distinct users who'd
+// never actually share an IP), and would otherwise start 429ing unrelated tests' setup steps once
+// enough of the suite had run. Unset in production, no effect there.
+const AUTH_LIMIT_MAX = Number(process.env.AUTH_LIMIT_MAX) || 8; // signup/login call scryptSync (CPU-bound, synchronous) — cheap to flood without this
 const BC_DAY_CYCLE_MS = 20 * 60 * 1000; // must match DAY_CYCLE_MS on the client
 const BC_SLEEP_PHASE_TARGET = 0.27; // roughly sunrise — same constant the client uses to render it
 const BC_SPAWN = { x: 0, y: 2.4, z: 0, yaw: 0 }; // feet-level spawn (matches yawObject.position.set(0,4,0) minus EYE_HEIGHT)
@@ -1395,6 +1952,22 @@ function getOrCreateRoom(code) {
     db.upsertRoom(code);
   }
   return room;
+}
+
+// Remembers the last signed-in account seen under a given display name in this room, so
+// ban-user/mute-user can still persist a proper account-linked (rejoin-proof) ban/mute even if
+// the target already disconnected by the time the host acts — e.g. kick-then-ban in one go, or
+// the target closing the tab during the client's confirm() prompt. Without this, those very
+// common flows silently fall back to a name-only ban that a signed-in target can trivially evade
+// by reconnecting under a new display name. Bounded (oldest evicted first) since it's just a
+// best-effort recent-departures cache, not meant to be a durable identity record.
+const RECENT_ACCOUNT_BY_NAME_CAP = 200;
+function rememberRecentAccountForName(room, name, accountId) {
+  if (!room.recentAccountsByName) room.recentAccountsByName = new Map();
+  const map = room.recentAccountsByName;
+  map.delete(name); // re-insert at the end so it counts as freshest for eviction purposes
+  map.set(name, accountId);
+  if (map.size > RECENT_ACCOUNT_BY_NAME_CAP) map.delete(map.keys().next().value);
 }
 
 function generateRoomCode() {
@@ -1472,6 +2045,7 @@ function leaveRoom(ws, announce = true) {
   leaveVoice(ws);
   const room = rooms.get(code);
   if (room) {
+    if (ws.accountId && ws.profile) rememberRecentAccountForName(room, ws.profile.name, ws.accountId);
     room.clients.delete(ws);
     if (announce) {
       broadcastRoom(code, { type: 'system', text: `${ws.profile.name} left the room`, at: Date.now() });
@@ -1576,6 +2150,22 @@ function leaveBcVoice(ws) {
   for (const p of voice.values()) send(p.ws, { type: 'bc-voice-peer-left', id: ws.bcId });
 }
 
+// Shared by bc-sleep (after adding a sleeper) and leaveBc (after a disconnect shrinks
+// bc.players) — checking the consensus threshold only at bc-sleep time meant a non-sleeping
+// player disconnecting while others waited never got re-evaluated: sleeping.size could already
+// numerically satisfy the (now smaller) players.size with nothing left to ever re-trigger the
+// check, leaving every sleeper stuck showing "waiting for everyone else" forever.
+function checkBcSleepConsensus(code, bc) {
+  if (!bc.sleeping || bc.sleeping.size === 0 || bc.sleeping.size < bc.players.size || bc.players.size === 0) return;
+  const now = Date.now();
+  const offset = bc.dayNightOffsetMs || 0;
+  const phase = ((now + offset) % BC_DAY_CYCLE_MS) / BC_DAY_CYCLE_MS;
+  const targetPhase = phase > 0.8 ? 1 + BC_SLEEP_PHASE_TARGET : BC_SLEEP_PHASE_TARGET;
+  bc.dayNightOffsetMs = offset + (targetPhase - phase) * BC_DAY_CYCLE_MS;
+  bc.sleeping.clear();
+  broadcastBc(code, { type: 'bc-skip-night', offsetMs: bc.dayNightOffsetMs });
+}
+
 function leaveBc(ws) {
   const code = ws.bcRoom;
   if (!code) return;
@@ -1585,12 +2175,13 @@ function leaveBc(ws) {
     const player = room.bc.players.get(ws);
     room.bc.players.delete(ws);
     if (room.bc.sleeping) room.bc.sleeping.delete(ws);
+    checkBcSleepConsensus(code, room.bc);
     broadcastBc(code, { type: 'bc-player-left', id: ws.bcId });
     if (player) clearRoomActivity(code, player.name);
-    // World overrides are already persisted to SQLite (db.setBcOverrides) and rehydrated on the
-    // next bc-join (see that handler, which reloads via db.getBcOverrides), so it's safe to drop
-    // this in-memory session once nobody's left playing — otherwise it (claims, voice map, and
-    // all) stays resident forever, same pattern leaveTv/leaveDg already use below.
+    // World overrides and claims are both persisted to SQLite (db.setBcOverrides / db.addBcClaim)
+    // and rehydrated on the next bc-join (via db.getBcOverrides / db.getBcClaims), so it's safe to
+    // drop this in-memory session once nobody's left playing — otherwise it (voice map and all)
+    // stays resident forever, same pattern leaveTv/leaveDg already use below.
     if (room.bc.players.size === 0) delete room.bc;
   }
   ws.bcRoom = null;
@@ -1657,6 +2248,122 @@ function leaveSw(ws) {
   }
   ws.swRoom = null;
   ws.swId = null;
+}
+
+// ---- Firefight (room.fg) — see the FG_* constants above for the overall design. Broadcasts go
+// to every connection in fg.players (both active duelists and queued spectators), same as every
+// other minigame's broadcast helper in this file.
+function broadcastFg(code, data, exclude) {
+  const room = rooms.get(code);
+  const fg = room && room.fg;
+  if (!fg) return;
+  const payload = JSON.stringify(data);
+  for (const client of fg.players.keys()) {
+    if (client !== exclude && client.readyState === client.OPEN) client.send(payload);
+  }
+}
+
+function fgSlotOf(fg, ws) {
+  if (fg.slotA === ws) return 'a';
+  if (fg.slotB === ws) return 'b';
+  return null;
+}
+
+// Resets both duelists to full health/alive and starts a fresh round clock. Called for the very
+// first round of a match and again after each intermission — always re-checked against the
+// current slotA/slotB (not cached), since either duelist could have left/been replaced since the
+// timer was scheduled.
+function startFgRound(code) {
+  const room = rooms.get(code);
+  const fg = room && room.fg;
+  if (!fg || !fg.slotA || !fg.slotB) return;
+  for (const ws of [fg.slotA, fg.slotB]) {
+    const p = fg.players.get(ws);
+    if (!p) continue;
+    p.health = FG_MAX_HEALTH;
+    p.alive = true;
+    p.respawnedAt = Date.now();
+  }
+  fg.phase = 'active';
+  fg.roundNumber += 1;
+  fg.roundEndAt = Date.now() + FG_ROUND_MS;
+  clearTimeout(fg.timer);
+  fg.timer = setTimeout(() => endFgRound(code, null), FG_ROUND_MS);
+  broadcastFg(code, { type: 'fg-round-start', roundNumber: fg.roundNumber, endsAt: fg.roundEndAt, scoreA: fg.scoreA, scoreB: fg.scoreB });
+}
+
+// winnerSlot is 'a'/'b' (an elimination), or null (the round clock ran out — a draw, no score,
+// same shape as a real tactical shooter's round timer expiring with both sides still alive).
+function endFgRound(code, winnerSlot) {
+  const room = rooms.get(code);
+  const fg = room && room.fg;
+  if (!fg || fg.phase !== 'active') return;
+  clearTimeout(fg.timer);
+  if (winnerSlot === 'a') fg.scoreA += 1;
+  else if (winnerSlot === 'b') fg.scoreB += 1;
+
+  if (fg.scoreA >= FG_ROUNDS_TO_WIN || fg.scoreB >= FG_ROUNDS_TO_WIN) {
+    const matchWinnerSlot = fg.scoreA > fg.scoreB ? 'a' : 'b';
+    const matchWinnerWs = matchWinnerSlot === 'a' ? fg.slotA : fg.slotB;
+    const matchWinner = matchWinnerWs && fg.players.get(matchWinnerWs);
+    // Total kills across the whole match, not just this round — a meaningful "best duel
+    // performance" score for the room's leaderboard, only recorded once per match (not per round).
+    if (matchWinner) db.bumpLeaderboard(code, 'fg', matchWinner.name, matchWinner.kills);
+    fg.phase = 'match-end';
+    broadcastFg(code, { type: 'fg-match-end', winner: matchWinnerSlot, scoreA: fg.scoreA, scoreB: fg.scoreB });
+    // A fresh fg-start is required for a new match — same "explicit start, not auto-restart"
+    // convention every other round-based minigame in this file uses (dg-start, tv-start).
+    fg.phase = 'waiting';
+    fg.scoreA = 0;
+    fg.scoreB = 0;
+    fg.roundNumber = 0;
+    for (const ws of [fg.slotA, fg.slotB]) {
+      const p = ws && fg.players.get(ws);
+      if (p) p.kills = 0;
+    }
+    return;
+  }
+
+  fg.phase = 'intermission';
+  broadcastFg(code, { type: 'fg-round-end', winnerSlot, scoreA: fg.scoreA, scoreB: fg.scoreB });
+  fg.timer = setTimeout(() => startFgRound(code), FG_INTERMISSION_MS);
+}
+
+function leaveFg(ws) {
+  const code = ws.fgRoom;
+  if (!code) return;
+  const room = rooms.get(code);
+  const fg = room && room.fg;
+  if (fg) {
+    const player = fg.players.get(ws);
+    fg.players.delete(ws);
+    const slot = fgSlotOf(fg, ws);
+    if (slot === 'a') fg.slotA = null;
+    if (slot === 'b') fg.slotB = null;
+    if (slot) {
+      // The pairing just changed — any in-progress match no longer means anything (the departed
+      // duelist's opponent shouldn't keep a lead built against someone who isn't there anymore).
+      clearTimeout(fg.timer);
+      fg.phase = 'waiting';
+      fg.scoreA = 0;
+      fg.scoreB = 0;
+      fg.roundNumber = 0;
+      // Promote the longest-waiting spectator (Map iteration order is insertion order) into the
+      // now-empty slot, same "first queued, first up" fairness every other queue-based feature in
+      // this app uses.
+      for (const [otherWs, otherP] of fg.players) {
+        if (fgSlotOf(fg, otherWs)) continue;
+        if (slot === 'a') fg.slotA = otherWs; else fg.slotB = otherWs;
+        broadcastFg(code, { type: 'fg-slot-filled', slot, id: otherP.id, name: otherP.name });
+        break;
+      }
+    }
+    if (player) broadcastFg(code, { type: 'fg-player-left', id: player.id });
+    if (player) clearRoomActivity(code, player.name);
+    if (fg.players.size === 0) { clearTimeout(fg.timer); delete room.fg; }
+  }
+  ws.fgRoom = null;
+  ws.fgId = null;
 }
 
 // ---- Trivia Night (room.tv) — curated question bank, free/no-signup, no external trivia API.
@@ -2111,7 +2818,52 @@ function leaveWb(ws) {
   ws.wbRoom = null;
 }
 
-wss.on('connection', (ws) => {
+// Shared by kick-user/mute-user/ban-user (host check + target-name parsing + in-memory room
+// lookup) — was copy-pasted verbatim at all three call sites. unmute-user isn't included: its
+// shape genuinely differs (no empty/self-name guard, doesn't bail if the room is already gone),
+// so folding it in here would risk a subtle behavior change rather than a pure extraction.
+function resolveModerationTarget(ws, msg) {
+  const dbRoom = db.getRoom(ws.room);
+  if (!dbRoom || dbRoom.host_name !== ws.profile.name) return null;
+  const targetName = String(msg.name || '').trim();
+  if (!targetName || targetName === ws.profile.name) return null;
+  const room = rooms.get(ws.room);
+  if (!room) return null;
+  return { dbRoom, room, targetName };
+}
+
+wss.on('connection', (ws, req) => {
+  // Registered before anything else, including the connect-rate-limit check right below that can
+  // close the connection immediately — without a listener for the 'error' event, Node's
+  // EventEmitter throws an unhandled 'error' as an uncaught exception, which escapes past any
+  // try/catch (this happens at the stream/frame level, not application code) into the
+  // process-level uncaughtException handler near the top of this file, which deliberately calls
+  // process.exit(1) — turning ONE bad frame from ANY connected client into a crash of the entire
+  // server for every single connected user. Registering this any later left a real gap: a
+  // connection rejected by isWsConnectRateLimited below (closed before this line used to run) had
+  // no error protection at all during its own rejection.
+  ws.on('error', (err) => {
+    // reportError itself does a synchronous DB write — if that throws (locked/corrupted DB, disk
+    // full, whatever), the exception would propagate back out through ws's own internal emit()
+    // call stack rather than through this file's application code, right back to the exact
+    // uncaught-exception crash this handler exists to prevent. try/catch this specific call so a
+    // failure to *log* the error can never itself become the crash.
+    try {
+      reportError('server', err, { wsConnectionError: true });
+    } catch {
+      // Deliberately swallowed — see comment above.
+    }
+  });
+  // Only used to defend against a single IP claiming an outsized share of one stream's
+  // viewer slots (see MAX_SCORPTURE_VIEWERS_PER_IP below) — 'trust proxy' above only affects
+  // req.ip on HTTP routes, not this raw upgrade request, so the X-Forwarded-For header (set by
+  // the same local reverse proxy) is read directly here.
+  const xff = req.headers['x-forwarded-for'];
+  ws._ip = (xff ? xff.split(',')[0].trim() : null) || req.socket.remoteAddress || 'unknown';
+  if (isWsConnectRateLimited(ws._ip)) {
+    ws.close(1013, 'Too many connections too quickly — slow down a bit.');
+    return;
+  }
   ws.on('message', (raw) => {
     let msg;
     try {
@@ -2119,6 +2871,15 @@ wss.on('connection', (ws) => {
     } catch {
       return;
     }
+    // JSON.parse("null") succeeds and returns null (not caught above) — every dispatch check
+    // below assumes msg is an object and reads msg.type unconditionally, which throws on null
+    // (and would throw the same way on a bare number/string/boolean, though only null is valid
+    // JSON that isn't also a plain object/array). That throw used to escape uncaught (the catch
+    // block further down reads msg.type on the same null a second time while building its error
+    // context, throwing again with nothing left to catch it) straight into the process-level
+    // uncaughtException handler, which calls process.exit(1) — a single `ws.send("null")` from
+    // any connected client killed the entire server for every room/user, not just that connection.
+    if (!msg || typeof msg !== 'object') return;
 
     // The entire dispatch below is one big try/catch: a bug in any single message handler
     // must not kill this connection's message loop (or, since all clients share one process,
@@ -2158,24 +2919,66 @@ wss.on('connection', (ws) => {
       const title = String(msg.title || 'Untitled stream').slice(0, 100).trim() || 'Untitled stream';
       const account = db.getAccountById(ws.accountId);
       if (!account) return;
-      liveStreams.set(ws.accountId, { ws, username: account.username, title, startedAt: Date.now(), viewers: new Map() });
+      // A stale tab still registered as this account's live stream (e.g. a second tab, or this
+      // same tab calling go-live again after a reconnect) must be properly torn down — its
+      // viewers notified via endScorptureLive — before this one takes over. Without this, the
+      // stale tab's later close/end-live would blow away *this* stream's viewers instead of its
+      // own, since both were only ever keyed by accountId with no way to tell tabs apart.
+      if (liveStreams.has(ws.accountId)) endScorptureLive(ws.accountId);
+      liveStreams.set(ws.accountId, { ws, username: account.username, title, startedAt: Date.now(), viewers: new Map(), viewerIps: new Map() });
       send(ws, { type: 'scorpture-go-live-ack', ok: true });
       notifyScorptureSubscribers(ws.accountId, { title: `${account.username} is live`, body: title });
       return;
     }
 
     if (msg.type === 'scorpture-end-live') {
-      if (ws.accountId) endScorptureLive(ws.accountId);
+      // Only end the stream if this connection is the one actually on file — a stale/superseded
+      // tab (see scorpture-go-live above) explicitly ending "its" stream must not tear down a
+      // newer one that already replaced it.
+      if (ws.accountId) {
+        const stream = liveStreams.get(ws.accountId);
+        if (stream && stream.ws === ws) endScorptureLive(ws.accountId);
+      }
       return;
     }
 
     if (msg.type === 'scorpture-watch-live') {
+      // Rate-limited (not scorpture-leave-live, its counterpart below — that one only ever does
+      // cleanup, and throttling it risks leaving stream.viewers/viewerIps stuck over-counted,
+      // defeating the very cap this is meant to protect). Without this, a single connection
+      // could loop watch→leave against one streamer as fast as the network allows, each cycle
+      // forcing that streamer's browser to open/close a fresh RTCPeerConnection — an
+      // unauthenticated DoS against a specific broadcaster's tab.
+      if (isWsMsgRateLimited(ws)) return;
       const streamerAccount = db.getAccountByUsername(String(msg.streamerUsername || '').trim());
       const stream = streamerAccount ? liveStreams.get(streamerAccount.id) : null;
       if (!stream) {
         send(ws, { type: 'scorpture-watch-ack', live: false });
         return;
       }
+      // A connection can only ever watch one stream at a time (ws.scorptureViewerId is a single
+      // scalar field) — clear out any prior viewer registration first, whether it's for this same
+      // stream or a different one. Without this, repeated watch-live calls from the same socket
+      // (same streamer or switching streamers) leak an orphaned entry into stream.viewers on every
+      // call — never removed since ws.scorptureViewerId just gets overwritten — and force the
+      // streamer's browser to open a brand-new RTCPeerConnection each time.
+      if (ws.scorptureStreamerAccountId) leaveScorptureLive(ws);
+      if (stream.viewers.size >= MAX_SCORPTURE_VIEWERS) {
+        send(ws, { type: 'scorpture-watch-ack', live: false });
+        return;
+      }
+      // No sign-in is required to watch (by design — anonymous spectating), so there's nothing
+      // to rate-limit auth attempts against; instead cap concurrent viewer slots per IP so one
+      // machine can't force the streamer's browser to open hundreds of RTCPeerConnections or eat
+      // a large share of the global MAX_SCORPTURE_VIEWERS budget.
+      const viewerIp = ws._ip || 'unknown';
+      const ipCount = stream.viewerIps.get(viewerIp) || 0;
+      if (ipCount >= MAX_SCORPTURE_VIEWERS_PER_IP) {
+        send(ws, { type: 'scorpture-watch-ack', live: false });
+        return;
+      }
+      stream.viewerIps.set(viewerIp, ipCount + 1);
+      ws._scorptureViewerIp = viewerIp;
       const viewerId = crypto.randomUUID();
       stream.viewers.set(viewerId, ws);
       ws.scorptureStreamerAccountId = streamerAccount.id;
@@ -2194,15 +2997,30 @@ wss.on('connection', (ws) => {
     // streamer, so it addresses implicitly via ws.scorptureStreamerAccountId; the streamer
     // addresses a specific viewer explicitly via msg.viewerId (it may be broadcasting to several).
     if (msg.type === 'scorpture-signal') {
-      if (ws.scorptureStreamerAccountId) {
-        const stream = liveStreams.get(ws.scorptureStreamerAccountId);
-        if (stream) send(stream.ws, { type: 'scorpture-signal', viewerId: ws.scorptureViewerId, signal: msg.signal });
-        return;
-      }
+      // Real signaling traffic is naturally low-volume (a handful of SDP/ICE messages per call
+      // setup), so this is cheap insurance rather than a load-bearing limit — but it was missing
+      // entirely, unlike every other WS path that relays content to another connection.
+      if (isWsMsgRateLimited(ws)) return;
+      // A single connection can be simultaneously live (broadcasting) AND watching someone else's
+      // stream (the mini-widget lets you keep your own stream running while browsing elsewhere) —
+      // ws.scorptureStreamerAccountId being set doesn't mean every scorpture-signal this connection
+      // sends is viewer-to-broadcaster traffic. msg.viewerId is only ever set by a broadcaster
+      // addressing one specific viewer of its own (see the comment above), so check that first and
+      // only fall back to "I'm a viewer, forward to the streamer I'm watching" when it's absent.
+      // Previously the viewer branch fired unconditionally whenever scorptureStreamerAccountId was
+      // set, silently rerouting a simultaneous broadcaster's own outbound signaling to whichever
+      // OTHER stream they were watching instead of to their real viewers — any viewer joining
+      // during that window never received an SDP offer/ICE candidate and was stuck on an eternal
+      // "connecting" spinner, with no error anywhere.
       if (ws.accountId && msg.viewerId) {
         const stream = liveStreams.get(ws.accountId);
         const viewerWs = stream && stream.viewers.get(msg.viewerId);
         if (viewerWs) send(viewerWs, { type: 'scorpture-signal', signal: msg.signal });
+        return;
+      }
+      if (ws.scorptureStreamerAccountId) {
+        const stream = liveStreams.get(ws.scorptureStreamerAccountId);
+        if (stream) send(stream.ws, { type: 'scorpture-signal', viewerId: ws.scorptureViewerId, signal: msg.signal });
       }
       return;
     }
@@ -2219,6 +3037,9 @@ wss.on('connection', (ws) => {
         ? liveStreams.get(ws.scorptureStreamerAccountId)
         : liveStreams.get(ws.accountId);
       if (!stream) return;
+      // Same flood gate as regular chat/DM messages — was missing here, letting an unthrottled
+      // viewer spam every other viewer + the streamer at unlimited speed.
+      if (isWsMsgRateLimited(ws)) return;
       const chatMsg = { type: 'scorpture-live-chat', username: account.username, text, at: Date.now() };
       send(stream.ws, chatMsg);
       for (const viewerWs of stream.viewers.values()) send(viewerWs, chatMsg);
@@ -2244,7 +3065,10 @@ wss.on('connection', (ws) => {
           db.createBcWorld(code, seed);
           world = { seed };
         }
-        room.bc = { seed: world.seed, overrides: new Map(db.getBcOverrides(code)), players: new Map(), dayNightOffsetMs: 0, sleeping: new Set(), claims: [] };
+        // Claims are now persisted (see db.js's bc_claims table comment) -- previously always
+        // started as [] here, so any claim made in a session silently vanished once the room's
+        // last player left and this branch ran again on the next join.
+        room.bc = { seed: world.seed, overrides: new Map(db.getBcOverrides(code)), players: new Map(), dayNightOffsetMs: 0, sleeping: new Set(), claims: db.getBcClaims(code) };
       }
       if (room.bc.players.size >= MAX_GAME_PLAYERS) {
         send(ws, { type: 'bc-full' });
@@ -2253,11 +3077,16 @@ wss.on('connection', (ws) => {
       const id = crypto.randomUUID();
       ws.bcRoom = code;
       ws.bcId = id;
+      // A stable per-browser id (localStorage-generated, see buildcraft.js) used for land-claim
+      // ownership instead of display name — two players sharing a name (plausible with the
+      // default "Player") used to treat each other's claims as their own. Optional: an older
+      // client that hasn't picked this up yet just falls back to the legacy name-based check.
+      const stableId = typeof msg.playerId === 'string' ? msg.playerId.slice(0, 64) : null;
       const players = [...room.bc.players.values()].map((p) => ({ id: p.id, name: p.name, x: p.x, y: p.y, z: p.z, yaw: p.yaw, health: p.health, color: p.color, armorTier: p.armorTier || null }));
       // gameMode starts unset (treated as survival by applyBcDamage) — bc-join fires the instant
       // the socket opens, before the player has actually picked Creative/Survival on the start
       // screen; the real value arrives moments later via bc-set-mode once they click a mode.
-      room.bc.players.set(ws, { id, name, x: 0, y: 2.4, z: 0, yaw: 0, health: BC_MAX_HEALTH, lastPunchAt: 0, lastDamageAt: 0, armorReduction: 0, armorTier: null, color, gameMode: null });
+      room.bc.players.set(ws, { id, name, stableId, x: 0, y: 2.4, z: 0, yaw: 0, health: BC_MAX_HEALTH, lastPunchAt: 0, lastDamageAt: 0, armorReduction: 0, armorTier: null, color, gameMode: null });
       send(ws, {
         type: 'bc-init',
         id,
@@ -2275,16 +3104,33 @@ wss.on('connection', (ws) => {
     if (msg.type === 'bc-block' && ws.bcRoom) {
       const room = rooms.get(ws.bcRoom);
       if (!room || !room.bc) return;
+      // Land-claim protection was previously enforced client-side only (buildcraft.js's own
+      // isCellClaimedByOther checks before ever sending bc-block) — a raw WS client bypassing
+      // that JS entirely (or a modified build) could ignore claims completely, since this handler
+      // never checked them itself. `me` may be undefined for a connection that reconnected
+      // mid-session without a fresh bc-join; in that case fall back to rejecting any claimed cell
+      // outright rather than risking a false "it's mine" match via bcClaimOwnedBy.
+      const me = room.bc.players.get(ws);
+      const claims = room.bc.claims || [];
+      const isClaimedByOther = (x, z) => claims.some((c) => (!me || !bcClaimOwnedBy(c, me)) && Math.hypot(x - c.x, z - c.z) <= c.radius);
       const rawChanges = Array.isArray(msg.changes) ? msg.changes.slice(0, 2000) : [];
       const validChanges = [];
       const persistEntries = [];
       for (const c of rawChanges) {
         const type = (c.t === null || c.t === undefined) ? null : (c.t | 0);
         if (type !== null && (type < 0 || type > BC_MAX_BLOCK_TYPE)) continue;
-        const key = `${c.x | 0},${c.y | 0},${c.z | 0}`;
+        // Block type already had this bound (BC_MAX_BLOCK_TYPE) but the coordinates themselves
+        // didn't, unlike every other position field in this game (bc-pos, gw-pos, sw-pos all
+        // clamp to BC_MAX_COORD) -- an out-of-range override persists to SQLite forever and grows
+        // every future joiner's bc-init payload, so reject rather than clamp (a clamp would still
+        // let someone pile up thousands of garbage entries at the boundary).
+        const bx = c.x | 0, by = c.y | 0, bz = c.z | 0;
+        if (Math.abs(bx) > BC_MAX_COORD || Math.abs(by) > BC_MAX_COORD || Math.abs(bz) > BC_MAX_COORD) continue;
+        if (isClaimedByOther(bx, bz)) continue;
+        const key = `${bx},${by},${bz}`;
         room.bc.overrides.set(key, type);
         persistEntries.push([key, type]);
-        validChanges.push({ x: c.x | 0, y: c.y | 0, z: c.z | 0, t: type });
+        validChanges.push({ x: bx, y: by, z: bz, t: type });
       }
       if (persistEntries.length) db.setBcOverrides(ws.bcRoom, persistEntries);
       if (validChanges.length) broadcastBc(ws.bcRoom, { type: 'bc-block', changes: validChanges }, ws);
@@ -2292,6 +3138,14 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'bc-pos' && ws.bcRoom) {
+      // No throttle at all before this — a raw WS client ignoring buildcraft.js's own 120ms
+      // client-side send throttle (updateBcPosBroadcast) could flood the whole room with
+      // position broadcasts. The standard chat gate (isWsMsgRateLimited, ~1.3/sec) would be far
+      // too tight for legitimate use here — position streams are meant to run much faster than
+      // chat — so this reuses isStrokeRateLimited (20/sec) instead, the same "faster than chat
+      // but still bounded" gate whiteboard/Pictionary strokes already use, which comfortably
+      // covers the real ~8/sec (120ms) legitimate rate with headroom for jitter.
+      if (isStrokeRateLimited(ws)) return;
       const room = rooms.get(ws.bcRoom);
       const p = room && room.bc && room.bc.players.get(ws);
       if (!p) return;
@@ -2303,16 +3157,24 @@ wss.on('connection', (ws) => {
 
     if (msg.type === 'bc-punch' && ws.bcRoom) {
       const room = rooms.get(ws.bcRoom);
-      const dg = room && room.bc;
-      if (!dg) return;
-      const attacker = dg.players.get(ws);
+      const bc = room && room.bc;
+      if (!bc) return;
+      const attacker = bc.players.get(ws);
       if (!attacker || attacker.health <= 0) return;
       const now = Date.now();
       if (now - (attacker.lastPunchAt || 0) < BC_PUNCH_COOLDOWN_MS) return;
+      // Set as soon as the cooldown itself clears, not only once a punch actually connects — a
+      // punch that misses (bad targetId, dead target, out of range) still cost the attacker their
+      // swing in a real fight, and this is what makes the cooldown check above actually throttle
+      // the message rate. Setting it only on a landed hit left every miss free: a raw WS client
+      // spamming bc-punch at a target it knows is out of range paid no cooldown at all, an
+      // unthrottled flood of messages (same bug independently found and fixed in fg-shoot/
+      // sw-strike, which used to follow this exact same shape).
+      attacker.lastPunchAt = now;
 
       let targetWs = null;
       let target = null;
-      for (const [w, p] of dg.players) {
+      for (const [w, p] of bc.players) {
         if (p.id === msg.targetId) { targetWs = w; target = p; break; }
       }
       if (!target || target.health <= 0) return;
@@ -2322,16 +3184,20 @@ wss.on('connection', (ws) => {
       const dx = attacker.x - target.x, dy = attacker.y - target.y, dz = attacker.z - target.z;
       if (Math.sqrt(dx * dx + dy * dy + dz * dz) > BC_PUNCH_RANGE + 3) return;
 
-      attacker.lastPunchAt = now;
       applyBcDamage(ws.bcRoom, targetWs, target, 1, attacker.id);
       return;
     }
 
     if (msg.type === 'bc-fall-damage' && ws.bcRoom) {
       const room = rooms.get(ws.bcRoom);
-      const dg = room && room.bc;
-      const me = dg && dg.players.get(ws);
+      const bc = room && room.bc;
+      const me = bc && bc.players.get(ws);
       if (!me || me.health <= 0) return;
+      // Only ever damages the sender's own health (byId: null), so unlike bc-punch this can't
+      // directly harm another player — but applyBcDamage broadcasts a real bc-hit to the whole
+      // room on every call, and this had no cooldown at all, unlike bc-punch's dedicated one. A
+      // raw WS client spamming this was a room-wide broadcast flood, not just self-harm.
+      if (isWsMsgRateLimited(ws)) return;
       const amount = Math.max(0, Math.min(BC_MAX_HEALTH, Math.floor(+msg.amount || 0)));
       if (amount <= 0) return;
       applyBcDamage(ws.bcRoom, ws, me, amount, null);
@@ -2347,6 +3213,10 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'bc-set-armor' && ws.bcRoom) {
+      // Unlike bc-claim/dg-start/tv-start (naturally bounded by a per-player cap or "can't
+      // restart an active round"), this and bc-set-skin below have no such natural limit — a
+      // cosmetic/loadout choice can be toggled at will, with a room-wide broadcast every time.
+      if (isWsMsgRateLimited(ws)) return;
       const room = rooms.get(ws.bcRoom);
       const me = room && room.bc && room.bc.players.get(ws);
       if (!me) return;
@@ -2359,6 +3229,7 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'bc-set-skin' && ws.bcRoom) {
+      if (isWsMsgRateLimited(ws)) return;
       const room = rooms.get(ws.bcRoom);
       const me = room && room.bc && room.bc.players.get(ws);
       if (!me || !/^#[0-9a-fA-F]{6}$/.test(msg.color || '')) return;
@@ -2369,54 +3240,49 @@ wss.on('connection', (ws) => {
 
     if (msg.type === 'bc-claim' && ws.bcRoom) {
       const room = rooms.get(ws.bcRoom);
-      const dg = room && room.bc;
-      const me = dg && dg.players.get(ws);
-      if (!dg || !me) return;
-      if (!dg.claims) dg.claims = [];
-      const ownedCount = dg.claims.filter((c) => c.owner === me.name).length;
+      const bc = room && room.bc;
+      const me = bc && bc.players.get(ws);
+      if (!bc || !me) return;
+      if (!bc.claims) bc.claims = [];
+      const ownedCount = bc.claims.filter((c) => bcClaimOwnedBy(c, me)).length;
       if (ownedCount >= BC_MAX_CLAIMS_PER_PLAYER) {
         send(ws, { type: 'bc-claim-denied' });
         return;
       }
-      const claim = { x: Math.floor(+msg.x || 0), z: Math.floor(+msg.z || 0), radius: BC_CLAIM_RADIUS, owner: me.name };
-      dg.claims.push(claim);
+      const claimX = Math.max(-BC_MAX_COORD, Math.min(BC_MAX_COORD, Math.floor(+msg.x || 0)));
+      const claimZ = Math.max(-BC_MAX_COORD, Math.min(BC_MAX_COORD, Math.floor(+msg.z || 0)));
+      const claim = { x: claimX, z: claimZ, radius: BC_CLAIM_RADIUS, owner: me.name, ownerId: me.stableId || null };
+      bc.claims.push(claim);
+      db.addBcClaim(ws.bcRoom, claim.x, claim.z, claim.radius, claim.owner, claim.ownerId);
       broadcastBc(ws.bcRoom, { type: 'bc-claim-added', ...claim });
       return;
     }
 
     if (msg.type === 'bc-sleep' && ws.bcRoom) {
       const room = rooms.get(ws.bcRoom);
-      const dg = room && room.bc;
-      const me = dg && dg.players.get(ws);
-      if (!dg || !me) return;
-      if (!dg.sleeping) dg.sleeping = new Set();
-      dg.sleeping.add(ws);
-      broadcastBc(ws.bcRoom, { type: 'bc-sleep-count', sleeping: dg.sleeping.size, total: dg.players.size });
-      if (dg.sleeping.size >= dg.players.size && dg.players.size > 0) {
-        const now = Date.now();
-        const offset = dg.dayNightOffsetMs || 0;
-        const phase = ((now + offset) % BC_DAY_CYCLE_MS) / BC_DAY_CYCLE_MS;
-        const targetPhase = phase > 0.8 ? 1 + BC_SLEEP_PHASE_TARGET : BC_SLEEP_PHASE_TARGET;
-        dg.dayNightOffsetMs = offset + (targetPhase - phase) * BC_DAY_CYCLE_MS;
-        dg.sleeping.clear();
-        broadcastBc(ws.bcRoom, { type: 'bc-skip-night', offsetMs: dg.dayNightOffsetMs });
-      }
+      const bc = room && room.bc;
+      const me = bc && bc.players.get(ws);
+      if (!bc || !me) return;
+      if (!bc.sleeping) bc.sleeping = new Set();
+      bc.sleeping.add(ws);
+      broadcastBc(ws.bcRoom, { type: 'bc-sleep-count', sleeping: bc.sleeping.size, total: bc.players.size });
+      checkBcSleepConsensus(ws.bcRoom, bc);
       return;
     }
 
     if (msg.type === 'bc-wake' && ws.bcRoom) {
       const room = rooms.get(ws.bcRoom);
-      const dg = room && room.bc;
-      if (!dg || !dg.sleeping) return;
-      dg.sleeping.delete(ws);
-      broadcastBc(ws.bcRoom, { type: 'bc-sleep-count', sleeping: dg.sleeping.size, total: dg.players.size });
+      const bc = room && room.bc;
+      if (!bc || !bc.sleeping) return;
+      bc.sleeping.delete(ws);
+      broadcastBc(ws.bcRoom, { type: 'bc-sleep-count', sleeping: bc.sleeping.size, total: bc.players.size });
       return;
     }
 
     if (msg.type === 'bc-eat' && ws.bcRoom) {
       const room = rooms.get(ws.bcRoom);
-      const dg = room && room.bc;
-      const me = dg && dg.players.get(ws);
+      const bc = room && room.bc;
+      const me = bc && bc.players.get(ws);
       if (!me || me.health <= 0) return;
       const amount = Math.max(0, Math.min(BC_MAX_HEALTH, Math.floor(+msg.amount || 0)));
       if (amount <= 0) return;
@@ -2432,14 +3298,14 @@ wss.on('connection', (ws) => {
 
     if (msg.type === 'bc-voice-join' && ws.bcRoom) {
       const room = rooms.get(ws.bcRoom);
-      const dg = room && room.bc;
-      const me = dg && dg.players.get(ws);
-      if (!dg || !me) return;
-      if (!dg.voice) dg.voice = new Map();
-      const existing = [...dg.voice.entries()].map(([id, p]) => ({ id, name: p.name }));
-      dg.voice.set(ws.bcId, { ws, name: me.name });
+      const bc = room && room.bc;
+      const me = bc && bc.players.get(ws);
+      if (!bc || !me) return;
+      if (!bc.voice) bc.voice = new Map();
+      const existing = [...bc.voice.entries()].map(([id, p]) => ({ id, name: p.name }));
+      bc.voice.set(ws.bcId, { ws, name: me.name });
       send(ws, { type: 'bc-voice-peers', peers: existing });
-      for (const [id, p] of dg.voice) {
+      for (const [id, p] of bc.voice) {
         if (id !== ws.bcId) send(p.ws, { type: 'bc-voice-peer-joined', id: ws.bcId, name: me.name });
       }
       return;
@@ -2465,6 +3331,9 @@ wss.on('connection', (ws) => {
       if (!me) return;
       const text = String(msg.text || '').slice(0, 300).trim();
       if (!text) return;
+      // Same flood gate every other chat-creation path in this app shares (room chat, DMs,
+      // group DMs, Scorpture live chat) — Build Craft's in-game chat was missing it.
+      if (isWsMsgRateLimited(ws)) return;
       broadcastBc(ws.bcRoom, { type: 'bc-chat', name: me.name, text });
       return;
     }
@@ -2533,6 +3402,10 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'gw-pos' && ws.gwRoom) {
+      // Same reasoning as bc-pos above — no throttle before this, and the standard chat gate
+      // would be too tight for a real-time position stream (legitimate client throttle is 100ms,
+      // ~10/sec).
+      if (isStrokeRateLimited(ws)) return;
       const room = rooms.get(ws.gwRoom);
       const session = room && room.gw && room.gw.get(ws.gwLevel);
       const p = session && session.players.get(ws);
@@ -2553,6 +3426,16 @@ wss.on('connection', (ws) => {
       const name = String(msg.name || '').slice(0, 30).trim();
       const percent = Math.max(0, Math.min(100, Math.floor(+msg.percent || 0)));
       if (!level || !name || !percent) return;
+      // Fully client-computed like arcade-submit-score (Snake/2048/Fighter Plane) — anyone can
+      // fire a gw-complete frame directly to plant a fake leaderboard entry. Reuses that same
+      // submission-cooldown mitigation, but deliberately NOT the min-session-time half of it:
+      // unlike arcade-join (fires on page load), gw-join fires right when startLevel() actually
+      // starts play, so a genuinely fast clear of a short/easy hand-built level could be well
+      // under the 3s threshold that's safe for the arcade games — a false block on a real score
+      // is worse than leaving this particular gap only partially covered.
+      const nowGw = Date.now();
+      if (nowGw - (ws.lastGwSubmitAt || 0) < ARCADE_SUBMIT_COOLDOWN_MS) return;
+      ws.lastGwSubmitAt = nowGw;
       db.bumpLeaderboard(ws.gwRoom, `gw-${level}`, name, percent);
       return;
     }
@@ -2581,14 +3464,18 @@ wss.on('connection', (ws) => {
       ws.swRoom = code;
       ws.swId = id;
       const players = [...room.sw.players.values()].map((p) => ({ id: p.id, name: p.name, x: p.x, y: p.y, z: p.z, yaw: p.yaw }));
-      room.sw.players.set(ws, { id, name, x: 0, y: 0, z: 0, yaw: 0 });
-      send(ws, { type: 'sw-init', id, players });
+      room.sw.players.set(ws, { id, name, x: 0, y: 0, z: 0, yaw: 0, health: SW_MAX_HEALTH, lastStrikeAt: 0, respawnedAt: 0 });
+      send(ws, { type: 'sw-init', id, players, health: SW_MAX_HEALTH });
       broadcastSw(code, { type: 'sw-player-joined', id, name }, ws);
       setRoomActivity(code, name, 'sw');
       return;
     }
 
     if (msg.type === 'sw-pos' && ws.swRoom) {
+      // Same reasoning as bc-pos above — no throttle before this, and the standard chat gate
+      // would be too tight for a real-time position stream (legitimate client throttle is 100ms,
+      // ~10/sec).
+      if (isStrokeRateLimited(ws)) return;
       const room = rooms.get(ws.swRoom);
       const p = room && room.sw && room.sw.players.get(ws);
       if (!p) return;
@@ -2598,6 +3485,44 @@ wss.on('connection', (ws) => {
         type: 'sw-pos', id: ws.swId, x: p.x, y: p.y, z: p.z, yaw: p.yaw,
         swinging: !!msg.swinging, ax: swClamp(msg.ax), ay: swClamp(msg.ay), az: swClamp(msg.az),
       }, ws);
+      return;
+    }
+
+    // Web strike — PvP combat. Same shape as bc-punch: a cooldown, a loose position-based range
+    // check (not authoritative geometry, matching this game's existing trust-the-client position
+    // model), then a direct health decrement with a broadcast death/respawn on elimination.
+    if (msg.type === 'sw-strike' && ws.swRoom) {
+      const room = rooms.get(ws.swRoom);
+      const session = room && room.sw;
+      if (!session) return;
+      const attacker = session.players.get(ws);
+      if (!attacker || attacker.health <= 0) return;
+      const now = Date.now();
+      if (now - (attacker.lastStrikeAt || 0) < SW_STRIKE_COOLDOWN_MS) return;
+      // Set right after the cooldown check clears, not only on a landed hit — see the identical
+      // fix (and its full explanation) on bc-punch above; a miss (self-target, dead target,
+      // respawn grace, out of range) used to cost nothing, leaving this cooldown check trivially
+      // bypassable by spamming sw-strike at a target it knows won't connect.
+      attacker.lastStrikeAt = now;
+
+      if (msg.targetId === attacker.id) return;
+      let target = null;
+      for (const p of session.players.values()) {
+        if (p.id === msg.targetId) { target = p; break; }
+      }
+      if (!target || target.health <= 0) return;
+      if (now - (target.respawnedAt || 0) < SW_RESPAWN_GRACE_MS) return;
+      const dx = attacker.x - target.x, dy = attacker.y - target.y, dz = attacker.z - target.z;
+      if (Math.sqrt(dx * dx + dy * dy + dz * dz) > SW_STRIKE_RANGE) return;
+
+      target.health -= 1;
+      if (target.health > 0) {
+        broadcastSw(ws.swRoom, { type: 'sw-hit', targetId: target.id, health: target.health, byId: attacker.id });
+        return;
+      }
+      target.health = SW_MAX_HEALTH;
+      target.respawnedAt = now;
+      broadcastSw(ws.swRoom, { type: 'sw-death', id: target.id, killedBy: attacker.id, health: SW_MAX_HEALTH });
       return;
     }
 
@@ -2622,6 +3547,156 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    if (msg.type === 'fg-join') {
+      const code = String(msg.code || '').toUpperCase().trim();
+      const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
+      if (!code) return;
+      // A connection already active in this exact session must never re-run slot assignment below
+      // — fg.slotA/fg.slotB are only ever checked for truthiness ("is a slot open"), not "is this
+      // someone else's connection", so a second fg-join on the same ws could otherwise claim BOTH
+      // duelist slots for itself: fgSlotOf always resolves such a connection to 'a', so fg-shoot's
+      // "target" would resolve back to the same entry as "attacker", guaranteeing every shot lands
+      // (zero distance to itself) and letting it farm round/match wins and leaderboard kills solo
+      // — the real client never does this (one fg-join per fresh connection), but a raw WS client
+      // could, and it broke the whole "genuine 1v1" premise this feature was built for. Already
+      // active in a *different* fg session just leaves that one first, same as a normal room switch.
+      if (ws.fgRoom === code) return;
+      if (ws.fgRoom) leaveFg(ws);
+      const room = getOrCreateRoom(code);
+      if (!room.fg) room.fg = { players: new Map(), slotA: null, slotB: null, phase: 'waiting', scoreA: 0, scoreB: 0, roundNumber: 0, roundEndAt: null, timer: null };
+      const fg = room.fg;
+      if (fg.players.size >= MAX_GAME_PLAYERS) {
+        send(ws, { type: 'fg-full' });
+        return;
+      }
+      const id = crypto.randomUUID();
+      ws.fgRoom = code;
+      ws.fgId = id;
+      const entry = { id, name, x: 0, y: 0, z: 0, yaw: 0, health: FG_MAX_HEALTH, alive: false, weapon: FG_DEFAULT_WEAPON, kills: 0, deaths: 0, lastShotAt: 0, respawnedAt: 0 };
+      fg.players.set(ws, entry);
+      // First two players to ever join a fresh session become the duelists; everyone after that
+      // queues as a spectator until a slot opens (see leaveFg's promotion logic).
+      let role = 'spectator';
+      if (!fg.slotA) { fg.slotA = ws; role = 'a'; }
+      else if (!fg.slotB) { fg.slotB = ws; role = 'b'; }
+      const totalKills = db.getFgKills(code, name);
+      send(ws, {
+        type: 'fg-init',
+        id,
+        role,
+        weapons: FG_WEAPONS,
+        maxHealth: FG_MAX_HEALTH,
+        totalKills,
+        unlockedWeapons: fgUnlockedWeapons(totalKills),
+        players: [...fg.players.values()],
+        slotAId: fg.slotA ? fg.players.get(fg.slotA).id : null,
+        slotBId: fg.slotB ? fg.players.get(fg.slotB).id : null,
+        phase: fg.phase,
+        scoreA: fg.scoreA,
+        scoreB: fg.scoreB,
+        roundNumber: fg.roundNumber,
+        endsAt: fg.roundEndAt,
+      });
+      broadcastFg(code, { type: 'fg-player-joined', id, name, role }, ws);
+      setRoomActivity(code, name, 'fg');
+      return;
+    }
+
+    if (msg.type === 'fg-start' && ws.fgRoom) {
+      const room = rooms.get(ws.fgRoom);
+      const fg = room && room.fg;
+      if (!fg || fg.phase !== 'waiting' || !fg.slotA || !fg.slotB) return;
+      startFgRound(ws.fgRoom);
+      return;
+    }
+
+    if (msg.type === 'fg-select-weapon' && ws.fgRoom) {
+      const room = rooms.get(ws.fgRoom);
+      const fg = room && room.fg;
+      const p = fg && fg.players.get(ws);
+      if (!p || !Object.prototype.hasOwnProperty.call(FG_WEAPONS, msg.weapon)) return;
+      // Actually enforced here, not just hidden/greyed-out client-side — a raw WS client could
+      // otherwise just send fg-select-weapon for a locked weapon directly and skip the unlock
+      // requirement entirely.
+      if (db.getFgKills(ws.fgRoom, p.name) < FG_WEAPONS[msg.weapon].unlockKills) return;
+      p.weapon = msg.weapon;
+      broadcastFg(ws.fgRoom, { type: 'fg-weapon-changed', id: p.id, weapon: p.weapon });
+      return;
+    }
+
+    if (msg.type === 'fg-pos' && ws.fgRoom) {
+      // Same reasoning as bc-pos/sw-pos/gw-pos above — real-time position stream, needs the
+      // higher-throughput gate, not the tight chat-message one.
+      if (isStrokeRateLimited(ws)) return;
+      const room = rooms.get(ws.fgRoom);
+      const p = room && room.fg && room.fg.players.get(ws);
+      if (!p) return;
+      const fgClamp = (n) => Math.max(-BC_MAX_COORD, Math.min(BC_MAX_COORD, +n || 0));
+      p.x = fgClamp(msg.x); p.y = fgClamp(msg.y); p.z = fgClamp(msg.z); p.yaw = +msg.yaw || 0;
+      broadcastFg(ws.fgRoom, { type: 'fg-pos', id: p.id, x: p.x, y: p.y, z: p.z, yaw: p.yaw }, ws);
+      return;
+    }
+
+    if (msg.type === 'fg-shoot' && ws.fgRoom) {
+      const room = rooms.get(ws.fgRoom);
+      const fg = room && room.fg;
+      if (!fg || fg.phase !== 'active') return;
+      const attackerSlot = fgSlotOf(fg, ws);
+      if (!attackerSlot) return; // only the two active duelists can deal damage — a queued spectator has nothing to shoot at
+      const attacker = fg.players.get(ws);
+      if (!attacker || !attacker.alive) return;
+      const weapon = FG_WEAPONS[attacker.weapon] || FG_WEAPONS[FG_DEFAULT_WEAPON];
+      const now = Date.now();
+      if (now - (attacker.lastShotAt || 0) < weapon.cooldownMs) return;
+      // Set right after the cooldown check clears, not only on a landed hit — see the identical
+      // fix (and its full explanation) on bc-punch above; a shot that misses (dead target,
+      // respawn grace, out of range) used to cost nothing, leaving this cooldown check trivially
+      // bypassable by spamming fg-shoot at a target known to be out of range.
+      attacker.lastShotAt = now;
+
+      const targetWs = attackerSlot === 'a' ? fg.slotB : fg.slotA;
+      // Defense in depth alongside fg-join's own guard above (which is what actually prevents
+      // fg.slotA and fg.slotB ever being the same connection in the first place) — same
+      // belt-and-suspenders self-target check sw-strike already has.
+      if (targetWs === ws) return;
+      const target = targetWs && fg.players.get(targetWs);
+      if (!target || !target.alive) return;
+      if (now - (target.respawnedAt || 0) < FG_RESPAWN_GRACE_MS) return;
+      const dx = attacker.x - target.x, dy = attacker.y - target.y, dz = attacker.z - target.z;
+      if (Math.sqrt(dx * dx + dy * dy + dz * dz) > weapon.range) return;
+
+      const headshot = !!msg.headshot && !!weapon.headshotDamage;
+      const damage = headshot ? weapon.headshotDamage : weapon.damage;
+      target.health = Math.max(0, target.health - damage);
+      if (target.health > 0) {
+        broadcastFg(ws.fgRoom, { type: 'fg-hit', targetId: target.id, health: target.health, byId: attacker.id, weapon: attacker.weapon, headshot });
+        return;
+      }
+      target.alive = false;
+      target.deaths += 1;
+      attacker.kills += 1;
+      broadcastFg(ws.fgRoom, { type: 'fg-death', id: target.id, killedBy: attacker.id, weapon: attacker.weapon, headshot });
+      // Career total, not the in-memory per-match `attacker.kills` above — persists across matches
+      // and reconnects (see fg_stats/bumpFgKills in db.js), which is what weapon unlocks are keyed
+      // to. Sent only to the attacker; nobody else's unlock progress is their business.
+      const totalKills = db.bumpFgKills(ws.fgRoom, attacker.name);
+      send(ws, { type: 'fg-unlock-progress', totalKills, unlockedWeapons: fgUnlockedWeapons(totalKills) });
+      endFgRound(ws.fgRoom, attackerSlot);
+      return;
+    }
+
+    if (msg.type === 'fg-leave') {
+      leaveFg(ws);
+      return;
+    }
+
+    if (msg.type === 'fg-leaderboard') {
+      const code = String(msg.code || '').toUpperCase().trim();
+      if (!code) return;
+      send(ws, { type: 'fg-leaderboard-result', scores: db.getLeaderboard(code, 'fg', 10) });
+      return;
+    }
+
     if (msg.type === 'tv-join') {
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
@@ -2643,7 +3718,11 @@ wss.on('connection', (ws) => {
       send(ws, { type: 'tv-init', id, players: tvScores(tv) });
       if (inRound) {
         const q = TV_QUESTIONS[tv.currentQuestion];
-        send(ws, { type: 'tv-question', question: q.q, choices: q.choices, category: q.category, endsAt: tv.roundEndAt });
+        // alreadyAnswered lets a reconnecting client correctly disable choice buttons instead of
+        // blindly re-enabling them for someone who answered this exact question before a brief
+        // disconnect — the server-side duplicate-answer guard above is keyed by name for the
+        // same reconnect case, so this just keeps the UI honest about it too.
+        send(ws, { type: 'tv-question', question: q.q, choices: q.choices, category: q.category, endsAt: tv.roundEndAt, alreadyAnswered: tv.answeredThisRound.has(name) });
       }
       broadcastTv(code, { type: 'tv-player-joined', id, name }, ws);
       setRoomActivity(code, name, 'tv');
@@ -2673,11 +3752,14 @@ wss.on('connection', (ws) => {
       const tv = room && room.tv;
       if (!tv || tv.currentQuestion === null || !tv.roundEndAt) return;
       const me = tv.players.get(ws);
-      if (!me || tv.answeredThisRound.has(me.id)) return;
+      // Keyed by name, not the per-connection id — tv-join mints a brand-new random id on every
+      // join, including a reconnect mid-round (brief network blip, bouncing to another tab), so
+      // keying this by id let a reconnected player answer (and score) the same question twice.
+      if (!me || tv.answeredThisRound.has(me.name)) return;
       const q = TV_QUESTIONS[tv.currentQuestion];
       const choice = Math.floor(+msg.choice);
       const correct = choice === q.answerIndex;
-      tv.answeredThisRound.set(me.id, correct);
+      tv.answeredThisRound.set(me.name, correct);
       let points = 0;
       if (correct) {
         const rank = [...tv.answeredThisRound.values()].filter(Boolean).length;
@@ -2709,12 +3791,17 @@ wss.on('connection', (ws) => {
       ws.arcadeRoom = code;
       ws.arcadeGame = game;
       ws.arcadeName = name;
+      ws.arcadeJoinedAt = Date.now();
       setRoomActivity(code, name, ARCADE_ACTIVITY_CODE[game]);
       send(ws, { type: 'arcade-leaderboard', scores: db.getLeaderboard(code, ARCADE_LEADERBOARD_KEY[game], 10) });
       return;
     }
 
     if (msg.type === 'arcade-submit-score' && ws.arcadeRoom) {
+      const nowArcade = Date.now();
+      if (nowArcade - (ws.arcadeJoinedAt || 0) < ARCADE_SUBMIT_MIN_SESSION_MS) return;
+      if (nowArcade - (ws.lastArcadeSubmitAt || 0) < ARCADE_SUBMIT_COOLDOWN_MS) return;
+      ws.lastArcadeSubmitAt = nowArcade;
       const score = Math.max(0, Math.min(100000, Math.floor(+msg.score || 0)));
       db.bumpLeaderboard(ws.arcadeRoom, ARCADE_LEADERBOARD_KEY[ws.arcadeGame], ws.arcadeName, score);
       send(ws, { type: 'arcade-leaderboard', scores: db.getLeaderboard(ws.arcadeRoom, ARCADE_LEADERBOARD_KEY[ws.arcadeGame], 10) });
@@ -2831,6 +3918,15 @@ wss.on('connection', (ws) => {
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
+      // Same fix as fg-join's — see its comment for the full exploit this closes. Here a repeat
+      // join corrupted the game rather than granting a guaranteed win: whiteId/blackId are IDs,
+      // not connections, and a second ch-join generates a fresh id and overwrites this ws's single
+      // Map entry with it — so the FIRST id (still sitting in whiteId or blackId) permanently
+      // points to an entry that no longer exists, soft-locking that color forever (ch-move checks
+      // ch.players.get(ws), which only ever reflects the *latest* entry) and, once both colors are
+      // "claimed" this way, locking out any real second player too.
+      if (ws.chRoom === code) return;
+      if (ws.chRoom) leaveCh(ws);
       const room = getOrCreateRoom(code);
       if (!room.ch) {
         room.ch = { players: new Map(), board: chessInitialBoard(), turn: 'white', winner: null, whiteId: null, blackId: null };
@@ -2924,6 +4020,12 @@ wss.on('connection', (ws) => {
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
+      // Same fix as ch-join's just above (and fg-join's, which this whole class was originally
+      // found in) — a repeat join here permanently soft-locks whichever symbol it "claims" a
+      // second time, since xId/oId are stable ids but this ws's single Map entry only ever holds
+      // the latest one.
+      if (ws.ttRoom === code) return;
+      if (ws.ttRoom) leaveTt(ws);
       const room = getOrCreateRoom(code);
       if (!room.tt) {
         room.tt = { players: new Map(), mode: 'tictactoe', board: new Array(9).fill(null), turn: 'X', winner: null, xId: null, oId: null };
@@ -2949,7 +4051,10 @@ wss.on('connection', (ws) => {
     if (msg.type === 'tt-set-mode' && ws.ttRoom) {
       const room = rooms.get(ws.ttRoom);
       const tt = room && room.tt;
-      if (!tt || !TT_MODES[msg.mode] || tt.board.some((c) => c)) return; // only before the first move
+      const meTt = tt && tt.players.get(ws);
+      // A spectator (3rd+ joiner, no seat) could otherwise reset the board on a loop and stop
+      // the two seated players from ever getting a mode choice that sticks.
+      if (!tt || !meTt || !meTt.symbol || !TT_MODES[msg.mode] || tt.board.some((c) => c)) return; // only before the first move
       tt.mode = msg.mode;
       const cfg = TT_MODES[tt.mode];
       tt.board = new Array(cfg.width * cfg.height).fill(null);
@@ -3073,6 +4178,11 @@ wss.on('connection', (ws) => {
         strokes: dg.strokes,
         categories: DG_CATEGORY_NAMES,
         category: dg.category,
+        // guessedThisRound is keyed by name (stable across a reconnect), while `id` above is a
+        // fresh per-connection value every dg-join generates — without this, a client reconnecting
+        // mid-round (e.g. a brief network blip) has no way to know it already guessed correctly
+        // this round, the same class of gap trivia's alreadyAnswered already closes for tv-question.
+        alreadyGuessed: dg.guessedThisRound.has(name),
       });
       broadcastDg(code, { type: 'dg-player-joined', id, name, isSpectator }, ws);
       setRoomActivity(code, name, 'dg');
@@ -3080,6 +4190,10 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'dg-set-spectator' && ws.dgRoom) {
+      // No natural bounding the way dg-start/dg-set-category have (can't restart/re-category an
+      // active round) — this can be toggled at will, any time, with a room-wide broadcast every
+      // call.
+      if (isWsMsgRateLimited(ws)) return;
       const room = rooms.get(ws.dgRoom);
       const dg = room && room.dg;
       const me = dg && dg.players.get(ws);
@@ -3093,6 +4207,10 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'dg-set-category' && ws.dgRoom) {
+      // Only bounded to "no active round" — freely spammable the whole time a room sits between
+      // rounds (which could be indefinitely, e.g. everyone just chatting), each call broadcasting
+      // to the room.
+      if (isWsMsgRateLimited(ws)) return;
       const room = rooms.get(ws.dgRoom);
       const dg = room && room.dg;
       if (!dg || dg.roundEndAt) return;
@@ -3139,7 +4257,8 @@ wss.on('connection', (ws) => {
       if (!dg || !dg.roundEndAt) return;
       const me = dg.players.get(ws);
       if (!me || me.id !== dg.drawerId) return;
-      const points = Array.isArray(msg.points) ? msg.points.slice(0, 500) : [];
+      if (isStrokeRateLimited(ws)) return;
+      const points = sanitizeStrokePoints(msg.points);
       if (!points.length) return;
       const stroke = {
         points,
@@ -3169,9 +4288,12 @@ wss.on('connection', (ws) => {
       if (!dg || !dg.roundEndAt) return;
       const me = dg.players.get(ws);
       if (!me || me.id === dg.drawerId || me.isSpectator) return;
+      // Same flood gate every other chat-creation path in this app shares — unlike its sibling
+      // dg-stroke (rate-limited just above), guesses/post-guess chat had no throttle at all.
+      if (isWsMsgRateLimited(ws)) return;
       const text = String(msg.text || '').slice(0, 100).trim();
       if (!text) return;
-      if (dg.guessedThisRound.has(me.id)) {
+      if (dg.guessedThisRound.has(me.name)) {
         // A player who's already guessed correctly can still chat, but not by typing the literal
         // answer again — this used to broadcast their text unfiltered, letting the secret word
         // leak straight into the guess-chat feed for everyone still trying to guess it.
@@ -3180,7 +4302,7 @@ wss.on('connection', (ws) => {
         return;
       }
       if (text.toLowerCase() === String(dg.word || '').toLowerCase()) {
-        dg.guessedThisRound.add(me.id);
+        dg.guessedThisRound.add(me.name);
         const points = dg.guessedThisRound.size === 1 ? 3 : 1;
         me.score += points;
         db.bumpLeaderboard(ws.dgRoom, 'pictionary', me.name, me.score);
@@ -3226,7 +4348,8 @@ wss.on('connection', (ws) => {
     if (msg.type === 'wb-stroke' && ws.wbRoom) {
       const room = rooms.get(ws.wbRoom);
       if (!room || !room.wb) return;
-      const points = Array.isArray(msg.points) ? msg.points.slice(0, 500) : [];
+      if (isStrokeRateLimited(ws)) return;
+      const points = sanitizeStrokePoints(msg.points);
       if (!points.length) return;
       const stroke = {
         id: crypto.randomUUID(),
@@ -3281,8 +4404,152 @@ wss.on('connection', (ws) => {
         send(ws, { type: 'error', message: 'You can only send private DMs to friends' });
         return;
       }
+      // Same flood gate every other message-creation path shares (see 'message'/'send-dm'/
+      // 'send-group-dm'/'scorpture-live-chat') — this one fires a real push notification per
+      // call, so an unthrottled loop is both spam and a push-bombing vector against a friend.
+      if (isWsMsgRateLimited(ws)) {
+        send(ws, { type: 'error', message: 'You are sending messages too fast — slow down a bit.' });
+        return;
+      }
       sendFriendDm(ws.profile.name, targetAccount.id, text);
       send(ws, { type: 'friend-dm-sent', toUsername });
+      return;
+    }
+
+    if (msg.type === 'create-group-dm') {
+      if (!ws.accountId) {
+        send(ws, { type: 'error', message: 'Sign in to start a group DM' });
+        return;
+      }
+      // Same flood gate as every other message/content-creation path in this app — this is a DB
+      // write plus a live WS fanout (and a toast on every other member's open tab) to everyone
+      // added, and had no throttle of its own even though its sibling send-group-dm already does.
+      if (isWsMsgRateLimited(ws)) {
+        send(ws, { type: 'error', message: 'You are creating group DMs too fast — slow down a bit.' });
+        return;
+      }
+      const memberUsernames = Array.isArray(msg.memberUsernames) ? msg.memberUsernames.slice(0, 20) : [];
+      const name = msg.name ? String(msg.name).slice(0, 60).trim() : null;
+      const memberIds = new Set([ws.accountId]);
+      for (const raw of memberUsernames) {
+        const username = String(raw || '').trim();
+        if (!username) continue;
+        const account = db.getAccountByUsername(username);
+        if (!account) {
+          send(ws, { type: 'error', message: `No account with username "${username}"` });
+          return;
+        }
+        const friendship = db.getFriendshipBetween(ws.accountId, account.id);
+        if (!friendship || friendship.status !== 'accepted') {
+          send(ws, { type: 'error', message: `You can only add friends to a group DM (${username} isn't one)` });
+          return;
+        }
+        memberIds.add(account.id);
+      }
+      if (memberIds.size < 3) {
+        send(ws, { type: 'error', message: 'Pick at least 2 friends to start a group DM' });
+        return;
+      }
+      const groupId = crypto.randomUUID();
+      db.createGroupDm(groupId, name, ws.accountId, [...memberIds]);
+      const threads = db.getGroupDmsForAccount(ws.accountId);
+      const thread = threads.find((t) => t.id === groupId);
+      for (const accountId of memberIds) {
+        if (accountId === ws.accountId) continue;
+        const liveConnections = accountConnections.get(accountId);
+        if (!liveConnections) continue;
+        const theirThreads = db.getGroupDmsForAccount(accountId);
+        const theirThread = theirThreads.find((t) => t.id === groupId);
+        for (const c of liveConnections) {
+          if (c.readyState === c.OPEN) send(c, { type: 'group-dm-created', thread: theirThread });
+        }
+      }
+      send(ws, { type: 'group-dm-created', thread });
+      return;
+    }
+
+    if (msg.type === 'get-group-dm-threads') {
+      if (!ws.accountId) {
+        send(ws, { type: 'error', message: 'Sign in to view group DMs' });
+        return;
+      }
+      send(ws, { type: 'group-dm-threads', threads: db.getGroupDmsForAccount(ws.accountId) });
+      return;
+    }
+
+    if (msg.type === 'get-group-dm-messages') {
+      if (!ws.accountId) {
+        send(ws, { type: 'error', message: 'Sign in to view group DMs' });
+        return;
+      }
+      const groupId = String(msg.groupId || '');
+      if (!db.isGroupDmMember(groupId, ws.accountId)) {
+        send(ws, { type: 'error', message: 'Not a member of that group DM' });
+        return;
+      }
+      // Same block filter as live delivery in sendGroupDm — without it, reopening/reloading the
+      // thread would show every message a blocked member ever sent even though none of them were
+      // delivered live, which is worse than doing nothing (the block would look broken, not just
+      // incomplete).
+      const messages = db.getGroupDmMessages(groupId).filter((m) => !db.isBlockedBetween(ws.accountId, m.fromAccountId));
+      send(ws, { type: 'group-dm-messages', groupId, messages });
+      return;
+    }
+
+    if (msg.type === 'send-group-dm') {
+      if (!ws.accountId) {
+        send(ws, { type: 'error', message: 'Sign in to send group DMs' });
+        return;
+      }
+      const groupId = String(msg.groupId || '');
+      const text = String(msg.text || '').slice(0, 500).trim();
+      if (!text) {
+        send(ws, { type: 'error', message: 'Empty message' });
+        return;
+      }
+      if (!db.isGroupDmMember(groupId, ws.accountId)) {
+        send(ws, { type: 'error', message: 'Not a member of that group DM' });
+        return;
+      }
+      // Same flood gate as regular chat/DM messages (see the 'dm' handler) — this was missing
+      // here, and group DMs fan out a push notification to every other member on every send, so
+      // an unthrottled sender could spam real push notifications to everyone in the group.
+      if (isWsMsgRateLimited(ws)) {
+        send(ws, { type: 'error', message: 'You are sending messages too fast — slow down a bit.' });
+        return;
+      }
+      const now = Date.now();
+      const entry = { id: crypto.randomUUID(), groupId, fromAccountId: ws.accountId, fromName: ws.profile.name, text, at: now };
+      db.insertGroupDmMessage(entry);
+      sendGroupDm(groupId, ws.accountId, ws.profile.name, text, ws);
+      send(ws, { type: 'group-dm-sent', message: entry });
+      return;
+    }
+
+    if (msg.type === 'leave-group-dm') {
+      if (!ws.accountId) {
+        send(ws, { type: 'error', message: 'Sign in required' });
+        return;
+      }
+      const groupId = String(msg.groupId || '');
+      if (!db.isGroupDmMember(groupId, ws.accountId)) {
+        send(ws, { type: 'error', message: 'Not a member of that group DM' });
+        return;
+      }
+      db.removeGroupDmMember(groupId, ws.accountId);
+      send(ws, { type: 'group-dm-left', groupId });
+      // The remaining members previously got no live signal at all when someone left — their
+      // rendered member list for this thread stayed stale (still showing the departed user)
+      // until they next reopened the thread. Message delivery itself was unaffected (member set
+      // is re-queried at send time), this only fixes the display.
+      const leftPayload = JSON.stringify({ type: 'group-dm-member-left', groupId, username: ws.profile.name });
+      for (const accountId of db.getGroupDmMemberIds(groupId)) {
+        const liveConnections = accountConnections.get(accountId);
+        if (!liveConnections) continue;
+        for (const c of liveConnections) {
+          if (c.readyState === c.OPEN) c.send(leftPayload);
+        }
+      }
       return;
     }
 
@@ -3356,7 +4623,7 @@ wss.on('connection', (ws) => {
         messages: attachPollVotes(room.history),
         users: roomUsers(code),
         name: dbRoom ? dbRoom.name : null,
-        reactions: db.getReactionsForRoom(code),
+        reactions: db.getReactionsForRoom(code, HISTORY_LIMIT),
         pins: db.getPins(code),
         activity: roomActivityList(room),
         isHost: (db.getRoom(code) || {}).host_name === ws.profile.name,
@@ -3370,7 +4637,20 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'set-avatar') {
-      const avatarUrl = typeof msg.avatarUrl === 'string' ? msg.avatarUrl.slice(0, 500) : null;
+      // Every other "attach media" path in this app (post-image, post-media, scorpture uploads/
+      // banner/avatar) requires a real /uploads/ URL — this one didn't, letting a raw WS client
+      // (bypassing the real UI, which only ever sends back its own /upload result — see app.js's
+      // set-avatar send site) set any external URL as their avatar. It's rendered as a real <img
+      // src> for every room member who sees that user (makeAvatar in app.js), so an arbitrary URL
+      // here is a tracking-pixel vector: everyone who loads the room fetches attacker.com and
+      // leaks their IP, independent of whether they ever open a message from that user.
+      // Same flood gate every other content-mutating path in this app shares — this and its two
+      // siblings below (set-status, set-name) had none, despite each doing a DB write plus a
+      // room-wide broadcast on every single call.
+      if (isWsMsgRateLimited(ws)) return;
+      const rawAvatarUrl = typeof msg.avatarUrl === 'string' ? msg.avatarUrl.slice(0, 500) : null;
+      const avatarUrl = rawAvatarUrl && rawAvatarUrl.startsWith('/uploads/') ? rawAvatarUrl : null;
+      claimUpload(avatarUrl);
       ws.profile.avatarUrl = avatarUrl;
       db.upsertProfile(ws.profile.name, { avatarUrl });
       const payload = { type: 'profile-updated', name: ws.profile.name, avatarUrl, status: ws.profile.status };
@@ -3380,6 +4660,7 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'set-status') {
+      if (isWsMsgRateLimited(ws)) return;
       const status = String(msg.status || '').slice(0, 60).trim() || null;
       ws.profile.status = status;
       db.upsertProfile(ws.profile.name, { status });
@@ -3389,7 +4670,59 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    // Renaming your own display name — works identically whether you're a guest or signed in,
+    // since both use ws.profile.name as their in-room identity (an account's login username,
+    // changed separately via POST /account/username, is a different thing entirely). ws.profile
+    // is mutated in place rather than replaced so every closure that already captured it (room
+    // membership matching, kick/mute target lookups) keeps working with no other changes needed.
+    if (msg.type === 'set-name') {
+      const newName = String(msg.name || '').slice(0, 30).trim();
+      if (!newName) {
+        send(ws, { type: 'error', message: 'Name cannot be empty' });
+        return;
+      }
+      if (newName === ws.profile.name) {
+        send(ws, { type: 'name-updated', name: newName });
+        return;
+      }
+      // Placed after the no-op "same name" short-circuit above (nothing to throttle there — no
+      // write, no broadcast) but before the duplicate-name scan and the actual rename, so a
+      // rate-limited request doesn't pay for either.
+      if (isWsMsgRateLimited(ws)) return;
+      if (ws.room) {
+        const room = rooms.get(ws.room);
+        if (room) {
+          for (const c of room.clients) {
+            if (c !== ws && c.profile && c.profile.name === newName) {
+              send(ws, { type: 'error', message: 'Someone else in this room already has that name' });
+              return;
+            }
+          }
+        }
+      }
+      const oldName = ws.profile.name;
+      ws.profile.name = newName;
+      db.upsertProfile(newName, { avatarUrl: ws.profile.avatarUrl, status: ws.profile.status });
+      if (ws.room) {
+        const room = rooms.get(ws.room);
+        db.renameRoomHostIfMatches(ws.room, oldName, newName);
+        if (ws.accountId) db.renamePersistentMuteName(ws.room, ws.accountId, newName);
+        if (room && room.muted && room.muted.has(oldName)) {
+          room.muted.delete(oldName);
+          room.muted.add(newName);
+        }
+      }
+      send(ws, { type: 'name-updated', oldName, name: newName });
+      if (ws.room) {
+        broadcastRoom(ws.room, { type: 'system', text: `${oldName} is now known as ${newName}`, at: Date.now() }, ws);
+        broadcastRoom(ws.room, { type: 'presence', users: roomUsers(ws.room) });
+      }
+      return;
+    }
+
     if (msg.type === 'rename-room' && ws.room) {
+      const dbRoom = db.getRoom(ws.room);
+      if (!dbRoom || dbRoom.host_name !== ws.profile.name) return;
       const name = String(msg.name || '').slice(0, 50).trim() || null;
       db.upsertRoom(ws.room, name);
       broadcastRoom(ws.room, { type: 'room-renamed', name });
@@ -3408,7 +4741,12 @@ wss.on('connection', (ws) => {
     if (msg.type === 'set-wallpaper' && ws.room) {
       const dbRoom = db.getRoom(ws.room);
       if (!dbRoom || dbRoom.host_name !== ws.profile.name) return;
-      const url = typeof msg.url === 'string' ? msg.url.slice(0, 500) : null;
+      // Same tracker-link gap set-avatar had (fixed earlier this session): the real UI only ever
+      // sends back its own /upload result, but nothing server-side enforced that — a raw WS client
+      // could set any external URL, loaded as a real background-image for every room member.
+      const rawUrl = typeof msg.url === 'string' ? msg.url.slice(0, 500) : null;
+      const url = rawUrl && rawUrl.startsWith('/uploads/') ? rawUrl : null;
+      claimUpload(url);
       db.setWallpaper(ws.room, url);
       broadcastRoom(ws.room, { type: 'wallpaper-updated', url });
       return;
@@ -3427,12 +4765,9 @@ wss.on('connection', (ws) => {
     // Weak by design, same trust model as everything else here (no accounts to actually verify
     // identity) — this stops accidental/casual disruption, not a determined impersonator. ----
     if (msg.type === 'kick-user' && ws.room) {
-      const dbRoom = db.getRoom(ws.room);
-      if (!dbRoom || dbRoom.host_name !== ws.profile.name) return;
-      const targetName = String(msg.name || '').trim();
-      if (!targetName || targetName === ws.profile.name) return;
-      const room = rooms.get(ws.room);
-      if (!room) return;
+      const modTarget = resolveModerationTarget(ws, msg);
+      if (!modTarget) return;
+      const { room, targetName } = modTarget;
       for (const client of [...room.clients]) {
         if (client.profile && client.profile.name === targetName) {
           send(client, { type: 'kicked', by: ws.profile.name });
@@ -3443,19 +4778,23 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'mute-user' && ws.room) {
-      const dbRoom = db.getRoom(ws.room);
-      if (!dbRoom || dbRoom.host_name !== ws.profile.name) return;
-      const targetName = String(msg.name || '').trim();
-      if (!targetName || targetName === ws.profile.name) return;
-      const room = rooms.get(ws.room);
-      if (!room) return;
+      const modTarget = resolveModerationTarget(ws, msg);
+      if (!modTarget) return;
+      const { room, targetName } = modTarget;
       if (!room.muted) room.muted = new Set();
       room.muted.add(targetName);
       // If the target is signed in, also persist the mute by account_id — otherwise it's only
       // in-memory for this display name and evaporates the moment they rejoin under a new one.
+      // Falls back to recentAccountsByName (populated on disconnect) if the target already left
+      // by the time this runs — e.g. kick-then-ban, or the target closing the tab during the
+      // client's confirm() prompt — so those common flows still produce a real account-linked,
+      // rejoin-proof mute instead of a silently bypassable name-only one.
       const targetClient = [...room.clients].find((c) => c.profile && c.profile.name === targetName);
-      if (targetClient && targetClient.accountId) {
-        db.addPersistentMute(ws.room, targetClient.accountId, targetName, ws.profile.name);
+      const targetAccountId = (targetClient && targetClient.accountId)
+        || (room.recentAccountsByName && room.recentAccountsByName.get(targetName))
+        || null;
+      if (targetAccountId) {
+        db.addPersistentMute(ws.room, targetAccountId, targetName, ws.profile.name);
       }
       broadcastRoom(ws.room, { type: 'user-muted', name: targetName });
       return;
@@ -3488,7 +4827,10 @@ wss.on('connection', (ws) => {
       const targetName = String(msg.targetName || '').trim().slice(0, 30);
       if (!targetName || targetName === ws.profile.name) return;
       const messageId = msg.messageId ? String(msg.messageId).slice(0, 100) : null;
-      const messageEntry = messageId ? db.getMessage(messageId) : null;
+      let messageEntry = messageId ? db.getMessage(messageId) : null;
+      // A client could supply any messageId, from any room — only trust it as this report's
+      // quoted text if it actually belongs to the room being reported from.
+      if (messageEntry && messageEntry.room_code !== ws.room) messageEntry = null;
       db.insertReport({
         id: crypto.randomUUID(),
         roomCode: ws.room,
@@ -3507,14 +4849,18 @@ wss.on('connection', (ws) => {
     // Bans persist (room_bans, see db.js) unlike kick above, which only disconnects once —
     // see the room_bans table comment for the account-vs-name enforcement split.
     if (msg.type === 'ban-user' && ws.room) {
-      const dbRoom = db.getRoom(ws.room);
-      if (!dbRoom || dbRoom.host_name !== ws.profile.name) return;
-      const targetName = String(msg.name || '').trim();
-      if (!targetName || targetName === ws.profile.name) return;
-      const room = rooms.get(ws.room);
-      if (!room) return;
+      const modTarget = resolveModerationTarget(ws, msg);
+      if (!modTarget) return;
+      const { room, targetName } = modTarget;
       const targetClient = [...room.clients].find((c) => c.profile && c.profile.name === targetName);
-      db.banFromRoom(crypto.randomUUID(), ws.room, targetClient ? targetClient.accountId || null : null, targetName, ws.profile.name);
+      // Same recentAccountsByName fallback as mute-user above, for the same reason: the target
+      // is very often already disconnected by the time a ban is issued (kick-then-ban, or they
+      // left mid-confirm()-prompt), and without this a signed-in target could trivially evade a
+      // ban by rejoining under a new display name.
+      const targetAccountId = (targetClient && targetClient.accountId)
+        || (room.recentAccountsByName && room.recentAccountsByName.get(targetName))
+        || null;
+      db.banFromRoom(crypto.randomUUID(), ws.room, targetAccountId, targetName, ws.profile.name);
       if (targetClient) {
         send(targetClient, { type: 'kicked', by: ws.profile.name });
         leaveRoom(targetClient);
@@ -3558,6 +4904,10 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'vote-poll' && ws.room) {
+      // Same flood gate as its sibling content-mutating paths — re-voting rapidly on the same
+      // poll (changing your own vote back and forth) broadcasts the full vote tally to the whole
+      // room on every call, with no throttle before this.
+      if (isWsMsgRateLimited(ws)) return;
       const messageId = String(msg.messageId || '');
       const target = db.getMessage(messageId);
       if (!target || target.room_code !== ws.room || target.media_type !== 'poll' || target.deleted) return;
@@ -3599,7 +4949,13 @@ wss.on('connection', (ws) => {
 
     if (msg.type === 'voice-signal' && ws.room) {
       const voice = voiceRoom(ws.room, false);
-      const target = voice && voice.get(String(msg.to || ''));
+      // The sender being in the room's chat isn't the same as being on the call — without this
+      // check, anyone in the text room (never having sent voice-join) could forge a signal to a
+      // real participant's sub, making the victim's client create a fresh RTCPeerConnection + a
+      // ghost call tile for a "peer" that never actually joined. That ghost never gets cleaned up
+      // by the normal voice-peer-left path (the forger was never in the `voice` Map to begin with).
+      if (!voice || !voice.has(ws.profile.sub)) return;
+      const target = voice.get(String(msg.to || ''));
       if (!target) return;
       send(target.ws, { type: 'voice-signal', from: ws.profile.sub, signal: msg.signal });
       return;
@@ -3607,8 +4963,8 @@ wss.on('connection', (ws) => {
 
     if (msg.type === 'voice-share' && ws.room) {
       const voice = voiceRoom(ws.room, false);
-      if (!voice) return;
       const sub = ws.profile.sub;
+      if (!voice || !voice.has(sub)) return;
       for (const [s, p] of voice) {
         if (s !== sub) send(p.ws, { type: 'voice-share', sub, sharing: !!msg.sharing });
       }
@@ -3617,8 +4973,8 @@ wss.on('connection', (ws) => {
 
     if ((msg.type === 'raise-hand' || msg.type === 'lower-hand') && ws.room) {
       const voice = voiceRoom(ws.room, false);
-      if (!voice) return;
       const sub = ws.profile.sub;
+      if (!voice || !voice.has(sub)) return;
       const raised = msg.type === 'raise-hand';
       for (const [s, p] of voice) {
         if (s !== sub) send(p.ws, { type: raised ? 'hand-raised' : 'hand-lowered', sub, name: ws.profile.name });
@@ -3627,11 +4983,14 @@ wss.on('connection', (ws) => {
     }
 
     // A request, not an enforced mute — this app has no roles/auth, so nothing should ever
-    // let one participant force-mute another's mic. Every peer decides for itself.
+    // let one participant force-mute another's mic. Every peer decides for itself. Still requires
+    // the sender to actually be on the call — otherwise anyone in the text room (never having
+    // joined the call) could force-mute every real participant with no way to tell it wasn't a
+    // genuine fellow caller.
     if (msg.type === 'mute-all-request' && ws.room) {
       const voice = voiceRoom(ws.room, false);
-      if (!voice) return;
       const sub = ws.profile.sub;
+      if (!voice || !voice.has(sub)) return;
       for (const [s, p] of voice) {
         if (s !== sub) send(p.ws, { type: 'mute-all-request', fromName: ws.profile.name });
       }
@@ -3649,20 +5008,32 @@ wss.on('connection', (ws) => {
       if (!toName || !text || toName === ws.profile.name) return;
       const room = rooms.get(ws.room);
       if (!room) return;
+      // A muted user was still able to send full free-text private DMs — a real harassment
+      // bypass, arguably worse than the equivalent edit-message gap fixed above, since this is an
+      // entirely fresh, unrestricted channel rather than editing something already said.
+      if (room.muted && room.muted.has(ws.profile.name)) {
+        send(ws, { type: 'error', message: 'You have been muted in this room' });
+        return;
+      }
       const targetClient = [...room.clients].find((c) => c.profile && c.profile.name === toName);
       if (!targetClient) {
         send(ws, { type: 'error', message: `${toName} is not currently in this room` });
         return;
       }
       // Shares the same flood gate as regular chat messages so DMs can't be used to dodge it.
-      const now = Date.now();
-      ws.msgTimestamps = (ws.msgTimestamps || []).filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
-      if (ws.msgTimestamps.length >= RATE_LIMIT_MAX_MESSAGES) {
+      if (isWsMsgRateLimited(ws)) {
         send(ws, { type: 'error', message: 'You are sending messages too fast — slow down a bit.' });
         return;
       }
-      ws.msgTimestamps.push(now);
-      const entry = { id: crypto.randomUUID(), roomCode: ws.room, fromName: ws.profile.name, toName, text, at: now };
+      const now = Date.now();
+      // Recorded alongside the name pair (see getDmThread's comment on insertMessage's
+      // account_id) so a signed-in participant's side of the thread stays theirs even if someone
+      // else later reconnects under the same now-vacated display name.
+      const entry = {
+        id: crypto.randomUUID(), roomCode: ws.room, fromName: ws.profile.name, toName, text, at: now,
+        fromAccountId: ws.accountId || null,
+        toAccountId: targetClient.accountId || null,
+      };
       db.insertDm(entry);
       const payload = { type: 'dm', id: entry.id, fromName: entry.fromName, toName: entry.toName, text: entry.text, at: entry.at };
       send(ws, payload);
@@ -3673,7 +5044,7 @@ wss.on('connection', (ws) => {
     if (msg.type === 'get-dm-thread' && ws.room) {
       const withName = String(msg.withName || '').trim();
       if (!withName) return;
-      send(ws, { type: 'dm-thread', withName, messages: db.getDmThread(ws.room, ws.profile.name, withName) });
+      send(ws, { type: 'dm-thread', withName, messages: db.getDmThread(ws.room, ws.profile.name, withName, ws.accountId || null) });
       return;
     }
 
@@ -3695,17 +5066,23 @@ wss.on('connection', (ws) => {
         send(ws, { type: 'error', message: 'You have been muted in this room' });
         return;
       }
-      const now = Date.now();
-      ws.msgTimestamps = (ws.msgTimestamps || []).filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
-      if (ws.msgTimestamps.length >= RATE_LIMIT_MAX_MESSAGES) {
+      if (isWsMsgRateLimited(ws)) {
         send(ws, { type: 'error', message: 'You are sending messages too fast — slow down a bit.' });
         return;
       }
-      ws.msgTimestamps.push(now);
       const text = String(msg.text || '').slice(0, 2000).trim();
-      const mediaUrl = typeof msg.mediaUrl === 'string' ? msg.mediaUrl : null;
       const mediaType = ['video', 'image', 'audio', 'poll'].includes(msg.mediaType) ? msg.mediaType : null;
+      // Every other "attach media" path in this app (post-image, post-media, scorpture uploads)
+      // requires a real /uploads/ URL — this was the one place that didn't, letting any user post
+      // an arbitrary external URL that auto-loads (mediaType 'video'/'image'/'audio') in every
+      // room member's browser as a classic IP/UA-grabbing tracker link. Polls use the literal
+      // sentinel 'poll' here instead of a real URL, so they're exempted from the prefix check.
+      const mediaUrl = typeof msg.mediaUrl === 'string' && (mediaType === 'poll' ? msg.mediaUrl === 'poll' : msg.mediaUrl.startsWith('/uploads/'))
+        ? msg.mediaUrl
+        : null;
+      claimUpload(mediaUrl);
       if (!text && !(mediaUrl && mediaType)) return;
+      if (mediaType === 'poll' && !isValidPollText(text)) return;
 
       let replyToId = null;
       let replyPreview = null;
@@ -3730,7 +5107,7 @@ wss.on('connection', (ws) => {
       };
       room.history.push(entry);
       if (room.history.length > HISTORY_LIMIT) room.history.shift();
-      db.insertMessage({ id: entry.id, roomCode: ws.room, name: entry.name, text: entry.text, mediaUrl: entry.mediaUrl, mediaType: entry.mediaType, replyToId, at: entry.at });
+      db.insertMessage({ id: entry.id, roomCode: ws.room, name: entry.name, text: entry.text, mediaUrl: entry.mediaUrl, mediaType: entry.mediaType, replyToId, at: entry.at, accountId: ws.accountId || null });
       db.upsertRoom(ws.room);
       broadcastRoom(ws.room, entry);
       pushNewMessage(ws.room, entry);
@@ -3739,13 +5116,29 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'edit-message' && ws.room) {
+      // Same flood gate as 'message' above — bounded to editing your own messages, but repeatedly
+      // re-editing one still broadcasts to the whole room on every call with no throttle before
+      // this.
+      if (isWsMsgRateLimited(ws)) return;
+      const room = rooms.get(ws.room);
+      // The 'message' handler above refuses a muted user's *new* posts, but this never checked
+      // the same thing — a muted user could still edit an existing message of theirs to say
+      // anything, a real moderation bypass (mute someone, and they just repurpose whatever they
+      // already had posted instead of being blocked outright).
+      if (room && room.muted && room.muted.has(ws.profile.name)) {
+        send(ws, { type: 'error', message: 'You have been muted in this room' });
+        return;
+      }
       const messageId = String(msg.messageId || '');
       const text = String(msg.text || '').slice(0, 2000).trim();
       if (!messageId || !text) return;
       const target = db.getMessage(messageId);
-      if (!target || target.room_code !== ws.room || target.name !== ws.profile.name || target.deleted) return;
+      // Polls store structured JSON in `text` (see isValidPollText) — editing was never a
+      // supported poll feature and this generic free-text path has no shape validation, so
+      // allowing it here would let a user corrupt their own poll the same way the message
+      // handler above now guards against on creation.
+      if (!target || target.room_code !== ws.room || !ownsMessage(target, ws) || target.deleted || target.media_type === 'poll') return;
       db.updateMessageText(messageId, text);
-      const room = rooms.get(ws.room);
       const entry = room && room.history.find((m) => m.id === messageId);
       if (entry) { entry.text = text; entry.edited = true; }
       broadcastRoom(ws.room, { type: 'message-edited', messageId, text });
@@ -3753,13 +5146,17 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'delete-message' && ws.room) {
+      // Same flood gate as 'edit-message' above — each individual message can only be deleted
+      // once (target.deleted guards that), but rapidly deleting many different messages in a row
+      // still broadcasts to the whole room every time, with no throttle before this.
+      if (isWsMsgRateLimited(ws)) return;
       const messageId = String(msg.messageId || '');
       if (!messageId) return;
       const target = db.getMessage(messageId);
       if (!target || target.room_code !== ws.room || target.deleted) return;
       const dbRoom = db.getRoom(ws.room);
       const isHost = dbRoom && dbRoom.host_name === ws.profile.name;
-      if (target.name !== ws.profile.name && !isHost) return;
+      if (!ownsMessage(target, ws) && !isHost) return;
       db.deleteMessageRow(messageId);
       const room = rooms.get(ws.room);
       const entry = room && room.history.find((m) => m.id === messageId);
@@ -3777,12 +5174,30 @@ wss.on('connection', (ws) => {
       const raw = typeof msg.emoji === 'string' ? msg.emoji.trim() : '';
       const emoji = raw && raw.length <= 8 ? raw : null;
       if (!messageId || !emoji) return;
+      // Every sibling handler (edit/delete/pin/vote/get-thread) verifies the target message
+      // belongs to the reactor's own room before acting — this one didn't, so a reaction on a
+      // message ID from a different room (ids are unguessable UUIDs, so low practical risk, but
+      // a real gap in an otherwise-consistent room-isolation pattern) would surface in that other
+      // room's reaction list via db.getReactionsForRoom's join on room_code.
+      const reactTarget = db.getMessage(messageId);
+      if (!reactTarget || reactTarget.room_code !== ws.room) return;
+      // Reactions are still a form of expression a mute is meant to stop — a muted user could
+      // otherwise keep reacting (including provocatively) with no restriction at all.
+      const reactRoom = rooms.get(ws.room);
+      if (reactRoom && reactRoom.muted && reactRoom.muted.has(ws.profile.name)) return;
+      // Same flood gate as regular messages — each toggle is a DB write plus a room-wide
+      // broadcast, previously unthrottled.
+      if (isWsMsgRateLimited(ws)) return;
       const added = db.toggleReaction(messageId, emoji, ws.profile.name);
       broadcastRoom(ws.room, { type: 'reaction', messageId, emoji, name: ws.profile.name, added });
       return;
     }
 
     if (msg.type === 'pin-message' && ws.room) {
+      // Same flood gate every other content-mutating path shares — any room member (not just the
+      // host) can pin/unpin, and each call does a DB write plus a room-wide broadcast of the full
+      // pins list, with no throttle before this.
+      if (isWsMsgRateLimited(ws)) return;
       const messageId = String(msg.messageId || '');
       const target = db.getMessage(messageId);
       if (!target || target.room_code !== ws.room) return;
@@ -3792,6 +5207,7 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'unpin-message' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
       const messageId = String(msg.messageId || '');
       db.unpinMessage(ws.room, messageId);
       broadcastRoom(ws.room, { type: 'pins-updated', pins: db.getPins(ws.room) });
@@ -3799,6 +5215,13 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'typing' && ws.room) {
+      // The real client already self-throttles to one 'typing' send per 2s (see app.js), but
+      // unlike every other message-creation path in this app, this handler had zero server-side
+      // rate limiting of its own — a raw WS client ignoring that throttle could flood every other
+      // room member's socket with 'typing' broadcasts. Same shared gate as chat messages/reactions/
+      // Scorpture watch-live etc: cheap for a real user (well under budget at 1 send/2s), closes
+      // the flood off for anyone bypassing the client.
+      if (isWsMsgRateLimited(ws)) return;
       broadcastRoom(ws.room, { type: 'typing', name: ws.profile.name }, ws);
       return;
     }
@@ -3806,12 +5229,29 @@ wss.on('connection', (ws) => {
     if (msg.type === 'read' && ws.room) {
       const messageId = String(msg.messageId || '');
       if (!messageId) return;
+      // Same room-ownership check every sibling handler (edit/delete/pin/vote/get-thread/react)
+      // already has — this one was the one gap left. Practically low-risk on its own (ids are
+      // unguessable random UUIDs, and the client only ever compares receipts by exact string
+      // equality against its own room's last message id — see renderSeenBy in app.js — so a
+      // cross-room id just silently never matches anything), but consistent with the rest of the
+      // room-isolation pattern rather than leaving one handler as the odd one out.
+      const readTarget = db.getMessage(messageId);
+      if (!readTarget || readTarget.room_code !== ws.room) return;
       db.setReadReceipt(ws.room, ws.profile.name, messageId);
       broadcastRoom(ws.room, { type: 'read-receipt', name: ws.profile.name, messageId }, ws);
       return;
     }
     } catch (err) {
-      reportError('server', err, { wsMessageType: msg.type, room: ws.room || null });
+      // Same reasoning as the try/catch inside ws.on('error', ...) above: this whole outer
+      // try/catch exists so a bug in any single message handler can't kill this connection's
+      // message loop (or the whole process) — but if reportError itself throws (a synchronous DB
+      // write failing), that exception would propagate back out through ws's own internal emit()
+      // call stack the exact same way, defeating the entire point of this catch block existing.
+      try {
+        reportError('server', err, { wsMessageType: msg && msg.type, room: ws.room || null });
+      } catch {
+        // Deliberately swallowed.
+      }
     }
   });
 
@@ -3822,6 +5262,7 @@ wss.on('connection', (ws) => {
     if (ws.bcRoom) leaveBc(ws);
     if (ws.gwRoom) leaveGw(ws);
     if (ws.swRoom) leaveSw(ws);
+    if (ws.fgRoom) leaveFg(ws);
     if (ws.dgRoom) leaveDg(ws);
     if (ws.wbRoom) leaveWb(ws);
     if (ws.tvRoom) leaveTv(ws);
@@ -3829,7 +5270,14 @@ wss.on('connection', (ws) => {
     if (ws.chRoom) leaveCh(ws);
     if (ws.hmRoom) leaveHm(ws);
     if (ws.arcadeRoom && ws.arcadeName) clearRoomActivity(ws.arcadeRoom, ws.arcadeName);
-    if (ws.accountId && liveStreams.has(ws.accountId)) endScorptureLive(ws.accountId);
+    // Only end the stream if this closing socket is the one actually on file — see the identity
+    // guard added to scorpture-go-live/scorpture-end-live above; without it, a stale tab that had
+    // already been superseded by a newer "go live" from the same account would kill the newer,
+    // actually-live stream's real viewers the moment it finally closed.
+    if (ws.accountId) {
+      const liveStream = liveStreams.get(ws.accountId);
+      if (liveStream && liveStream.ws === ws) endScorptureLive(ws.accountId);
+    }
     leaveScorptureLive(ws);
   });
 });
@@ -3873,6 +5321,28 @@ function cleanupInactiveRooms() {
 setTimeout(cleanupInactiveRooms, 30 * 1000); // shortly after boot, not instantly — let startup settle first
 setInterval(cleanupInactiveRooms, CLEANUP_INTERVAL_MS);
 
+// See pendingUploads/claimUpload near the /upload route above for why this exists. Generous grace
+// period — real flows (AI Studio's caption-then-upload-then-post, the video editor's "send to
+// chat" happening well after editing) can legitimately take a while between upload and claim —
+// balanced against not leaving a sustained-abuse window open too long.
+// Overridable via env so the regression suite can verify real sweep behavior in milliseconds
+// instead of minutes — unset in production, so this has no effect there.
+const UPLOAD_CLAIM_GRACE_MS = Number(process.env.UPLOAD_CLAIM_GRACE_MS) || 15 * 60 * 1000;
+const UPLOAD_SWEEP_INTERVAL_MS = Number(process.env.UPLOAD_SWEEP_INTERVAL_MS) || 5 * 60 * 1000;
+function sweepOrphanedUploads() {
+  const cutoff = Date.now() - UPLOAD_CLAIM_GRACE_MS;
+  let swept = 0;
+  for (const [url, uploadedAt] of pendingUploads) {
+    if (uploadedAt > cutoff) continue;
+    deleteUploadFile(url);
+    pendingUploads.delete(url);
+    swept += 1;
+  }
+  if (swept) console.log(`[cleanup] Swept ${swept} orphaned upload(s) never attached to anything.`);
+  return swept;
+}
+setInterval(sweepOrphanedUploads, UPLOAD_SWEEP_INTERVAL_MS);
+
 app.post('/admin/cleanup/run', requireAdmin, (req, res) => {
   try {
     res.json({ ok: true, ...cleanupInactiveRooms() });
@@ -3909,8 +5379,17 @@ function isRoomFullyEmpty(room) {
     }
   }
   if (room.sw && room.sw.players && room.sw.players.size > 0) return false;
+  if (room.fg && room.fg.players && room.fg.players.size > 0) return false;
   if (room.tv && room.tv.players && room.tv.players.size > 0) return false;
   if (room.dg && room.dg.players && room.dg.players.size > 0) return false;
+  // wb/tt/ch/hm were missing here — a room with players only in whiteboard, tic-tac-toe/
+  // connect4, chess, or hangman (no one in main chat/voice/other games) looked "fully empty"
+  // and got swept by the 10-minute interval below even with live connections still playing,
+  // silently dropping their moves/strokes from that point on.
+  if (room.wb && room.wb.players && room.wb.players.size > 0) return false;
+  if (room.tt && room.tt.players && room.tt.players.size > 0) return false;
+  if (room.ch && room.ch.players && room.ch.players.size > 0) return false;
+  if (room.hm && room.hm.players && room.hm.players.size > 0) return false;
   return true;
 }
 setInterval(() => {

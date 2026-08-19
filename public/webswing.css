@@ -421,6 +421,46 @@ button.primary:active {
   );
 }
 
+/* PvP health — same heart-row convention as Build Craft's #health-bar. */
+#health-bar {
+  position: fixed;
+  bottom: 6.4rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  display: flex;
+  gap: 0.15rem;
+}
+
+#health-bar .heart {
+  font-size: 1.3rem;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
+}
+
+#health-bar .heart.empty {
+  opacity: 0.28;
+  filter: none;
+}
+
+/* Same radial-pulse-on-hit pattern as Build Craft's #damage-flash. */
+#damage-flash {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  pointer-events: none;
+  background: radial-gradient(circle, rgba(224, 30, 30, 0) 55%, rgba(224, 30, 30, 0.45) 100%);
+  opacity: 0;
+}
+
+#damage-flash.show {
+  animation: damage-pulse 0.5s ease-out;
+}
+
+@keyframes damage-pulse {
+  0% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
 /* Pump charge meter — only on screen while attached to a web. Sits below centre so it's readable
    without pulling the eye off the crosshair, which is where you're actually aiming. */
 #pump-meter {

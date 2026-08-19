@@ -36,6 +36,14 @@ const CLIMB_SPEED = 6;
 const CLIMB_IDLE_SLIDE = -1.4; // slow slide down when not actively climbing up/down, for a little urgency
 const GRAPPLE_TOP_MARGIN = 4; // aiming within this many units of a building's roof grapples you up onto it
 const GRAPPLE_SPEED = 40;
+// ---- PvP web strikes ---- (must match SW_MAX_HEALTH/SW_STRIKE_RANGE/SW_STRIKE_COOLDOWN_MS on
+// the server — the server is authoritative on health/hits, these are just for local UX: showing
+// the right health bar width and graying out the strike input during its own cooldown so it
+// doesn't fire a request that the server would silently drop anyway.)
+const SW_MAX_HEALTH_CLIENT = 3;
+const SW_STRIKE_RANGE_CLIENT = 30;
+const SW_STRIKE_COOLDOWN_MS_CLIENT = 700;
+const SW_STRIKE_AIM_DOT_MIN = 0.55; // how tightly you have to be aiming at someone to hit them, 1 = dead-on
 const TOWER_HEIGHT = 480; // the landmark spire at city center — dwarfs every regular building (max ~84)
 const TOWER_SIZE = 20;
 const PUMP_BUILD_RATE = 0.6; // momentum meter (0-1) gained per second while actively pumping A/D
@@ -143,6 +151,8 @@ const pumpMeterEl = document.getElementById('pump-meter');
 const pumpFillEl = document.getElementById('pump-fill');
 const pumpHintEl = document.getElementById('pump-hint');
 const bestLabel = document.getElementById('best-label');
+const healthBarEl = document.getElementById('health-bar');
+const damageFlashEl = document.getElementById('damage-flash');
 const soundToggleBtn = document.getElementById('sound-toggle-btn');
 const leaderboardBtn = document.getElementById('leaderboard-btn');
 const leaderboardOverlay = document.getElementById('leaderboard-overlay');
@@ -916,7 +926,21 @@ const player = {
   diving: false,
   wipeout: 0, // seconds of post-crash sprawl left; > 0 means input is locked out
   rollTimer: 0, // seconds of roll tuck left; purely visual — input stays live
+  health: SW_MAX_HEALTH_CLIENT,
 };
+
+for (let i = 0; i < SW_MAX_HEALTH_CLIENT; i++) {
+  const heart = document.createElement('span');
+  heart.className = 'heart';
+  heart.textContent = '❤️';
+  healthBarEl.appendChild(heart);
+}
+function renderHealth() {
+  const hearts = healthBarEl.children;
+  for (let i = 0; i < hearts.length; i++) {
+    hearts[i].classList.toggle('empty', i >= player.health);
+  }
+}
 
 // ---- Avatar animation ----
 // A pose is just a set of target joint angles; the live rotations ease toward them every frame, so
@@ -1581,6 +1605,45 @@ function handleWebAction() {
   else shootWeb();
 }
 
+// ---- PvP: web strike ----
+// Not a raycast against player meshes — hitting a fast-moving swinging target with a thin ray is
+// nearly impossible and would feel terrible. Instead: find whichever remote player is within range
+// AND roughly where the camera is pointed (aim-cone via dot product), same "am I facing them"
+// shape fighterplane.js's own bot-aim check already uses, then pick whichever candidate is most
+// precisely aimed at (not just closest) so an off-angle nearer player doesn't steal a shot meant
+// for someone further away but dead-center.
+let lastStrikeAttemptAt = 0;
+function attemptWebStrike() {
+  if (!mpRoomCode || !swSocket || swSocket.readyState !== WebSocket.OPEN) return;
+  if (player.wipeout > 0 || player.health <= 0) return;
+  const now = performance.now();
+  if (now - lastStrikeAttemptAt < SW_STRIKE_COOLDOWN_MS_CLIENT) return;
+
+  const aim = aimDirection();
+  const aimX = aim.x, aimY = aim.y, aimZ = aim.z;
+  let bestId = null;
+  let best = null;
+  let bestDot = -Infinity;
+  for (const [id, rp] of remotePlayers) {
+    const dx = rp.group.position.x - player.x;
+    const dy = rp.group.position.y - player.y;
+    const dz = rp.group.position.z - player.z;
+    const dist = Math.hypot(dx, dy, dz);
+    if (dist < 0.001 || dist > SW_STRIKE_RANGE_CLIENT) continue;
+    const dot = (dx / dist) * aimX + (dy / dist) * aimY + (dz / dist) * aimZ;
+    if (dot < SW_STRIKE_AIM_DOT_MIN || dot <= bestDot) continue;
+    bestDot = dot;
+    bestId = id;
+    best = rp;
+  }
+  if (!best) return;
+
+  lastStrikeAttemptAt = now;
+  swSocket.send(JSON.stringify({ type: 'sw-strike', targetId: bestId }));
+  spawnImpact(best.group.position.x, best.group.position.y + 1, best.group.position.z);
+  playSound('strike');
+}
+
 // Fast zip toward a rooftop grapple target — gravity-free straight-line pull, snaps to a stand
 // on arrival. Buildings-collision/ground-check are skipped while this is active (see update()),
 // since the target deliberately sits right at a wall/roof edge that those would otherwise resist.
@@ -1714,6 +1777,7 @@ window.addEventListener('keydown', (e) => {
   keys[e.code] = true;
   if (e.code === 'Space') { e.preventDefault(); doJump(); }
   if (e.code === 'KeyE') { e.preventDefault(); handleWebAction(); }
+  if (e.code === 'KeyF') { e.preventDefault(); attemptWebStrike(); }
 });
 window.addEventListener('keyup', (e) => { keys[e.code] = false; });
 
@@ -1721,9 +1785,11 @@ canvas.addEventListener('click', () => {
   if (!gameStarted || isTouchDevice || pointerLocked) return;
   canvas.requestPointerLock();
 });
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 canvas.addEventListener('mousedown', (e) => {
-  if (e.button !== 0 || !gameStarted || !pointerLocked) return;
-  handleWebAction();
+  if (!gameStarted || !pointerLocked) return;
+  if (e.button === 0) handleWebAction();
+  else if (e.button === 2) attemptWebStrike();
 });
 document.addEventListener('pointerlockchange', () => {
   pointerLocked = document.pointerLockElement === canvas;
@@ -1884,6 +1950,7 @@ if (isTouchDevice) {
   diveBtn.addEventListener('touchend', releaseTouchDive);
   diveBtn.addEventListener('touchcancel', releaseTouchDive);
   bindTap('touch-web', () => handleWebAction());
+  bindTap('touch-strike', () => attemptWebStrike());
 }
 
 // ---- Physics ----
@@ -2045,10 +2112,9 @@ function resolveLanding(groundY) {
   player.grounded = true;
 }
 
-// Put the player back on the spawn tower. Deliberately does NOT touch the score: falling off the
-// edge of the map is a hole in the world, not a mistake the player made, so it shouldn't cost them a
-// run. The air chain does reset, since they've effectively touched down.
-function respawnFromVoid() {
+// Shared by respawnFromVoid() and the PvP death handler below — both put the player back on the
+// spawn tower with a clean physics/traversal state, they just differ in toast/sound/score effect.
+function resetPlayerPhysics() {
   player.x = spawnPlatform.x;
   player.y = spawnPlatform.y + 1;
   player.z = spawnPlatform.z;
@@ -2065,6 +2131,13 @@ function respawnFromVoid() {
   if (airChain > 0) { airChain = 0; setChainLabel(); }
   trailActive = false;
   trailStrength = 0;
+}
+
+// Put the player back on the spawn tower. Deliberately does NOT touch the score: falling off the
+// edge of the map is a hole in the world, not a mistake the player made, so it shouldn't cost them a
+// run. The air chain does reset, since they've effectively touched down.
+function respawnFromVoid() {
+  resetPlayerPhysics();
   showToast('↩ Returned to the tower', 1100);
   playSound('land');
 }
@@ -2195,7 +2268,7 @@ function addRemotePlayer(id, name, pos) {
   scene.add(group);
   const strand = makeWebStrand();
   remotePlayers.set(id, {
-    group, strand,
+    group, strand, name,
     target: { x: pos.x, y: pos.y, z: pos.z, yaw: pos.yaw || 0 },
     swinging: false, anchor: null,
     lastSeen: performance.now(), hidden: false,
@@ -2298,8 +2371,10 @@ function updateRemoteAvatars(dt) {
   }
 }
 
+let swRoomFull = false; // set on 'sw-full' so the close handler below doesn't reconnect-loop into a full room
 function connectSw() {
   if (!mpRoomCode) return;
+  swRoomFull = false;
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   swSocket = new WebSocket(`${protocol}//${location.host}`);
   swSocket.addEventListener('open', () => {
@@ -2315,7 +2390,38 @@ function connectSw() {
     }
     if (data.type === 'sw-init') {
       swMyId = data.id;
+      if (Number.isFinite(data.health)) { player.health = data.health; renderHealth(); }
       data.players.forEach((p) => addRemotePlayer(p.id, p.name, p));
+    } else if (data.type === 'sw-hit') {
+      if (data.targetId === swMyId) {
+        player.health = data.health;
+        renderHealth();
+        damageFlashEl.classList.remove('show');
+        void damageFlashEl.offsetWidth; // restart the CSS animation
+        damageFlashEl.classList.add('show');
+        playSound('hurt');
+      }
+    } else if (data.type === 'sw-death') {
+      // Teleport the dead player's ghost to the spawn tower immediately rather than waiting for
+      // their next ~100ms-throttled sw-pos broadcast — otherwise every other client briefly sees
+      // them frozen at the spot they died.
+      const rp = remotePlayers.get(data.id);
+      if (rp) {
+        rp.target.x = spawnPlatform.x; rp.target.y = spawnPlatform.y + 1; rp.target.z = spawnPlatform.z;
+        rp.swinging = false; rp.anchor = null;
+      }
+      if (data.id === swMyId) {
+        resetPlayerPhysics();
+        player.health = data.health;
+        renderHealth();
+        const killerName = (data.killedBy && remotePlayers.get(data.killedBy)?.name) || 'someone';
+        showToast(`💀 Eliminated by ${killerName}`, 1600);
+        playSound('eliminated');
+      } else if (data.killedBy === swMyId) {
+        addScore(SW_KILL_SCORE_BONUS);
+        const victimName = rp?.name || 'a player';
+        showToast(`🕸️ You eliminated ${victimName}! +${SW_KILL_SCORE_BONUS}`, 1600);
+      }
     } else if (data.type === 'sw-player-joined') {
       addRemotePlayer(data.id, data.name, { x: spawnPlatform.x, y: spawnPlatform.y + 1, z: spawnPlatform.z, yaw: 0 });
     } else if (data.type === 'sw-pos') {
@@ -2331,11 +2437,22 @@ function connectSw() {
     } else if (data.type === 'sw-player-left') {
       removeRemotePlayer(data.id);
     } else if (data.type === 'sw-full') {
+      swRoomFull = true;
       if (swSocket) swSocket.close();
       swSocket = null;
     } else if (data.type === 'sw-leaderboard-result') {
       renderLeaderboard(data.scores || []);
     }
+  });
+  // Without this, a dropped connection (server restart, brief network blip) left every remote
+  // ghost frozen in its last position forever with no indication anything broke and no way to
+  // recover short of reloading the page — same reconnect pattern fighterplane.js's leaderboard
+  // socket already uses. Existing ghosts are cleared since their positions are now stale; a fresh
+  // sw-init snapshot repopulates them once reconnected.
+  swSocket.addEventListener('close', () => {
+    for (const id of [...remotePlayers.keys()]) removeRemotePlayer(id);
+    swSocket = null;
+    if (!swRoomFull) setTimeout(connectSw, 1500);
   });
 }
 
@@ -2434,6 +2551,11 @@ function blip(kind) {
     bonus: { type: 'triangle', f0: 700, f1: 2100, g: 0.16, dur: 0.32 },
     // Roll: a soft downward whump, quieter than 'land' — the roll is the smooth outcome.
     roll: { type: 'sine', f0: 320, f1: 110, g: 0.10, dur: 0.18 },
+    // PvP: a short sharp crack for landing a strike, a lower thud for taking one, and a longer
+    // descending tone (distinct from 'wipeout', which is a crash-landing, not a kill) for dying.
+    strike: { type: 'sawtooth', f0: 700, f1: 180, g: 0.16, dur: 0.12 },
+    hurt: { type: 'square', f0: 200, f1: 90, g: 0.15, dur: 0.16 },
+    eliminated: { type: 'sawtooth', f0: 480, f1: 60, g: 0.18, dur: 0.5 },
   };
   const p = presets[kind];
   if (!p) return;
@@ -2570,6 +2692,7 @@ startBtn.addEventListener('click', () => {
   bonusTimer = BONUS_SPAWN_INTERVAL * 0.4;
   gameStarted = true;
   connectSw();
+  if (mpRoomCode) { player.health = SW_MAX_HEALTH_CLIENT; renderHealth(); healthBarEl.classList.remove('hidden'); }
   if (!isTouchDevice) canvas.requestPointerLock();
 });
 

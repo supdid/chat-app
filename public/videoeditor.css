@@ -120,6 +120,15 @@ body {
   justify-content: center;
 }
 
+/* Same touch-target bump the main chat page applies to its own .icon-btn — 2.3rem (~37px) is
+   under the ~44px WCAG/HIG touch-target recommendation. */
+@media (pointer: coarse) {
+  .icon-btn {
+    width: 44px;
+    height: 44px;
+  }
+}
+
 .icon-btn:hover {
   filter: brightness(1.1);
 }
@@ -435,6 +444,17 @@ input[type="color"] { padding: 0.2rem; width: 2.6rem; height: 2.4rem; }
   cursor: ew-resize;
   background: rgba(255,255,255,0.18);
   touch-action: none;
+}
+
+/* A real 10px touch target is hard to grab, but this can't get the full ~44px WCAG/HIG bump like
+   other icon buttons on this page did — clips can be as narrow as MIN_BLOCK_PX (28px, see
+   videoeditor.js), and each clip has two handles, so anything wider than ~13px risks the left and
+   right handles overlapping (or swallowing the whole clip) at minimum zoom. 14px is the largest
+   safe width with margin to spare (14+14=28, still under MIN_BLOCK_PX). */
+@media (pointer: coarse) {
+  .trim-handle {
+    width: 14px;
+  }
 }
 
 .trim-handle.left { left: 0; border-radius: 6px 0 0 6px; }

@@ -14,7 +14,7 @@
 <body>
 
   <header id="topbar">
-    <a id="back-link" href="index.html" title="Back to chat">&larr;</a>
+    <a id="back-link" href="index.html" title="Back to chat" aria-label="Back to chat">&larr;</a>
     <a id="logo-link" href="#/"><span id="logo-mark">🦂</span><span id="logo-text">Scorpture</span></a>
     <a id="live-nav-link" href="#/live" class="pill-btn">🔴 Live</a>
     <a id="subscriptions-nav-link" href="#/subscriptions" class="pill-btn hidden">📺 Subscriptions</a>
@@ -122,15 +122,15 @@
       <span class="live-dot">🔴 LIVE</span>
       <span id="live-mini-viewers">0 watching</span>
     </div>
-    <button id="live-mini-expand-btn" class="icon-btn" title="Open stream controls">⤢</button>
-    <button id="live-mini-hide-btn" class="icon-btn" title="Hide preview">✕</button>
+    <button id="live-mini-expand-btn" class="icon-btn" title="Open stream controls" aria-label="Open stream controls">⤢</button>
+    <button id="live-mini-hide-btn" class="icon-btn" title="Hide preview" aria-label="Hide preview">✕</button>
   </div>
 
   <!-- Same "lives outside #app, survives navigation" idea as #live-mini-widget above, but for
        chat — a single floating chat box on screen instead of one baked into the watch-live page
        or the Go Live dialog. Shown/enabled whenever you're broadcasting or watching a live
        stream; toggled with #live-chat-toggle-btn. -->
-  <button id="live-chat-toggle-btn" class="hidden" title="Toggle live chat">💬</button>
+  <button id="live-chat-toggle-btn" class="hidden" title="Toggle live chat" aria-label="Toggle live chat">💬</button>
   <div id="live-chat-widget" class="hidden">
     <div id="live-chat-widget-header">
       <span>💬 Live chat</span>

@@ -1602,7 +1602,18 @@ function landOnGround() {
 // parachute already makes the other direction.
 const CALL_PLANE_MIN_ALTITUDE = 60;
 function callPlane() {
-  if (!gameStarted || mode === 'flying' || mode === 'parachuting' || controllingMissile) return;
+  // mode === 'spectating' wasn't excluded — pressing F during the post-death spectate window
+  // let a player regain control immediately, skipping the rest of the forced camera sequence.
+  if (!gameStarted || mode === 'flying' || mode === 'parachuting' || mode === 'spectating' || controllingMissile) return;
+  // mode === 'tank' wasn't excluded either, and calling a plane in while driving a tank switched
+  // mode straight to 'flying' without going through exitTank() — activeTank.occupied was never
+  // reset, so the abandoned tank stayed permanently marked occupied (excluded from
+  // tryEnterVehicle's search) for the rest of the round. Same bug class as the already-fixed
+  // plane-crash slot leak, just reached via this different exit path.
+  if (mode === 'tank' && activeTank) {
+    activeTank.occupied = false;
+    activeTank = null;
+  }
   mode = 'flying';
   planePos.y = Math.max(planePos.y + 50, CALL_PLANE_MIN_ALTITUDE);
   planePitch = 0;
@@ -2273,6 +2284,24 @@ function crashPlane(reason) {
   planeGroup.visible = false;
   health = 0;
   renderHealth();
+  // Only exitPlane() (a normal landing) used to release activePlaneSlot — a crash never went
+  // through that path, so a boarded parked plane's slot stayed occupied:true (and its
+  // placeholder mesh stayed hidden) forever after a fatal crash. Beyond permanently losing that
+  // plane from the pool for the rest of the round, it left activePlaneSlot itself stale: the
+  // *next* time the player boarded a different plane and landed normally, exitPlane() would find
+  // this old truthy reference and reposition/reveal *that* abandoned plane at the new landing
+  // spot instead of the one actually just landed, silently mixing up two unrelated flights.
+  // Mirrors exitPlane()'s own cleanup (reposition + reveal at the crash site, occupied=false)
+  // rather than leaving the slot's mesh invisible-but-technically-available forever.
+  if (activePlaneSlot) {
+    activePlaneSlot.occupied = false;
+    activePlaneSlot.x = planePos.x;
+    activePlaneSlot.z = planePos.z;
+    activePlaneSlot.mesh.position.set(planePos.x, 1.2, planePos.z);
+    activePlaneSlot.mesh.rotation.y = planeYaw;
+    activePlaneSlot.mesh.visible = true;
+    activePlaneSlot = null;
+  }
   die(reason);
 }
 
@@ -2765,6 +2794,20 @@ window.addEventListener('keydown', (e) => {
 });
 window.addEventListener('keyup', (e) => { keys[e.code] = false; });
 
+// A key released while the window doesn't have focus never delivers a keyup, so it stays latched
+// (same bug already fixed in webswing.js's clearHeldInput) — without this, alt-tabbing mid-throttle
+// or mid-turn left the plane/tank/on-foot character moving or turning forever after refocus.
+function clearHeldInput() {
+  for (const code in keys) keys[code] = false;
+  firingBullets = false;
+  aiming = false;
+  touchFiringBullets = false;
+  touchMissileX = 0;
+  touchMissileY = 0;
+}
+window.addEventListener('blur', clearHeldInput);
+document.addEventListener('visibilitychange', () => { if (document.hidden) clearHeldInput(); });
+
 canvas.addEventListener('click', () => {
   if (!gameStarted || isTouchDevice || pointerLocked) return;
   requestPointerLockSafe();
@@ -3062,6 +3105,10 @@ leaderboardBtn.addEventListener('click', () => {
 leaderboardCloseBtn.addEventListener('click', () => leaderboardOverlay.classList.add('hidden'));
 leaderboardOverlay.addEventListener('click', (e) => {
   if (e.target === leaderboardOverlay) leaderboardOverlay.classList.add('hidden');
+});
+// Same Escape-to-close fix already applied to every other overlay in this app this session.
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !leaderboardOverlay.classList.contains('hidden')) leaderboardCloseBtn.click();
 });
 
 // ---------- WebSocket ----------

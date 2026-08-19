@@ -30,8 +30,12 @@
   --bg-color: #eef3f8;
   --text-color: #10202f;
   --text-muted: #4a6478;
-  --text-dim: #6f8296;
-  --text-subtle: #56728a;
+  /* Both nudged darker from their original values (#6f8296 / #56728a) — against this theme's
+     --bg-color those computed to ~3.5:1 and ~4.5:1 contrast respectively, one failing WCAG AA's
+     4.5:1 normal-text threshold outright and the other passing with essentially no margin. These
+     now compute to ~4.7:1 and ~5.0:1. */
+  --text-dim: #557085;
+  --text-subtle: #4d6b82;
   --text-placeholder: #7c93a6;
   --panel-bg: rgba(255, 255, 255, 0.65);
   --panel-border: rgba(10, 30, 45, 0.1);
@@ -971,7 +975,8 @@ body {
   cursor: pointer;
 }
 
-.mention-dropdown-item:hover {
+.mention-dropdown-item:hover,
+.mention-dropdown-item.active {
   background: var(--icon-hover-bg);
 }
 
@@ -1129,10 +1134,22 @@ button.danger:hover {
   filter: brightness(1.1);
 }
 
-#my-status-input {
+.my-profile-fields {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+#my-name-input,
+#my-status-input {
   font-size: 0.85rem;
   padding: 0.45rem 0.65rem;
+}
+
+#my-name-error {
+  margin: 0;
 }
 
 .online-name-wrap {
@@ -1277,6 +1294,28 @@ button.danger:hover {
 
 #friend-add-form input {
   flex: 1;
+}
+
+#group-new-btn {
+  margin-bottom: 0.6rem;
+}
+
+#group-new-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 0.9rem;
+  padding: 0.6rem;
+  background: var(--bubble-bg);
+  border: 1px solid var(--bubble-border);
+  border-radius: 8px;
+}
+
+#group-friend-picker .friend-name {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
 }
 
 .friends-list {
@@ -1997,6 +2036,17 @@ button.danger:hover {
    recommend >=44x44px). Scoped to this media query so desktop sizing/density is untouched. */
 @media (pointer: coarse) {
   .icon-btn {
+    min-width: 44px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* The per-message react/save/reply/thread/pin/report/edit/delete row was missed when .icon-btn
+     got this same touch-target bump — under ~22px, easy to mis-tap between actions (e.g. delete
+     vs. save) on a dense message stack. */
+  .msg-action-btn {
     min-width: 44px;
     min-height: 44px;
     display: inline-flex;

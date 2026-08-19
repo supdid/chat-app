@@ -71,6 +71,20 @@ db.exec(`
     PRIMARY KEY (room_code, cell_key)
   );
 
+  -- Land claims (see server.js's BC_MAX_CLAIMS_PER_PLAYER) -- previously in-memory only
+  -- (room.bc.claims), which silently vanished the moment a Build Craft room emptied out (unlike
+  -- world overrides, which persist here) since a fresh bc-join always rehydrates from bc_worlds/
+  -- bc_overrides but had nothing to load claims back from. No unclaim exists (claims are purely
+  -- additive, capped per player), so no id/removal machinery is needed here.
+  CREATE TABLE IF NOT EXISTS bc_claims (
+    room_code TEXT,
+    x INTEGER,
+    z INTEGER,
+    radius INTEGER,
+    owner TEXT,
+    created_at INTEGER
+  );
+
   CREATE TABLE IF NOT EXISTS profiles (
     name TEXT PRIMARY KEY,
     avatar_url TEXT,
@@ -85,6 +99,20 @@ db.exec(`
     score INTEGER,
     updated_at INTEGER,
     PRIMARY KEY (room_code, game, name)
+  );
+
+  -- Firefight weapon-unlock progress. Deliberately separate from the generic leaderboard table
+  -- above: that one only ever keeps the best score a name has achieved (a high-score board), not
+  -- a running total, so it can't answer "how many kills has this player earned, ever" — exactly
+  -- what unlocking weapons needs. total_kills only ever increases (see bumpFgKills in server.js's
+  -- call site), one row per (room, name), same identity convention every other per-room stat here
+  -- already uses.
+  CREATE TABLE IF NOT EXISTS fg_stats (
+    room_code TEXT,
+    name TEXT,
+    total_kills INTEGER DEFAULT 0,
+    updated_at INTEGER,
+    PRIMARY KEY (room_code, name)
   );
 
   CREATE TABLE IF NOT EXISTS bc_blueprints (
@@ -110,19 +138,35 @@ function ensureColumn(table, column, definition) {
 }
 ensureColumn('messages', 'edited', 'INTEGER DEFAULT 0');
 ensureColumn('messages', 'deleted', 'INTEGER DEFAULT 0');
+// See insertMessage's comment — a signed-in poster's account_id, not just their display name.
+ensureColumn('messages', 'account_id', 'TEXT');
 ensureColumn('rooms', 'host_name', 'TEXT');
 ensureColumn('rooms', 'announcement', 'TEXT');
 ensureColumn('rooms', 'pin_required', 'TEXT');
 ensureColumn('rooms', 'wallpaper_url', 'TEXT');
+// Land claims were keyed purely by display name (owner) — two players sharing a name (plausible
+// with the default "Player" or common names) treated each other's claims as their own. New claims
+// also get a stable per-browser owner_id; existing pre-migration rows keep owner_id NULL and fall
+// back to the old name-based check (see isClaimedByOther in server.js), so nothing already placed
+// silently loses its protection.
+ensureColumn('bc_claims', 'owner_id', 'TEXT');
 
 // One-time migration: pins used to be single-pin-per-room (PK: room_code) — multi-pin needs a
 // composite PK (room_code, message_id) instead, which ALTER TABLE can't change in place.
-// Guarded by checking the actual PK columns on disk so this only ever runs once.
+// Guarded by checking the actual PK columns on disk so this only ever runs once — but that guard
+// only protects against re-running a *completed* migration, not a crash *during* one. This isn't
+// only a legacy-upgrade path either: the CREATE TABLE IF NOT EXISTS above always creates pins with
+// the old single-column PK, so this block runs on every brand-new database too, including every
+// disposable instance the test suite spins up. Wrapped in an explicit transaction (SQLite allows
+// DDL inside one) so a crash between any of these four statements can't leave the table renamed
+// away with no replacement — either the whole reshape lands, or none of it does, and the next boot
+// finds pins exactly as it left it.
 {
   const pinsInfo = db.prepare('PRAGMA table_info(pins)').all();
   const pinsHasCompositeKey = pinsInfo.filter((c) => c.pk > 0).length > 1;
   if (!pinsHasCompositeKey) {
     db.exec(`
+      BEGIN;
       ALTER TABLE pins RENAME TO pins_old;
       CREATE TABLE pins (
         room_code TEXT,
@@ -133,6 +177,7 @@ ensureColumn('rooms', 'wallpaper_url', 'TEXT');
       );
       INSERT INTO pins (room_code, message_id, pinned_by, at) SELECT room_code, message_id, pinned_by, at FROM pins_old;
       DROP TABLE pins_old;
+      COMMIT;
     `);
   }
 }
@@ -202,6 +247,34 @@ db.exec(`
     PRIMARY KEY (account_id, room_code)
   );
   CREATE INDEX IF NOT EXISTS idx_account_recent_rooms ON account_recent_rooms(account_id, at);
+
+  -- Group DMs are account-id based (unlike the room-scoped 'dms' table above, which is keyed
+  -- by ephemeral display names) so membership and history stay valid across renames and survive
+  -- independent of anyone being currently connected to a room.
+  CREATE TABLE IF NOT EXISTS group_dms (
+    id TEXT PRIMARY KEY,
+    name TEXT,
+    created_by TEXT,
+    created_at INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS group_dm_members (
+    group_id TEXT,
+    account_id TEXT,
+    joined_at INTEGER,
+    PRIMARY KEY (group_id, account_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_group_dm_members_account ON group_dm_members(account_id);
+
+  CREATE TABLE IF NOT EXISTS group_dm_messages (
+    id TEXT PRIMARY KEY,
+    group_id TEXT,
+    from_account_id TEXT,
+    from_name TEXT,
+    text TEXT,
+    at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_group_dm_messages_group ON group_dm_messages(group_id, at);
 
   CREATE TABLE IF NOT EXISTS error_reports (
     id TEXT PRIMARY KEY,
@@ -349,6 +422,8 @@ ensureColumn('accounts', 'scorpture_avatar_url', 'TEXT');
 ensureColumn('accounts', 'scorpture_bonus_subscribers', 'INTEGER DEFAULT 0');
 ensureColumn('accounts', 'scorpture_overlay_json', 'TEXT');
 ensureColumn('scorpture_comments', 'edited', 'INTEGER DEFAULT 0');
+ensureColumn('dms', 'from_account_id', 'TEXT');
+ensureColumn('dms', 'to_account_id', 'TEXT');
 ensureColumn('scorpture_videos', 'category', 'TEXT');
 ensureColumn('push_subscriptions', 'account_id', 'TEXT');
 // Was a UNIQUE index (one account per email) — relaxed to allow up to MAX_ACCOUNTS_PER_EMAIL
@@ -363,17 +438,30 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_push_account ON push_subscriptions(accou
 
 function insertDm(entry) {
   db.prepare(
-    `INSERT INTO dms (id, room_code, from_name, to_name, text, at) VALUES (@id, @roomCode, @fromName, @toName, @text, @at)`
-  ).run(entry);
+    `INSERT INTO dms (id, room_code, from_name, to_name, text, at, from_account_id, to_account_id)
+     VALUES (@id, @roomCode, @fromName, @toName, @text, @at, @fromAccountId, @toAccountId)`
+  ).run({ ...entry, fromAccountId: entry.fromAccountId || null, toAccountId: entry.toAccountId || null });
 }
 
-function getDmThread(code, nameA, nameB, limit = 200) {
+// nameA is always "the requester" here (see get-dm-thread) — requesterAccountId is whoever is
+// actually asking right now. Display names have no persistent identity (see insertMessage's
+// account_id comment for the same issue), so someone who reconnects under a name a signed-in
+// account previously used in this thread must not be able to read that account's side of it
+// just by matching the name. A row is only excluded when its "requester side" was posted by a
+// *different* signed-in account than the one asking now — anonymous-only threads (both sides
+// never signed in) are untouched, exactly as name-based as they always were.
+function getDmThread(code, nameA, nameB, requesterAccountId, limit = 200) {
   const rows = db
     .prepare(
       `SELECT * FROM dms WHERE room_code = ? AND ((from_name = ? AND to_name = ?) OR (from_name = ? AND to_name = ?)) ORDER BY at ASC LIMIT ?`
     )
     .all(code, nameA, nameB, nameB, nameA, limit);
-  return rows.map((r) => ({ id: r.id, fromName: r.from_name, toName: r.to_name, text: r.text, at: r.at }));
+  return rows
+    .filter((r) => {
+      const requesterSideAccountId = r.from_name === nameA ? r.from_account_id : r.to_account_id;
+      return !requesterSideAccountId || requesterSideAccountId === requesterAccountId;
+    })
+    .map((r) => ({ id: r.id, fromName: r.from_name, toName: r.to_name, text: r.text, at: r.at }));
 }
 
 // ---- rooms ----
@@ -407,6 +495,13 @@ function setRoomHostIfUnset(code, name) {
   db.prepare("UPDATE rooms SET host_name = ? WHERE code = ? AND (host_name IS NULL OR host_name = '')").run(name, code);
 }
 
+// Keeps host privileges attached to whoever the host actually is across a display-name rename
+// (see 'set-name' in server.js) — a no-op if this room's host isn't oldName, so it's safe to call
+// unconditionally for every room a renaming user happens to be in.
+function renameRoomHostIfMatches(code, oldName, newName) {
+  db.prepare('UPDATE rooms SET host_name = ? WHERE code = ? AND host_name = ?').run(newName, code, oldName);
+}
+
 function setAnnouncement(code, text) {
   db.prepare('UPDATE rooms SET announcement = ? WHERE code = ?').run(text || null, code);
 }
@@ -423,8 +518,8 @@ function setWallpaper(code, url) {
 
 function insertMessage(entry) {
   db.prepare(
-    `INSERT INTO messages (id, room_code, name, text, media_url, media_type, reply_to_id, at)
-     VALUES (@id, @roomCode, @name, @text, @mediaUrl, @mediaType, @replyToId, @at)`
+    `INSERT INTO messages (id, room_code, name, text, media_url, media_type, reply_to_id, at, account_id)
+     VALUES (@id, @roomCode, @name, @text, @mediaUrl, @mediaType, @replyToId, @at, @accountId)`
   ).run({
     id: entry.id,
     roomCode: entry.roomCode,
@@ -434,6 +529,12 @@ function insertMessage(entry) {
     mediaType: entry.mediaType || null,
     replyToId: entry.replyToId || null,
     at: entry.at,
+    // Display names are just a self-reported string with no persistent identity — a signed-in
+    // poster's own account_id is a much sturdier "who actually owns this" check than name alone,
+    // since a name can be picked up by someone else the moment the original holder disconnects
+    // (see edit-message/delete-message's use of this column). Null for anonymous posters, who
+    // have no such identity to bind to — unchanged, name-only behavior for them.
+    accountId: entry.accountId || null,
   });
 }
 
@@ -517,14 +618,17 @@ function toggleReaction(messageId, emoji, name) {
   return true;
 }
 
-function getReactionsForRoom(code) {
+// Capped to the same window as getRecentMessages (the only messages actually ever rendered
+// client-side on join) — this used to join against the room's entire all-time message history
+// with no limit, so a long-running room's join cost (and payload size) grew forever even though
+// reactions on messages outside the visible window are never shown anyway.
+function getReactionsForRoom(code, limit) {
   return db
     .prepare(
       `SELECT r.message_id as messageId, r.emoji, r.name FROM reactions r
-       JOIN messages m ON m.id = r.message_id
-       WHERE m.room_code = ?`
+       WHERE r.message_id IN (SELECT id FROM messages WHERE room_code = ? ORDER BY at DESC LIMIT ?)`
     )
-    .all(code);
+    .all(code, limit);
 }
 
 // ---- pins ----
@@ -568,6 +672,11 @@ function getReadReceipts(code) {
 
 // ---- whiteboard ----
 
+// Matches the in-memory room.wb.strokes cap in server.js (3000) — that cap only ever trimmed
+// the in-memory copy, so a long-lived active room's DB rows grew unbounded (the 90-day-inactivity
+// purge never reaches a room still in regular use) and a fresh rehydration (server restart, or a
+// room reload after being evicted by the activity sweep) re-sent the *entire* unbounded history.
+const WB_STROKE_DB_CAP = 3000;
 function insertStroke(code, stroke) {
   db.prepare('INSERT INTO whiteboard_strokes (id, room_code, stroke_json, at) VALUES (?, ?, ?, ?)').run(
     stroke.id,
@@ -575,11 +684,19 @@ function insertStroke(code, stroke) {
     JSON.stringify(stroke),
     Date.now()
   );
+  const { n } = db.prepare('SELECT COUNT(*) AS n FROM whiteboard_strokes WHERE room_code = ?').get(code);
+  if (n > WB_STROKE_DB_CAP) {
+    db.prepare(
+      `DELETE FROM whiteboard_strokes WHERE room_code = ? AND id IN (
+         SELECT id FROM whiteboard_strokes WHERE room_code = ? ORDER BY at ASC LIMIT ?
+       )`
+    ).run(code, code, n - WB_STROKE_DB_CAP);
+  }
 }
 
 function getWhiteboardStrokes(code) {
-  const rows = db.prepare('SELECT stroke_json FROM whiteboard_strokes WHERE room_code = ? ORDER BY at ASC').all(code);
-  return rows.map((r) => JSON.parse(r.stroke_json));
+  const rows = db.prepare('SELECT stroke_json FROM whiteboard_strokes WHERE room_code = ? ORDER BY at DESC LIMIT ?').all(code, WB_STROKE_DB_CAP);
+  return rows.map((r) => JSON.parse(r.stroke_json)).reverse();
 }
 
 function clearStrokes(code) {
@@ -617,6 +734,15 @@ function getBcOverrides(code) {
     .map((r) => [r.cell_key, r.type]);
 }
 
+function addBcClaim(code, x, z, radius, owner, ownerId) {
+  db.prepare('INSERT INTO bc_claims (room_code, x, z, radius, owner, owner_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(code, x, z, radius, owner, ownerId || null, Date.now());
+}
+
+function getBcClaims(code) {
+  return db.prepare('SELECT x, z, radius, owner, owner_id AS ownerId FROM bc_claims WHERE room_code = ?').all(code);
+}
+
 // ---- Profiles (avatar + status, keyed by display name like rooms are keyed by code — this
 // app has no accounts, so "the same name" is the closest thing to an identity to hang these on) ----
 
@@ -650,6 +776,23 @@ function getLeaderboard(code, game, limit = 10) {
   return db
     .prepare('SELECT name, score FROM leaderboard WHERE room_code = ? AND game = ? ORDER BY score DESC LIMIT ?')
     .all(code, game, limit);
+}
+
+// ---- Firefight weapon-unlock progress (see fg_stats above) ----
+
+function getFgKills(code, name) {
+  const row = db.prepare('SELECT total_kills FROM fg_stats WHERE room_code = ? AND name = ?').get(code, name);
+  return row ? row.total_kills : 0;
+}
+
+function bumpFgKills(code, name) {
+  db.prepare(
+    `INSERT INTO fg_stats (room_code, name, total_kills, updated_at) VALUES (?, ?, 1, ?)
+     ON CONFLICT(room_code, name) DO UPDATE SET
+       total_kills = fg_stats.total_kills + 1,
+       updated_at = excluded.updated_at`
+  ).run(code, name, Date.now());
+  return getFgKills(code, name);
 }
 
 // ---- Build Craft blueprints ----
@@ -775,6 +918,12 @@ function countAccountsByEmail(email) {
 
 function getAccountById(id) {
   return db.prepare('SELECT * FROM accounts WHERE id = ?').get(id) || null;
+}
+
+// Caller checks getAccountByUsername for a collision first (see /account/username in server.js),
+// but the UNIQUE COLLATE NOCASE constraint is the real backstop against a same-instant race.
+function updateAccountUsername(accountId, newUsername) {
+  db.prepare('UPDATE accounts SET username = ? WHERE id = ?').run(newUsername, accountId);
 }
 
 // ---- Google sign-in (optional, alongside username/password) — an account created this way has
@@ -953,6 +1102,77 @@ function getBlockedUsers(accountId) {
        ORDER BY f.updated_at DESC`
     )
     .all(accountId);
+}
+
+// ---- Group DMs ----
+
+function createGroupDm(id, name, createdBy, memberAccountIds) {
+  const now = Date.now();
+  const insertGroup = db.prepare(`INSERT INTO group_dms (id, name, created_by, created_at) VALUES (?, ?, ?, ?)`);
+  const insertMember = db.prepare(
+    `INSERT INTO group_dm_members (group_id, account_id, joined_at) VALUES (?, ?, ?)`
+  );
+  const tx = db.transaction(() => {
+    insertGroup.run(id, name || null, createdBy, now);
+    for (const accountId of memberAccountIds) insertMember.run(id, accountId, now);
+  });
+  tx();
+}
+
+function getGroupDm(id) {
+  return db.prepare('SELECT * FROM group_dms WHERE id = ?').get(id) || null;
+}
+
+function getGroupDmMemberIds(groupId) {
+  return db.prepare('SELECT account_id FROM group_dm_members WHERE group_id = ?').all(groupId).map((r) => r.account_id);
+}
+
+function isGroupDmMember(groupId, accountId) {
+  return !!db.prepare('SELECT 1 FROM group_dm_members WHERE group_id = ? AND account_id = ?').get(groupId, accountId);
+}
+
+// Every group DM this account belongs to, with its member usernames and last message preview —
+// the thread-list view, so one query per field instead of N+1 per thread.
+function getGroupDmsForAccount(accountId) {
+  const groups = db
+    .prepare(
+      `SELECT g.* FROM group_dms g
+       JOIN group_dm_members m ON m.group_id = g.id
+       WHERE m.account_id = ?
+       ORDER BY g.created_at DESC`
+    )
+    .all(accountId);
+  const membersStmt = db.prepare(
+    `SELECT a.id, a.username FROM group_dm_members m JOIN accounts a ON a.id = m.account_id WHERE m.group_id = ?`
+  );
+  const lastMessageStmt = db.prepare(
+    `SELECT from_name, text, at FROM group_dm_messages WHERE group_id = ? ORDER BY at DESC LIMIT 1`
+  );
+  return groups.map((g) => ({
+    id: g.id,
+    name: g.name,
+    createdBy: g.created_by,
+    createdAt: g.created_at,
+    members: membersStmt.all(g.id),
+    lastMessage: lastMessageStmt.get(g.id) || null,
+  }));
+}
+
+function insertGroupDmMessage(entry) {
+  db.prepare(
+    `INSERT INTO group_dm_messages (id, group_id, from_account_id, from_name, text, at) VALUES (@id, @groupId, @fromAccountId, @fromName, @text, @at)`
+  ).run(entry);
+}
+
+function getGroupDmMessages(groupId, limit = 200) {
+  return db
+    .prepare(`SELECT * FROM group_dm_messages WHERE group_id = ? ORDER BY at ASC LIMIT ?`)
+    .all(groupId, limit)
+    .map((r) => ({ id: r.id, groupId: r.group_id, fromAccountId: r.from_account_id, fromName: r.from_name, text: r.text, at: r.at }));
+}
+
+function removeGroupDmMember(groupId, accountId) {
+  db.prepare('DELETE FROM group_dm_members WHERE group_id = ? AND account_id = ?').run(groupId, accountId);
 }
 
 // ---- Scorpture (video sharing) ----
@@ -1213,6 +1433,15 @@ function getPersistentMuteByName(roomCode, targetName) {
   return db.prepare('SELECT * FROM room_mutes WHERE room_code = ? AND target_name = ?').get(roomCode, targetName) || null;
 }
 
+// Keeps a muted account's row findable by the by-name fallback above after they rename — without
+// this, renaming while muted (even once, at any point before an offline unmute is attempted)
+// permanently orphans the row: getPersistentMuteByName looks up by whatever name the host
+// currently sees, which no longer matches what's stored, so removePersistentMute never fires.
+function renamePersistentMuteName(roomCode, targetAccountId, newName) {
+  if (!targetAccountId) return;
+  db.prepare('UPDATE room_mutes SET target_name = ? WHERE room_code = ? AND target_account_id = ?').run(newName, roomCode, targetAccountId);
+}
+
 // ---- Room bans (see room_bans table comment for the account-vs-name enforcement split) ----
 
 function banFromRoom(id, roomCode, targetAccountId, targetName, bannedBy) {
@@ -1327,6 +1556,7 @@ const deleteRoomCascade = db.transaction((code) => {
   db.prepare('DELETE FROM whiteboard_strokes WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM bc_worlds WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM bc_overrides WHERE room_code = ?').run(code);
+  db.prepare('DELETE FROM bc_claims WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM leaderboard WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM bc_blueprints WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM dms WHERE room_code = ?').run(code);
@@ -1359,14 +1589,19 @@ module.exports = {
   createBcWorld,
   setBcOverrides,
   getBcOverrides,
+  addBcClaim,
+  getBcClaims,
   getProfile,
   upsertProfile,
   bumpLeaderboard,
   getLeaderboard,
+  getFgKills,
+  bumpFgKills,
   saveBlueprint,
   getBlueprints,
   getBlueprint,
   setRoomHostIfUnset,
+  renameRoomHostIfMatches,
   setAnnouncement,
   setRoomPin,
   setWallpaper,
@@ -1387,6 +1622,7 @@ module.exports = {
   getAccountsByEmail,
   countAccountsByEmail,
   getAccountById,
+  updateAccountUsername,
   createAccountWithGoogle,
   getAccountByGoogleId,
   linkGoogleId,
@@ -1406,6 +1642,14 @@ module.exports = {
   getIncomingFriendRequests,
   getOutgoingFriendRequests,
   getBlockedUsers,
+  createGroupDm,
+  getGroupDm,
+  getGroupDmMemberIds,
+  isGroupDmMember,
+  getGroupDmsForAccount,
+  insertGroupDmMessage,
+  getGroupDmMessages,
+  removeGroupDmMember,
   insertErrorReport,
   getErrorReport,
   setErrorReportStatus,
@@ -1417,6 +1661,7 @@ module.exports = {
   removePersistentMute,
   isPersistentlyMuted,
   getPersistentMuteByName,
+  renamePersistentMuteName,
   banFromRoom,
   unbanFromRoom,
   getRoomBans,

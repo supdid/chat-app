@@ -10,7 +10,11 @@ OUT="$DEST/$STAMP"
 
 mkdir -p "$OUT"
 chmod 700 "$OUT"
-cp "$SRC/valk.db" "$OUT/" 2>/dev/null || true
+# valk.db runs in WAL mode, so a plain `cp` of the main file alone can miss everything sitting
+# in valk.db-wal that hasn't been checkpointed yet (in practice this silently produced stale,
+# unchanging backups for days). backup-db.js uses better-sqlite3's online backup API instead,
+# which correctly merges the WAL and snapshots safely even while the live server keeps writing.
+node "$SRC/backup-db.js" "$SRC/valk.db" "$OUT/valk.db" 2>/dev/null || true
 cp "$SRC/admin-key.json" "$OUT/" 2>/dev/null || true
 cp "$SRC/vapid-keys.json" "$OUT/" 2>/dev/null || true
 cp "$SRC/google-config.json" "$OUT/" 2>/dev/null || true
