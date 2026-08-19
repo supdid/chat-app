@@ -575,6 +575,17 @@ app.get('/room-qr/:code', async (req, res) => {
 const LINK_PREVIEW_TTL_MS = 60 * 60 * 1000;
 const LINK_PREVIEW_FAILURE_TTL_MS = 5 * 60 * 1000;
 const linkPreviewCache = new Map(); // url -> { data, expiresAt }
+// Every other cache/rate-limit Map in this file (authRateLimits, usernameFailLimits,
+// postMediaRateLimits, errorReportRateLimits, friendsActionRateLimits, wsConnectRateLimits,
+// pendingUploads) caps its worst-case size the same crude way — this one was missing it. Unlike
+// those, this cache is keyed by an arbitrary caller-supplied URL string rather than an IP, so the
+// existing per-IP rate limit on /link-preview doesn't bound the number of distinct keys at all:
+// one IP pasting many different URLs over time (or an attacker doing it deliberately) could grow
+// this Map without limit, since expired entries are only skipped on read, never actively evicted.
+function cacheLinkPreview(url, entry) {
+  linkPreviewCache.set(url, entry);
+  if (linkPreviewCache.size > 10000) linkPreviewCache.clear();
+}
 
 // String-level denylist for obvious localhost/private targets — not exhaustive SSRF protection
 // (doesn't resolve DNS before fetching), but blocks the easy cases for a hobby app with no
@@ -661,7 +672,7 @@ app.get('/link-preview', async (req, res) => {
     clearTimeout(timeout);
     const contentType = response.headers.get('content-type') || '';
     if (!contentType.includes('text/html')) {
-      linkPreviewCache.set(url, { data: empty, expiresAt: Date.now() + LINK_PREVIEW_TTL_MS });
+      cacheLinkPreview(url, { data: empty, expiresAt: Date.now() + LINK_PREVIEW_TTL_MS });
       return res.json(empty);
     }
     // og:/title tags live in <head>, near the top — read a bounded prefix instead of the whole
@@ -687,10 +698,10 @@ app.get('/link-preview', async (req, res) => {
       description: description ? decodeHtmlEntities(description.trim()).slice(0, 300) : null,
       image,
     };
-    linkPreviewCache.set(url, { data, expiresAt: Date.now() + LINK_PREVIEW_TTL_MS });
+    cacheLinkPreview(url, { data, expiresAt: Date.now() + LINK_PREVIEW_TTL_MS });
     res.json(data);
   } catch {
-    linkPreviewCache.set(url, { data: empty, expiresAt: Date.now() + LINK_PREVIEW_FAILURE_TTL_MS });
+    cacheLinkPreview(url, { data: empty, expiresAt: Date.now() + LINK_PREVIEW_FAILURE_TTL_MS });
     res.json(empty);
   }
 });
