@@ -1580,6 +1580,17 @@ const rooms = new Map();
 const accountConnections = new Map();
 
 function registerAccountConnection(ws, accountId) {
+  // A connection can call join-server more than once with a *different* account's token without
+  // ever disconnecting in between — signing out and into a different account in the same tab
+  // (see app.js's signOutAccount, which only clears client-side state, no server message) then
+  // sending a fresh join-server for the new account. Without unregistering the old association
+  // first, that connection stays permanently stuck in the *old* account's accountConnections set
+  // too — the old account would show as online (see getAccountPresence, which drives the friends
+  // list's online indicator) forever, or until this connection eventually closes and
+  // unregisterAccountConnection runs using whatever ws.accountId is *by then* (the new account),
+  // still never cleaning up the stale old-account entry. Same stale-identity-mapping bug class as
+  // voice's leaveVoice fix elsewhere in this file, just via ws.accountId instead of a sub key.
+  if (ws.accountId && ws.accountId !== accountId) unregisterAccountConnection(ws);
   ws.accountId = accountId;
   if (!accountConnections.has(accountId)) accountConnections.set(accountId, new Set());
   accountConnections.get(accountId).add(ws);

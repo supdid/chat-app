@@ -223,6 +223,42 @@ describe('friends', () => {
     });
     assert.equal(res.status, 400);
   });
+
+  test('signing into a different account on the same connection does not leave the previous account stuck showing online', async () => {
+    const signup = async (username, email) => fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password: 'pass1234', email }),
+    }).then((r) => r.json());
+    const a = await signup('SwitchA', 'switcha@test.com');
+    const b = await signup('SwitchB', 'switchb@test.com');
+    await fetch(`${BASE_URL}/friends/request`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${a.token}` },
+      body: JSON.stringify({ username: 'SwitchB' }),
+    });
+    await fetch(`${BASE_URL}/friends/accept`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${b.token}` },
+      body: JSON.stringify({ username: 'SwitchA' }),
+    });
+
+    // One connection signs in as Account A first.
+    const ws = await connectWs();
+    send(ws, { type: 'join-server', username: 'SwitchA', accountToken: a.token });
+    await waitFor(ws, (m) => m.type === 'joined-server');
+
+    const presence1 = await fetch(`${BASE_URL}/friends/presence`, { headers: { Authorization: `Bearer ${b.token}` } }).then((r) => r.json());
+    assert.equal(presence1.presence.find((p) => p.username === 'SwitchA').online, true);
+
+    // The SAME still-open connection now signs into Account B instead, with no disconnect in
+    // between — this is exactly what app.js's signOutAccount + re-send-join-server flow does
+    // when switching accounts mid-session (see registerAccountConnection in server.js).
+    send(ws, { type: 'join-server', username: 'SwitchB', accountToken: b.token });
+    await waitFor(ws, (m) => m.type === 'joined-server');
+
+    const presence2 = await fetch(`${BASE_URL}/friends/presence`, { headers: { Authorization: `Bearer ${b.token}` } }).then((r) => r.json());
+    assert.equal(presence2.presence.find((p) => p.username === 'SwitchA').online, false, 'Account A must not stay stuck online after this connection switched to Account B');
+
+    ws.close();
+  });
 });
 
 describe('room moderation', () => {
