@@ -1436,6 +1436,42 @@ describe('Scorpture watch-live and signal-relay rate limits', () => {
   });
 });
 
+describe('Scorpture video creation is rate-limited', () => {
+  // Unlike its siblings (.../comments, .../report — both already rate-limited), POST
+  // /api/scorpture/videos had no throttle at all — nothing stopped reusing one already-uploaded
+  // videoUrl across unlimited create calls, each a fresh unbounded row in scorpture_videos.
+  test('flood of video creates reusing one uploaded file is rate-limited', async () => {
+    const signupRes = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'ScorpVideoFlood', password: 'password123', email: 'scorpvideoflood@test.com' }),
+    });
+    const { token } = await signupRes.json();
+
+    // isPostMediaRateLimited is a shared per-IP budget with every other route this session added
+    // it to — let it fully clear first so this test starts from a known, fresh state instead of
+    // inheriting spend from whichever test ran immediately before it (same discipline as the
+    // /room-qr + /link-preview pair above).
+    await sleep(6500);
+
+    const form = new FormData();
+    form.append('file', new Blob(['flood video content'], { type: 'video/mp4' }), 'flood.mp4');
+    const { url } = await (await fetch(`${BASE_URL}/upload`, { method: 'POST', body: form })).json();
+
+    let created = 0;
+    let sawLimited = false;
+    for (let i = 0; i < 15; i++) {
+      const res = await fetch(`${BASE_URL}/api/scorpture/videos`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ title: 'Flood ' + i, videoUrl: url }),
+      });
+      if (res.status === 200) created++;
+      else if (res.status === 429) sawLimited = true;
+    }
+    assert.ok(created > 0, 'at least some video creates should succeed before the limit kicks in');
+    assert.ok(sawLimited, 'a burst of 15 creates reusing one upload should eventually hit the rate limit');
+  });
+});
+
 describe('Build Craft sleep consensus', () => {
   test('a non-sleeping player disconnecting re-triggers the consensus check instead of leaving sleepers stuck', async () => {
     const code = 'BCSLEEPTEST1';

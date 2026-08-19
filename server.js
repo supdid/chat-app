@@ -1310,6 +1310,11 @@ function notifyScorptureSubscribers(channelId, payload) {
 app.post('/api/scorpture/videos', (req, res) => {
   const account = getAccountFromReq(req);
   if (!account) return res.status(401).json({ error: 'Not signed in' });
+  // Unlike its siblings (.../comments, .../report — both already rate-limited), this insert-a-
+  // new-row-with-no-cap route had no throttle of its own. Uploading the video file itself is
+  // already rate-limited (POST /upload), but nothing stopped reusing that same already-uploaded
+  // videoUrl across unlimited create calls, each one a fresh unbounded row in scorpture_videos.
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many uploads too quickly — slow down a bit.' });
   const title = String(req.body.title || '').slice(0, 100).trim();
   const description = String(req.body.description || '').slice(0, 2000).trim();
   const videoUrl = typeof req.body.videoUrl === 'string' ? req.body.videoUrl.slice(0, 2000) : '';
