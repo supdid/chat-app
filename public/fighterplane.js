@@ -233,6 +233,28 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
+// scene.remove() alone only detaches an object from the render graph — it never frees the
+// underlying WebGL resources (geometry buffers, materials, textures). Every bullet, missile,
+// grenade, explosion, and tank shell in this game is a brand-new mesh built fresh per shot (see
+// makeBulletMesh/makeMissileMesh/etc.), never pooled or shared, so without disposing them on
+// removal a long, actively-fought session leaks GPU memory at combat-fire-rate rather than
+// player-count rate — the fast path, not the rare one. Safe for every current caller: none of
+// this file's transient combat objects use THREE.Sprite (the one type whose .geometry is a
+// shared module-level singleton elsewhere in this codebase — see Firefight/Web Swing's
+// removeRemotePlayer — that would be wrong to dispose), so a plain mesh-geometry disposal is
+// correct here with no exclusion needed.
+function disposeObject3D(obj) {
+  if (!obj) return;
+  obj.traverse((o) => {
+    if (!o.isMesh) return;
+    if (o.geometry) o.geometry.dispose();
+    if (o.material) {
+      if (o.material.map) o.material.map.dispose();
+      o.material.dispose();
+    }
+  });
+}
+
 scene.add(new THREE.Mesh(new THREE.SphereGeometry(1000, 16, 16), new THREE.MeshBasicMaterial({ map: makeSkyTexture(), side: THREE.BackSide, fog: false })));
 scene.fog = new THREE.Fog(0x6fa3d8, 260, 950);
 scene.add(new THREE.HemisphereLight(0xdff0ff, 0x1f3a26, 1.0));
@@ -919,6 +941,7 @@ function extinguishStructure(o) {
   if (o.fireEffect) {
     if (o.fireEffect.userData.light) activeDynamicLights--;
     scene.remove(o.fireEffect);
+    disposeObject3D(o.fireEffect);
     o.fireEffect = null;
   }
   o.mesh.traverse((child) => {
@@ -1171,6 +1194,7 @@ function updateTroopBullets(dt) {
     b.mesh.position.copy(b.pos);
     if (now - b.spawnedAt > BOT_BULLET_LIFETIME_MS || bulletBlockedByObstacle(b.pos)) {
       scene.remove(b.mesh);
+      disposeObject3D(b.mesh);
       troopBullets.splice(i, 1);
       continue;
     }
@@ -1178,6 +1202,7 @@ function updateTroopBullets(dt) {
       b.target.hp -= 1;
       if (b.target.hp <= 0) destroyBot(b.target);
       scene.remove(b.mesh);
+      disposeObject3D(b.mesh);
       troopBullets.splice(i, 1);
     }
   }
@@ -1473,6 +1498,7 @@ function fireTankShell() {
 
 function explodeTankShell(s) {
   scene.remove(s.mesh);
+  disposeObject3D(s.mesh);
   for (const bot of [...bots, ...groundBots]) {
     if (!bot.alive || isFriendlyTroop(bot)) continue;
     if (s.pos.distanceTo(bot.mesh.position) <= TANK_SHELL_BLAST_RADIUS) {
@@ -2012,6 +2038,7 @@ function updateExplosions() {
     const t = (now - ex.spawnedAt) / ex.duration;
     if (t >= 1) {
       scene.remove(ex.mesh);
+      disposeObject3D(ex.mesh);
       if (ex.light) { scene.remove(ex.light); activeDynamicLights--; }
       explosions.splice(i, 1);
       continue;
@@ -2330,18 +2357,23 @@ function resetGame() {
   planeBank = 0;
   planeSpeed = PLANE_CRUISE_SPEED;
   controllingMissile = false;
-  if (missile) { scene.remove(missile.mesh); missile = null; }
+  if (missile) { scene.remove(missile.mesh); disposeObject3D(missile.mesh); missile = null; }
   missileReadyAt = 0;
-  for (const b of playerBullets) scene.remove(b.mesh);
+  for (const b of playerBullets) { scene.remove(b.mesh); disposeObject3D(b.mesh); }
   playerBullets.length = 0;
   nextBulletAt = 0;
-  for (const g of grenades) scene.remove(g.mesh);
+  for (const g of grenades) { scene.remove(g.mesh); disposeObject3D(g.mesh); }
   grenades.length = 0;
   grenadeReadyAt = 0;
-  for (const b of troopBullets) scene.remove(b.mesh);
+  for (const b of troopBullets) { scene.remove(b.mesh); disposeObject3D(b.mesh); }
   troopBullets.length = 0;
-  for (const ex of explosions) { scene.remove(ex.mesh); if (ex.light) scene.remove(ex.light); }
+  for (const ex of explosions) { scene.remove(ex.mesh); disposeObject3D(ex.mesh); if (ex.light) scene.remove(ex.light); }
   explosions.length = 0;
+  // tankShells used to be cleared with .length = 0 alone here, with no scene.remove() at all —
+  // any shell mid-flight when a round reset (not just left leaking GPU memory but staying fully
+  // visible and still moving, a permanent ghost projectile with nothing left tracking it).
+  for (const s of tankShells) { scene.remove(s.mesh); disposeObject3D(s.mesh); }
+  tankShells.length = 0;
   for (const bot of bots) respawnBot(bot);
   for (const bot of groundBots) resetFactionTroop(bot);
   redAliveCount = TROOPS_PER_FACTION;
@@ -2355,7 +2387,7 @@ function resetGame() {
   activeDynamicLights = 0;
   for (const o of obstacles) {
     if (!o.flammable || (!o.burning && !o.burnedOut)) continue;
-    if (o.fireEffect) { scene.remove(o.fireEffect); o.fireEffect = null; }
+    if (o.fireEffect) { scene.remove(o.fireEffect); disposeObject3D(o.fireEffect); o.fireEffect = null; }
     o.burning = false;
     o.burnedOut = false;
     for (const c of o.originalColors) c.material.color.copy(c.color);
@@ -2422,7 +2454,6 @@ function resetGame() {
   }
   activeTank = null;
   activePlaneSlot = null;
-  tankShells.length = 0;
 
   updateTouchStickVisibility();
 }
@@ -2462,6 +2493,7 @@ function throwGrenade() {
 
 function explodeGrenade(g) {
   scene.remove(g.mesh);
+  disposeObject3D(g.mesh);
   for (const bot of [...bots, ...groundBots]) {
     if (!bot.alive || isFriendlyTroop(bot)) continue;
     if (g.pos.distanceTo(bot.mesh.position) <= GRENADE_KILL_RADIUS) {
@@ -2533,6 +2565,7 @@ function fireMissile() {
 function endMissile() {
   if (missile) {
     scene.remove(missile.mesh);
+    disposeObject3D(missile.mesh);
     missile = null;
   }
   controllingMissile = false;
@@ -2688,6 +2721,7 @@ function updatePlayerBullets(dt) {
     b.mesh.position.copy(b.pos);
     if (now - b.spawnedAt > BULLET_LIFETIME_MS || bulletBlockedByObstacle(b.pos)) {
       scene.remove(b.mesh);
+      disposeObject3D(b.mesh);
       playerBullets.splice(i, 1);
       continue;
     }
@@ -2699,6 +2733,7 @@ function updatePlayerBullets(dt) {
       hitBot.hp -= 1;
       if (hitBot.hp <= 0) destroyBot(hitBot);
       scene.remove(b.mesh);
+      disposeObject3D(b.mesh);
       playerBullets.splice(i, 1);
     }
   }
