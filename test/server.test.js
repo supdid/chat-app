@@ -606,6 +606,29 @@ describe('room DMs', () => {
     assert.equal(bystanderSawIt, false, 'a third party in the room should never see a DM');
   });
 
+  // Same "insert directly into the scratch server's own DB, in-process" approach as the reaction-
+  // cap test above (posting 205 real-time DMs through the flood gate would be far too slow for
+  // what's really a db.js query-shape question).
+  test('a DM thread past the 200-message window shows the most recent messages, not the oldest', async () => {
+    const scratchDb = require(require('node:path').join(server.dir, 'db.js'));
+    const { ws: host, code } = await joinRoom('DmWindowHost');
+    const guest = await joinExistingRoom('DmWindowGuest', code);
+    for (let i = 1; i <= 205; i++) {
+      scratchDb.insertDm({
+        id: require('node:crypto').randomUUID(), roomCode: code,
+        fromName: 'DmWindowHost', toName: 'DmWindowGuest', text: 'm' + i, at: Date.now() + i,
+      });
+    }
+    send(host, { type: 'get-dm-thread', withName: 'DmWindowGuest' });
+    const thread = await waitFor(host, (m) => m.type === 'dm-thread' && m.withName === 'DmWindowGuest');
+    assert.equal(thread.messages.length, 200);
+    assert.equal(thread.messages[0].text, 'm6', 'the oldest message kept should be the 6th (205 - 200 + 1), not m1');
+    assert.equal(thread.messages[thread.messages.length - 1].text, 'm205', 'the newest message must be included');
+    // Still returned in chronological order, not reverse-chronological.
+    assert.ok(thread.messages.every((m, i) => i === 0 || Number(m.text.slice(1)) > Number(thread.messages[i - 1].text.slice(1))));
+    guest.close();
+  });
+
   test('cannot DM yourself or someone not currently in the room', async () => {
     const { ws: host } = await joinRoom('DmSelfHost');
     let sawDm = false;
@@ -720,6 +743,30 @@ describe('friend DMs and group DMs (account-gated)', () => {
     await sleep(500);
     alice.off('message', h);
     assert.ok(count > 0 && count <= 8, `expected 1-8 of 15 group-dm creations through, got ${count}`);
+  });
+
+  // Same "insert directly into the scratch server's own DB" approach as the DM-thread window
+  // test in the 'room DMs' describe block above. Must run before the blocking test below, which
+  // blocks FdmBob for this same aliceToken account — create-group-dm requires every member to
+  // currently be a friend, and a blocked member no longer counts as one.
+  test('a group DM past the 200-message window shows the most recent messages, not the oldest', async () => {
+    const scratchDb = require(require('node:path').join(server.dir, 'db.js'));
+    const alice = await joinAsAccount('FdmAlice4', aliceToken);
+    send(alice, { type: 'create-group-dm', memberUsernames: ['FdmBob', 'FdmCarol'], name: 'Window Test Group' });
+    const created = await waitFor(alice, (m) => m.type === 'group-dm-created');
+    const groupId = created.thread.id;
+    const aliceAccountId = scratchDb.getSessionAccount(aliceToken).id;
+    for (let i = 1; i <= 205; i++) {
+      scratchDb.insertGroupDmMessage({
+        id: require('node:crypto').randomUUID(), groupId, fromAccountId: aliceAccountId,
+        fromName: 'FdmAlice4', text: 'm' + i, at: Date.now() + i,
+      });
+    }
+    send(alice, { type: 'get-group-dm-messages', groupId });
+    const history = await waitFor(alice, (m) => m.type === 'group-dm-messages' && m.groupId === groupId);
+    assert.equal(history.messages.length, 200);
+    assert.equal(history.messages[0].text, 'm6', 'the oldest message kept should be the 6th (205 - 200 + 1), not m1');
+    assert.equal(history.messages[history.messages.length - 1].text, 'm205', 'the newest message must be included');
   });
 
   test('blocking a group-DM co-member silences them for the blocker only, live and on reload', async () => {

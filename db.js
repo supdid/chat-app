@@ -451,11 +451,16 @@ function insertDm(entry) {
 // *different* signed-in account than the one asking now — anonymous-only threads (both sides
 // never signed in) are untouched, exactly as name-based as they always were.
 function getDmThread(code, nameA, nameB, requesterAccountId, limit = 200) {
+  // DESC + reverse, not a direct ASC query — same reasoning as getRecentMessages above: LIMIT on
+  // an ASC-ordered query keeps the OLDEST rows, not the most recent ones. A thread past `limit`
+  // messages would otherwise be stuck showing only its ancient beginning forever on every reload,
+  // silently hiding everything sent more recently (this was live for a while before being caught).
   const rows = db
     .prepare(
-      `SELECT * FROM dms WHERE room_code = ? AND ((from_name = ? AND to_name = ?) OR (from_name = ? AND to_name = ?)) ORDER BY at ASC LIMIT ?`
+      `SELECT * FROM dms WHERE room_code = ? AND ((from_name = ? AND to_name = ?) OR (from_name = ? AND to_name = ?)) ORDER BY at DESC LIMIT ?`
     )
-    .all(code, nameA, nameB, nameB, nameA, limit);
+    .all(code, nameA, nameB, nameB, nameA, limit)
+    .reverse();
   return rows
     .filter((r) => {
       const requesterSideAccountId = r.from_name === nameA ? r.from_account_id : r.to_account_id;
@@ -1165,9 +1170,13 @@ function insertGroupDmMessage(entry) {
 }
 
 function getGroupDmMessages(groupId, limit = 200) {
+  // Same DESC + reverse fix as getDmThread above — an ASC-ordered LIMIT kept only the oldest
+  // `limit` messages, so any group DM past that count was stuck reshowing its ancient start on
+  // every reopen and never surfacing anything sent more recently.
   return db
-    .prepare(`SELECT * FROM group_dm_messages WHERE group_id = ? ORDER BY at ASC LIMIT ?`)
+    .prepare(`SELECT * FROM group_dm_messages WHERE group_id = ? ORDER BY at DESC LIMIT ?`)
     .all(groupId, limit)
+    .reverse()
     .map((r) => ({ id: r.id, groupId: r.group_id, fromAccountId: r.from_account_id, fromName: r.from_name, text: r.text, at: r.at }));
 }
 
