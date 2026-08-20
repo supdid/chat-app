@@ -392,6 +392,10 @@ let localVoiceStop = null; // stop function for the local speaking-ring detector
 // this (see switchMicrophone) and re-applies whatever effect was already selected.
 let rawMicStream = null;
 let voiceEffect = 'none';
+// Bumped at the start of every applyVoiceEffect/switchMicrophone attempt so the two can't clobber
+// each other if a user changes the effect and the mic device in quick succession — whichever
+// attempt's own awaits resolve last discards its result instead of overwriting newer state.
+let micOpGeneration = 0;
 let voiceEffectCleanup = null; // tears down the current Web Audio graph; no-op when effect is 'none'
 let screenStream = null; // local outgoing screen-share stream, null when not sharing
 let screenShareStarting = false; // guards against a second getDisplayMedia() call racing the first while its OS picker is still up
@@ -3432,12 +3436,22 @@ function buildOutgoingStream(rawStream, effect) {
 // changes (switchMicrophone) so the currently-selected effect carries over to the new device.
 async function applyVoiceEffect(effect) {
   if (!voiceActive || !rawMicStream) { voiceEffect = effect; return; }
+  const myCallGeneration = voiceCallGeneration;
+  const myOpGen = ++micOpGeneration;
   const { stream: newOutgoing, cleanup: newCleanup } = buildOutgoingStream(rawMicStream, effect);
   const newTrack = newOutgoing.getAudioTracks()[0];
   const oldTrack = localStream && localStream.getAudioTracks()[0];
   if (oldTrack) newTrack.enabled = oldTrack.enabled;
 
   const ok = await replaceOutgoingTrackAcrossPeers(newTrack);
+  // The call may have ended, or a newer switchMicrophone()/applyVoiceEffect() attempt may have
+  // already committed its own result, while the await above was in flight — committing this one
+  // now would either resurrect a hot mic + AudioContext with no UI left to stop them, or clobber
+  // whatever that newer attempt already set up. Either way, just discard this one.
+  if (myCallGeneration !== voiceCallGeneration || myOpGen !== micOpGeneration) {
+    newCleanup();
+    return;
+  }
   if (!ok) {
     newCleanup();
     voiceErrorEl.textContent = 'Could not switch voice effects — try again.';
@@ -3462,8 +3476,10 @@ async function switchMicrophone(deviceId) {
   if (!voiceActive || !deviceId) return;
   // Same stale-attempt guard as startVoiceCall()/retryEnableMicrophone() — picking a device
   // right as the call ends would otherwise leave a hot mic track + speaking-detector loop
-  // leaked with no UI left to stop them.
+  // leaked with no UI left to stop them. micOpGeneration additionally guards against this
+  // racing a concurrent applyVoiceEffect() attempt (see its own comment).
   const myCallGeneration = voiceCallGeneration;
+  const myOpGen = ++micOpGeneration;
   let newRawStream;
   try {
     newRawStream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: deviceId } } });
@@ -3472,7 +3488,7 @@ async function switchMicrophone(deviceId) {
     voiceErrorEl.classList.remove('hidden');
     return;
   }
-  if (myCallGeneration !== voiceCallGeneration) {
+  if (myCallGeneration !== voiceCallGeneration || myOpGen !== micOpGeneration) {
     newRawStream.getTracks().forEach((t) => t.stop());
     return;
   }
@@ -3482,6 +3498,14 @@ async function switchMicrophone(deviceId) {
   newTrack.enabled = oldTrack ? oldTrack.enabled : true;
 
   const ok = await replaceOutgoingTrackAcrossPeers(newTrack);
+  // Re-check after this second await too — the first check above only covers a stale/superseded
+  // attempt during the getUserMedia prompt; this one covers the same happening during the
+  // (usually much faster, but not instant) replaceTrack round-trip that follows it.
+  if (myCallGeneration !== voiceCallGeneration || myOpGen !== micOpGeneration) {
+    newCleanup();
+    newRawStream.getTracks().forEach((t) => t.stop());
+    return;
+  }
   if (!ok) {
     newCleanup();
     newRawStream.getTracks().forEach((t) => t.stop());
