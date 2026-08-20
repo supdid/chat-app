@@ -35,6 +35,8 @@ const TOWER_HEIGHT = 3;      // every tower is 3 tall: walls you go around, not 
 const NUM_TOWER_WALLS = 7;   // straight wall runs built from 3-tall towers
 const NUM_CUBES = 5;         // single cubes stay climbable
 const STRUCTURE_RANGE = 10;  // structures spawn within this many blocks of center
+const ROAD_WIDTH = 6;        // crossroad street width — shared with cellFree() so cover blocks
+                              // can't spawn standing in the middle of the asphalt
 
 const MAX_HEALTH = 100;
 const BOT_MAX_HEALTH = 50;
@@ -206,7 +208,7 @@ function crossroadTexture(mapSize) {
   const px = 1024;
   const scale = px / mapSize; // pixels per world unit
   const half = px / 2;
-  const roadW = 6 * scale; // a 6-unit-wide street in world space
+  const roadW = ROAD_WIDTH * scale;
   const c = document.createElement('canvas');
   c.width = c.height = px;
   const g = c.getContext('2d');
@@ -359,9 +361,15 @@ function placeColumn(i, j, height) {
   }
 }
 
+const ROAD_HALF = ROAD_WIDTH / 2;
 function cellFree(i, j) {
   if (occupied.has(`${i},${j}`)) return false;
-  return !(Math.abs(i + 0.5) < 2 && Math.abs(j + 0.5) < 2); // keep spawn clear
+  if (Math.abs(i + 0.5) < 2 && Math.abs(j + 0.5) < 2) return false; // keep spawn clear
+  // Keeps cover blocks off the crossroad's own asphalt — a "building" straddling the street
+  // read as a visual bug the moment the road actually looked like a road (previously harmless
+  // when the ground was just an abstract gray grid with no real road to stand in).
+  if (Math.abs(i + 0.5) < ROAD_HALF || Math.abs(j + 0.5) < ROAD_HALF) return false;
+  return true;
 }
 
 function randCell() {
