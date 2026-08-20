@@ -851,6 +851,17 @@ describe('friend DMs and group DMs (account-gated)', () => {
     assert.ok(bobError && /not a member/i.test(bobError.message));
   });
 
+  test('leave-group-dm is rate-limited (repeat/garbage groupIds still cost a DB read each)', async () => {
+    const dave = await joinAsAccount('FdmDaveFlood', undefined);
+    let errorCount = 0;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'error') errorCount++; };
+    dave.on('message', h);
+    for (let i = 0; i < 15; i++) send(dave, { type: 'leave-group-dm', groupId: 'nonexistent-' + i });
+    await sleep(500);
+    dave.off('message', h);
+    assert.ok(errorCount > 0 && errorCount <= 8, `expected 1-8 of 15 error responses through, got ${errorCount}`);
+  });
+
   test('create-group-dm is rate-limited like every other content-creation path', async () => {
     const alice = await joinAsAccount('FdmAliceFlood', aliceToken);
     let count = 0;

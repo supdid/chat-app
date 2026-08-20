@@ -4653,6 +4653,11 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'leave-group-dm') {
+      // Added when this got real client UI a few commits ago — until then the handler was
+      // unreachable so a missing gate didn't matter. A repeat/garbage groupId still costs a
+      // db.isGroupDmMember read on every call even though it's rejected, and unlike bc-claim
+      // (whose repeated-attempt case is a genuinely free no-op) that's not zero-cost.
+      if (isWsMsgRateLimited(ws)) return;
       if (!ws.accountId) {
         send(ws, { type: 'error', message: 'Sign in required' });
         return;
