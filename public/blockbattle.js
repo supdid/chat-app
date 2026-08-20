@@ -684,9 +684,16 @@ function nextWeaponKey() {
   return idx < WEAPON_ORDER.length - 1 ? WEAPON_ORDER[idx + 1] : null;
 }
 
+// Level is derived from the same kill-based unlock ladder weapons already use, rather than a
+// second, redundant progression system tracking its own separate thresholds — Level N means
+// "N of the 8 ladder weapons unlocked so far" (Level 1 = just the starting Glock).
+function getLevel() {
+  return WEAPON_ORDER.filter((key) => kills >= WEAPONS[key].unlock).length;
+}
+
 function updateWeaponHud() {
   weaponName.textContent = knifeOut ? KNIFE.title : WEAPONS[weapon].title;
-  killCounter.textContent = `Kills: ${kills}`;
+  killCounter.textContent = `Level ${getLevel()} · Kills: ${kills}`;
   const nk = nextWeaponKey();
   if (!nk) {
     upgradeBtn.classList.add('hidden'); // top of the ladder
@@ -826,6 +833,10 @@ function equipWeapon(key) {
 }
 
 function tryUpgrade() {
+  // Was missing this, unlike its siblings trySelectWeapon()/selectFists() — since takeDamage()
+  // never releases pointer lock on death, U still worked in the gap right after dying, silently
+  // upgrading (equipWeapon's own autosave then no-ops against "no saving from the grave").
+  if (dead) return;
   const nk = nextWeaponKey();
   if (!nk || kills < WEAPONS[nk].unlock) return;
   equipWeapon(nk);
@@ -1179,8 +1190,17 @@ function damageBot(bot, amount, killCredit) {
     // to the player to notice the Upgrade button lit up.
     for (const key of WEAPON_ORDER) {
       if (killsBefore < WEAPONS[key].unlock && kills >= WEAPONS[key].unlock) {
-        if (document.pointerLockElement) document.exitPointerLock();
-        openLoadoutPicker(() => canvas.requestPointerLock());
+        showWaveBanner(`⭐ LEVEL UP! Level ${getLevel()}`);
+        // Skip opening the picker here if an already-in-flight enemy bullet resolved earlier in
+        // this same tick() and killed the player (bullet-vs-player collision runs before this
+        // point) — pointerlockchange/`paused` only flip asynchronously, so `dead` is the one
+        // reliable signal available synchronously. Opening it anyway would stack it on top of
+        // the death overlay in a not-actually-alive state; the (now-fixed) death/respawn click
+        // flow already picks up the loadout correctly once they respawn.
+        if (!dead) {
+          if (document.pointerLockElement) document.exitPointerLock();
+          openLoadoutPicker(() => canvas.requestPointerLock());
+        }
         break;
       }
     }
@@ -1533,7 +1553,12 @@ window.addEventListener('keydown', (e) => {
   e.preventDefault();
   // Both Ctrl and C still crouch (keys.add(dir) below is unconditional either way), but sliding
   // is deliberately C-specific — Ctrl now only ever crouches, never slides.
-  if (dir === 'crouch' && !keys.has('crouch') && e.code === 'KeyC') wantSlide = true; // fresh press, not auto-repeat
+  // e.repeat, not keys.has('crouch') — Ctrl and C share the same abstract 'crouch' entry in
+  // `keys`, so checking that instead would leave a genuinely fresh C tap unable to arm a slide
+  // whenever Ctrl was already held (crouch already "active" from Ctrl alone). e.repeat correctly
+  // reflects whether *this key* is a fresh press vs. the OS auto-repeating it, independent of
+  // whatever else is held.
+  if (dir === 'crouch' && !e.repeat && e.code === 'KeyC') wantSlide = true;
   // A fresh jump press (not held/auto-repeat) while already airborne — the fists double-jump
   // below only fires on this, so holding Space doesn't just auto-hop twice on the way down.
   if (dir === 'jump' && !keys.has('jump')) wantJump = true;
@@ -1605,11 +1630,16 @@ document.addEventListener('click', () => {
   // movement deltas and hides the OS pointer, same reason backToModeSelect() already releases
   // it for its own buttons.
   if (document.pointerLockElement) document.exitPointerLock();
-  deathOverlay.classList.add('hidden');
-  openLoadoutPicker(() => {
-    respawn();
-    canvas.requestPointerLock();
-  });
+  // respawn() runs FIRST, before the picker shows — it's the only place `dead` gets cleared
+  // back to false, and equipWeapon()/selectFists() (what a tile pick calls) both silently no-op
+  // while dead is still true: selectFists() bails outright (fists could never actually be
+  // picked post-death), and equipWeapon()'s autosave hits saveGame()'s own "no saving from the
+  // grave" guard (a gun pick would work in-memory but never persist). respawn() already hides
+  // deathOverlay itself, resets position/health, and clears dead — doing that before the picker
+  // opens means every tile pick genuinely happens as a live player, exactly like at any other
+  // loadout-picker call site.
+  respawn();
+  openLoadoutPicker(() => canvas.requestPointerLock());
 });
 
 // ---- Collision ----
