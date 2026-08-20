@@ -1645,6 +1645,34 @@ describe('cosmetic/settings toggles without natural bounding are rate-limited', 
     watcher.off('message', h);
     assert.ok(count > 0 && count <= 8, `expected 1-8 dg-spectator-changed broadcasts through, got ${count}`);
   });
+
+  test('join-server flood is rate-limited (was completely unguarded — flooded the whole-server broadcast)', async () => {
+    // join-server is the very first message any connection can send (no room, no prior state
+    // needed) and its broadcastWorldwideCount() call sweeps every connected client on the whole
+    // server, not just one room — the worst of the gaps this describe block covers.
+    const flooder = await connectWs();
+    let acks = 0;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'joined-server') acks++; };
+    flooder.on('message', h);
+    for (let i = 0; i < 15; i++) send(flooder, { type: 'join-server', username: 'JoinFlood' + i });
+    await sleep(300);
+    flooder.off('message', h);
+    assert.ok(acks > 0 && acks <= 8, `expected 1-8 joined-server acks through, got ${acks}`);
+  });
+
+  test('bc-join flood is rate-limited (representative of the whole *-join family sharing this gate)', async () => {
+    // Every minigame *-join handler got this same guard — bc-join stands in for all 11. Each
+    // unthrottled call would otherwise re-run getOrCreateRoom (real DB writes, can manufacture a
+    // brand-new room from any code) and setRoomActivity (another DB write plus a room broadcast).
+    const flooder = await connectWs();
+    let inits = 0;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'bc-init') inits++; };
+    flooder.on('message', h);
+    for (let i = 0; i < 15; i++) send(flooder, { type: 'bc-join', code: 'BCJOINFLOOD' + i, name: 'BcJoinFlooder' });
+    await sleep(300);
+    flooder.off('message', h);
+    assert.ok(inits > 0 && inits <= 8, `expected 1-8 bc-init responses through, got ${inits}`);
+  });
 });
 
 describe('orphaned upload sweep', () => {

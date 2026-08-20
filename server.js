@@ -2894,6 +2894,10 @@ function leaveWb(ws) {
 // shape genuinely differs (no empty/self-name guard, doesn't bail if the room is already gone),
 // so folding it in here would risk a subtle behavior change rather than a pure extraction.
 function resolveModerationTarget(ws, msg) {
+  // Shared by kick/mute/ban — host-only, but a flood still costs a synchronous DB write plus a
+  // full room broadcast every call, blocking the shared event loop for every room on the server,
+  // not just the attacker's own.
+  if (isWsMsgRateLimited(ws)) return null;
   const dbRoom = db.getRoom(ws.room);
   if (!dbRoom || dbRoom.host_name !== ws.profile.name) return null;
   const targetName = String(msg.name || '').trim();
@@ -2957,6 +2961,10 @@ wss.on('connection', (ws, req) => {
     // every other connection too). See reportError() near the top of this file.
     try {
     if (msg.type === 'join-server') {
+      // No rate limit here meant any client (no prior room join needed — this is the very first
+      // message a connection can send) could flood broadcastWorldwideCount() below, which does
+      // two full passes over every connected client on the whole server, not just one room.
+      if (isWsMsgRateLimited(ws)) return;
       const name = String(msg.username || 'Anonymous').slice(0, 30).trim() || 'Anonymous';
       const saved = db.getProfile(name);
       ws.profile = {
@@ -3121,6 +3129,11 @@ wss.on('connection', (ws, req) => {
     // (not the chat page), so these never go through 'join-server' / ws.profile — handled here,
     // before the chat-identity gate below.
     if (msg.type === 'bc-join') {
+      // Every *-join handler funnels into getOrCreateRoom (real DB writes, can manufacture a
+      // brand-new room+world from any arbitrary code) and setRoomActivity (another DB write plus
+      // a full room broadcast) with zero prior dedup — a raw client resending this could flood
+      // both at the raw message rate. Same shared gate every other write/broadcast path uses.
+      if (isWsMsgRateLimited(ws)) return;
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       const color = /^#[0-9a-fA-F]{6}$/.test(msg.color || '') ? msg.color : '#2fb6ac';
@@ -3173,6 +3186,11 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'bc-block' && ws.bcRoom) {
+      // Unlike bc-pos (which got the same isStrokeRateLimited gate for the same reason — the
+      // standard chat gate is too tight for legitimate fast play), buildcraft.js sends one
+      // bc-block per break/place with no client-side batching/throttling, so a fast player mining
+      // several blocks in quick succession is real, expected traffic, not just an attacker.
+      if (isStrokeRateLimited(ws)) return;
       const room = rooms.get(ws.bcRoom);
       if (!room || !room.bc) return;
       // Land-claim protection was previously enforced client-side only (buildcraft.js's own
@@ -3330,6 +3348,8 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'bc-sleep' && ws.bcRoom) {
+      // A toggle like bc-wake below, not a continuous stream like bc-pos — the standard gate.
+      if (isWsMsgRateLimited(ws)) return;
       const room = rooms.get(ws.bcRoom);
       const bc = room && room.bc;
       const me = bc && bc.players.get(ws);
@@ -3342,6 +3362,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'bc-wake' && ws.bcRoom) {
+      if (isWsMsgRateLimited(ws)) return; // see bc-sleep's comment on this same guard
       const room = rooms.get(ws.bcRoom);
       const bc = room && room.bc;
       if (!bc || !bc.sleeping) return;
@@ -3410,6 +3431,9 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'bc-blueprint-save' && ws.bcRoom) {
+      // Each call does a JSON.stringify + DB insert on up to 20,000 block entries, with no cap
+      // on how many blueprints one player can save — the standard gate at least bounds the rate.
+      if (isWsMsgRateLimited(ws)) return;
       const room = rooms.get(ws.bcRoom);
       const me = room && room.bc && room.bc.players.get(ws);
       if (!me) return;
@@ -3448,6 +3472,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'gw-join') {
+      if (isWsMsgRateLimited(ws)) return; // see bc-join's comment on this same guard
       const code = String(msg.code || '').toUpperCase().trim();
       const level = String(msg.level || 'easy').slice(0, 20);
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
@@ -3522,6 +3547,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'sw-join') {
+      if (isWsMsgRateLimited(ws)) return; // see bc-join's comment on this same guard
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
@@ -3625,6 +3651,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'fg-join') {
+      if (isWsMsgRateLimited(ws)) return; // see bc-join's comment on this same guard
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
@@ -3692,6 +3719,8 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'fg-select-weapon' && ws.fgRoom) {
+      // Each call does a DB read (getFgKills) plus a room broadcast on success — no cap before.
+      if (isWsMsgRateLimited(ws)) return;
       const room = rooms.get(ws.fgRoom);
       const fg = room && room.fg;
       const p = fg && fg.players.get(ws);
@@ -3779,6 +3808,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'tv-join') {
+      if (isWsMsgRateLimited(ws)) return; // see bc-join's comment on this same guard
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
@@ -3865,6 +3895,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'arcade-join') {
+      if (isWsMsgRateLimited(ws)) return; // see bc-join's comment on this same guard
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       const game = String(msg.game || '');
@@ -3902,6 +3933,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'hm-join') {
+      if (isWsMsgRateLimited(ws)) return; // see bc-join's comment on this same guard
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
@@ -3996,6 +4028,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'ch-join') {
+      if (isWsMsgRateLimited(ws)) return; // see bc-join's comment on this same guard
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
@@ -4098,6 +4131,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'tt-join') {
+      if (isWsMsgRateLimited(ws)) return; // see bc-join's comment on this same guard
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
@@ -4223,6 +4257,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'dg-join') {
+      if (isWsMsgRateLimited(ws)) return; // see bc-join's comment on this same guard
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
@@ -4353,6 +4388,8 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'dg-clear' && ws.dgRoom) {
+      // Drawer-only, but unbounded during their own turn — same shape as wb-clear's existing gate.
+      if (isWsMsgRateLimited(ws)) return;
       const room = rooms.get(ws.dgRoom);
       const dg = room && room.dg;
       if (!dg) return;
@@ -4407,6 +4444,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'wb-join') {
+      if (isWsMsgRateLimited(ws)) return; // see bc-join's comment on this same guard
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
@@ -4809,6 +4847,10 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'rename-room' && ws.room) {
+      // Host-only, but the flood cost lands on every room on the server (synchronous DB write
+      // blocks the shared event loop), not just the attacker's own — same reasoning as
+      // resolveModerationTarget's identical guard just above.
+      if (isWsMsgRateLimited(ws)) return;
       const dbRoom = db.getRoom(ws.room);
       if (!dbRoom || dbRoom.host_name !== ws.profile.name) return;
       const name = String(msg.name || '').slice(0, 50).trim() || null;
@@ -4827,6 +4869,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'set-wallpaper' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return; // see rename-room's comment on this same guard
       const dbRoom = db.getRoom(ws.room);
       if (!dbRoom || dbRoom.host_name !== ws.profile.name) return;
       // Same tracker-link gap set-avatar had (fixed earlier this session): the real UI only ever
@@ -4841,6 +4884,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'set-announcement' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return; // see rename-room's comment on this same guard
       const dbRoom = db.getRoom(ws.room);
       if (!dbRoom || dbRoom.host_name !== ws.profile.name) return;
       const text = String(msg.text || '').slice(0, 200).trim() || null;
@@ -4889,6 +4933,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'unmute-user' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return; // see rename-room's comment on this same guard
       const dbRoom = db.getRoom(ws.room);
       if (!dbRoom || dbRoom.host_name !== ws.profile.name) return;
       const targetName = String(msg.name || '').trim();
@@ -4958,6 +5003,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'unban-user' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return; // see rename-room's comment on this same guard
       const dbRoom = db.getRoom(ws.room);
       if (!dbRoom || dbRoom.host_name !== ws.profile.name) return;
       const banId = String(msg.banId || '');
