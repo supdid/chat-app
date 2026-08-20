@@ -735,6 +735,11 @@ function handleServerMessage(data) {
       // a reconnect/room-switch, it kept showing whatever room's results were last rendered even
       // though currentRoomCode (and the message list a hit would jump to) had already moved on.
       searchOverlay.classList.add('hidden');
+      // Lower stakes than the others (its own click handler already falls back to opening the raw
+      // media URL if the message isn't in the current room's DOM, so this was never actually
+      // reachable as a wrong-room jump) but still cosmetically stale — a fresh get-media re-fetches
+      // once reopened anyway, so there's no reason to leave the old room's grid showing.
+      galleryOverlay.classList.add('hidden');
       seedReactions(data.reactions);
       seedActivity(data.activity);
       pinnedMessages = data.pins || [];
