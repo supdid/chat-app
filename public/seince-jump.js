@@ -206,7 +206,11 @@
     const best = loadBest();
     if (!best[id] || attempts < best[id]) {
       best[id] = attempts;
-      localStorage.setItem(SAVE_KEY, JSON.stringify(best));
+      // Unlike loadBest() above, this was unguarded — called from complete() inside the main
+      // requestAnimationFrame loop, a throw here (Safari private browsing, a storage-blocking
+      // extension) would propagate out of update()/loop() and kill the render loop entirely,
+      // freezing the game on the win-flash frame with no recovery short of a reload.
+      try { localStorage.setItem(SAVE_KEY, JSON.stringify(best)); } catch {}
     }
   }
 
