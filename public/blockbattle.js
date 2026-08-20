@@ -585,11 +585,16 @@ const SAVE_KEY = 'valk-fps-save';
 const saveBtn = document.getElementById('save-btn');
 let saveFlashTimer = null;
 
-function saveGame() {
+// `silent` is used for autosave (every kill, every new wave) — same write, but skips the chime
+// and button flash so scoring several kills in a row doesn't spam confirmation feedback for
+// something the player didn't ask for. The manual Save button/P key keep that feedback exactly
+// as before, since there it IS the point — confirming "yes, that press worked."
+function saveGame(silent) {
   if (dead) return; // no saving from the grave
   try {
     localStorage.setItem(SAVE_KEY, JSON.stringify({ kills, weapon, wave, health, savedAt: Date.now() }));
   } catch { return; }
+  if (silent) return;
   sfxPickup();
   saveBtn.textContent = '💾 Saved ✓';
   clearTimeout(saveFlashTimer);
@@ -773,6 +778,7 @@ function tryUpgrade() {
   equipGun(nk);
   updateWeaponHud();
   updateAmmoHud();
+  saveGame(true); // autosave — an earned upgrade is progress too, not just the kill count
 }
 upgradeBtn.addEventListener('click', tryUpgrade);
 
@@ -1058,6 +1064,7 @@ function startWave() {
   updateWaveHud();
   showWaveBanner(`Wave ${wave}`);
   sfxWaveStart();
+  saveGame(true); // autosave — reaching a new wave is real progress too, not just kills
 }
 
 // FS mode only: a dead bot comes back somewhere else after its timer runs out.
@@ -1090,6 +1097,7 @@ function damageBot(bot, amount, killCredit) {
     sfxKill();
     dropHealthPack(bot.x, bot.z);
     updateWeaponHud();
+    saveGame(true); // autosave — a kill is exactly the progress a player wouldn't want to lose
   }
 }
 
@@ -1432,7 +1440,9 @@ window.addEventListener('keydown', (e) => {
   const dir = KEYMAP[e.code];
   if (!dir) return;
   e.preventDefault();
-  if (dir === 'crouch' && !keys.has('crouch')) wantSlide = true; // fresh press, not auto-repeat
+  // Both Ctrl and C still crouch (keys.add(dir) below is unconditional either way), but sliding
+  // is deliberately C-specific — Ctrl now only ever crouches, never slides.
+  if (dir === 'crouch' && !keys.has('crouch') && e.code === 'KeyC') wantSlide = true; // fresh press, not auto-repeat
   keys.add(dir);
 });
 window.addEventListener('keyup', (e) => {
