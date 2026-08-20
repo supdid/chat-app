@@ -3107,6 +3107,13 @@ pttToggleBtn.addEventListener('click', () => setPttMode(!pttMode));
 pttBtn.addEventListener('pointerdown', pttStart);
 pttBtn.addEventListener('pointerup', pttStop);
 pttBtn.addEventListener('pointerleave', pttStop);
+// pointercancel — an OS/browser gesture takeover mid-press (e.g. a touch edge-swipe) — is
+// distinct from pointerleave: it can fire while the pointer is still physically over the button,
+// so pointerleave never catches it. Without this, that specific interruption left the mic
+// permanently unmuted (pttActive stuck true) with no further pointer event ever able to stop it
+// short of toggling push-to-talk mode off and back on. Same bug class just fixed in
+// videoeditor.js's drag handlers, found by checking for the same gap elsewhere in the app.
+pttBtn.addEventListener('pointercancel', pttStop);
 
 // Space bar as an alternative to holding the on-screen button — guarded so it doesn't
 // hijack Space while someone's actually typing in the message box.
