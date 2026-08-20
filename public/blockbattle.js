@@ -508,6 +508,8 @@ let slideT = 0;
 let slideDirX = 0;
 let slideDirZ = 0;
 let wantSlide = false;
+let wantJump = false;   // fresh Space press, consumed once a tick — gates the fists double-jump
+let jumpsUsed = 0;      // resets to 0 on landing; fists gets a 2nd jump mid-air, guns don't
 let health = MAX_HEALTH;
 let dead = false;
 let kills = 0;
@@ -549,6 +551,47 @@ const waveBanner = document.getElementById('wave-banner');
 const deathStats = document.getElementById('death-stats');
 const deathBest = document.getElementById('death-best');
 const deathRecord = document.getElementById('death-record');
+
+// ---- Loadout picker ----
+// A simple emoji "picture" per weapon — matches this whole app's asset-free style (every
+// minigame draws its own art or uses emoji, no external image files to load).
+const WEAPON_ICONS = {
+  glock: '🔫', deagle: '🔫', uzi: '🔫', mp90: '🔫', ak47: '🔫',
+  sniper: '🎯', sniper3: '🎯', rpg: '🚀', knife: '🥊',
+};
+const loadoutOverlay = document.getElementById('loadout');
+const loadoutGrid = document.getElementById('loadout-grid');
+
+// Shows every currently-unlocked ladder weapon plus fists as clickable tiles; picking one
+// equips it and calls `onDone`. Used at the start of every life (fresh mode start, and every
+// respawn) and whenever a new weapon is unlocked mid-round — "until you die" per the ask, this
+// is the one screen that reappears every time a fresh life begins, not just once.
+function openLoadoutPicker(onDone) {
+  loadoutGrid.innerHTML = '';
+  const addTile = (icon, name, onPick) => {
+    const tile = document.createElement('div');
+    tile.className = 'loadout-tile';
+    const iconEl = document.createElement('div');
+    iconEl.className = 'loadout-icon';
+    iconEl.textContent = icon;
+    const nameEl = document.createElement('div');
+    nameEl.className = 'loadout-name';
+    nameEl.textContent = name;
+    tile.append(iconEl, nameEl);
+    tile.addEventListener('click', () => {
+      loadoutOverlay.classList.add('hidden');
+      onPick();
+      onDone();
+    });
+    loadoutGrid.appendChild(tile);
+  };
+  for (const key of WEAPON_ORDER) {
+    if (kills < WEAPONS[key].unlock) continue;
+    addTile(WEAPON_ICONS[key], WEAPONS[key].title, () => equipWeapon(key));
+  }
+  addTile(WEAPON_ICONS.knife, 'Fists', () => selectFists());
+  loadoutOverlay.classList.remove('hidden');
+}
 
 function showWaveBanner(text) {
   waveBanner.textContent = text;
@@ -767,18 +810,48 @@ function equipGun(type) {
 }
 equipGun('glock');
 
+// Shared by tryUpgrade() (the U-key ladder climb) and trySelectWeapon() (the 1/2/3 quick-swap
+// hotkeys, and the loadout picker's own tile clicks) — every path that puts a specific ladder
+// gun in your hands funnels through here so they can't drift out of sync with each other.
+function equipWeapon(key) {
+  weapon = key;
+  ammo = WEAPONS[key].mag;
+  isReloading = false;
+  nextShotAt = 0;
+  knifeOut = false; // equipping a gun pulls it straight into your hands, fists put away
+  equipGun(key);
+  updateWeaponHud();
+  updateAmmoHud();
+  saveGame(true); // autosave — earning/picking a loadout is progress too, not just kill count
+}
+
 function tryUpgrade() {
   const nk = nextWeaponKey();
   if (!nk || kills < WEAPONS[nk].unlock) return;
-  weapon = nk;
-  ammo = WEAPONS[nk].mag;
-  isReloading = false;
+  equipWeapon(nk);
+}
+
+// Quick-swap hotkeys (1/2/3) — unlike tryUpgrade, this can select ANY already-unlocked ladder
+// weapon directly, not just the next rung. No-ops silently on a locked weapon, same as the
+// upgrade button already does while disabled.
+function trySelectWeapon(key) {
+  if (dead || !WEAPONS[key] || kills < WEAPONS[key].unlock) return;
+  equipWeapon(key);
+}
+
+// Dedicated fists-select for the "3" hotkey and the loadout picker — unlike Q's toggleKnife(),
+// this always SELECTS fists rather than toggling them off if already out, matching "press 3 for
+// fists" as a direct pick, not a toggle.
+function selectFists() {
+  if (dead) return;
+  knifeOut = true;
+  equipGun('knife');
   nextShotAt = 0;
-  knifeOut = false; // upgrading pulls the new gun straight into your hands
-  equipGun(nk);
+  swingT = 0;
+  flourishT = 0;
   updateWeaponHud();
   updateAmmoHud();
-  saveGame(true); // autosave — an earned upgrade is progress too, not just the kill count
+  saveGame(true);
 }
 upgradeBtn.addEventListener('click', tryUpgrade);
 
@@ -1010,7 +1083,9 @@ function startMode(m) {
     nextWaveT = 1.5; // waves start counting once you click in and unpause
   }
   updateWaveHud();
-  document.getElementById('hint-title').textContent = 'Click to play';
+  // Pick a loadout before the very first "Click to play" of a fresh life, same as after every
+  // respawn/death below.
+  openLoadoutPicker(() => { document.getElementById('hint-title').textContent = 'Click to play'; });
 }
 
 document.querySelectorAll('.mode-btn[data-mode]').forEach((btn) => {
@@ -1093,11 +1168,22 @@ function damageBot(bot, amount, killCredit) {
     bot.deadBot = true;
     bot.deathT = 0;
     spawnImpact(bot.x, 0.6, bot.z, 0xd9534f, 10); // burst apart a little on the kill
+    const killsBefore = kills;
     kills += killCredit; // player shots pass 1 (2 for an RPG headshot); sidekick kills pass 0
     sfxKill();
     dropHealthPack(bot.x, bot.z);
     updateWeaponHud();
     saveGame(true); // autosave — a kill is exactly the progress a player wouldn't want to lose
+    // A kill can cross a new weapon's unlock threshold (even skip clean past one, on a 2-credit
+    // RPG headshot) — offer the loadout picker the instant that happens, instead of leaving it
+    // to the player to notice the Upgrade button lit up.
+    for (const key of WEAPON_ORDER) {
+      if (killsBefore < WEAPONS[key].unlock && kills >= WEAPONS[key].unlock) {
+        if (document.pointerLockElement) document.exitPointerLock();
+        openLoadoutPicker(() => canvas.requestPointerLock());
+        break;
+      }
+    }
   }
 }
 
@@ -1437,12 +1523,20 @@ window.addEventListener('keydown', (e) => {
     if (!dead && !isReloading && ammo < WEAPONS[weapon].mag) startReload(performance.now());
     return;
   }
+  // Quick-swap hotkeys — direct picks among 3 specific loadout slots, not the U-key ladder
+  // climb. trySelectWeapon() silently no-ops on a weapon that isn't unlocked yet.
+  if (e.code === 'Digit1') { trySelectWeapon('ak47'); return; }
+  if (e.code === 'Digit2') { trySelectWeapon('glock'); return; }
+  if (e.code === 'Digit3') { selectFists(); return; }
   const dir = KEYMAP[e.code];
   if (!dir) return;
   e.preventDefault();
   // Both Ctrl and C still crouch (keys.add(dir) below is unconditional either way), but sliding
   // is deliberately C-specific — Ctrl now only ever crouches, never slides.
   if (dir === 'crouch' && !keys.has('crouch') && e.code === 'KeyC') wantSlide = true; // fresh press, not auto-repeat
+  // A fresh jump press (not held/auto-repeat) while already airborne — the fists double-jump
+  // below only fires on this, so holding Space doesn't just auto-hop twice on the way down.
+  if (dir === 'jump' && !keys.has('jump')) wantJump = true;
   keys.add(dir);
 });
 window.addEventListener('keyup', (e) => {
@@ -1506,7 +1600,16 @@ document.addEventListener('mouseup', (e) => {
 document.addEventListener('contextmenu', (e) => e.preventDefault()); // right-click is the scope, not a menu
 window.addEventListener('blur', () => { mouseHeld = false; scoped = false; });
 document.addEventListener('click', () => {
-  if (dead) respawn();
+  if (!dead) return;
+  // The loadout tiles need a real, visible cursor — pointer lock only ever gives relative
+  // movement deltas and hides the OS pointer, same reason backToModeSelect() already releases
+  // it for its own buttons.
+  if (document.pointerLockElement) document.exitPointerLock();
+  deathOverlay.classList.add('hidden');
+  openLoadoutPicker(() => {
+    respawn();
+    canvas.requestPointerLock();
+  });
 });
 
 // ---- Collision ----
@@ -1632,9 +1735,16 @@ function tick(now) {
       if (!blockedAt(player.x, nz, player.y)) player.z = nz;
     }
 
-    if (keys.has('jump') && onGround) {
+    // Ground jump: held Space still auto-hops the instant you land, exactly as before — no
+    // fresh-press requirement, unrestricted by weapon. The fists double-jump is different on
+    // both counts: it needs a genuinely fresh Space press (wantJump) so holding the key doesn't
+    // just auto-trigger it the moment jumpsUsed allows another, and it only works with knifeOut.
+    const groundJump = keys.has('jump') && onGround;
+    const fistsAirJump = wantJump && !onGround && knifeOut && jumpsUsed < 2;
+    if (groundJump || fistsAirJump) {
       vy = JUMP_SPEED;
       onGround = false;
+      jumpsUsed++;
       if (sliding) {
         // Slide-jump: leave the ground carrying the slide's full speed.
         hasAirMomentum = true;
@@ -1643,6 +1753,7 @@ function tick(now) {
         sliding = false;
       }
     }
+    wantJump = false; // consumed every tick, whether or not it triggered a jump
 
     vy -= GRAVITY * dt;
     let ny = player.y + vy * dt;
@@ -1652,6 +1763,7 @@ function tick(now) {
       ny = support;
       vy = 0;
       onGround = true;
+      jumpsUsed = 0; // fresh jump budget the moment you touch down
       hasAirMomentum = false; // slide-jump speed doesn't survive touching down
     } else if (ny > support) {
       onGround = false; // walked off an edge (or still rising)

@@ -408,6 +408,68 @@ html, body {
   cursor: default;
 }
 
+/* Sits above everything else in-game (hint 20, death 25, mode-select 26) — it can be triggered
+   from either of the first two (a fresh unlock mid-round, or picking a loadout before a new
+   life) and needs to fully cover whichever is currently showing underneath. Solid near-black,
+   deliberately more opaque than its semi-transparent siblings — a genuine "black box" you pick
+   from, not just another tinted-glass menu. */
+#loadout {
+  position: fixed;
+  inset: 0;
+  z-index: 27;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.2rem;
+  background: rgba(4, 4, 6, 0.94);
+  text-align: center;
+}
+
+#loadout-title {
+  font-size: 1.8rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);
+}
+
+#loadout-grid {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.9rem;
+  width: min(560px, 90vw);
+}
+
+.loadout-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  width: 108px;
+  padding: 0.9rem 0.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+  color: #eaf6ff;
+}
+
+.loadout-tile:hover {
+  background: #2fb6ac;
+  color: #04211e;
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.loadout-icon {
+  font-size: 2.4rem;
+}
+
+.loadout-name {
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
 /* A soft vignette over the 3D view (under the HUD) pulls focus to the center. */
 body::after {
   content: '';
