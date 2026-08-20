@@ -3737,7 +3737,9 @@ const skinColorInput = document.getElementById('skin-color-input');
 skinColorInput.value = myShirtColor;
 skinColorInput.addEventListener('input', () => {
   myShirtColor = skinColorInput.value;
-  localStorage.setItem('valk-bc-skin-color', myShirtColor);
+  // A throw here previously skipped the bc-set-skin send below too — the color wouldn't sync to
+  // other players even though it changed locally, not just a lost-persistence issue.
+  try { localStorage.setItem('valk-bc-skin-color', myShirtColor); } catch {}
   if (bcSocket && bcSocket.readyState === WebSocket.OPEN) {
     bcSocket.send(JSON.stringify({ type: 'bc-set-skin', color: myShirtColor }));
   }

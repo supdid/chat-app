@@ -63,7 +63,9 @@ function headers() {
 async function tryLoad() {
   const res = await fetch('/admin/patches', { headers: headers() });
   if (!res.ok) return false;
-  localStorage.setItem(KEY_STORAGE, adminKey);
+  // A throw here (storage-blocking extension, etc.) previously aborted unlocking the panel below
+  // too, even with a server-confirmed valid key — stuck on the key-entry gate with no explanation.
+  try { localStorage.setItem(KEY_STORAGE, adminKey); } catch {}
   document.getElementById('key-gate').style.display = 'none';
   document.getElementById('panel').style.display = 'block';
   refresh();
