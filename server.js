@@ -810,6 +810,10 @@ app.post('/push/subscribe', (req, res) => {
 });
 
 app.post('/push/unsubscribe', (req, res) => {
+  // Its sibling /push/subscribe just above already has this — unauthenticated, no ownership
+  // check on the endpoint (not really meaningful here; endpoints are long random push-service
+  // URLs, not guessable), but still an unthrottled DB query on every call with no gate at all.
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many requests too quickly' });
   const endpoint = String(req.body.endpoint || '');
   if (endpoint) db.removePushSubscription(endpoint);
   res.json({ ok: true });
