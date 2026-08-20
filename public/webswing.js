@@ -1330,7 +1330,11 @@ function deactivateBonusOrb() {
 
 function collectBonusOrb() {
   // Counts toward the air chain like any orb would, but pays flat — the value is the trip.
-  if (!player.grounded) { airChain++; setChainLabel(); }
+  // Mirrors collectOrb()'s grounded-breaks-the-chain rule exactly, which this was missing —
+  // without it, landing a roll then grabbing a bonus orb while still grounded left the HUD
+  // showing a stale pre-landing chain count instead of clearing it.
+  if (!player.grounded) airChain++; else airChain = 0;
+  setChainLabel();
   addScore(BONUS_ORB_VALUE);
   showToast('💠 +' + BONUS_ORB_VALUE + ' bonus', 950);
   playSound('bonus');
