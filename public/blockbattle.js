@@ -688,7 +688,14 @@ function nextWeaponKey() {
 // second, redundant progression system tracking its own separate thresholds — Level N means
 // "N of the 8 ladder weapons unlocked so far" (Level 1 = just the starting Glock).
 function getLevel() {
-  return WEAPON_ORDER.filter((key) => kills >= WEAPONS[key].unlock).length;
+  const unlockedCount = WEAPON_ORDER.filter((key) => kills >= WEAPONS[key].unlock).length;
+  if (unlockedCount < WEAPON_ORDER.length) return unlockedCount;
+  // Uncapped past the top of the ladder (RPG, 150 kills) — every 10 kills beyond that is another
+  // level, climbing indefinitely rather than freezing at 8. This is what makes Level 100+ (the
+  // purple-glitch nametag threshold in the online lobby) an actual reachable, if serious, grind
+  // rather than a number the ladder itself could never produce.
+  const topUnlock = WEAPONS[WEAPON_ORDER[WEAPON_ORDER.length - 1]].unlock;
+  return WEAPON_ORDER.length + Math.floor((kills - topUnlock) / 10);
 }
 
 function updateWeaponHud() {
@@ -1109,6 +1116,7 @@ document.querySelectorAll('.mode-btn[data-mode]').forEach((btn) => {
 
 // M from the death screen: back to the mode screen instead of respawning.
 function backToModeSelect() {
+  leaveOnlineLobby(); // no-op if Online Play was never entered — guarded internally
   player.x = 0;
   player.y = 0;
   player.z = 0;
@@ -1328,6 +1336,437 @@ function respawn() {
   updateWaveHud();
 }
 
+// ---- Online lobby ----
+// A real WebSocket-connected, open, free-roam lobby (see server.js's bb-* handlers) — everyone
+// currently online sees everyone else walking around in third person, no combat at all, until two
+// players peer-to-peer challenge/accept into a private 1v1 (dueling flips both back to
+// first-person, one fixed shared weapon profile, server-authoritative damage). Deliberately kept
+// as its own isolated pair of flags (onlineActive/dueling) rather than a new value threaded
+// through the existing mode === 'fs'/'wave' conditionals scattered through the rest of this file —
+// those are well-tested single-player paths this feature shares no state with, so branching only
+// the few spots that actually differ (camera, gun visibility, shoot routing) is the lower-risk cut.
+let onlineActive = false;
+let dueling = false;
+let bbWs = null;
+let myBbId = null;
+let myOpponentId = null;
+let myOpponentName = '';
+let opponentHealth = 100;
+const BB_MAX_HEALTH_CLIENT = 100;
+// Mirrors server.js's BB_WEAPON exactly for local cosmetics (sound/tracer/cooldown gating) — the
+// server re-checks its own copy of these numbers before ever applying damage, so a modified client
+// can make this local copy lie without gaining anything.
+const BB_WEAPON_CLIENT = { damage: 20, range: 60, cooldownMs: 150 };
+let bbNextShotAt = 0;
+let bbPosSendT = 0;      // counts down to the next throttled bb-pos send
+let bbAvatarPhase = 0;   // local third-person avatar's own walk-cycle clock
+
+const lobbyHud = document.getElementById('lobby-hud');
+const lobbyPlayerCount = document.getElementById('lobby-player-count');
+const lobbyPlayersPanel = document.getElementById('lobby-players-panel');
+const lobbyPlayersList = document.getElementById('lobby-players-list');
+const challengePopup = document.getElementById('challenge-popup');
+const challengeText = document.getElementById('challenge-text');
+const duelHud = document.getElementById('duel-hud');
+const duelOpponentName = document.getElementById('duel-opponent-name');
+const duelOpponentHealthFill = document.getElementById('duel-opponent-health-fill');
+const duelResult = document.getElementById('duel-result');
+const weaponHudEl = document.getElementById('weapon-hud');
+
+// id -> { group, legs, arms, nameSprite, name, level, target: {x,y,z,yaw}, phase }
+const bbRemotePlayers = new Map();
+let bbPlayers = []; // last-known roster snapshot for the players panel: { id, name, level, dueling }
+
+// Shared by both the initial draw and every glitch-flicker redraw so the "purple glitchy" look
+// (Level 100+ only) doesn't need two copies of the same drawing code.
+function drawBbNameCanvas(canvas, name, purple) {
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = purple ? 'rgba(50,8,74,0.55)' : 'rgba(0,0,0,0.5)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.font = 'bold 30px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const label = String(name).slice(0, 16);
+  if (purple) {
+    // Cheap "glitch": two color-fringed copies jittered a few pixels off the true white text,
+    // redrawn on a short random interval (not every frame) via updateRemotePlayers' glitchT timer.
+    const jx = (Math.random() - 0.5) * 6, jy = (Math.random() - 0.5) * 3;
+    ctx.fillStyle = '#ff2ee0';
+    ctx.fillText(label, 128 + jx, 32 + jy);
+    ctx.fillStyle = '#37f2ff';
+    ctx.fillText(label, 128 - jx, 32 - jy);
+    ctx.fillStyle = '#f4e9ff';
+    ctx.fillText(label, 128, 32);
+  } else {
+    ctx.fillStyle = '#fff';
+    ctx.fillText(label, 128, 32);
+  }
+}
+
+function makeBbNameSprite(name, level) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256; canvas.height = 64;
+  const purple = level >= 100;
+  drawBbNameCanvas(canvas, name, purple);
+  const texture = new THREE.CanvasTexture(canvas);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false }));
+  sprite.scale.set(1.6, 0.4, 1);
+  sprite.position.y = 1.15;
+  sprite.userData.glitchy = purple;
+  sprite.userData.canvas = canvas;
+  sprite.userData.name = name;
+  sprite.userData.glitchT = 0.1;
+  return sprite;
+}
+
+// id -> the level.100+ purple-glitch redraw is by far the more expensive path (a canvas redraw +
+// needsUpdate every ~0.1s per such player); everyone else's tag is drawn once and left alone.
+function redrawBbNameSprite(sprite) {
+  drawBbNameCanvas(sprite.userData.canvas, sprite.userData.name, true);
+  sprite.material.map.needsUpdate = true;
+}
+
+function spawnRemotePlayer(id, name, level, pos) {
+  if (id === myBbId || bbRemotePlayers.has(id)) return;
+  const bodyMat = new THREE.MeshLambertMaterial({ color: 0x2fb6ac });
+  const limbMat = new THREE.MeshLambertMaterial({ color: 0x1f7d76 });
+  const headMat = new THREE.MeshLambertMaterial({ color: 0x6fe0d3 });
+  const group = new THREE.Group();
+  const { legs, arms } = addLimbs(group, bodyMat, limbMat);
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.28, 0.28), headMat);
+  head.position.y = 0.78;
+  head.castShadow = true;
+  group.add(head);
+  const nameSprite = makeBbNameSprite(name, level);
+  group.add(nameSprite);
+  const p = pos || { x: 0, y: 0, z: 0, yaw: 0 };
+  group.position.set(p.x, p.y, p.z);
+  group.rotation.y = p.yaw;
+  scene.add(group);
+  bbRemotePlayers.set(id, { group, legs, arms, nameSprite, name, level, target: { x: p.x, y: p.y, z: p.z, yaw: p.yaw }, phase: 0 });
+}
+
+function removeRemotePlayer(id) {
+  const rp = bbRemotePlayers.get(id);
+  if (!rp) return;
+  scene.remove(rp.group);
+  // Same disposal rule as firefight.js's removeRemotePlayer: every mesh's own geometry/material is
+  // this instance's alone and must be freed, but the name sprite's geometry is THREE.Sprite's
+  // single shared module-level PlaneGeometry (used by every sprite effect in the game) and must
+  // never be disposed — only its material and the CanvasTexture the material uniquely owns are.
+  rp.group.traverse((o) => {
+    if (!o.isMesh && !o.isSprite) return;
+    if (o.isMesh && o.geometry) o.geometry.dispose();
+    if (o.material) {
+      if (o.material.map) o.material.map.dispose();
+      o.material.dispose();
+    }
+  });
+  bbRemotePlayers.delete(id);
+}
+
+function updateRemotePlayers(dt) {
+  for (const rp of bbRemotePlayers.values()) {
+    const g = rp.group;
+    const t = rp.target;
+    const lerp = 1 - Math.exp(-12 * dt);
+    g.position.x += (t.x - g.position.x) * lerp;
+    g.position.y += (t.y - g.position.y) * lerp;
+    g.position.z += (t.z - g.position.z) * lerp;
+    // Shortest-path angle lerp so a player turning from just-under to just-over ±π doesn't spin
+    // the long way around.
+    let dyaw = ((t.yaw - g.rotation.y + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+    g.rotation.y += dyaw * lerp;
+    const moving = Math.hypot(t.x - g.position.x, t.z - g.position.z) > 0.02;
+    if (moving) rp.phase += 6 * dt;
+    animateWalk(rp.legs, rp.arms, rp.phase, moving);
+    if (rp.nameSprite.userData.glitchy) {
+      rp.nameSprite.userData.glitchT -= dt;
+      if (rp.nameSprite.userData.glitchT <= 0) {
+        rp.nameSprite.userData.glitchT = 0.08 + Math.random() * 0.1;
+        redrawBbNameSprite(rp.nameSprite);
+      }
+    }
+  }
+}
+
+// The local player's own avatar only exists to be seen by the third-person lobby camera — built
+// lazily on first use and torn down whenever a duel starts (first-person, no need to render
+// yourself) or the lobby is left entirely.
+let localAvatar = null;
+function ensureLocalAvatar() {
+  if (localAvatar) return;
+  const bodyMat = new THREE.MeshLambertMaterial({ color: 0xffb74d });
+  const limbMat = new THREE.MeshLambertMaterial({ color: 0xc98a2e });
+  const headMat = new THREE.MeshLambertMaterial({ color: 0xffd699 });
+  const group = new THREE.Group();
+  const { legs, arms } = addLimbs(group, bodyMat, limbMat);
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.28, 0.28), headMat);
+  head.position.y = 0.78;
+  head.castShadow = true;
+  group.add(head);
+  scene.add(group);
+  localAvatar = { group, legs, arms };
+}
+function removeLocalAvatar() {
+  if (!localAvatar) return;
+  scene.remove(localAvatar.group);
+  localAvatar.group.traverse((o) => {
+    if (!o.isMesh) return;
+    if (o.geometry) o.geometry.dispose();
+    if (o.material) o.material.dispose();
+  });
+  localAvatar = null;
+}
+function updateLocalAvatar(vx, vz, dt) {
+  ensureLocalAvatar();
+  localAvatar.group.position.set(player.x, player.y, player.z);
+  localAvatar.group.rotation.y = yaw;
+  const moving = onGround && Math.hypot(vx, vz) > 0.1;
+  if (moving) bbAvatarPhase += Math.hypot(vx, vz) * 1.9 * dt;
+  animateWalk(localAvatar.legs, localAvatar.arms, bbAvatarPhase, moving);
+}
+
+// One fixed semi-auto profile shared by every lobby duel, entirely separate from the single-
+// player ladder weapons — no ammo/reload, and the shot itself carries no target/hit-point payload
+// at all (mirrors fg-shoot exactly): the server resolves the opponent via its own opponentId and
+// does its own cooldown/range/alive-state check, so this function is purely cosmetic feedback.
+function tryFireOnline(nowMs) {
+  if (nowMs < bbNextShotAt) return;
+  bbNextShotAt = nowMs + BB_WEAPON_CLIENT.cooldownMs;
+  gunKick = 1;
+  muzzleT = 0.05;
+  gun.userData.muzzle.visible = true;
+  gun.userData.flash.intensity = 2.2;
+  sfxShot('deagle');
+  raycaster.setFromCamera(CROSSHAIR_CENTER, camera);
+  spawnTracer(raycaster.ray.at(60, new THREE.Vector3()));
+  if (bbWs && bbWs.readyState === WebSocket.OPEN) bbWs.send(JSON.stringify({ type: 'bb-shoot' }));
+}
+
+function sendBbPos(dt) {
+  if (!bbWs || bbWs.readyState !== WebSocket.OPEN) return;
+  bbPosSendT -= dt;
+  if (bbPosSendT > 0) return;
+  bbPosSendT = 0.08; // ~12/sec, matching firefight.js's own fg-pos cadence
+  bbWs.send(JSON.stringify({ type: 'bb-pos', x: player.x, y: player.y, z: player.z, yaw }));
+}
+
+function renderLobbyPlayersList() {
+  lobbyPlayersList.innerHTML = '';
+  for (const p of bbPlayers) {
+    const li = document.createElement('li');
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = `${p.name}${p.level >= 100 ? ' ✨' : ''} · Lv ${p.level}`;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'lobby-player-challenge-btn';
+    btn.textContent = '⚔️ Challenge';
+    btn.disabled = dueling;
+    btn.addEventListener('click', () => {
+      if (bbWs && bbWs.readyState === WebSocket.OPEN) bbWs.send(JSON.stringify({ type: 'bb-challenge', targetId: p.id }));
+      showWaveBanner(`Challenge sent to ${p.name}`);
+    });
+    li.append(nameSpan, btn);
+    lobbyPlayersList.appendChild(li);
+  }
+}
+
+function endDuel(message) {
+  dueling = false;
+  myOpponentId = null;
+  duelHud.classList.add('hidden');
+  duelResult.textContent = message;
+  duelResult.classList.remove('hidden');
+  setTimeout(() => duelResult.classList.add('hidden'), 2500);
+  health = MAX_HEALTH;
+  updateHealthBar();
+  if (onlineActive) lobbyHud.classList.remove('hidden');
+}
+
+function handleBbMessage(data) {
+  switch (data.type) {
+    case 'bb-init': {
+      myBbId = data.id;
+      for (const p of data.players) spawnRemotePlayer(p.id, p.name, p.level, p);
+      bbPlayers = data.players.map((p) => ({ id: p.id, name: p.name, level: p.level, dueling: p.dueling }));
+      lobbyPlayerCount.textContent = String(bbPlayers.length);
+      renderLobbyPlayersList();
+      break;
+    }
+    case 'bb-full': {
+      leaveOnlineLobby();
+      backToModeSelect();
+      showWaveBanner('⚠️ Lobby is full — try again shortly');
+      break;
+    }
+    case 'bb-player-joined': {
+      spawnRemotePlayer(data.id, data.name, data.level, data);
+      bbPlayers.push({ id: data.id, name: data.name, level: data.level, dueling: false });
+      lobbyPlayerCount.textContent = String(bbPlayers.length);
+      renderLobbyPlayersList();
+      break;
+    }
+    case 'bb-player-left': {
+      removeRemotePlayer(data.id);
+      bbPlayers = bbPlayers.filter((p) => p.id !== data.id);
+      lobbyPlayerCount.textContent = String(bbPlayers.length);
+      renderLobbyPlayersList();
+      break;
+    }
+    case 'bb-pos': {
+      const rp = bbRemotePlayers.get(data.id);
+      if (rp) { rp.target.x = data.x; rp.target.y = data.y; rp.target.z = data.z; rp.target.yaw = data.yaw; }
+      break;
+    }
+    case 'bb-challenged': {
+      challengeText.textContent = `${data.fromName} challenges you to a 1v1!`;
+      challengePopup.dataset.fromId = data.fromId;
+      challengePopup.classList.remove('hidden');
+      break;
+    }
+    case 'bb-challenge-declined': {
+      const p = bbPlayers.find((x) => x.id === data.byId);
+      showWaveBanner(`${p ? p.name : 'They'} declined your challenge`);
+      break;
+    }
+    case 'bb-duel-started': {
+      dueling = true;
+      myOpponentId = data.opponentId;
+      myOpponentName = data.opponentName;
+      opponentHealth = BB_MAX_HEALTH_CLIENT;
+      health = MAX_HEALTH;
+      updateHealthBar();
+      lobbyPlayersPanel.classList.add('hidden');
+      challengePopup.classList.add('hidden');
+      duelResult.classList.add('hidden');
+      duelOpponentName.textContent = myOpponentName;
+      duelOpponentHealthFill.style.width = '100%';
+      duelHud.classList.remove('hidden');
+      lobbyHud.classList.add('hidden');
+      removeLocalAvatar(); // first-person again — nothing to gain from also rendering yourself
+      if (document.pointerLockElement !== canvas) canvas.requestPointerLock();
+      break;
+    }
+    case 'bb-hit-confirm': {
+      opponentHealth = data.opponentHealth;
+      duelOpponentHealthFill.style.width = `${Math.max(0, opponentHealth) / BB_MAX_HEALTH_CLIENT * 100}%`;
+      showHitMarker(false);
+      break;
+    }
+    case 'bb-hit': {
+      health = Math.max(0, health - BB_WEAPON_CLIENT.damage);
+      updateHealthBar();
+      flashDamage();
+      sfxHurt();
+      break;
+    }
+    case 'bb-duel-won': endDuel('🏆 You won the duel!'); break;
+    case 'bb-duel-lost': endDuel('💀 You lost the duel'); break;
+    case 'bb-duel-ended': endDuel('Duel ended — opponent left'); break;
+  }
+}
+
+function connectBb() {
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  bbWs = new WebSocket(`${protocol}//${location.host}`);
+  bbWs.addEventListener('open', () => {
+    const accountToken = localStorage.getItem('valk-account-token') || '';
+    bbWs.send(JSON.stringify({ type: 'bb-join', accountToken, level: getLevel() }));
+  });
+  bbWs.addEventListener('message', (event) => {
+    let data;
+    try { data = JSON.parse(event.data); } catch { return; }
+    handleBbMessage(data);
+  });
+  bbWs.addEventListener('close', () => {
+    for (const id of [...bbRemotePlayers.keys()]) removeRemotePlayer(id);
+    bbWs = null;
+    // Only auto-reconnect while the player is still actually trying to be in the lobby — a
+    // deliberate Leave already flips onlineActive off before ever closing the socket itself.
+    if (onlineActive) setTimeout(() => { if (onlineActive) connectBb(); }, 1500);
+  });
+}
+
+function startOnlinePlay() {
+  mode = 'online';
+  modeSelect.classList.add('hidden');
+  while (bullets.length) removeBullet(0);
+  while (pickups.length) removePickup(0);
+  while (bots.length) removeBot(0);
+  while (allies.length) removeAlly(0);
+  wave = 0;
+  updateWaveHud();
+  onlineActive = true;
+  dueling = false;
+  player.x = 0; player.y = 0; player.z = 0; vy = 0; onGround = true; hasAirMomentum = false;
+  health = MAX_HEALTH;
+  dead = false;
+  updateHealthBar();
+  weaponHudEl.classList.add('hidden');
+  waveCounter.classList.add('hidden');
+  lobbyHud.classList.remove('hidden');
+  connectBb();
+  document.getElementById('hint-title').textContent = 'Click to play';
+  hint.classList.remove('hidden');
+}
+
+function leaveOnlineLobby() {
+  if (bbWs) {
+    try { bbWs.send(JSON.stringify({ type: 'bb-leave' })); } catch {}
+    bbWs.close();
+    bbWs = null;
+  }
+  for (const id of [...bbRemotePlayers.keys()]) removeRemotePlayer(id);
+  removeLocalAvatar();
+  onlineActive = false;
+  dueling = false;
+  myBbId = null;
+  myOpponentId = null;
+  lobbyHud.classList.add('hidden');
+  lobbyPlayersPanel.classList.add('hidden');
+  challengePopup.classList.add('hidden');
+  duelHud.classList.add('hidden');
+  duelResult.classList.add('hidden');
+  weaponHudEl.classList.remove('hidden');
+  waveCounter.classList.remove('hidden');
+  gun.visible = true;
+}
+
+document.getElementById('online-play-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  ensureAudio();
+  startOnlinePlay();
+});
+document.getElementById('lobby-players-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  renderLobbyPlayersList();
+  lobbyPlayersPanel.classList.remove('hidden');
+  if (document.pointerLockElement) document.exitPointerLock();
+});
+document.getElementById('lobby-players-close-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  lobbyPlayersPanel.classList.add('hidden');
+});
+document.getElementById('lobby-leave-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  leaveOnlineLobby();
+  backToModeSelect();
+});
+document.getElementById('challenge-accept-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const fromId = challengePopup.dataset.fromId;
+  challengePopup.classList.add('hidden');
+  if (bbWs && bbWs.readyState === WebSocket.OPEN) bbWs.send(JSON.stringify({ type: 'bb-challenge-response', fromId, accept: true }));
+});
+document.getElementById('challenge-decline-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const fromId = challengePopup.dataset.fromId;
+  challengePopup.classList.add('hidden');
+  if (bbWs && bbWs.readyState === WebSocket.OPEN) bbWs.send(JSON.stringify({ type: 'bb-challenge-response', fromId, accept: false }));
+});
+
 // ---- Player shooting (hitscan through the crosshair) ----
 const raycaster = new THREE.Raycaster();
 raycaster.far = 100;
@@ -1449,6 +1888,12 @@ function startReload(nowMs) {
 }
 
 function tryFire(nowMs) {
+  // During an online duel, shooting is routed entirely differently — one fixed semi-auto profile,
+  // no ammo/reload, and damage resolution is server-authoritative (bb-shoot carries no target or
+  // hit payload at all; the server decides range/cooldown/alive-state, matching Firefight's own
+  // fg-shoot exactly), so none of the single-player ladder-weapon logic below applies.
+  if (dueling) { tryFireOnline(nowMs); return; }
+  if (onlineActive) return; // defense-in-depth: the lobby's mousedown handler already blocks this
   if (knifeOut) {
     if (nowMs < nextShotAt) return; // still mid-swing
     nextShotAt = nowMs + KNIFE.interval * 1000;
@@ -1613,6 +2058,7 @@ document.addEventListener('mousemove', (e) => {
 // Under pointer lock, mouse events land on the canvas and bubble here.
 document.addEventListener('mousedown', (e) => {
   if (document.pointerLockElement !== canvas || dead) return;
+  if (onlineActive && !dueling) return; // lobby is free-roam only — no shooting/scoping until a duel starts
   if (e.button === 2) { scoped = true; return; } // hold right-click to scope
   if (e.button !== 0) return;
   mouseHeld = true; // automatics keep firing from the main loop while held
@@ -2163,8 +2609,11 @@ function tick(now) {
     }
   }
 
-  // Automatics spray while the button is held.
-  if (mouseHeld && WEAPONS[weapon].auto && !dead && document.pointerLockElement === canvas) {
+  // Automatics spray while the button is held. Excluded during a duel — `weapon` still refers to
+  // whatever single-player ladder gun was last equipped (unrelated to the online duel, which
+  // always uses BB_WEAPON_CLIENT's own fixed semi-auto profile), so this would otherwise spray
+  // duel shots too if that ladder weapon happened to be one of the automatics.
+  if (mouseHeld && !dueling && WEAPONS[weapon].auto && !dead && document.pointerLockElement === canvas) {
     tryFire(now);
   }
 
@@ -2249,9 +2698,29 @@ function tick(now) {
   // Stance drives eye height; both ease so crouching/standing feels smooth.
   const eyeTarget = sliding ? EYE_SLIDE : keys.has('crouch') ? EYE_CROUCH : EYE_STAND;
   eye += (eyeTarget - eye) * (1 - Math.exp(-14 * dt));
-  camera.position.set(player.x, player.y + eye, player.z);
-  camera.rotation.x = pitch;
-  camera.rotation.y = yaw;
+  if (onlineActive) {
+    updateRemotePlayers(dt);
+    sendBbPos(dt);
+  }
+  if (onlineActive && !dueling) {
+    // Third-person lobby camera: orbits around a pivot near the avatar's head, same distance in
+    // every direction, so mouse-look (yaw AND pitch — the same input that drives first-person
+    // aiming everywhere else in this file) swings the camera up/down/around exactly like an
+    // over-the-shoulder third-person rig rather than only spinning flatly around the player.
+    const camDist = 4.2;
+    const camPitch = Math.max(-0.9, Math.min(0.9, pitch)); // clamped so it can't dip under the floor or flip overhead
+    const fx = -Math.sin(yaw) * Math.cos(camPitch);
+    const fy = Math.sin(camPitch);
+    const fz = -Math.cos(yaw) * Math.cos(camPitch);
+    const pivotY = player.y + 0.9;
+    camera.position.set(player.x - fx * camDist, pivotY - fy * camDist + 0.6, player.z - fz * camDist);
+    camera.lookAt(player.x, pivotY, player.z);
+    updateLocalAvatar(vx, vz, dt);
+  } else {
+    camera.position.set(player.x, player.y + eye, player.z);
+    camera.rotation.x = pitch;
+    camera.rotation.y = yaw;
+  }
 
   // A touch of extra FOV while sprinting/sliding/slide-jumping sells the speed.
   // A scoped sniper zooms the whole view 40% in (FOV 70 → 42) and takes over
@@ -2268,7 +2737,7 @@ function tick(now) {
     scopeShown = zoomed;
     scopeOverlay.classList.toggle('hidden', !zoomed);
   }
-  gun.visible = !zoomed;
+  gun.visible = !zoomed && (!onlineActive || dueling);
 
   for (const cloud of clouds) {
     cloud.position.x += 0.4 * dt;

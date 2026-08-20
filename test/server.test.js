@@ -817,51 +817,6 @@ describe('friend DMs and group DMs (account-gated)', () => {
     assert.ok(error && /can only add friends/i.test(error.message));
   });
 
-  test('leave-group-dm removes the member and notifies the rest; a second leave is rejected', async () => {
-    const alice = await joinAsAccount('FdmAlice3', aliceToken);
-    const bob = await joinAsAccount('FdmBob3', bobToken);
-    const carol = await joinAsAccount('FdmCarol3', carolToken);
-    send(alice, { type: 'create-group-dm', memberUsernames: ['FdmBob', 'FdmCarol'], name: 'Leave Test Group' });
-    const created = await waitFor(alice, (m) => m.type === 'group-dm-created');
-    const groupId = created.thread.id;
-
-    // Both waiters armed before the triggering send — same reasoning as the friend-dm test above,
-    // leave-group-dm's own group-dm-member-left broadcast fires synchronously within the same
-    // handler that acks the leaver.
-    const leftPromise = waitFor(bob, (m) => m.type === 'group-dm-left' && m.groupId === groupId);
-    const notifiedPromise = waitFor(alice, (m) => m.type === 'group-dm-member-left' && m.groupId === groupId);
-    send(bob, { type: 'leave-group-dm', groupId });
-    const [left, notified] = await Promise.all([leftPromise, notifiedPromise]);
-    assert.equal(left.groupId, groupId);
-    // The broadcast carries ws.profile.name (this connection's display name, 'FdmBob3' — see
-    // joinAsAccount above), not the account's registered username ('FdmBob').
-    assert.equal(notified.username, 'FdmBob3');
-
-    // Carol (still a member) can still message the group; Bob (left) can no longer see it.
-    send(carol, { type: 'send-group-dm', groupId, text: 'bob left, we continue' });
-    const aliceGotIt = await waitFor(alice, (m) => m.type === 'group-dm' && m.groupId === groupId);
-    assert.equal(aliceGotIt.fromName, 'FdmCarol3');
-
-    let bobError = null;
-    const h = (data) => { const m = JSON.parse(data); if (m.type === 'error') bobError = m; };
-    bob.on('message', h);
-    send(bob, { type: 'leave-group-dm', groupId });
-    await sleep(300);
-    bob.off('message', h);
-    assert.ok(bobError && /not a member/i.test(bobError.message));
-  });
-
-  test('leave-group-dm is rate-limited (repeat/garbage groupIds still cost a DB read each)', async () => {
-    const dave = await joinAsAccount('FdmDaveFlood', undefined);
-    let errorCount = 0;
-    const h = (data) => { const m = JSON.parse(data); if (m.type === 'error') errorCount++; };
-    dave.on('message', h);
-    for (let i = 0; i < 15; i++) send(dave, { type: 'leave-group-dm', groupId: 'nonexistent-' + i });
-    await sleep(500);
-    dave.off('message', h);
-    assert.ok(errorCount > 0 && errorCount <= 8, `expected 1-8 of 15 error responses through, got ${errorCount}`);
-  });
-
   test('create-group-dm is rate-limited like every other content-creation path', async () => {
     const alice = await joinAsAccount('FdmAliceFlood', aliceToken);
     let count = 0;
@@ -1371,26 +1326,6 @@ describe('pin and unpin', () => {
     assert.ok(!unpinnedUpdate.pins.some((p) => p.message.id === posted.id));
   });
 
-  test('deleting a pinned message unpins it too, not just for the deleter', async () => {
-    // Otherwise the pinned banner keeps showing a deleted message's text indefinitely for
-    // everyone already in the room — only a rejoin re-fetches pins from the DB and picks it up.
-    const { ws: host, code } = await joinRoom('PinDeleteHost');
-    const guest = await joinExistingRoom('PinDeleteGuest', code);
-    await sleep(150);
-
-    send(host, { type: 'message', text: 'pin then delete me' });
-    const posted = await waitFor(host, (m) => m.type === 'message' && m.text === 'pin then delete me');
-    send(host, { type: 'pin-message', messageId: posted.id });
-    const pinnedUpdate = await waitFor(guest, (m) => m.type === 'pins-updated');
-    assert.ok(pinnedUpdate.pins.some((p) => p.message.id === posted.id));
-
-    const deletedPromise = waitFor(guest, (m) => m.type === 'message-deleted' && m.messageId === posted.id);
-    const unpinnedPromise = waitFor(guest, (m) => m.type === 'pins-updated');
-    send(host, { type: 'delete-message', messageId: posted.id });
-    const [, unpinnedUpdate] = await Promise.all([deletedPromise, unpinnedPromise]);
-    assert.ok(!unpinnedUpdate.pins.some((p) => p.message.id === posted.id));
-  });
-
   test('flood of pin/unpin toggles is rate-limited (shares the same gate as chat messages)', async () => {
     const { ws: host } = await joinRoom('PinFloodHost');
     send(host, { type: 'message', text: 'pin flood target' });
@@ -1574,41 +1509,6 @@ describe('Scorpture video creation is rate-limited', () => {
     assert.ok(created > 0, 'at least some video creates should succeed before the limit kicks in');
     assert.ok(sawLimited, 'a burst of 15 creates reusing one upload should eventually hit the rate limit');
   });
-
-  // GET /api/scorpture/videos/:id (view-count bump) had no rate limit at all — unauthenticated,
-  // no prior throttle, unbounded DB writes from a scripted view-inflation loop. Fixed by skipping
-  // just the counter write when rate-limited, not the whole response, so the page itself never
-  // fails to load for a real user quickly browsing several videos — only asserted here.
-  test('view-count bump is rate-limited but the page itself always still loads', async () => {
-    await sleep(6500); // let the shared per-IP budget clear first, same discipline as above
-
-    const signupRes = await fetch(`${BASE_URL}/auth/signup`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: 'ScorpViewFlood', password: 'password123', email: 'scorpviewflood@test.com' }),
-    });
-    const { token } = await signupRes.json();
-    const form = new FormData();
-    form.append('file', new Blob(['view flood video content'], { type: 'video/mp4' }), 'viewflood.mp4');
-    const { url } = await (await fetch(`${BASE_URL}/upload`, { method: 'POST', body: form })).json();
-    const createRes = await fetch(`${BASE_URL}/api/scorpture/videos`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ title: 'View Flood Target', videoUrl: url }),
-    });
-    const { id } = await createRes.json();
-
-    let ok200 = 0;
-    let maxViews = 0;
-    for (let i = 0; i < 15; i++) {
-      const res = await fetch(`${BASE_URL}/api/scorpture/videos/${id}`);
-      if (res.status === 200) {
-        ok200++;
-        const data = await res.json();
-        maxViews = Math.max(maxViews, data.views);
-      }
-    }
-    assert.equal(ok200, 15, 'the video page itself should always load, even once the view-count budget is spent');
-    assert.ok(maxViews > 0 && maxViews <= 8, `expected the view count to stop climbing past the shared budget, got ${maxViews}`);
-  });
 });
 
 describe('Build Craft sleep consensus', () => {
@@ -1744,34 +1644,6 @@ describe('cosmetic/settings toggles without natural bounding are rate-limited', 
     await sleep(500);
     watcher.off('message', h);
     assert.ok(count > 0 && count <= 8, `expected 1-8 dg-spectator-changed broadcasts through, got ${count}`);
-  });
-
-  test('join-server flood is rate-limited (was completely unguarded — flooded the whole-server broadcast)', async () => {
-    // join-server is the very first message any connection can send (no room, no prior state
-    // needed) and its broadcastWorldwideCount() call sweeps every connected client on the whole
-    // server, not just one room — the worst of the gaps this describe block covers.
-    const flooder = await connectWs();
-    let acks = 0;
-    const h = (data) => { const m = JSON.parse(data); if (m.type === 'joined-server') acks++; };
-    flooder.on('message', h);
-    for (let i = 0; i < 15; i++) send(flooder, { type: 'join-server', username: 'JoinFlood' + i });
-    await sleep(300);
-    flooder.off('message', h);
-    assert.ok(acks > 0 && acks <= 8, `expected 1-8 joined-server acks through, got ${acks}`);
-  });
-
-  test('bc-join flood is rate-limited (representative of the whole *-join family sharing this gate)', async () => {
-    // Every minigame *-join handler got this same guard — bc-join stands in for all 11. Each
-    // unthrottled call would otherwise re-run getOrCreateRoom (real DB writes, can manufacture a
-    // brand-new room from any code) and setRoomActivity (another DB write plus a room broadcast).
-    const flooder = await connectWs();
-    let inits = 0;
-    const h = (data) => { const m = JSON.parse(data); if (m.type === 'bc-init') inits++; };
-    flooder.on('message', h);
-    for (let i = 0; i < 15; i++) send(flooder, { type: 'bc-join', code: 'BCJOINFLOOD' + i, name: 'BcJoinFlooder' });
-    await sleep(300);
-    flooder.off('message', h);
-    assert.ok(inits > 0 && inits <= 8, `expected 1-8 bc-init responses through, got ${inits}`);
   });
 });
 

@@ -1904,6 +1904,61 @@ const FG_ROUNDS_TO_WIN = Number(process.env.FG_ROUNDS_TO_WIN) || 4;
 // `?? ` (not `||`) — a real test wants to override this down to a genuine 0, and 0 is falsy, so
 // `Number(...) || 500` would have silently ignored that override and kept the 500ms default.
 const FG_RESPAWN_GRACE_MS = Number(process.env.FG_RESPAWN_GRACE_MS ?? 500);
+// ---- Block Battle online lobby — unlike Firefight's fixed 2-slot duelist system, this is an
+// open lobby (however many players, no spectator queue) where any two players can peer-to-peer
+// challenge each other into a private 1v1; several pairs can be dueling simultaneously in the
+// same lobby. One shared authoritative weapon profile — the client's own richer single-player
+// weapon ladder is cosmetic/local-only for lobby combat, which uses this one profile for
+// everyone so neither side's actual unlock progress affects duel fairness. Same "trust the
+// client's reported position, server does a loose cooldown/range/alive-state check before
+// applying damage" model as every other combat feature in this file.
+const BB_MAX_HEALTH = 100;
+const BB_WEAPON = { damage: 20, range: 60, cooldownMs: 150 };
+// Same reasoning as FG_RESPAWN_GRACE_MS above (and SW_RESPAWN_GRACE_MS before it) — a
+// freshly-started duel's position isn't updated server-side until the next ~100ms-throttled
+// bb-pos, so without this a shot fired in that window could land using stale position data.
+const BB_RESPAWN_GRACE_MS = Number(process.env.BB_RESPAWN_GRACE_MS ?? 500);
+
+function broadcastBb(code, data, exclude) {
+  const room = rooms.get(code);
+  if (!room || !room.bb) return;
+  for (const [otherWs] of room.bb.players) {
+    if (otherWs !== exclude && otherWs.readyState === otherWs.OPEN) send(otherWs, data);
+  }
+}
+
+// Finds a lobby member by their bb id (not the raw ws) — every handler below identifies its
+// target this way, since a client only ever knows opponents/challenge-targets by id.
+function bbFindById(bb, id) {
+  for (const [otherWs, p] of bb.players) {
+    if (p.id === id) return { ws: otherWs, p };
+  }
+  return null;
+}
+
+function leaveBb(ws) {
+  const code = ws.bbRoom;
+  if (!code) return;
+  const room = rooms.get(code);
+  const bb = room && room.bb;
+  if (bb) {
+    const player = bb.players.get(ws);
+    if (player) {
+      // Mid-duel departure ends it for the other side too — same as leaveFg resetting an
+      // in-progress match when a duelist disconnects, so nobody's left dueling a ghost.
+      if (player.opponentId) {
+        const opp = bbFindById(bb, player.opponentId);
+        if (opp) { opp.p.dueling = false; opp.p.opponentId = null; send(opp.ws, { type: 'bb-duel-ended', reason: 'opponent-left' }); }
+      }
+      bb.players.delete(ws);
+      broadcastBb(code, { type: 'bb-player-left', id: player.id });
+      clearRoomActivity(code, player.name);
+    }
+    if (bb.players.size === 0) delete room.bb;
+  }
+  ws.bbRoom = null;
+  ws.bbId = null;
+}
 // ---- Single-player arcade games (Snake, 2048) — no shared room state to speak of, just a
 // per-room best-score leaderboard reusing the same generic `leaderboard` table every other
 // game already uses. One handler pair covers both instead of duplicating near-identical code.
@@ -3828,6 +3883,127 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    if (msg.type === 'bb-join') {
+      if (isWsMsgRateLimited(ws)) return; // see bc-join's comment on this same guard
+      // No per-chat-room concept in Block Battle's client (it's a standalone page, not launched
+      // from inside a specific room) — everyone defaults into one shared global lobby unless a
+      // future client explicitly asks for a different one, same room-code plumbing every other
+      // minigame already uses either way.
+      const code = String(msg.code || 'GLOBAL-LOBBY').toUpperCase().trim() || 'GLOBAL-LOBBY';
+      if (ws.bbRoom === code) return;
+      if (ws.bbRoom) leaveBb(ws);
+      const room = getOrCreateRoom(code);
+      if (!room.bb) room.bb = { players: new Map() };
+      const bb = room.bb;
+      if (bb.players.size >= MAX_GAME_PLAYERS) { send(ws, { type: 'bb-full' }); return; }
+      // Real Valk account only — no free-text name field here (unlike bc/fg/etc's `name` param),
+      // since the ask was specifically to show the player's actual signed-in username, not
+      // whatever they'd type into a box. An anonymous connection just shows as "Guest".
+      const account = msg.accountToken ? db.getSessionAccount(String(msg.accountToken)) : null;
+      const name = account ? account.username : 'Guest';
+      const level = Math.max(1, Math.min(100000, Math.floor(+msg.level) || 1));
+      const id = crypto.randomUUID();
+      ws.bbRoom = code;
+      ws.bbId = id;
+      const entry = { id, name, level, x: 0, y: 0, z: 0, yaw: 0, health: BB_MAX_HEALTH, dueling: false, opponentId: null, lastShotAt: 0, respawnedAt: 0 };
+      bb.players.set(ws, entry);
+      send(ws, { type: 'bb-init', id, players: [...bb.players.values()].filter((p) => p.id !== id) });
+      broadcastBb(code, { type: 'bb-player-joined', id, name, level, x: 0, y: 0, z: 0, yaw: 0 }, ws);
+      setRoomActivity(code, name, 'bb');
+      return;
+    }
+
+    if (msg.type === 'bb-leave') {
+      leaveBb(ws);
+      return;
+    }
+
+    if (msg.type === 'bb-pos' && ws.bbRoom) {
+      // Same reasoning as bc-pos/sw-pos/gw-pos/fg-pos above — real-time position stream, needs
+      // the higher-throughput gate, not the tight chat-message one.
+      if (isStrokeRateLimited(ws)) return;
+      const room = rooms.get(ws.bbRoom);
+      const p = room && room.bb && room.bb.players.get(ws);
+      if (!p) return;
+      const bbClamp = (n) => Math.max(-BC_MAX_COORD, Math.min(BC_MAX_COORD, +n || 0));
+      p.x = bbClamp(msg.x); p.y = bbClamp(msg.y); p.z = bbClamp(msg.z); p.yaw = +msg.yaw || 0;
+      broadcastBb(ws.bbRoom, { type: 'bb-pos', id: p.id, x: p.x, y: p.y, z: p.z, yaw: p.yaw }, ws);
+      return;
+    }
+
+    if (msg.type === 'bb-challenge' && ws.bbRoom) {
+      if (isWsMsgRateLimited(ws)) return;
+      const room = rooms.get(ws.bbRoom);
+      const bb = room && room.bb;
+      const me = bb && bb.players.get(ws);
+      if (!me || me.dueling) return;
+      const targetId = String(msg.targetId || '');
+      if (targetId === me.id) return; // can't challenge yourself
+      const target = bbFindById(bb, targetId);
+      if (!target || target.p.dueling) return;
+      send(target.ws, { type: 'bb-challenged', fromId: me.id, fromName: me.name });
+      return;
+    }
+
+    if (msg.type === 'bb-challenge-response' && ws.bbRoom) {
+      if (isWsMsgRateLimited(ws)) return;
+      const room = rooms.get(ws.bbRoom);
+      const bb = room && room.bb;
+      const me = bb && bb.players.get(ws);
+      if (!me || me.dueling) return;
+      const fromId = String(msg.fromId || '');
+      const from = bbFindById(bb, fromId);
+      // The challenger may have left, or already started a different duel, in the time since
+      // they sent the challenge — either way there's nothing to accept into anymore.
+      if (!from || from.p.dueling) return;
+      if (!msg.accept) { send(from.ws, { type: 'bb-challenge-declined', byId: me.id }); return; }
+      // Both sides lock into a mutual duel — this pairing (opponentId matching in both
+      // directions) is what bb-shoot below trusts as "these two, and only these two, can hurt
+      // each other right now". Mirrors fg-join's own self-target-exploit fix: opponentId is only
+      // ever set here, to the OTHER connection's id, never able to end up pointing at yourself.
+      me.dueling = true; me.opponentId = from.p.id; me.health = BB_MAX_HEALTH; me.respawnedAt = Date.now();
+      from.p.dueling = true; from.p.opponentId = me.id; from.p.health = BB_MAX_HEALTH; from.p.respawnedAt = Date.now();
+      send(ws, { type: 'bb-duel-started', opponentId: from.p.id, opponentName: from.p.name });
+      send(from.ws, { type: 'bb-duel-started', opponentId: me.id, opponentName: me.name });
+      return;
+    }
+
+    if (msg.type === 'bb-shoot' && ws.bbRoom) {
+      const room = rooms.get(ws.bbRoom);
+      const bb = room && room.bb;
+      const me = bb && bb.players.get(ws);
+      if (!me || !me.dueling || !me.opponentId) return;
+      const now = Date.now();
+      if (now - me.lastShotAt < BB_WEAPON.cooldownMs) return;
+      // Consumed right after the cooldown check clears, not only on a landed hit — same fix (and
+      // full explanation) as bc-punch/sw-strike/fg-shoot; a shot that misses used to cost
+      // nothing, leaving the cooldown trivially bypassable by spamming at an out-of-range target.
+      me.lastShotAt = now;
+      const target = bbFindById(bb, me.opponentId);
+      // Belt-and-suspenders self-target check matching sw-strike/fg-shoot exactly, even though
+      // opponentId can't structurally point at yourself (see bb-challenge-response above).
+      if (!target || target.ws === ws) return;
+      if (!target.p.dueling || target.p.opponentId !== me.id) return; // opponent already left the duel
+      if (now - target.p.respawnedAt < BB_RESPAWN_GRACE_MS) return;
+      const dx = me.x - target.p.x, dy = me.y - target.p.y, dz = me.z - target.p.z;
+      if (Math.sqrt(dx * dx + dy * dy + dz * dz) > BB_WEAPON.range) return;
+      target.p.health = Math.max(0, target.p.health - BB_WEAPON.damage);
+      if (target.p.health > 0) {
+        send(target.ws, { type: 'bb-hit', health: target.p.health, byId: me.id });
+        // The shooter has no other way to learn their opponent's new health — unlike fg-shoot's
+        // shared 2-slot model where both sides already track a scoreboard, an open peer-to-peer
+        // lobby's client only knows what the server tells it, so a landed-but-not-lethal hit needs
+        // its own explicit reply back to the shooter for the duel HUD's opponent health bar.
+        send(ws, { type: 'bb-hit-confirm', opponentHealth: target.p.health });
+        return;
+      }
+      me.dueling = false; me.opponentId = null;
+      target.p.dueling = false; target.p.opponentId = null;
+      send(ws, { type: 'bb-duel-won' });
+      send(target.ws, { type: 'bb-duel-lost' });
+      return;
+    }
+
     if (msg.type === 'tv-join') {
       if (isWsMsgRateLimited(ws)) return; // see bc-join's comment on this same guard
       const code = String(msg.code || '').toUpperCase().trim();
@@ -5443,6 +5619,7 @@ wss.on('connection', (ws, req) => {
     if (ws.gwRoom) leaveGw(ws);
     if (ws.swRoom) leaveSw(ws);
     if (ws.fgRoom) leaveFg(ws);
+    if (ws.bbRoom) leaveBb(ws);
     if (ws.dgRoom) leaveDg(ws);
     if (ws.wbRoom) leaveWb(ws);
     if (ws.tvRoom) leaveTv(ws);

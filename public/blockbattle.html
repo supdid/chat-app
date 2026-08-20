@@ -47,9 +47,35 @@
     <div id="mode-buttons">
       <button class="mode-btn" type="button" data-mode="wave">🌊 Wave Challenge<span>Endless waves — blue sidekicks fight at your side</span></button>
       <button class="mode-btn" type="button" data-mode="fs">⚔️ FS<span>4 enemies, back 5 seconds after they fall</span></button>
-      <button class="mode-btn" type="button" disabled>🌐 Online Play<span>Coming soon</span></button>
+      <button class="mode-btn" type="button" id="online-play-btn">🌐 Online Play<span>Free-roam lobby — no fighting until you challenge someone</span></button>
     </div>
   </div>
+
+  <div id="lobby-hud" class="hidden">
+    <button id="lobby-players-btn" type="button">👥 Players (<span id="lobby-player-count">0</span>)</button>
+    <button id="lobby-leave-btn" type="button">🚪 Leave lobby</button>
+  </div>
+
+  <div id="lobby-players-panel" class="hidden">
+    <div id="lobby-players-title">Challenge a player</div>
+    <ul id="lobby-players-list"></ul>
+    <button id="lobby-players-close-btn" type="button">Close</button>
+  </div>
+
+  <div id="challenge-popup" class="hidden">
+    <div id="challenge-text"></div>
+    <div id="challenge-buttons">
+      <button id="challenge-accept-btn" type="button">⚔️ Accept</button>
+      <button id="challenge-decline-btn" type="button">Decline</button>
+    </div>
+  </div>
+
+  <div id="duel-hud" class="hidden">
+    <div id="duel-opponent-name"></div>
+    <div id="duel-opponent-health-wrap"><div id="duel-opponent-health-fill"></div></div>
+  </div>
+
+  <div id="duel-result" class="hidden"></div>
 
   <div id="hint">
     <div id="hint-name">BLOCK BATTLE</div>
