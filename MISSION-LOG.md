@@ -1,5 +1,21 @@
 ﻿# Valk work log
 
+## 2026-08-19: Pulled and deployed on the box — Block Battle + Web Swing passes are live
+
+Done from the box itself (a Claude Code session running directly in `~/chat-app`, with local
+service control this laptop's session doesn't have). At the time of pulling, this box's own local
+history had also diverged from `origin/main` since `f5fb508` — ~30 more commits (Firefight
+weapon unlocks/headshots/self-fight-exploit fix, a systemic flood-gate/crash-safety pass, a new
+voice-changer feature, plus this session's own regression-test suite). Reconciled with a real
+`git merge` (not a force-push either direction) — one conflict, `sw.js`'s `CACHE_NAME` (now
+`v160`, past both sides' values), everything else auto-merged clean. Full suite (94/94) verified
+post-merge, pushed as `28bc978`, then `systemctl --user restart chat-app` — confirmed live on
+localhost:3001 (`blockbattle.html`/`.js` both 200, `sw.js` serving v160). **Block Battle and the
+Web Swing passes are now live on this box's own deployment alongside everything from the other
+history.** Still unconfirmed whether this box's deployment is the same one reachable at valk.chat
+specifically — that gap was flagged repeatedly in earlier sessions as needing Isaac's own
+follow-up and wasn't re-checked here; worth confirming directly with him rather than assuming.
+
 ## 2026-08-19: Block Battle + parked Web Swing passes shipped to GitHub — server pull pending
 
 `d4df9a4` commits Block Battle (`public/blockbattle.*`, menu link) and the parked Web Swing
