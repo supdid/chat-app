@@ -817,6 +817,40 @@ describe('friend DMs and group DMs (account-gated)', () => {
     assert.ok(error && /can only add friends/i.test(error.message));
   });
 
+  test('leave-group-dm removes the member and notifies the rest; a second leave is rejected', async () => {
+    const alice = await joinAsAccount('FdmAlice3', aliceToken);
+    const bob = await joinAsAccount('FdmBob3', bobToken);
+    const carol = await joinAsAccount('FdmCarol3', carolToken);
+    send(alice, { type: 'create-group-dm', memberUsernames: ['FdmBob', 'FdmCarol'], name: 'Leave Test Group' });
+    const created = await waitFor(alice, (m) => m.type === 'group-dm-created');
+    const groupId = created.thread.id;
+
+    // Both waiters armed before the triggering send — same reasoning as the friend-dm test above,
+    // leave-group-dm's own group-dm-member-left broadcast fires synchronously within the same
+    // handler that acks the leaver.
+    const leftPromise = waitFor(bob, (m) => m.type === 'group-dm-left' && m.groupId === groupId);
+    const notifiedPromise = waitFor(alice, (m) => m.type === 'group-dm-member-left' && m.groupId === groupId);
+    send(bob, { type: 'leave-group-dm', groupId });
+    const [left, notified] = await Promise.all([leftPromise, notifiedPromise]);
+    assert.equal(left.groupId, groupId);
+    // The broadcast carries ws.profile.name (this connection's display name, 'FdmBob3' — see
+    // joinAsAccount above), not the account's registered username ('FdmBob').
+    assert.equal(notified.username, 'FdmBob3');
+
+    // Carol (still a member) can still message the group; Bob (left) can no longer see it.
+    send(carol, { type: 'send-group-dm', groupId, text: 'bob left, we continue' });
+    const aliceGotIt = await waitFor(alice, (m) => m.type === 'group-dm' && m.groupId === groupId);
+    assert.equal(aliceGotIt.fromName, 'FdmCarol3');
+
+    let bobError = null;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'error') bobError = m; };
+    bob.on('message', h);
+    send(bob, { type: 'leave-group-dm', groupId });
+    await sleep(300);
+    bob.off('message', h);
+    assert.ok(bobError && /not a member/i.test(bobError.message));
+  });
+
   test('create-group-dm is rate-limited like every other content-creation path', async () => {
     const alice = await joinAsAccount('FdmAliceFlood', aliceToken);
     let count = 0;

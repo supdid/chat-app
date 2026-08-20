@@ -160,6 +160,7 @@ const groupsListEl = document.getElementById('groups-list');
 const groupsEmptyMsg = document.getElementById('groups-empty-msg');
 const groupDmOverlay = document.getElementById('group-dm-overlay');
 const groupDmCloseBtn = document.getElementById('group-dm-close-btn');
+const groupDmLeaveBtn = document.getElementById('group-dm-leave-btn');
 const groupDmTitleEl = document.getElementById('group-dm-title');
 const groupDmMembersEl = document.getElementById('group-dm-members');
 const groupDmMessagesEl = document.getElementById('group-dm-messages');
@@ -723,6 +724,13 @@ function handleServerMessage(data) {
       // erroring, or (if nobody by that name is present) just leave the stale panel open forever.
       dmOverlay.classList.add('hidden');
       currentDmWithName = null;
+      // Same staleness problem as the two above, just missed when group DMs were built: this also
+      // fires on a plain WS reconnect (join-server -> auto-rejoin), not just an actual room switch,
+      // and nothing ever refreshed an open group DM afterward — a message sent by another member
+      // during the drop was delivered live-only (the server doesn't re-push it later) and so was
+      // silently missing from the thread until manually closed and reopened. Closing it here, same
+      // as dmOverlay/threadOverlay, is simpler than trying to reconcile a gap of unknown size.
+      if (groupDmOverlay) { groupDmOverlay.classList.add('hidden'); currentGroupDmId = null; }
       seedReactions(data.reactions);
       seedActivity(data.activity);
       pinnedMessages = data.pins || [];
@@ -932,7 +940,16 @@ function handleServerMessage(data) {
       } else {
         showAppToast(`💬 ${data.fromName} (group): ${data.text}`);
         playNotifySound();
+        // Was missing here — friend-dm above gets a real OS notification for a backgrounded tab,
+        // but this sibling case only ever showed an in-tab toast, easy to miss while minimized.
+        notify(`${data.fromName} (group)`, data.text);
       }
+      break;
+
+    case 'group-dm-left':
+      groupDmOverlay.classList.add('hidden');
+      currentGroupDmId = null;
+      if (groupsOverlay && !groupsOverlay.classList.contains('hidden')) loadGroupThreads();
       break;
 
     case 'announcement-updated':
@@ -2691,6 +2708,10 @@ groupNewBtn.addEventListener('click', async () => {
     // was last rendered into the friends overlay (which may never have been opened this session).
     try {
       const res = await fetch('/friends', { headers: { Authorization: `Bearer ${accountToken}` } });
+      // Unlike a network failure, a non-2xx response (e.g. an expired accountToken) doesn't throw
+      // — without this check it silently fell through to an empty picker with no visible error,
+      // instead of the message the catch block below is meant to show.
+      if (!res.ok) throw new Error('friends fetch failed');
       const data = await res.json();
       lastLoadedFriends = data.friends || [];
       renderGroupFriendPicker();
@@ -2716,6 +2737,13 @@ groupCreateBtn.addEventListener('click', () => {
 });
 
 groupDmCloseBtn.addEventListener('click', () => { groupDmOverlay.classList.add('hidden'); currentGroupDmId = null; });
+// The server's leave-group-dm/group-dm-left round trip already existed — this was the only piece
+// missing, no way to actually reach it from the UI (the panel only ever had a close button).
+groupDmLeaveBtn.addEventListener('click', () => {
+  if (!currentGroupDmId || !ws || ws.readyState !== WebSocket.OPEN) return;
+  if (!confirm('Leave this group DM? You can only rejoin if someone adds you back.')) return;
+  ws.send(JSON.stringify({ type: 'leave-group-dm', groupId: currentGroupDmId }));
+});
 groupDmOverlay.addEventListener('click', (e) => {
   if (e.target === groupDmOverlay) { groupDmOverlay.classList.add('hidden'); currentGroupDmId = null; }
 });
