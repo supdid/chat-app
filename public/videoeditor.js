@@ -1004,6 +1004,13 @@ function startClipDrag(e, clip) {
   dragCtx = { type: 'reorder', clipId: clip.id, startX: e.clientX, startLeftPx: timeToPx(starts[idx]) };
   window.addEventListener('pointermove', onClipDragMove);
   window.addEventListener('pointerup', onClipDragEnd);
+  // pointercancel — not just pointerup — fires when the OS/browser takes the gesture away mid-drag
+  // (an edge-swipe navigation, a notification pull-down, the browser's own scroll-cancel heuristic
+  // on touch). Without listening for it too, dragCtx and this window listener never get cleaned up:
+  // every mousemove/touchmove anywhere on the page afterward — even with no button held — keeps
+  // calling onClipDragMove, reordering clips on mere hover, until the page is reloaded. Same fix
+  // applied identically to the trim/title/playhead drags below.
+  window.addEventListener('pointercancel', onClipDragEnd);
 }
 
 function onClipDragMove(e) {
@@ -1038,6 +1045,7 @@ function onClipDragMove(e) {
 function onClipDragEnd() {
   window.removeEventListener('pointermove', onClipDragMove);
   window.removeEventListener('pointerup', onClipDragEnd);
+  window.removeEventListener('pointercancel', onClipDragEnd);
   dragCtx = null;
   renderTimeline();
   refreshPreviewForEdits();
@@ -1050,6 +1058,7 @@ function startTrim(e, clip, side) {
   dragCtx = { type: 'trim', side, clipId: clip.id, startX: e.clientX, startTrimStart: clip.trimStart, startTrimEnd: clip.trimEnd };
   window.addEventListener('pointermove', onTrimMove);
   window.addEventListener('pointerup', onTrimEnd);
+  window.addEventListener('pointercancel', onTrimEnd); // see startClipDrag's comment on this
 }
 
 function onTrimMove(e) {
@@ -1073,6 +1082,7 @@ function onTrimMove(e) {
 function onTrimEnd() {
   window.removeEventListener('pointermove', onTrimMove);
   window.removeEventListener('pointerup', onTrimEnd);
+  window.removeEventListener('pointercancel', onTrimEnd);
   dragCtx = null;
   renderInspector();
   refreshPreviewForEdits();
@@ -1085,6 +1095,7 @@ function startTitleDrag(e, ov, mode) {
   dragCtx = { type: 'title', mode, titleId: ov.id, startX: e.clientX, startStart: ov.start, startEnd: ov.end };
   window.addEventListener('pointermove', onTitleDragMove);
   window.addEventListener('pointerup', onTitleDragEnd);
+  window.addEventListener('pointercancel', onTitleDragEnd); // see startClipDrag's comment on this
 }
 
 function onTitleDragMove(e) {
@@ -1114,6 +1125,7 @@ function onTitleDragMove(e) {
 function onTitleDragEnd() {
   window.removeEventListener('pointermove', onTitleDragMove);
   window.removeEventListener('pointerup', onTitleDragEnd);
+  window.removeEventListener('pointercancel', onTitleDragEnd);
   const ov = dragCtx && dragCtx.type === 'title' ? overlays.find((o) => o.id === dragCtx.titleId) : null;
   if (ov) reanchorOverlay(ov);
   dragCtx = null;
@@ -1144,9 +1156,11 @@ function startPlayheadDrag(e) {
   const up = () => {
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', up);
+    window.removeEventListener('pointercancel', up);
   };
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', up);
+  window.addEventListener('pointercancel', up); // see startClipDrag's comment on this
 }
 
 playheadEl.addEventListener('pointerdown', startPlayheadDrag);
