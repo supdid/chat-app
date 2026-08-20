@@ -68,7 +68,9 @@ let soundOn = localStorage.getItem('firefight_sound_muted') !== '1';
 soundToggleBtn.textContent = soundOn ? '🔊' : '🔇';
 soundToggleBtn.addEventListener('click', () => {
   soundOn = !soundOn;
-  localStorage.setItem('firefight_sound_muted', soundOn ? '0' : '1');
+  // A throw here previously aborted the rest of this handler too, leaving the button's own icon
+  // stuck showing the OLD state even though soundOn had already flipped in memory.
+  try { localStorage.setItem('firefight_sound_muted', soundOn ? '0' : '1'); } catch {}
   soundToggleBtn.textContent = soundOn ? '🔊' : '🔇';
 });
 function ensureAudio() {

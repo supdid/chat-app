@@ -2216,7 +2216,11 @@ function addScore(n) {
   scoreLabel.textContent = `🎯 ${score}`;
   if (score > best) {
     best = score;
-    localStorage.setItem('fighterplane_best', String(best));
+    // addScore() runs constantly during active play (every hit) — unlike a one-off settings
+    // toggle, an unguarded throw here (Safari private browsing, a storage-blocking extension)
+    // would crash the render loop the moment anyone beats their best score, not just on some
+    // rare path. Same bug class just fixed in seince-jump.js's saveBest().
+    try { localStorage.setItem('fighterplane_best', String(best)); } catch {}
     bestLabel.textContent = `Best: ${best}`;
   }
 }
@@ -3101,7 +3105,10 @@ function updateContinuousAudio() {
 
 soundToggleBtn.addEventListener('click', () => {
   soundOn = !soundOn;
-  localStorage.setItem('fighterplane_sound_muted', soundOn ? '0' : '1');
+  // A throw here previously aborted the rest of this handler too, leaving the button's own icon
+  // stuck showing the OLD state even though soundOn had already flipped in memory — confusing,
+  // looks like the click did nothing.
+  try { localStorage.setItem('fighterplane_sound_muted', soundOn ? '0' : '1'); } catch {}
   soundToggleBtn.textContent = soundOn ? '🔊' : '🔇';
 });
 

@@ -275,7 +275,10 @@ function toggleSaveMessage(data) {
     });
     savedMessages = savedMessages.slice(0, 200);
   }
-  localStorage.setItem(SAVED_KEY, JSON.stringify(savedMessages));
+  // A throw here (Safari private browsing, a storage-blocking extension) previously aborted the
+  // rest of this function too, leaving the save-button icon stuck showing the OLD state even
+  // though savedMessages had already been mutated in memory above.
+  try { localStorage.setItem(SAVED_KEY, JSON.stringify(savedMessages)); } catch {}
   document.querySelectorAll(`[data-message-id="${CSS.escape(data.id)}"] .save-btn`).forEach((btn) => {
     btn.classList.toggle('saved', isSaved(data.id));
   });
@@ -348,7 +351,9 @@ try {
 const blockedNames = new Set(blockedNamesInit);
 function toggleBlockUser(name) {
   if (blockedNames.has(name)) blockedNames.delete(name); else blockedNames.add(name);
-  localStorage.setItem(BLOCKED_KEY, JSON.stringify([...blockedNames]));
+  // A throw here previously aborted the rest of this function too, leaving that sender's
+  // messages not actually hidden/shown even though blockedNames had already toggled in memory.
+  try { localStorage.setItem(BLOCKED_KEY, JSON.stringify([...blockedNames])); } catch {}
   document.querySelectorAll(`[data-sender-name="${CSS.escape(name)}"]`).forEach((el) => {
     el.classList.toggle('blocked-hidden', blockedNames.has(name));
   });
@@ -427,7 +432,8 @@ applyTheme(localStorage.getItem('valk-theme') === 'light' ? 'light' : 'dark');
 if (themeToggleBtn) {
   themeToggleBtn.addEventListener('click', () => {
     const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
-    localStorage.setItem('valk-theme', next);
+    // A throw here previously aborted applyTheme() below too, making the toggle look unresponsive.
+    try { localStorage.setItem('valk-theme', next); } catch {}
     applyTheme(next);
   });
 }
@@ -2161,7 +2167,8 @@ function getRecentRooms() {
 function saveRecentRoom(code, name) {
   const list = getRecentRooms().filter((r) => r.code !== code);
   list.unshift({ code, name: name || null, lastJoined: Date.now() });
-  localStorage.setItem(RECENT_ROOMS_KEY, JSON.stringify(list.slice(0, RECENT_ROOMS_MAX)));
+  // A throw here previously skipped the account-sync fetch below too, not just local persistence.
+  try { localStorage.setItem(RECENT_ROOMS_KEY, JSON.stringify(list.slice(0, RECENT_ROOMS_MAX))); } catch {}
   if (accountToken) {
     fetch('/account/recent-rooms', {
       method: 'POST',
@@ -2223,8 +2230,15 @@ accountToggleBtn.addEventListener('click', () => {
 async function finishAccountSignIn(data) {
   accountToken = data.token;
   accountUsername = data.username;
-  localStorage.setItem(ACCOUNT_TOKEN_KEY, accountToken);
-  localStorage.setItem(ACCOUNT_USERNAME_KEY, accountUsername);
+  // A throw here (Safari private browsing, a storage-blocking extension) previously aborted the
+  // rest of sign-in too — renderAccountState() and the WS account-linking below never ran, so
+  // sign-in silently failed to actually complete even though the server-side auth had already
+  // succeeded (the caller's own try/catch would show a confusing raw error like
+  // "QuotaExceededError" instead of the app just working for this session without persistence).
+  try {
+    localStorage.setItem(ACCOUNT_TOKEN_KEY, accountToken);
+    localStorage.setItem(ACCOUNT_USERNAME_KEY, accountUsername);
+  } catch {}
   renderAccountState();
   // Covers signing into an account after the WebSocket already sent its (accountless)
   // join-server — without this, ws.accountId on the server stays unset until the next
@@ -2369,7 +2383,10 @@ async function syncRecentRoomsFromAccount() {
       if (!existing || r.at > existing.lastJoined) byCode.set(r.code, { code: r.code, name: r.name || null, lastJoined: r.at });
     }
     const merged = [...byCode.values()].sort((a, b) => b.lastJoined - a.lastJoined).slice(0, RECENT_ROOMS_MAX);
-    localStorage.setItem(RECENT_ROOMS_KEY, JSON.stringify(merged));
+    // A throw here was already caught by this function's own outer catch (degrades gracefully,
+    // see its comment below), but it also skipped renderRecentRooms() on the next line — the
+    // freshly-merged list just never got drawn, correctable but no reason to let it happen.
+    try { localStorage.setItem(RECENT_ROOMS_KEY, JSON.stringify(merged)); } catch {}
     renderRecentRooms();
   } catch {
     /* offline or server unreachable — keep showing the local list as-is */
@@ -2946,7 +2963,9 @@ accountUsernameForm.addEventListener('submit', async (e) => {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || 'Something went wrong');
     accountUsername = data.username;
-    localStorage.setItem(ACCOUNT_USERNAME_KEY, accountUsername);
+    // A throw here previously aborted the rest of this handler too — the account would already
+    // be renamed server-side, but the UI would show a raw storage error instead of confirming it.
+    try { localStorage.setItem(ACCOUNT_USERNAME_KEY, accountUsername); } catch {}
     accountSignedInName.textContent = accountUsername;
     accountUsernameForm.classList.add('hidden');
     showAppToast(`✏️ Username changed to ${accountUsername}`);

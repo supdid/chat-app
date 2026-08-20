@@ -1158,7 +1158,10 @@ let recordSpeed = Number(localStorage.getItem('webswing_top_speed') || 0);
 function noteChainRecord() {
   if (airChain > recordChain) {
     recordChain = airChain;
-    localStorage.setItem('webswing_best_chain', String(recordChain));
+    // Called constantly during active play (every chain change) — an unguarded throw (Safari
+    // private browsing, a storage-blocking extension) would crash the render loop the moment
+    // anyone beats their chain record. Same bug class just fixed in seince-jump.js/fighterplane.js.
+    try { localStorage.setItem('webswing_best_chain', String(recordChain)); } catch {}
   }
 }
 
@@ -1168,7 +1171,7 @@ function noteSpeedRecord(spd) {
   const s = Math.min(MAX_SPEED, Math.round(spd));
   if (s > recordSpeed) {
     recordSpeed = s;
-    localStorage.setItem('webswing_top_speed', String(recordSpeed));
+    try { localStorage.setItem('webswing_top_speed', String(recordSpeed)); } catch {}
   }
 }
 
@@ -1392,7 +1395,7 @@ function addScore(n) {
   scoreLabel.textContent = `🕸️ ${score}`;
   if (score > best) {
     best = score;
-    localStorage.setItem('webswing_best', String(best));
+    try { localStorage.setItem('webswing_best', String(best)); } catch {}
     bestLabel.textContent = `Best: ${best}`;
   }
   sendScore();
@@ -2680,7 +2683,9 @@ document.addEventListener('visibilitychange', () => {
 
 soundToggleBtn.addEventListener('click', () => {
   soundOn = !soundOn;
-  localStorage.setItem('webswing_sound_muted', soundOn ? '0' : '1');
+  // A throw here previously aborted the rest of this handler too, leaving the icon/wind-audio
+  // stuck on the OLD state even though soundOn had already flipped in memory.
+  try { localStorage.setItem('webswing_sound_muted', soundOn ? '0' : '1'); } catch {}
   soundToggleBtn.textContent = soundOn ? '🔊' : '🔇';
   updateWind(); // take the change immediately instead of waiting for the next frame
 });

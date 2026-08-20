@@ -15,7 +15,8 @@ applyTheme(localStorage.getItem('valk-theme') === 'light' ? 'light' : 'dark');
 
 themeToggleBtn.addEventListener('click', () => {
   const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
-  localStorage.setItem('valk-theme', next);
+  // A throw here previously aborted applyTheme() below too, making the toggle look unresponsive.
+  try { localStorage.setItem('valk-theme', next); } catch {}
   applyTheme(next);
 });
 

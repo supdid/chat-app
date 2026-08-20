@@ -325,7 +325,12 @@ if (typeof document !== 'undefined') {
       try { return JSON.parse(localStorage.getItem(PROGRESS_KEY)) || {}; } catch { return {}; }
     }
     function saveProgress(progress) {
-      localStorage.setItem(PROGRESS_KEY, JSON.stringify(progress));
+      // Called from inside the per-frame update loop every time progress advances past the
+      // session best, not just once at level-complete — an unguarded throw here (Safari private
+      // browsing, a storage-blocking extension) would crash the render loop mid-run. Same bug
+      // class already fixed in seince-jump.js/fighterplane.js/webswing.js's own score/best/
+      // record persistence.
+      try { localStorage.setItem(PROGRESS_KEY, JSON.stringify(progress)); } catch {}
     }
     const progress = loadProgress();
 
