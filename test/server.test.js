@@ -1360,6 +1360,26 @@ describe('pin and unpin', () => {
     assert.ok(!unpinnedUpdate.pins.some((p) => p.message.id === posted.id));
   });
 
+  test('deleting a pinned message unpins it too, not just for the deleter', async () => {
+    // Otherwise the pinned banner keeps showing a deleted message's text indefinitely for
+    // everyone already in the room — only a rejoin re-fetches pins from the DB and picks it up.
+    const { ws: host, code } = await joinRoom('PinDeleteHost');
+    const guest = await joinExistingRoom('PinDeleteGuest', code);
+    await sleep(150);
+
+    send(host, { type: 'message', text: 'pin then delete me' });
+    const posted = await waitFor(host, (m) => m.type === 'message' && m.text === 'pin then delete me');
+    send(host, { type: 'pin-message', messageId: posted.id });
+    const pinnedUpdate = await waitFor(guest, (m) => m.type === 'pins-updated');
+    assert.ok(pinnedUpdate.pins.some((p) => p.message.id === posted.id));
+
+    const deletedPromise = waitFor(guest, (m) => m.type === 'message-deleted' && m.messageId === posted.id);
+    const unpinnedPromise = waitFor(guest, (m) => m.type === 'pins-updated');
+    send(host, { type: 'delete-message', messageId: posted.id });
+    const [, unpinnedUpdate] = await Promise.all([deletedPromise, unpinnedPromise]);
+    assert.ok(!unpinnedUpdate.pins.some((p) => p.message.id === posted.id));
+  });
+
   test('flood of pin/unpin toggles is rate-limited (shares the same gate as chat messages)', async () => {
     const { ws: host } = await joinRoom('PinFloodHost');
     send(host, { type: 'message', text: 'pin flood target' });

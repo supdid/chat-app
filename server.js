@@ -5302,6 +5302,12 @@ wss.on('connection', (ws, req) => {
       const entry = room && room.history.find((m) => m.id === messageId);
       if (entry) { entry.text = ''; entry.mediaUrl = null; entry.mediaType = null; entry.deleted = true; }
       broadcastRoom(ws.room, { type: 'message-deleted', messageId });
+      // Deleting a pinned message previously left the pinned banner showing its now-deleted text
+      // indefinitely for everyone already in the room (only a rejoin re-fetches pins from the DB
+      // and picks up the change) — unpin it too and broadcast the fresh list, same as an explicit
+      // unpin-message would. unpinMessage is a plain DELETE, harmless/idempotent if it wasn't pinned.
+      db.unpinMessage(ws.room, messageId);
+      broadcastRoom(ws.room, { type: 'pins-updated', pins: db.getPins(ws.room) });
       return;
     }
 

@@ -731,6 +731,10 @@ function handleServerMessage(data) {
       // silently missing from the thread until manually closed and reopened. Closing it here, same
       // as dmOverlay/threadOverlay, is simpler than trying to reconcile a gap of unknown size.
       if (groupDmOverlay) { groupDmOverlay.classList.add('hidden'); currentGroupDmId = null; }
+      // Same staleness class as the three overlays above, just missed for search: left open across
+      // a reconnect/room-switch, it kept showing whatever room's results were last rendered even
+      // though currentRoomCode (and the message list a hit would jump to) had already moved on.
+      searchOverlay.classList.add('hidden');
       seedReactions(data.reactions);
       seedActivity(data.activity);
       pinnedMessages = data.pins || [];
@@ -4549,10 +4553,16 @@ function renderPoll(container, data) {
   container.appendChild(card);
 }
 
+// Bumped on every submit so a response that arrives out of order (fetch B's response landing
+// before an earlier fetch A's, plausible under normal network jitter if the user edits and
+// resubmits before the first result comes back) can tell it's stale and discard itself instead
+// of overwriting a newer, correct result with an older one.
+let searchRequestId = 0;
 searchForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const q = searchInput.value.trim();
   if (!q || !currentRoomCode) return;
+  const myRequestId = ++searchRequestId;
   searchResultsEl.innerHTML = '<li class="search-status">Searching…</li>';
   try {
     // POST, not a query string — a room PIN in the URL would end up in browser history and any
@@ -4564,8 +4574,10 @@ searchForm.addEventListener('submit', async (e) => {
       body: JSON.stringify({ code: currentRoomCode, q, pin: currentRoomPin }),
     });
     const data = await res.json();
+    if (myRequestId !== searchRequestId) return;
     renderSearchResults(data.results || []);
   } catch {
+    if (myRequestId !== searchRequestId) return;
     searchResultsEl.innerHTML = '<li class="search-status">Search failed</li>';
   }
 });
