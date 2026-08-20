@@ -1272,7 +1272,14 @@ app.get('/api/scorpture/videos/:id', (req, res) => {
   const account = getAccountFromReq(req);
   const video = db.getScorptureVideo(req.params.id);
   if (!video) return res.status(404).json({ error: 'Video not found' });
-  db.bumpScorptureViews(video.id);
+  // No auth, no prior rate limit on this route at all — unlike its siblings (/comments,
+  // /report), which both already got isPostMediaRateLimited this session. A scripted loop could
+  // otherwise inflate any video's view count arbitrarily with unbounded DB writes. Skipping just
+  // the write (not the whole route) when rate-limited, rather than 429ing the response, so a
+  // real user quickly browsing several videos never sees the page itself fail to load — only
+  // the vanity view-counter silently stops incrementing past the burst.
+  const countedView = !isPostMediaRateLimited(req);
+  if (countedView) db.bumpScorptureViews(video.id);
   const uploaderAccount = db.getAccountById(video.uploader_id);
   const subscriberCount = db.getScorptureSubscriberCount(video.uploader_id);
   res.json({
@@ -1285,7 +1292,7 @@ app.get('/api/scorpture/videos/:id', (req, res) => {
     uploaderUsername: video.uploader_username,
     uploaderAvatarUrl: uploaderAccount ? uploaderAccount.scorpture_avatar_url || null : null,
     uploaderVerified: subscriberCount >= VERIFIED_SUBSCRIBER_THRESHOLD,
-    views: video.views + 1,
+    views: video.views + (countedView ? 1 : 0),
     createdAt: video.created_at,
     likeCount: db.getScorptureLikeCount(video.id),
     liked: account ? db.hasScorptureLiked(video.id, account.id) : false,
@@ -1354,6 +1361,10 @@ app.post('/api/scorpture/videos', (req, res) => {
 app.put('/api/scorpture/videos/:id', (req, res) => {
   const account = getAccountFromReq(req);
   if (!account) return res.status(401).json({ error: 'Not signed in' });
+  // Bounded to the caller's own video, but its sibling create route (POST /videos/:id/comments
+  // below) already has this same gate — an unthrottled authenticated edit loop is still real DB
+  // write pressure, just not unbounded growth like the view-counter above.
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many edits too quickly — slow down a bit.' });
   const video = db.getScorptureVideo(req.params.id);
   if (!video) return res.status(404).json({ error: 'Video not found' });
   if (video.uploader_id !== account.id) return res.status(403).json({ error: 'Not your video' });
@@ -1414,6 +1425,8 @@ app.post('/api/scorpture/videos/:id/comments', (req, res) => {
 app.put('/api/scorpture/comments/:id', (req, res) => {
   const account = getAccountFromReq(req);
   if (!account) return res.status(401).json({ error: 'Not signed in' });
+  // Same gap as PUT /videos/:id above — its sibling create route already has this.
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many edits too quickly — slow down a bit.' });
   const text = String(req.body.text || '').slice(0, 1000).trim();
   if (!text) return res.status(400).json({ error: 'Empty comment' });
   // updateScorptureComment's WHERE clause is the ownership check — a comment id that exists but
@@ -1582,6 +1595,10 @@ app.post('/api/scorpture/overlays', (req, res) => {
   if (input.length > MAX_OVERLAYS) return res.status(400).json({ error: `Max ${MAX_OVERLAYS} overlays` });
   const overlays = [];
   for (const raw of input) {
+    // A non-object entry (null, a bare string, etc.) previously threw reading raw.type below,
+    // caught only by the global error handler as a generic 500 — a real 400 is more honest about
+    // what actually went wrong (a malformed request body, not a server-side failure).
+    if (!raw || typeof raw !== 'object') return res.status(400).json({ error: 'Each overlay must be an object' });
     const type = OVERLAY_TYPES.includes(raw.type) ? raw.type : null;
     const position = OVERLAY_POSITIONS.includes(raw.position) ? raw.position : 'top-left';
     const content = String(raw.content || '').slice(0, type === 'text' ? 200 : 2000).trim();

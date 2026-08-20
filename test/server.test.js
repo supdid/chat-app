@@ -1574,6 +1574,41 @@ describe('Scorpture video creation is rate-limited', () => {
     assert.ok(created > 0, 'at least some video creates should succeed before the limit kicks in');
     assert.ok(sawLimited, 'a burst of 15 creates reusing one upload should eventually hit the rate limit');
   });
+
+  // GET /api/scorpture/videos/:id (view-count bump) had no rate limit at all — unauthenticated,
+  // no prior throttle, unbounded DB writes from a scripted view-inflation loop. Fixed by skipping
+  // just the counter write when rate-limited, not the whole response, so the page itself never
+  // fails to load for a real user quickly browsing several videos — only asserted here.
+  test('view-count bump is rate-limited but the page itself always still loads', async () => {
+    await sleep(6500); // let the shared per-IP budget clear first, same discipline as above
+
+    const signupRes = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'ScorpViewFlood', password: 'password123', email: 'scorpviewflood@test.com' }),
+    });
+    const { token } = await signupRes.json();
+    const form = new FormData();
+    form.append('file', new Blob(['view flood video content'], { type: 'video/mp4' }), 'viewflood.mp4');
+    const { url } = await (await fetch(`${BASE_URL}/upload`, { method: 'POST', body: form })).json();
+    const createRes = await fetch(`${BASE_URL}/api/scorpture/videos`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ title: 'View Flood Target', videoUrl: url }),
+    });
+    const { id } = await createRes.json();
+
+    let ok200 = 0;
+    let maxViews = 0;
+    for (let i = 0; i < 15; i++) {
+      const res = await fetch(`${BASE_URL}/api/scorpture/videos/${id}`);
+      if (res.status === 200) {
+        ok200++;
+        const data = await res.json();
+        maxViews = Math.max(maxViews, data.views);
+      }
+    }
+    assert.equal(ok200, 15, 'the video page itself should always load, even once the view-count budget is spent');
+    assert.ok(maxViews > 0 && maxViews <= 8, `expected the view count to stop climbing past the shared budget, got ${maxViews}`);
+  });
 });
 
 describe('Build Craft sleep consensus', () => {
