@@ -466,10 +466,16 @@ async function renderWatch(id) {
 }
 
 async function loadComments(id) {
+  // Every other async render path in this file guards against exactly this with routeToken (see
+  // the top of the file) — this one was missed. Without it, posting/editing a comment then
+  // navigating to a different video before the await above resolves let this write the OLD
+  // video's comments into the NEW video's #comments-list once it finally came back.
+  const myToken = routeToken;
   const listEl = document.getElementById('comments-list');
   if (!listEl) return;
   try {
     const data = await api(`/api/scorpture/videos/${encodeURIComponent(id)}/comments`);
+    if (myToken !== routeToken) return;
     document.getElementById('comments-heading').textContent = `${data.comments.length} Comment${data.comments.length === 1 ? '' : 's'}`;
     if (!data.comments.length) {
       listEl.innerHTML = `<div class="state-msg">No comments yet.</div>`;
@@ -494,6 +500,7 @@ async function loadComments(id) {
       .join('');
     wireCommentEditButtons(id);
   } catch {
+    if (myToken !== routeToken) return;
     listEl.innerHTML = `<div class="state-msg">Couldn't load comments.</div>`;
   }
 }
@@ -957,7 +964,15 @@ let broadcastState = null; // { localStream, screenStream, peers: Map<viewerId, 
 // loser's camera/mic stream and requestAnimationFrame loop forever (nothing else ever references
 // them once broadcastState is overwritten by whichever call finishes last).
 let goLiveStarting = false;
-let watchState = null; // { pc, username }
+let watchState = null; // { pc, username, token }
+// FIFO of tokens for in-flight scorpture-watch-live requests, one push per renderWatchLive() call.
+// scorpture-watch-ack carries no id of its own to say which request it's answering — this relies
+// on the WS transport preserving order (guaranteed for one connection) so the Nth ack received is
+// always the answer to the Nth request sent, letting a stale ack (for a stream already superseded
+// by a newer watch attempt, e.g. clicking two live streams in quick succession before the first
+// ack comes back) be told apart from the one actually describing the current watchState.
+let watchAckQueue = [];
+let watchTokenSeq = 0;
 
 function connectWs() {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -974,6 +989,13 @@ function connectWs() {
     // were signaling through the now-dead ws and can't be revived without a fresh negotiation
     // per viewer, which this doesn't attempt; only the is-live status recovers automatically.
     if (broadcastState) wsSend({ type: 'scorpture-go-live', title: broadcastState.title });
+    // Same gap on the viewer side, previously unhandled entirely: the server's leaveScorptureLive
+    // (triggered by the old connection closing, including this reconnect's own blip) tells the
+    // broadcaster to close *this viewer's* peer connection, but this tab's own `pc` was never told
+    // — it just sat there with the video frozen on the last frame forever, no error, no recovery
+    // short of manually navigating away and back. renderWatchLive() already does a full
+    // stopWatching()-then-rebuild, which is exactly a fresh reconnect for the viewer side too.
+    if (watchState) renderWatchLive(watchState.username);
   });
   ws.addEventListener('close', () => setTimeout(connectWs, 1500));
   ws.addEventListener('message', (event) => {
@@ -1103,8 +1125,13 @@ async function startGoLive(useScreen) {
   goLiveStarting = true;
   const title = goLiveTitleInput.value.trim() || 'Untitled stream';
   goLiveStatusEl.textContent = 'Requesting camera/mic access…';
+  // Declared outside the try so the catch block below can stop it if acquisition succeeded but
+  // something after it (sourceVideo.play(), etc.) threw before broadcastState ever got set —
+  // otherwise the camera/mic (or screen capture) stream is left running with nothing left
+  // referencing it, camera light stuck on indefinitely with only a reload to release it.
+  let rawStream = null;
   try {
-    const rawStream = useScreen
+    rawStream = useScreen
       ? await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
       : await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
 
@@ -1199,6 +1226,7 @@ async function startGoLive(useScreen) {
     }
   } catch (err) {
     goLiveStatusEl.textContent = `Couldn't start: ${err.message}`;
+    if (rawStream && !broadcastState) rawStream.getTracks().forEach((t) => t.stop());
   } finally {
     goLiveStarting = false;
   }
@@ -1221,6 +1249,13 @@ async function switchGoLiveSource(useScreen) {
     const newRawStream = useScreen
       ? await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
       : await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    // The stream could have been ended (End Stream clicked) while that permission prompt was up
+    // — broadcastState is null now, and using it below would throw, landing in the catch with
+    // this freshly-acquired stream never stopped (the same leak class just fixed in startGoLive).
+    if (!broadcastState) {
+      newRawStream.getTracks().forEach((t) => t.stop());
+      return;
+    }
     // Audio normally keeps coming from the original source (the mic) the whole time — only the
     // video feed powering the compositing canvas changes — so the fresh audio track this request
     // also grabbed is usually unused. *Except*: if the session went live with no audio track at
@@ -1373,7 +1408,9 @@ function renderWatchLive(username) {
     .catch(() => {});
 
   const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-  watchState = { pc, username };
+  const token = ++watchTokenSeq;
+  watchState = { pc, username, token };
+  watchAckQueue.push(token);
   pc.ontrack = (e) => {
     const player = document.getElementById('live-player');
     if (player) player.srcObject = e.streams[0];
@@ -1499,10 +1536,15 @@ function appendLiveChatMessage(data) {
 }
 
 function handleWatchAck(data) {
+  const token = watchAckQueue.shift();
+  // Stale ack for a watch attempt already superseded by a newer one (or the user navigated away
+  // entirely, e.g. stopWatching() already nulled watchState) — ignore it. Acting on it would tear
+  // down or mislabel whatever the CURRENT watchState actually is, not the one this ack is for.
+  if (!watchState || token !== watchState.token) return;
   // Peer-connection cleanup must not depend on this DOM lookup succeeding — decoupled so a
   // future refactor of the watch page's markup can't silently reintroduce a leaked RTCPeerConnection.
-  const offlineUsername = watchState ? watchState.username : 'This channel';
-  if (!data.live && watchState) {
+  const offlineUsername = watchState.username;
+  if (!data.live) {
     watchState.pc.close();
     watchState = null;
   }
