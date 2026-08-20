@@ -593,8 +593,23 @@ function addBox(parent, w, h, d, color, x, y, z, rx) {
   return m;
 }
 
+// Every mesh in a bot/ally/gun group owns its own geometry and material (none of it is a shared
+// module-level singleton like packMat below), so a plain traverse-and-dispose-everything is safe
+// here — matches fighterplane.js's disposeObject3D exactly.
+function disposeObject3D(obj) {
+  if (!obj) return;
+  obj.traverse((o) => {
+    if (!o.isMesh) return;
+    if (o.geometry) o.geometry.dispose();
+    if (o.material) {
+      if (o.material.map) o.material.map.dispose();
+      o.material.dispose();
+    }
+  });
+}
+
 function equipGun(type) {
-  if (gun) camera.remove(gun);
+  if (gun) { camera.remove(gun); disposeObject3D(gun); }
   gun = new THREE.Group();
   let muzzleZ = -0.11;
   const DARK = 0x2b2f33;
@@ -742,6 +757,7 @@ function spawnBot(fireInterval) {
 function removeBot(index) {
   const bot = bots[index];
   scene.remove(bot.group);
+  disposeObject3D(bot.group);
   meshToBot.delete(bot.body);
   meshToBot.delete(bot.head);
   botMeshes.splice(botMeshes.indexOf(bot.body), 1);
@@ -807,6 +823,7 @@ function spawnAlly() {
 
 function removeAlly(index) {
   scene.remove(allies[index].group);
+  disposeObject3D(allies[index].group);
   allies.splice(index, 1);
 }
 
@@ -969,7 +986,11 @@ function dropHealthPack(x, z) {
 }
 
 function removePickup(index) {
-  scene.remove(pickups[index].group);
+  const group = pickups[index].group;
+  scene.remove(group);
+  // Geometry only — packMat above is one shared material reused by every pickup on screen, so
+  // disposing it here (like disposeObject3D would) would break every other still-visible pack.
+  group.traverse((o) => { if (o.isMesh && o.geometry) o.geometry.dispose(); });
   pickups.splice(index, 1);
 }
 
@@ -1274,7 +1295,10 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyU') { tryUpgrade(); return; }
   if (e.code === 'KeyP') { saveGame(); return; }
   if (e.code === 'KeyM') { if (dead) backToModeSelect(); return; }
-  if (e.code === 'KeyQ') { toggleKnife(); return; }
+  // e.repeat guard: toggleKnife() rebuilds the gun viewmodel every call, so without this, holding
+  // Q down (OS keyboard auto-repeat) tore down and rebuilt it many times a second, leaking a fresh
+  // set of geometries/materials on every rebuild.
+  if (e.code === 'KeyQ') { if (!e.repeat) toggleKnife(); return; }
   if (e.code === 'KeyR') { // manual reload, if the magazine isn't full
     if (!dead && !isReloading && ammo < WEAPONS[weapon].mag) startReload(performance.now());
     return;
