@@ -181,7 +181,7 @@ function speckleTexture(r, g, b, vary, px) {
   return tex;
 }
 
-// ---- The gray map, now with a horizon ----
+// ---- The ground, now with a horizon ----
 const groundTex = speckleTexture(138, 138, 138, 7, 64);
 groundTex.repeat.set(150, 150); // 2x2 blocks per tile across the 300-block plane
 const ground = new THREE.Mesh(
@@ -193,14 +193,93 @@ ground.receiveShadow = true;
 scene.add(ground);
 solids.push(ground);
 
-// Grid lines one block apart over the playable area, floated a hair up to avoid z-fighting.
-const grid = new THREE.GridHelper(MAP_BLOCKS, MAP_BLOCKS, 0x7d7d7d, 0x7d7d7d);
-grid.position.y = 0.002;
-scene.add(grid);
+// ---- Crossroad road surface ----
+// A single non-tiling texture covering exactly the playable square (unlike groundTex above,
+// which repeats a small tile and can't represent one big global layout), painted with two
+// asphalt roads crossing in a "+" through the map center, lane markings, and a crosswalk at
+// each of the 4 approaches — sidewalk-toned pavement fills the four quadrants between them.
+// Layered as its own thin plane just above the original ground (left completely unchanged
+// below, as generic backdrop past the walls) rather than replacing it, and deliberately not
+// added to `solids` — the ground plane it sits on top of already handles that collision role,
+// so none of the placement/collision logic below needs to know or care this exists.
+function crossroadTexture(mapSize) {
+  const px = 1024;
+  const scale = px / mapSize; // pixels per world unit
+  const half = px / 2;
+  const roadW = 6 * scale; // a 6-unit-wide street in world space
+  const c = document.createElement('canvas');
+  c.width = c.height = px;
+  const g = c.getContext('2d');
+
+  // Sidewalk base, with a little pavement speckle so it isn't a flat slab.
+  g.fillStyle = '#9a9186';
+  g.fillRect(0, 0, px, px);
+  for (let n = 0; n < 6000; n++) {
+    const x = Math.random() * px, y = Math.random() * px;
+    if (Math.abs(x - half) < roadW / 2 || Math.abs(y - half) < roadW / 2) continue; // skip the road
+    g.fillStyle = `rgba(0,0,0,${Math.random() * 0.06})`;
+    g.fillRect(x, y, 2, 2);
+  }
+
+  // Asphalt roads, crossing in a plus, with their own speckle.
+  g.fillStyle = '#37393c';
+  g.fillRect(half - roadW / 2, 0, roadW, px);
+  g.fillRect(0, half - roadW / 2, px, roadW);
+  for (let n = 0; n < 8000; n++) {
+    const onVertical = Math.random() < 0.5;
+    const x = onVertical ? half - roadW / 2 + Math.random() * roadW : Math.random() * px;
+    const y = onVertical ? Math.random() * px : half - roadW / 2 + Math.random() * roadW;
+    g.fillStyle = `rgba(255,255,255,${Math.random() * 0.04})`;
+    g.fillRect(x, y, 2, 2);
+  }
+
+  // Curb line where asphalt meets sidewalk.
+  g.strokeStyle = '#d8d3c8';
+  g.lineWidth = Math.max(2, scale * 0.08);
+  g.strokeRect(half - roadW / 2, 0, roadW, px);
+  g.strokeRect(0, half - roadW / 2, px, roadW);
+
+  // Yellow dashed center lines down each road, skipped through the intersection itself.
+  g.fillStyle = '#e8c93c';
+  const dash = scale * 0.7, gap = scale * 0.5, lineW = Math.max(2, scale * 0.09);
+  for (let y = 0; y < px; y += dash + gap) {
+    if (Math.abs(y + dash / 2 - half) < roadW / 2 + dash) continue;
+    g.fillRect(half - lineW / 2, y, lineW, dash);
+  }
+  for (let x = 0; x < px; x += dash + gap) {
+    if (Math.abs(x + dash / 2 - half) < roadW / 2 + dash) continue;
+    g.fillRect(x, half - lineW / 2, dash, lineW);
+  }
+
+  // White zebra-stripe crosswalks on all 4 approaches to the intersection.
+  g.fillStyle = '#e9e9e4';
+  const stripeW = scale * 0.5, stripeGap = scale * 0.4, crossDepth = scale * 1.8;
+  const inset = roadW / 2 + scale * 0.6; // just outside the intersection box
+  for (let s = -roadW / 2 + stripeGap; s < roadW / 2; s += stripeW + stripeGap) {
+    g.fillRect(half + s, half - inset - crossDepth, stripeW, crossDepth); // north
+    g.fillRect(half + s, half + inset, stripeW, crossDepth);              // south
+    g.fillRect(half - inset - crossDepth, half + s, crossDepth, stripeW); // west
+    g.fillRect(half + inset, half + s, crossDepth, stripeW);              // east
+  }
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.magFilter = THREE.LinearFilter;
+  return tex;
+}
+const roadPlane = new THREE.Mesh(
+  new THREE.PlaneGeometry(MAP_BLOCKS, MAP_BLOCKS),
+  new THREE.MeshLambertMaterial({ map: crossroadTexture(MAP_BLOCKS) })
+);
+roadPlane.rotation.x = -Math.PI / 2;
+roadPlane.position.y = 0.001; // just above the base ground plane, avoids z-fighting
+roadPlane.receiveShadow = true;
+scene.add(roadPlane);
 
 // ---- Perimeter walls ----
+// Warmed from the old cool blue-gray to a brick-adjacent tone matching the cover blocks below —
+// reads as building facades lining the crossroad instead of an abstract arena boundary.
 const HALF_MAP = MAP_BLOCKS / 2;
-const wallTex = speckleTexture(154, 164, 170, 6, 64);
+const wallTex = speckleTexture(176, 152, 128, 8, 64);
 wallTex.repeat.set(12, 1); // long faces get ~2-block-square tiles instead of one smeared stretch
 const wallMat = new THREE.MeshLambertMaterial({ map: wallTex });
 [
@@ -260,10 +339,12 @@ const clouds = [];
 // x in [i, i+1), z in [j, j+1). `occupied` is also what collision checks against.
 const occupied = new Map(); // "i,j" -> column height
 
+// Warmed from flat gray to a brick tone — same placement/height logic below, unchanged, just
+// reads as small buildings lining the crossroad instead of abstract Minecraft-style cover.
 const blockGeo = new THREE.BoxGeometry(1, 1, 1);
-const blockMat = new THREE.MeshLambertMaterial({ map: speckleTexture(158, 158, 158, 8, 32) });
+const blockMat = new THREE.MeshLambertMaterial({ map: speckleTexture(168, 128, 104, 10, 32) });
 const edgeGeo = new THREE.EdgesGeometry(blockGeo);
-const edgeMat = new THREE.LineBasicMaterial({ color: 0x6a6a6a });
+const edgeMat = new THREE.LineBasicMaterial({ color: 0x5c4736 });
 
 function placeColumn(i, j, height) {
   occupied.set(`${i},${j}`, height);
@@ -701,15 +782,54 @@ function randomBotCell(avoidX, avoidZ) {
   return [randCell(), randCell()];
 }
 
+// Shared humanoid-limb builder for bots/allies — legs, torso, arms occupy the exact same overall
+// vertical footprint the old single torso box did (y: 0 to 0.6, head unchanged at 0.78) so this
+// is purely a silhouette upgrade: no PLAYER_WIDTH/collision/aiming-height math anywhere else in
+// this file needed to change. Limbs are deliberately NOT added to botMeshes/meshToBot (the
+// raycast-hittable list) — same as the eyes already weren't — so hit-detection and headshot
+// logic are completely unaffected, matching the app's existing "decorative-only" precedent.
+function addLimbs(group, torsoMat, limbMat) {
+  const legGeo = new THREE.BoxGeometry(0.16, 0.32, 0.16);
+  const legs = [-0.11, 0.11].map((xOff) => {
+    const leg = new THREE.Mesh(legGeo, limbMat);
+    leg.position.set(xOff, 0.16, 0);
+    leg.castShadow = true;
+    group.add(leg);
+    return leg;
+  });
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(PLAYER_WIDTH, 0.28, 0.3), torsoMat);
+  torso.position.y = 0.46;
+  torso.castShadow = true;
+  group.add(torso);
+  const armGeo = new THREE.BoxGeometry(0.12, 0.28, 0.14);
+  const arms = [-0.31, 0.31].map((xOff) => {
+    const arm = new THREE.Mesh(armGeo, limbMat);
+    arm.position.set(xOff, 0.46, 0);
+    arm.castShadow = true;
+    group.add(arm);
+    return arm;
+  });
+  return { torso, legs, arms };
+}
+
+// Same phase value driving the existing step-bob (now/110 + a per-unit offset) so legs/arms swing
+// in sync with it rather than introducing a second, unrelated clock. Arms counter-swing opposite
+// their same-side leg — the real thing a walking gait does — rather than mirroring the legs.
+function animateWalk(legs, arms, phase, moving) {
+  const swing = moving ? Math.sin(phase) * 0.6 : 0;
+  legs[0].rotation.x = swing;
+  legs[1].rotation.x = -swing;
+  arms[0].rotation.x = -swing;
+  arms[1].rotation.x = swing;
+}
+
 function spawnBot(fireInterval) {
   // Each bot gets its own materials so one bot's hit-flash doesn't light them all up.
   const bodyMat = new THREE.MeshLambertMaterial({ color: 0xd9534f });
+  const limbMat = new THREE.MeshLambertMaterial({ color: 0xa93f38 }); // darker — reads as clothing, not just a recolored torso
   const headMat = new THREE.MeshLambertMaterial({ color: 0xe8837b });
   const group = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.BoxGeometry(PLAYER_WIDTH, 0.6, 0.3), bodyMat);
-  body.position.y = 0.3;
-  body.castShadow = true;
-  group.add(body);
+  const { torso: body, legs, arms } = addLimbs(group, bodyMat, limbMat);
   const head = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.28, 0.28), headMat);
   head.position.y = 0.78;
   head.castShadow = true;
@@ -726,7 +846,7 @@ function spawnBot(fireInterval) {
 
   const [i, j] = randomBotCell(player.x, player.z);
   const bot = {
-    group, body, head, bodyMat, headMat, eyeMat,
+    group, body, head, bodyMat, limbMat, headMat, eyeMat, legs, arms,
     x: i + 0.5,
     z: j + 0.5,
     dir: Math.random() * Math.PI * 2,
@@ -775,12 +895,10 @@ const allies = [];
 
 function spawnAlly() {
   const bodyMat = new THREE.MeshLambertMaterial({ color: 0x4a8fd9 });
+  const limbMat = new THREE.MeshLambertMaterial({ color: 0x2f5f96 });
   const headMat = new THREE.MeshLambertMaterial({ color: 0x8fbce8 });
   const group = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.BoxGeometry(PLAYER_WIDTH, 0.6, 0.3), bodyMat);
-  body.position.y = 0.3;
-  body.castShadow = true;
-  group.add(body);
+  const { torso: body, legs, arms } = addLimbs(group, bodyMat, limbMat);
   const head = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.28, 0.28), headMat);
   head.position.y = 0.78;
   head.castShadow = true;
@@ -806,7 +924,7 @@ function spawnAlly() {
     if (!blockedAt(cx, cz, 0)) { x = cx; z = cz; break; }
   }
   const ally = {
-    group, bodyMat, headMat, eyeMat,
+    group, bodyMat, limbMat, headMat, eyeMat, legs, arms,
     x, z,
     dir: Math.random() * Math.PI * 2,
     fireT: 1 + Math.random(), // staggered, so two sidekicks don't volley in sync
@@ -1561,6 +1679,7 @@ function tick(now) {
       bot.flashT -= dt;
       const on = bot.flashT > 0;
       bot.bodyMat.emissive.setHex(on ? 0x991111 : 0x000000);
+      bot.limbMat.emissive.setHex(on ? 0x991111 : 0x000000);
       bot.headMat.emissive.setHex(on ? 0x991111 : 0x000000);
     }
 
@@ -1653,8 +1772,11 @@ function tick(now) {
     }
 
     // A little hop in the step whenever they're on the move sells the walk.
-    const stepBob = (mvx !== 0 || mvz !== 0) ? Math.abs(Math.sin(now / 110 + bi * 1.7)) * 0.05 : 0;
+    const botMoving = mvx !== 0 || mvz !== 0;
+    const botPhase = now / 110 + bi * 1.7;
+    const stepBob = botMoving ? Math.abs(Math.sin(botPhase)) * 0.05 : 0;
     bot.group.position.set(bot.x, stepBob, bot.z);
+    animateWalk(bot.legs, bot.arms, botPhase, botMoving);
     // Face what they're doing: their target when one's seen, otherwise the way they walk.
     bot.group.rotation.y = bot.seesTarget
       ? Math.atan2(bot.tgtX - bot.x, bot.tgtZ - bot.z)
@@ -1691,6 +1813,7 @@ function tick(now) {
       ally.flashT -= dt;
       const on = ally.flashT > 0;
       ally.bodyMat.emissive.setHex(on ? 0x991111 : 0x000000);
+      ally.limbMat.emissive.setHex(on ? 0x991111 : 0x000000);
       ally.headMat.emissive.setHex(on ? 0x991111 : 0x000000);
     }
 
@@ -1750,8 +1873,11 @@ function tick(now) {
       ally.avoidT = 0.5;
     }
 
-    const allyBob = (mvx !== 0 || mvz !== 0) ? Math.abs(Math.sin(now / 110 + ai * 2.3)) * 0.05 : 0;
+    const allyMoving = mvx !== 0 || mvz !== 0;
+    const allyPhase = now / 110 + ai * 2.3;
+    const allyBob = allyMoving ? Math.abs(Math.sin(allyPhase)) * 0.05 : 0;
     ally.group.position.set(ally.x, allyBob, ally.z);
+    animateWalk(ally.legs, ally.arms, allyPhase, allyMoving);
     ally.group.rotation.y = target
       ? Math.atan2(target.x - ally.x, target.z - ally.z)
       : (mvx !== 0 || mvz !== 0) ? Math.atan2(mvx, mvz)
