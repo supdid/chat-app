@@ -18,38 +18,37 @@
 
   <div id="menu">
     <div class="panel">
-      <h1>Web Swing</h1>
-      <p class="tagline">Sling webs between skyscrapers and swing through the city like a superhero. Collect glowing orbs as you go.</p>
-      <button id="start-btn" class="primary">Start Swinging</button>
+      <h1><span>Web</span> <span>Swing</span></h1>
+      <p class="tagline">Swing the city &mdash; the faster, closer and higher you fly, the more it pays.</p>
+      <p id="records-row" class="records hidden"><span class="records-label">Personal best</span> <span id="records-vals"></span></p>
+      <button id="start-btn" class="primary">Start swinging</button>
       <ul class="controls-list" id="controls-list-desktop">
-        <li><strong>WASD</strong> &mdash; run (reel in/out &amp; pump the swing while airborne, or climb/shuffle while on a wall)</li>
-        <li><strong>Mouse</strong> &mdash; click the city to look around / aim</li>
-        <li><strong>E</strong> (or Left Click) &mdash; shoot a web at the crosshair / let go. Aim near a rooftop to grapple straight up onto it; aim lower to swing from it</li>
-        <li><strong>F</strong> (or Right Click) &mdash; web strike. Aim at another player up close to hit them &mdash; three hits eliminates them (they respawn at the tower; you get bonus points)</li>
-        <li><strong>Scroll wheel</strong> &mdash; zoom the camera in and out</li>
-        <li><strong>Space</strong> &mdash; jump (or push off a wall while climbing). <strong>Hold it while swinging</strong> to climb up the web toward the anchor</li>
-        <li>Move into a building's wall to grab on and crawl it &mdash; works while running straight at it or strafing past it</li>
-        <li><strong>Shift</strong> (in the air) &mdash; dive. Tuck and drive downward to trade height for speed, steered by where you aim</li>
-        <li>Pump A/D while swinging to build momentum &mdash; let go at the right moment for a huge boosted jump</li>
-        <li>Orbs grabbed <strong>without touching the ground</strong> stack an air chain, worth up to +5 each &mdash; landing resets it</li>
-        <li>Watch the <strong>charge bar</strong> while swinging. It turns amber when you're charged and <strong>pulses green the instant you're charged and rising</strong> &mdash; let go then for a perfect release, worth bonus points and a bigger launch</li>
-        <li><strong>Near misses</strong> &mdash; skim a building at speed to score. String them together for a rising multiplier</li>
-        <li><strong>Don't hit the ground hard.</strong> Slamming in at speed wipes you out: you lose the air chain and control for a moment</li>
+        <li class="ctl"><kbd>E</kbd><span>shoot web / let go &middot; aim near a roof to zip onto it</span></li>
+        <li class="ctl"><kbd>F</kbd><span>web strike &middot; three close-range hits eliminate a player &mdash; they respawn, you score</span></li>
+        <li class="ctl"><kbd>WASD</kbd><span>run &middot; reel the rope (W/S) &middot; pump the swing (A/D)</span></li>
+        <li class="ctl"><kbd>Space</kbd><span>jump &middot; hold on a web to climb the strand</span></li>
+        <li class="ctl"><kbd>Shift</kbd><span>dive &mdash; trade height for speed, steered by aim</span></li>
+        <li class="ctl"><kbd>Mouse</kbd><span>look &amp; aim &middot; scroll to zoom &middot; run into a wall to crawl it</span></li>
+        <li class="rule gain"><b>Air chain</b><span>orbs taken without landing stack, up to +5 each</span></li>
+        <li class="rule gain"><b>Near miss</b><span>skim a building at speed &mdash; chains to &times;5</span></li>
+        <li class="rule gain"><b>Perfect release</b><span>let go while the charge bar pulses green</span></li>
+        <li class="rule gain"><b>Bonus orb</b><span>a blue one lands far off now and then &mdash; +15</span></li>
+        <li class="rule gain"><b>Roll</b><span>hold forward, land just under crash speed &mdash; keep your chain, gain speed</span></li>
+        <li class="rule risk"><b>Wipeout</b><span>slam the street too fast and you eat the pavement</span></li>
       </ul>
       <ul class="controls-list hidden" id="controls-list-touch">
-        <li><strong>Joystick</strong> (bottom-left) &mdash; run, reel/pump while swinging, or climb/shuffle while on a wall</li>
-        <li><strong>Drag the screen</strong> &mdash; look around / aim</li>
-        <li><strong>Pinch with two fingers</strong> &mdash; zoom the camera in and out</li>
-        <li><strong>🕸️ button</strong> &mdash; shoot a web at the crosshair / let go. Aim near a rooftop to grapple up onto it; aim lower to swing from it</li>
-        <li><strong>👊 button</strong> &mdash; web strike. Aim at another player up close to hit them &mdash; three hits eliminates them (they respawn at the tower; you get bonus points)</li>
-        <li><strong>⤒ button</strong> &mdash; jump (or push off a wall while climbing). <strong>Hold it while swinging</strong> to climb up the web toward the anchor</li>
-        <li>Move into a building's wall to grab on and crawl it &mdash; works while running straight at it or strafing past it</li>
-        <li><strong>⤓ button</strong> (in the air) &mdash; dive. Tuck and drive downward to trade height for speed, steered by where you aim</li>
-        <li>Pump the joystick side to side while swinging to build momentum &mdash; let go at the right moment for a huge boosted jump</li>
-        <li>Orbs grabbed <strong>without touching the ground</strong> stack an air chain, worth up to +5 each &mdash; landing resets it</li>
-        <li>Watch the <strong>charge bar</strong> while swinging. It turns amber when you're charged and <strong>pulses green the instant you're charged and rising</strong> &mdash; let go then for a perfect release, worth bonus points and a bigger launch</li>
-        <li><strong>Near misses</strong> &mdash; skim a building at speed to score. String them together for a rising multiplier</li>
-        <li><strong>Don't hit the ground hard.</strong> Slamming in at speed wipes you out: you lose the air chain and control for a moment</li>
+        <li class="ctl"><kbd>🕸️</kbd><span>shoot web / let go &middot; aim near a roof to zip onto it</span></li>
+        <li class="ctl"><kbd>👊</kbd><span>web strike &middot; three close-range hits eliminate a player &mdash; they respawn, you score</span></li>
+        <li class="ctl"><kbd>&#10514;</kbd><span>jump &middot; hold on a web to climb the strand</span></li>
+        <li class="ctl"><kbd>&#10515;</kbd><span>dive &mdash; trade height for speed, steered by aim</span></li>
+        <li class="ctl"><kbd>Stick</kbd><span>run &middot; reel &amp; pump the swing &middot; crawl walls</span></li>
+        <li class="ctl"><kbd>Drag</kbd><span>look &amp; aim &middot; pinch to zoom</span></li>
+        <li class="rule gain"><b>Air chain</b><span>orbs taken without landing stack, up to +5 each</span></li>
+        <li class="rule gain"><b>Near miss</b><span>skim a building at speed &mdash; chains to &times;5</span></li>
+        <li class="rule gain"><b>Perfect release</b><span>let go while the charge bar pulses green</span></li>
+        <li class="rule gain"><b>Bonus orb</b><span>a blue one lands far off now and then &mdash; +15</span></li>
+        <li class="rule gain"><b>Roll</b><span>hold forward, land just under crash speed &mdash; keep your chain, gain speed</span></li>
+        <li class="rule risk"><b>Wipeout</b><span>slam the street too fast and you eat the pavement</span></li>
       </ul>
     </div>
   </div>

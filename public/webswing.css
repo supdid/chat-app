@@ -1,5 +1,28 @@
+/* Chrome design language: the menu is the swinger's own gear card, hung in a web.
+   Amber is the orb — the thing the player chases — so amber marks reward everywhere; the suit red
+   is reserved for the single risk line. Monospace is the instrument voice (keys, numbers). */
+:root {
+  --night: #0a1420;
+  --ink: #eaf6ff;
+  --dim: #8fa9bf;
+  --web: #cfe4f7;
+  --orb: #ffd93d;
+  --orb-deep: #c98f00;
+  --risk: #ff4d5e;
+  --suit-red: #e0263f;
+  --suit-blue: #1f3fcc;
+  --edge: #24405c;
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", "Segoe UI Mono", Consolas, monospace;
+}
+
 * {
   box-sizing: border-box;
+}
+
+:focus-visible {
+  outline: 2px solid var(--orb);
+  outline-offset: 2px;
 }
 
 html, body {
@@ -19,6 +42,8 @@ html, body {
   position: fixed;
   top: 0.75rem;
   left: 0.75rem;
+  top: calc(0.75rem + env(safe-area-inset-top));
+  left: calc(0.75rem + env(safe-area-inset-left));
   z-index: 30;
   background: rgba(6, 14, 22, 0.65);
   backdrop-filter: blur(10px);
@@ -51,64 +76,199 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: radial-gradient(circle at center, rgba(30, 30, 50, 0.6), rgba(4, 10, 16, 0.92));
+  /* Dusk, not vignette: deep navy warming very slightly toward the horizon. */
+  background: linear-gradient(180deg, rgba(6, 12, 20, 0.9), rgba(10, 18, 30, 0.94) 55%, rgba(24, 20, 36, 0.92));
+  overflow: hidden;
+}
+
+/* The signature: the card hangs in a web. Two taut strands run from the top screen corners and
+   cross behind the panel — the same move the whole game is about. Pseudo-elements live on #menu
+   (NOT .panel: its overflow-y would clip them). Bright at the anchor, fading toward the tip. */
+#menu::before,
+#menu::after {
+  content: '';
+  position: absolute;
+  top: -12px;
+  width: 120vmax;
+  height: 2px;
+  background: linear-gradient(90deg, rgba(207, 228, 247, 0.85), rgba(207, 228, 247, 0.28) 35%, rgba(207, 228, 247, 0) 80%);
+  pointer-events: none;
+}
+
+#menu::before {
+  left: -12px;
+  transform-origin: top left;
+  transform: rotate(36deg);
+}
+
+#menu::after {
+  right: -12px;
+  transform-origin: top right;
+  transform: rotate(-41deg); /* asymmetric on purpose — rigged, not mirrored */
+  /* Mirrored gradient: this strand's anchor is its RIGHT end. */
+  background: linear-gradient(270deg, rgba(207, 228, 247, 0.85), rgba(207, 228, 247, 0.28) 35%, rgba(207, 228, 247, 0) 80%);
 }
 
 .panel {
-  background: rgba(8, 18, 28, 0.75);
-  backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  position: relative; /* above the strands */
+  background: linear-gradient(180deg, #132235, #0d1926);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--edge);
   padding: 2rem 2.5rem;
-  border-radius: 16px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  border-radius: 14px;
+  /* Top edge carries the suit: a red-over-blue keyline instead of gradient title text. */
+  box-shadow: inset 0 3px 0 var(--suit-red), inset 0 6px 0 var(--suit-blue), 0 24px 60px rgba(0, 0, 0, 0.55);
   text-align: center;
-  max-width: 440px;
-  width: min(90vw, 440px);
+  max-width: 460px;
+  width: min(92vw, 460px);
   max-height: 90vh;
   overflow-y: auto;
 }
 
 .panel h1 {
-  margin: 0 0 0.25rem;
-  background: linear-gradient(90deg, #e0263f, #3b6dff);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  margin: 0.4rem 0 0.35rem;
+  font-size: 2.3rem;
+  font-weight: 900;
+  font-style: italic; /* the one nod to motion — nothing else leans */
+  text-transform: uppercase;
+  letter-spacing: 0.01em;
+  line-height: 1;
+  color: var(--ink);
+}
+
+.panel h1 span:last-child {
+  color: var(--orb);
 }
 
 .tagline {
   margin: 0 0 1.25rem;
-  color: #a7bdd1;
+  color: var(--dim);
   font-size: 0.9rem;
 }
 
 .controls-list {
   list-style: none;
-  margin: 1.25rem 0 0;
+  margin: 1.4rem 0 0;
   padding: 0;
   text-align: left;
   font-size: 0.8rem;
   color: #c3d6e5;
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
+  gap: 0.45rem;
+}
+
+/* Key map rows: chip + one job each. */
+.controls-list .ctl {
+  display: grid;
+  grid-template-columns: 4.6em 1fr;
+  gap: 0.7em;
+  align-items: center;
+}
+
+.controls-list kbd {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  text-align: center;
+  padding: 0.2em 0.4em;
+  background: #16283c;
+  border: 1px solid #2c4a68;
+  border-bottom-width: 2px; /* keycap depth */
+  border-radius: 6px;
+  color: var(--web);
+  white-space: nowrap;
+}
+
+/* Scoring rules: amber = pays, red = costs. The color IS the information. */
+.controls-list .rule {
+  display: grid;
+  grid-template-columns: 7.4em 1fr;
+  gap: 0.7em;
+  align-items: baseline;
+  border-left: 2px solid var(--orb-deep);
+  padding-left: 0.65em;
+}
+
+.controls-list .ctl + .rule {
+  margin-top: 0.9rem;
+}
+
+.controls-list .rule b {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--orb);
+}
+
+.controls-list .rule.risk {
+  border-left-color: var(--risk);
+}
+
+.controls-list .rule.risk b {
+  color: var(--risk);
+}
+
+/* Personal records — quiet menu furniture above the start button, in the instrument voice. */
+.records {
+  margin: -0.5rem 0 0.9rem;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--orb);
+}
+
+.records-label {
+  display: block;
+  font-family: var(--font-ui);
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--dim);
+  margin-bottom: 0.15rem;
 }
 
 button.primary {
   width: 100%;
-  padding: 0.7rem 1.5rem;
+  padding: 0.75rem 1.5rem;
   border: none;
-  border-radius: 8px;
-  background: linear-gradient(135deg, #e0263f, #3b6dff);
-  color: #fff;
-  font-weight: 600;
+  border-radius: 9px;
+  background: var(--orb);
+  color: #201503;
+  font-weight: 800;
   font-size: 1rem;
+  letter-spacing: 0.01em;
   cursor: pointer;
   margin-top: 0.5rem;
+  box-shadow: 0 4px 18px rgba(255, 217, 61, 0.22);
 }
 
 button.primary:hover {
-  filter: brightness(1.08);
+  filter: brightness(1.06);
+}
+
+button.primary:active {
+  transform: translateY(1px);
+}
+
+/* One orchestrated entrance — the card settles onto its strands. Nothing else animates. */
+@media (prefers-reduced-motion: no-preference) {
+  #menu .panel {
+    animation: panel-settle 0.45s cubic-bezier(0.22, 1.25, 0.36, 1) both;
+  }
+  #menu::before, #menu::after {
+    animation: strand-fade 0.6s ease-out both;
+  }
+}
+
+@keyframes panel-settle {
+  from { opacity: 0; transform: translateY(-14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes strand-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .panel-header {
@@ -135,13 +295,44 @@ button.primary:hover {
   gap: 0.4rem;
 }
 
+#leaderboard-list {
+  counter-reset: rank;
+}
+
 #leaderboard-list li {
   display: flex;
-  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.6rem;
   background: rgba(255, 255, 255, 0.05);
   border-radius: 8px;
   padding: 0.4rem 0.7rem;
   font-size: 0.9rem;
+}
+
+/* Rank numbers are real information here — a leaderboard IS a sequence. :has() gates them to
+   actual score rows, so the "No scores yet" empty state isn't numbered 01. */
+#leaderboard-list li:has(span) {
+  counter-increment: rank;
+}
+
+#leaderboard-list li:has(span)::before {
+  content: counter(rank, decimal-leading-zero);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--dim);
+}
+
+#leaderboard-list li span:first-of-type {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#leaderboard-list li span:last-of-type {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--orb);
 }
 
 #hud {
@@ -151,6 +342,8 @@ button.primary:hover {
   right: 0;
   z-index: 10;
   padding: 0.75rem 1rem;
+  /* Landscape notch: keep the sound/leaderboard buttons out from under the sensor housing. */
+  padding: calc(0.75rem + env(safe-area-inset-top)) calc(1rem + env(safe-area-inset-right)) 0.75rem calc(1rem + env(safe-area-inset-left));
 }
 
 #hud-row {
@@ -181,24 +374,33 @@ button.primary:hover {
   box-shadow: 0 0 12px rgba(255, 190, 60, 0.55);
 }
 
+/* Numbers speak monospace — the HUD is an instrument, and tabular digits stop every readout
+   twitching as values change. */
 #score-label {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   font-weight: 700;
-  font-size: 1.1rem;
+  font-size: 1.05rem;
+  color: var(--orb);
   background: rgba(6, 14, 22, 0.55);
   backdrop-filter: blur(8px);
   padding: 0.35rem 0.8rem;
+  border: 1px solid rgba(207, 228, 247, 0.14);
   border-radius: 999px;
 }
 
 #best-label {
-  color: #a7bdd1;
-  font-size: 0.8rem;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+  font-size: 0.78rem;
 }
 
 #speed-label {
-  color: #cfe4f7;
-  font-size: 0.8rem;
-  font-variant-numeric: tabular-nums; /* stops the row twitching as the digits change */
+  font-family: var(--font-mono);
+  color: var(--web);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
   min-width: 4.2rem;
   text-align: right;
 }
@@ -411,7 +613,12 @@ button.primary:hover {
 #touch-joystick {
   position: absolute;
   left: 22px;
+  /* Double declaration is the fallback pattern: browsers without env() keep the first. The page
+     opts into the full screen with viewport-fit=cover, so without this the joystick sits under
+     the home-indicator bar on notched phones. */
   bottom: 22px;
+  bottom: calc(22px + env(safe-area-inset-bottom));
+  left: calc(22px + env(safe-area-inset-left));
   width: 110px;
   height: 110px;
   border-radius: 50%;
@@ -437,6 +644,8 @@ button.primary:hover {
   position: absolute;
   right: 18px;
   bottom: 22px;
+  bottom: calc(22px + env(safe-area-inset-bottom));
+  right: calc(18px + env(safe-area-inset-right));
   display: flex;
   flex-direction: column;
   gap: 12px;

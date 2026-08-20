@@ -55,6 +55,26 @@ const FOV_BASE = 72;
 const FOV_SPEED_ADD = 16; // extra FOV at top speed — the whole sense of velocity comes from this
 const FOV_SPEED_FLOOR = 18; // below this speed the FOV sits at base
 const AIR_CHAIN_MAX_BONUS = 4; // orbs stack up to +4 while you stay off the ground
+
+// ---- Frame-rate-independent smoothing ----
+// Several smoothing factors were per-FRAME constants (accel `* 0.3`, friction `*= 0.8`, camera
+// lerp 0.25), which made the game play differently by refresh rate: at 144Hz you accelerated
+// ~2.4x harder and per-second friction was 0.8^144 vs 0.8^60. The exponential form below converges
+// along the same curve at any rate — two 8ms steps land exactly where one 16ms step does.
+// Rates are calibrated to reproduce the old per-frame factors at 60fps, where the game was tuned:
+// rate = 60 * -ln(1 - perFrameLerp), or 60 * -ln(perFrameDecay) for a decay multiplier.
+function expBlend(rate, dt) {
+  return 1 - Math.exp(-rate * dt);
+}
+const CAM_BLEND_RATE = 17.3;       // ≡ lerp 0.25/frame @60fps
+const GHOST_BLEND_RATE = 17.3;     // ≡ lerp 0.25/frame @60fps
+const GROUND_ACCEL_RATE = 21.4;    // ≡ 0.3/frame @60fps
+const AIR_ACCEL_RATE = 3.7;        // ≡ 0.06/frame @60fps
+const GROUND_FRICTION_RATE = 13.4; // ≡ ×0.8/frame @60fps
+const DUST_DRAG_RATE = 3.7;        // ≡ ×0.94/frame @60fps
+const SHAKE_DECAY_RATE = 5.5;      // same rate the old Euler form used
+const FOV_BLEND_RATE = 4;          // same rate the old Euler form used
+const TRAIL_BLEND_RATE = 6;        // same rate the old Euler form used
 const THRILL_SPEED_MIN = 22; // below this a close pass reads as loitering, not a near miss
 const THRILL_RADIUS = 3.4; // gap to a facade that counts as a near miss (player radius is 0.4)
 const THRILL_COOLDOWN = 1.3; // per-building re-arm, so one wall can't be farmed by hugging it
@@ -62,6 +82,13 @@ const THRILL_CHAIN_WINDOW = 2.2; // land another near miss inside this and the s
 const THRILL_CHAIN_MAX = 5;
 const WIPEOUT_SPEED = 32; // downward speed at ground contact that turns a landing into a crash
 const WIPEOUT_DURATION = 1.05; // seconds of no control after a crash
+// Landing roll: the window just under the wipeout threshold, made into a skill move. Hold forward
+// and touch down at ROLL_MIN_FALL..WIPEOUT_SPEED to roll — the air chain survives the touch, and
+// part of the fall converts into forward speed. Above the threshold you still eat the street:
+// the roll is window mastery, not a pardon.
+const ROLL_MIN_FALL = 20;
+const ROLL_CONVERT = 0.35;  // fraction of fall speed converted into forward speed
+const ROLL_DURATION = 0.4;  // seconds the tuck pose holds; no input lockout — it's a reward
 // Wind. Driven off the same speed normalisation as the FOV kick and the edge rush, so all three
 // agree about how fast you're going. Squared gain keeps it out of the way at cruising speed and only
 // really arrives near the top end — a linear ramp made a gentle swing sound like a gale.
@@ -217,6 +244,38 @@ function makeGroundTexture() {
   return tex;
 }
 
+// ---- Per-day dusk ----
+// Same CITY_SEED city, but the sky no longer sits at one eternal minute of one eternal evening.
+// The palette is picked from the UTC date — a room shares a *moment*, not a timezone, so two
+// players in the same room always see the same sky, wherever they are. Geometry, orbs and physics
+// are untouched: this drives only the sky gradient, fog, sun tint and clear color. Palette 0 is
+// the exact pre-existing look, kept in the rotation. All six stay in the dusk family the lighting
+// was tuned for — this is weather, not a day/night cycle.
+const DUSK_PALETTES = [
+  { name: 'clear',  sky: ['#2f5fc9', '#5f8fdd', '#9cc0e9', '#c8d8e4', '#e9c98a'], fog: 0xc3d4e6, sun: 0xfff2d9, clear: 0x8fb8e8 },
+  { name: 'ember',  sky: ['#2b4db0', '#6d7fd0', '#b3a8d8', '#e0b58c', '#f2a95c'], fog: 0xd8c2a8, sun: 0xffe3b8, clear: 0x9aa8d8 },
+  { name: 'violet', sky: ['#241f63', '#4a4a9e', '#8a7cc4', '#c9a3d0', '#e8b7a8'], fog: 0xc9b3cc, sun: 0xf2d8c8, clear: 0x8f86c4 },
+  { name: 'teal',   sky: ['#173e66', '#2f6f96', '#6aa8b8', '#a8cfc8', '#e8d8a0'], fog: 0xb8cfc4, sun: 0xf8ecc8, clear: 0x7fa8b8 },
+  { name: 'rose',   sky: ['#3a4a92', '#7080c0', '#adaad0', '#d8b8bc', '#f0b898'], fog: 0xd4c0c0, sun: 0xffe0c0, clear: 0x9aa0cc },
+  { name: 'storm',  sky: ['#3c4c60', '#5c7086', '#8fa0ad', '#b8c2c4', '#d8cfa0'], fog: 0xb5bec4, sun: 0xf0e8d0, clear: 0x8898a8 },
+];
+
+function dayKeyUTC(d) {
+  return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0') + '-' + String(d.getUTCDate()).padStart(2, '0');
+}
+
+function hashDayKey(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return h >>> 0;
+}
+
+function duskForDayKey(key) {
+  return DUSK_PALETTES[hashDayKey(key) % DUSK_PALETTES.length];
+}
+
+const DUSK = duskForDayKey(dayKeyUTC(new Date()));
+
 function makeSkyTexture() {
   const canvasTex = document.createElement('canvas');
   canvasTex.width = 2; canvasTex.height = 256;
@@ -224,11 +283,11 @@ function makeSkyTexture() {
   // Extra stops through the middle: a real sky loses saturation faster than it loses brightness on
   // the way down to the horizon, and a plain three-stop ramp reads as a painted backdrop instead.
   const grad = ctx.createLinearGradient(0, 0, 0, 256);
-  grad.addColorStop(0, '#2f5fc9');
-  grad.addColorStop(0.35, '#5f8fdd');
-  grad.addColorStop(0.62, '#9cc0e9');
-  grad.addColorStop(0.82, '#c8d8e4');
-  grad.addColorStop(1, '#e9c98a');
+  grad.addColorStop(0, DUSK.sky[0]);
+  grad.addColorStop(0.35, DUSK.sky[1]);
+  grad.addColorStop(0.62, DUSK.sky[2]);
+  grad.addColorStop(0.82, DUSK.sky[3]);
+  grad.addColorStop(1, DUSK.sky[4]);
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, 2, 256);
   const tex = new THREE.CanvasTexture(canvasTex);
@@ -242,7 +301,7 @@ const camera = new THREE.PerspectiveCamera(72, window.innerWidth / window.innerH
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setClearColor(0x8fb8e8);
+renderer.setClearColor(DUSK.clear);
 // Colour pipeline: without sRGB output three does its lighting maths in sRGB space, which is what
 // makes untouched WebGL scenes read as flat and slightly plasticky. Encoding the output correctly
 // and rolling the highlights off through ACES is the single cheapest realism win available here —
@@ -262,6 +321,10 @@ const MAX_ANISOTROPY = renderer.capabilities.getMaxAnisotropy();
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
+  // Re-applied because a resize can also be a monitor change: dragging the window from a 1x to a
+  // 2x display fires resize, and the ratio set at startup would leave the canvas blurry there.
+  // Before setSize — setSize computes the drawing-buffer size from the current ratio.
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
@@ -270,9 +333,9 @@ window.addEventListener('resize', () => {
 scene.add(new THREE.Mesh(new THREE.SphereGeometry(600, 32, 24), new THREE.MeshBasicMaterial({ map: makeSkyTexture(), side: THREE.BackSide, fog: false, toneMapped: false })));
 // Fog tinted toward the pale horizon band rather than mid-sky blue, so distant towers fade into the
 // skyline the way haze actually works instead of turning blue.
-scene.fog = new THREE.Fog(0xc3d4e6, 170, 620);
+scene.fog = new THREE.Fog(DUSK.fog, 170, 620);
 scene.add(new THREE.HemisphereLight(0xbfd9ff, 0x4a3b2c, 0.62));
-const sun = new THREE.DirectionalLight(0xfff2d9, 1.35);
+const sun = new THREE.DirectionalLight(DUSK.sun, 1.35);
 // Same direction as before (this is the old vector x3), but pushed far enough out that the 480-unit
 // landmark tower still falls inside the shadow camera's near plane instead of poking through it.
 sun.position.set(360, 600, 240);
@@ -604,13 +667,14 @@ function updateDust(dt) {
   if (dustLife <= 0) return;
   dustLife -= dt;
   if (dustLife <= 0) { dustPoints.visible = false; dustMat.opacity = 0; return; }
+  const dustDrag = Math.exp(-DUST_DRAG_RATE * dt);
   for (let i = 0; i < DUST_COUNT; i++) {
     dustPositions[i * 3] += dustVel[i * 3] * dt;
     dustPositions[i * 3 + 1] += dustVel[i * 3 + 1] * dt;
     dustPositions[i * 3 + 2] += dustVel[i * 3 + 2] * dt;
     dustVel[i * 3 + 1] -= 3.2 * dt; // settles back down rather than rising forever
-    dustVel[i * 3] *= 0.94;
-    dustVel[i * 3 + 2] *= 0.94;
+    dustVel[i * 3] *= dustDrag;
+    dustVel[i * 3 + 2] *= dustDrag;
   }
   dustGeo.attributes.position.needsUpdate = true;
   const k = dustLife / DUST_DURATION;
@@ -672,7 +736,7 @@ function updateTrail(dt) {
   trailActive = want;
   // Strength eases both ways so the ribbon doesn't pop in and out at the threshold.
   const target = want ? Math.min(1, (spd - TRAIL_MIN_SPEED) / (MAX_SPEED - TRAIL_MIN_SPEED)) : 0;
-  trailStrength += (target - trailStrength) * Math.min(1, dt * 6);
+  trailStrength += (target - trailStrength) * expBlend(TRAIL_BLEND_RATE, dt);
   if (trailStrength < 0.01) { trailMesh.visible = false; return; }
   trailMesh.visible = true;
 
@@ -861,6 +925,7 @@ const player = {
   pumpMomentum: 0,
   diving: false,
   wipeout: 0, // seconds of post-crash sprawl left; > 0 means input is locked out
+  rollTimer: 0, // seconds of roll tuck left; purely visual — input stays live
   health: SW_MAX_HEALTH_CLIENT,
 };
 
@@ -921,6 +986,12 @@ function poseTargets(pose, ph) {
       return { aL: 2.60, aR: 2.60, eL: 0.05, eR: 0.05,
                lL: 0.10, lR: -0.10, kL: 0.30, kR: 0.20,
                spread: 0.85, lean: 1.35 };
+    // Rolling out of a hard landing: pitched hard forward, elbows and knees pulled in tight.
+    // Held (no cycle) like the sprawl — a 0.4s tuck reads cleaner than a spun animation.
+    case 'roll':
+      return { aL: 1.35, aR: 1.35, eL: 1.30, eR: 1.30,
+               lL: -1.20, lR: -1.20, kL: 1.55, kR: 1.55,
+               spread: 0.15, lean: 1.00 };
     // Diving: arms swept back along the body, legs together, pitched head-first into the fall.
     case 'dive':
       return { aL: -1.20, aR: -1.20, eL: 0.15, eR: 0.15,
@@ -937,7 +1008,7 @@ function updateAvatarPose(group, pose, cycleSpeed, dt) {
   if (!p) return;
   group.userData.phase += dt * cycleSpeed;
   const t = poseTargets(pose, group.userData.phase);
-  const k = Math.min(1, dt * POSE_BLEND);
+  const k = expBlend(POSE_BLEND, dt);
   const ease = (node, axis, target) => { node.rotation[axis] += (target - node.rotation[axis]) * k; };
   ease(p.armL.shoulder, 'x', t.aL); ease(p.armR.shoulder, 'x', t.aR);
   ease(p.armL.elbow, 'x', t.eL);    ease(p.armR.elbow, 'x', t.eR);
@@ -954,6 +1025,8 @@ function localPose() {
   // Checked before everything else: a crash cancels the swing/climb states anyway, and the sprawl
   // has to win over the run pose the moment you come to rest on the ground.
   if (player.wipeout > 0) return { pose: 'sprawl', speed: 0 };
+  // Grounded guard: jumping straight out of a roll should read as airborne immediately.
+  if (player.rollTimer > 0 && player.grounded) return { pose: 'roll', speed: 0 };
   if (player.climbing) {
     const { f } = readMoveInput();
     return { pose: 'wall', speed: f !== 0 ? 4.0 + Math.abs(f) * 3.0 : 1.5 };
@@ -1041,14 +1114,14 @@ function updateCamera(dt) {
     player.y - aim.y * camDistance + 2.2,
     player.z - aim.z * camDistance
   );
-  camera.position.lerp(targetPos, 0.25);
+  camera.position.lerp(targetPos, expBlend(CAM_BLEND_RATE, dt));
   camera.lookAt(player.x, player.y + 1.6, player.z);
   if (shakeAmp > 0.001) {
     // Applied after lookAt so it shifts the frame without rotating the aim.
     camera.position.x += (Math.random() - 0.5) * shakeAmp;
     camera.position.y += (Math.random() - 0.5) * shakeAmp;
     camera.position.z += (Math.random() - 0.5) * shakeAmp;
-    shakeAmp *= Math.max(0, 1 - dt * 5.5);
+    shakeAmp *= Math.exp(-SHAKE_DECAY_RATE * dt);
   } else shakeAmp = 0;
   // Speed pulls the FOV open. Nothing else in the scene conveys how fast you're going — the camera
   // trails at a fixed distance, so without this a 50-unit/s swing looks identical to a 15-unit/s one.
@@ -1056,7 +1129,7 @@ function updateCamera(dt) {
   const k = Math.max(0, Math.min(1, (spd - FOV_SPEED_FLOOR) / (MAX_SPEED - FOV_SPEED_FLOOR)));
   const targetFov = FOV_BASE + k * fovSpeedAdd();
   if (Math.abs(targetFov - camera.fov) > 0.01) {
-    camera.fov += (targetFov - camera.fov) * Math.min(1, dt * 4);
+    camera.fov += (targetFov - camera.fov) * expBlend(FOV_BLEND_RATE, dt);
     camera.updateProjectionMatrix();
   }
   // Edge-of-frame rush, driven off the same normalised speed as the FOV so the two never disagree.
@@ -1073,6 +1146,50 @@ const orbs = [];
 let score = 0;
 let best = Number(localStorage.getItem('webswing_best') || 0);
 bestLabel.textContent = `Best: ${best}`;
+
+// ---- Personal records ----
+// The game kept a best score and threw away the two numbers players actually brag about: the
+// longest air chain and the top speed. Persisted like webswing_best, shown in the menu on the
+// next visit — records are menu furniture, deliberately not toasts (a "new record!" popup would
+// fire constantly during anyone's first session).
+let recordChain = Number(localStorage.getItem('webswing_best_chain') || 0);
+let recordSpeed = Number(localStorage.getItem('webswing_top_speed') || 0);
+
+function noteChainRecord() {
+  if (airChain > recordChain) {
+    recordChain = airChain;
+    localStorage.setItem('webswing_best_chain', String(recordChain));
+  }
+}
+
+// Rounded and clamped before comparing, so localStorage is written at most ~MAX_SPEED times ever
+// rather than on every frame the speed creeps up a decimal.
+function noteSpeedRecord(spd) {
+  const s = Math.min(MAX_SPEED, Math.round(spd));
+  if (s > recordSpeed) {
+    recordSpeed = s;
+    localStorage.setItem('webswing_top_speed', String(recordSpeed));
+  }
+}
+
+// Pure so the harness can assert the exact copy for every combination of records held.
+function recordsSummary() {
+  const parts = [];
+  if (best > 0) parts.push('score ' + best);
+  if (recordChain > 1) parts.push('chain ×' + recordChain);
+  if (recordSpeed > 0) parts.push(recordSpeed + ' m/s');
+  return parts.length ? parts.join('  ·  ') : null;
+}
+
+const recordsRow = document.getElementById('records-row');
+const recordsVals = document.getElementById('records-vals');
+function renderRecords() {
+  const summary = recordsSummary();
+  if (!summary) return; // first-ever visit: no row at all beats a row of zeroes
+  recordsVals.textContent = summary;
+  recordsRow.classList.remove('hidden');
+}
+renderRecords();
 
 // An orb this close to a facade can't be taken without clipping the wall on the way in, so it may as
 // well be inside it. Pickup radius is 2.6 and the player is 0.4, which is what sets the floor here.
@@ -1155,6 +1272,91 @@ function spawnOrbs() {
 }
 spawnOrbs();
 
+// ---- Bonus orb ----
+// One rare, far-off prize on the map at a time. Regular orbs reward the line you're already
+// flying; the bonus orb is a destination — it spawns far from wherever you are, pays a flat +15,
+// and leaves after 25s, so spotting it and re-routing fast is the whole game it creates.
+// Client-local like every other orb (orbs are not synced between players; only scores are).
+const BONUS_ORB_VALUE = 15;
+const BONUS_SPAWN_INTERVAL = 45; // seconds from despawn/collection to the next appearance
+const BONUS_LIFETIME = 25;       // seconds it waits before moving on
+const BONUS_MIN_DIST = 80;       // horizontal distance from the player it tries to spawn at
+const BONUS_PICKUP_RADIUS = 3.0; // a touch larger than regular orbs (2.6) — it's the prize
+
+// Cyan against the regular orbs' amber: the one thing on the map that isn't part of the reward
+// palette, so it reads as "different kind of thing" from across the city.
+const bonusOrbMat = new THREE.MeshStandardMaterial({ color: 0x4dd2ff, emissive: 0x1a8fff, emissiveIntensity: 1.1, roughness: 0.25, metalness: 0.2 });
+const bonusHaloMat = new THREE.SpriteMaterial({ map: GLOW_TEXTURE, color: 0x66d9ff, transparent: true, opacity: 0.85, depthWrite: false, blending: THREE.AdditiveBlending, fog: false });
+const bonusMesh = new THREE.Mesh(orbGeo, bonusOrbMat);
+bonusMesh.scale.set(1.5, 1.5, 1.5);
+const bonusHalo = new THREE.Sprite(bonusHaloMat);
+bonusHalo.scale.set(5.5, 5.5, 1);
+bonusMesh.add(bonusHalo);
+bonusMesh.visible = false;
+scene.add(bonusMesh);
+
+let bonusActive = false;
+let bonusTimer = BONUS_SPAWN_INTERVAL * 0.4; // the first one shows up early, ~18s into a run
+let bonusLife = 0;
+let bonusT = 0;
+// Plain object rather than reading back mesh.position — the mesh is a stub under test; this is
+// the value the pickup check and the tests both use.
+const bonusPos = { x: 0, y: 0, z: 0 };
+
+function spawnBonusOrb() {
+  // Far from the player and clear of geometry. Best-effort: keep the farthest clear candidate if
+  // nothing meets the distance bar, rather than failing to spawn at all.
+  let best = null, bestDist = -1;
+  for (let i = 0; i < 20; i++) {
+    const p = randomOrbPosition();
+    if (!orbClearOfBuildings(p.x, p.y, p.z, ORB_CLEARANCE)) continue;
+    const d = Math.hypot(p.x - player.x, p.z - player.z);
+    if (d > bestDist) { bestDist = d; best = p; }
+    if (d >= BONUS_MIN_DIST) break;
+  }
+  if (!best) return; // shouldn't happen (the roof fallback is always clear), but never spawn inside a wall
+  bonusPos.x = best.x; bonusPos.y = best.y; bonusPos.z = best.z;
+  bonusActive = true;
+  bonusLife = BONUS_LIFETIME;
+  bonusMesh.position.set(bonusPos.x, bonusPos.y, bonusPos.z);
+  bonusMesh.visible = true;
+}
+
+function deactivateBonusOrb() {
+  bonusActive = false;
+  bonusMesh.visible = false;
+  bonusTimer = BONUS_SPAWN_INTERVAL;
+}
+
+function collectBonusOrb() {
+  // Counts toward the air chain like any orb would, but pays flat — the value is the trip.
+  if (!player.grounded) { airChain++; setChainLabel(); }
+  addScore(BONUS_ORB_VALUE);
+  showToast('💠 +' + BONUS_ORB_VALUE + ' bonus', 950);
+  playSound('bonus');
+  addShake(0.18);
+  deactivateBonusOrb();
+}
+
+function updateBonusOrb(dt) {
+  if (!bonusActive) {
+    bonusTimer -= dt;
+    if (bonusTimer <= 0) spawnBonusOrb();
+    return;
+  }
+  bonusLife -= dt;
+  if (bonusLife <= 0) { deactivateBonusOrb(); return; }
+  bonusT += dt;
+  bonusMesh.rotation.y += dt * 2.2;
+  bonusMesh.position.y = bonusPos.y + Math.sin(bonusT * 1.6) * 0.5;
+  const pulse = 4.6 + Math.sin(bonusT * 2.2) * 0.9;
+  bonusHalo.scale.set(pulse, pulse, 1);
+  // Last 5s: blink as a leaving-soon warning — a visibility flip is cheap and reads at distance.
+  if (bonusLife < 5) bonusMesh.visible = ((bonusLife * 4) | 0) % 2 === 0;
+  const dx = bonusPos.x - player.x, dy = bonusPos.y - (player.y + 1), dz = bonusPos.z - player.z;
+  if (dx * dx + dy * dy + dz * dz < BONUS_PICKUP_RADIUS * BONUS_PICKUP_RADIUS) collectBonusOrb();
+}
+
 function showToast(text, duration = 700) {
   pickupToastEl.textContent = text;
   pickupToastEl.classList.remove('hidden');
@@ -1170,6 +1372,7 @@ function showToast(text, duration = 700) {
 let airChain = 0;
 
 function setChainLabel() {
+  noteChainRecord(); // every chain change funnels through here, so the record can't miss one
   if (airChain > 1) {
     chainLabel.textContent = `×${airChain} air`;
     chainLabel.classList.remove('hidden');
@@ -1812,15 +2015,20 @@ function updateInputMove(dt) {
   }
   if (f || r) {
     const len = Math.hypot(f, r);
-    const wishX = fwdX * (f / len) + rightX * (r / len);
-    const wishZ = fwdZ * (f / len) + rightZ * (r / len);
+    // Normalize only above unit length. Keyboard diagonals (len = √2) still normalize so they
+    // aren't faster than cardinals — but the touch stick is analog, and always renormalizing
+    // meant a 10% deflection ran at full speed. Below unit length the deflection IS the speed.
+    const scale = len > 1 ? 1 / len : 1;
+    const wishX = (fwdX * f + rightX * r) * scale;
+    const wishZ = (fwdZ * f + rightZ * r) * scale;
     const speed = player.grounded ? RUN_SPEED : RUN_SPEED * 0.55;
-    const accel = player.grounded ? 0.3 : 0.06;
+    const accel = expBlend(player.grounded ? GROUND_ACCEL_RATE : AIR_ACCEL_RATE, dt);
     player.vx += (wishX * speed - player.vx) * accel;
     player.vz += (wishZ * speed - player.vz) * accel;
   } else if (player.grounded) {
-    player.vx *= 0.8;
-    player.vz *= 0.8;
+    const drag = Math.exp(-GROUND_FRICTION_RATE * dt);
+    player.vx *= drag;
+    player.vz *= drag;
   }
 }
 
@@ -1853,32 +2061,55 @@ function groundCheck() {
   if (hits.length) {
     const groundY = hits[0].point.y;
     if (player.y <= groundY + 0.15 && player.vy <= 0) {
-      const fallSpeed = -player.vy;
-      const wasAirborne = !player.grounded;
-      player.y = groundY;
-      player.vy = 0;
-      // Until now every landing was survivable, so there was no reason not to take the fastest,
-      // steepest line everywhere — a dive straight into the street cost nothing. Coming in above
-      // WIPEOUT_SPEED now sprawls you, locks input for a beat and forfeits the air chain, which is
-      // what gives the dive and the pump-release boost an actual downside to weigh.
-      if (wasAirborne && fallSpeed > WIPEOUT_SPEED) {
-        player.wipeout = WIPEOUT_DURATION;
-        player.vx *= 0.15; player.vz *= 0.15;
-        playSound('wipeout');
-        spawnDust(player.x, groundY, player.z, fallSpeed * 1.6);
-        addShake(0.85);
-        showToast('💥 Wipeout', 900);
-      } else if (wasAirborne && fallSpeed > 6) {
-        playSound('land');
-        spawnDust(player.x, groundY, player.z, fallSpeed);
-        addShake(Math.min(0.28, fallSpeed * 0.012));
-      }
-      if (wasAirborne && airChain > 0) { airChain = 0; setChainLabel(); }
-      player.grounded = true;
+      resolveLanding(groundY);
       return;
     }
   }
   player.grounded = false;
+}
+
+// Extracted from groundCheck so the landing rules are testable — the raycast above returns
+// nothing under the stub harness, so this branch was unreachable in tests while it lived inline.
+function resolveLanding(groundY) {
+  const fallSpeed = -player.vy;
+  const wasAirborne = !player.grounded;
+  player.y = groundY;
+  player.vy = 0;
+  let rolled = false;
+  // Until pass 3 every landing was survivable, so there was no reason not to take the fastest,
+  // steepest line everywhere. Above WIPEOUT_SPEED you sprawl, lose input for a beat and forfeit
+  // the air chain. The band just under it is the roll window: hold forward as you touch down and
+  // the landing keeps the chain and converts fall into forward speed instead of stopping you.
+  if (wasAirborne && fallSpeed > WIPEOUT_SPEED) {
+    player.wipeout = WIPEOUT_DURATION;
+    player.vx *= 0.15; player.vz *= 0.15;
+    playSound('wipeout');
+    spawnDust(player.x, groundY, player.z, fallSpeed * 1.6);
+    addShake(0.85);
+    showToast('💥 Wipeout', 900);
+  } else if (wasAirborne && fallSpeed >= ROLL_MIN_FALL && readMoveInput().f > 0) {
+    rolled = true;
+    const h = Math.hypot(player.vx, player.vz);
+    if (h > 1) {
+      // Convert along the current heading, capped so the roll can't exceed the global speed cap.
+      const target = Math.min(h + fallSpeed * ROLL_CONVERT, MAX_SPEED);
+      const k = target / h;
+      player.vx *= k;
+      player.vz *= k;
+    }
+    player.rollTimer = ROLL_DURATION;
+    playSound('roll');
+    spawnDust(player.x, groundY, player.z, fallSpeed * 0.5);
+    addShake(0.12);
+    showToast('↻ Roll', 600);
+  } else if (wasAirborne && fallSpeed > 6) {
+    playSound('land');
+    spawnDust(player.x, groundY, player.z, fallSpeed);
+    addShake(Math.min(0.28, fallSpeed * 0.012));
+  }
+  // The roll's real prize: the chain survives the touch. Every other airborne landing resets it.
+  if (wasAirborne && airChain > 0 && !rolled) { airChain = 0; setChainLabel(); }
+  player.grounded = true;
 }
 
 // Shared by respawnFromVoid() and the PvP death handler below — both put the player back on the
@@ -1895,6 +2126,7 @@ function resetPlayerPhysics() {
   player.climbing = false;
   player.grounded = false;
   player.wipeout = 0;
+  player.rollTimer = 0;
   player.pumpMomentum = 0;
   if (airChain > 0) { airChain = 0; setChainLabel(); }
   trailActive = false;
@@ -1943,6 +2175,7 @@ function update(dt) {
   gameTime += dt;
   // Ticked before the movement code so the frame a wipeout expires is the frame control returns.
   if (player.wipeout > 0) player.wipeout = Math.max(0, player.wipeout - dt);
+  if (player.rollTimer > 0) player.rollTimer = Math.max(0, player.rollTimer - dt);
   updateInputMove(dt);
   // A sprawled player must not grab a wall they slid into, or they'd stand back up mid-crash.
   if (!player.swinging && !player.climbing && !player.grappling && player.wipeout <= 0) tryStartClimb();
@@ -1961,6 +2194,7 @@ function update(dt) {
   }
   const spd = Math.hypot(player.vx, player.vy, player.vz);
   if (spd > MAX_SPEED) { const k = MAX_SPEED / spd; player.vx *= k; player.vy *= k; player.vz *= k; }
+  noteSpeedRecord(spd);
 
   // Ground/rooftop landing must resolve before the wall push-out check below — otherwise a
   // player whose Y dips just below a roof for one frame while landing on it gets treated as
@@ -1992,6 +2226,7 @@ function update(dt) {
   updateTrail(dt); // after updateCamera — the ribbon billboards against this frame's camera position
   updateRope();
   updateOrbs(dt);
+  updateBonusOrb(dt);
   updateClouds(dt);
   updateDust(dt);
   updateImpact(dt);
@@ -2015,13 +2250,50 @@ let swSocket = null;
 let swMyId = null;
 const remotePlayers = new Map();
 
+// Ghost liveness. A player who drops without a clean sw-player-left used to leave a frozen statue
+// in the city forever. The fix needs no protocol change: sendPosBroadcast() already streams at
+// ~10/s from a foreground tab and ~1/s from a backgrounded one (rAF throttling), so the position
+// stream doubles as a heartbeat. The critical design point is HIDE, not delete — a phone resuming
+// from its lock screen keeps its socket and id, and the server never re-announces it, so a deleted
+// ghost would be invisible forever (sw-pos for an unknown id is dropped). A hidden one snaps back
+// on its next packet. The slot itself is only dropped after minutes of silence, far past any
+// plausible suspend-and-resume, purely so a long-lived room doesn't accumulate dead entries.
+const GHOST_HIDE_MS = 15000;
+const GHOST_DROP_MS = 5 * 60 * 1000;
+
 function addRemotePlayer(id, name, pos) {
   if (id === swMyId || remotePlayers.has(id)) return;
   const group = makeAvatar(name, true);
   group.position.set(pos.x, pos.y, pos.z);
   scene.add(group);
   const strand = makeWebStrand();
-  remotePlayers.set(id, { group, strand, name, target: { x: pos.x, y: pos.y, z: pos.z, yaw: pos.yaw || 0 }, swinging: false, anchor: null });
+  remotePlayers.set(id, {
+    group, strand, name,
+    target: { x: pos.x, y: pos.y, z: pos.z, yaw: pos.yaw || 0 },
+    swinging: false, anchor: null,
+    lastSeen: performance.now(), hidden: false,
+  });
+}
+
+// Shortest-path angular difference in (-PI, PI]. atan2 yaws live on a circle, and lerping them as
+// plain numbers treats the ±PI seam as distance: a ghost turning from +3.1 to -3.1 rad (a 0.08 rad
+// turn through the seam) would spin ~6.2 rad the long way round. Every ghost pirouetted whenever
+// its player reversed direction across the seam.
+function angleDelta(from, to) {
+  let d = (to - from) % (Math.PI * 2);
+  if (d > Math.PI) d -= Math.PI * 2;
+  else if (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
+
+// Receive-side half of the heartbeat: every packet stamps the clock and revives a hidden ghost.
+// (The strand un-hides via updateWebStrand on the next frame; only the body needs flipping here.)
+function touchRemotePlayer(rp) {
+  rp.lastSeen = performance.now();
+  if (rp.hidden) {
+    rp.hidden = false;
+    rp.group.visible = true;
+  }
 }
 
 function removeRemotePlayer(id) {
@@ -2092,11 +2364,23 @@ function updateRemoteSpeed(rp, x, y, z, now) {
 }
 
 function updateRemoteAvatars(dt) {
-  for (const rp of remotePlayers.values()) {
-    rp.group.position.x += (rp.target.x - rp.group.position.x) * 0.25;
-    rp.group.position.y += (rp.target.y - rp.group.position.y) * 0.25;
-    rp.group.position.z += (rp.target.z - rp.group.position.z) * 0.25;
-    rp.group.rotation.y += (rp.target.yaw - rp.group.rotation.y) * 0.25;
+  const now = performance.now();
+  const g = expBlend(GHOST_BLEND_RATE, dt);
+  for (const [id, rp] of remotePlayers) {
+    if (!rp.hidden && now - rp.lastSeen > GHOST_HIDE_MS) {
+      rp.hidden = true;
+      rp.group.visible = false;
+      rp.strand.visible = false; // updateWebStrand is skipped below, so it can't re-show it
+    }
+    if (rp.hidden) {
+      // Deleting the current entry mid-iteration is safe for a JS Map.
+      if (now - rp.lastSeen > GHOST_DROP_MS) removeRemotePlayer(id);
+      continue;
+    }
+    rp.group.position.x += (rp.target.x - rp.group.position.x) * g;
+    rp.group.position.y += (rp.target.y - rp.group.position.y) * g;
+    rp.group.position.z += (rp.target.z - rp.group.position.z) * g;
+    rp.group.rotation.y += angleDelta(rp.group.rotation.y, rp.target.yaw) * g;
     const pose = remotePose(rp);
     updateAvatarPose(rp.group, pose.pose, pose.speed, dt);
     updateWebStrand(
@@ -2163,6 +2447,7 @@ function connectSw() {
     } else if (data.type === 'sw-pos') {
       const rp = remotePlayers.get(data.id);
       if (rp) {
+        touchRemotePlayer(rp);
         // Must run before target is overwritten — it measures against the previous position.
         updateRemoteSpeed(rp, data.x, data.y, data.z, performance.now());
         rp.target.x = data.x; rp.target.y = data.y; rp.target.z = data.z; rp.target.yaw = data.yaw;
@@ -2221,6 +2506,15 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+// The server already coerces sw-score to a clamped integer (server.js:2612), so this is
+// belt-and-braces: the value still crosses innerHTML below, and a future server regression
+// shouldn't become an XSS in every viewer's leaderboard.
+function sanitizeScore(v) {
+  const n = Math.round(Number(v));
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.min(n, 999999999);
+}
+
 function renderLeaderboard(scores) {
   leaderboardList.innerHTML = '';
   if (!scores.length) {
@@ -2229,7 +2523,7 @@ function renderLeaderboard(scores) {
   }
   scores.forEach((s) => {
     const li = document.createElement('li');
-    li.innerHTML = `<span>${escapeHtml(s.name)}</span><span>${s.score}</span>`;
+    li.innerHTML = `<span>${escapeHtml(s.name)}</span><span>${sanitizeScore(s.score)}</span>`;
     leaderboardList.appendChild(li);
   });
 }
@@ -2273,6 +2567,10 @@ function blip(kind) {
     wipeout: { type: 'square', f0: 150, f1: 48, g: 0.16, dur: 0.34 },
     // Perfect release: rises where plain 'release' falls, so the two are never confusable.
     perfect: { type: 'triangle', f0: 520, f1: 1560, g: 0.13, dur: 0.26 },
+    // Bonus orb: longer and brighter than a plain collect — the trip deserved a fanfare.
+    bonus: { type: 'triangle', f0: 700, f1: 2100, g: 0.16, dur: 0.32 },
+    // Roll: a soft downward whump, quieter than 'land' — the roll is the smooth outcome.
+    roll: { type: 'sine', f0: 320, f1: 110, g: 0.10, dur: 0.18 },
     // PvP: a short sharp crack for landing a strike, a lower thud for taking one, and a longer
     // descending tone (distinct from 'wipeout', which is a crash-landing, not a kill) for dying.
     strike: { type: 'sawtooth', f0: 700, f1: 180, g: 0.16, dur: 0.12 },
@@ -2304,6 +2602,17 @@ function playSound(kind) {
 let windSource = null;
 let windGain = null;
 let windFilter = null;
+
+// Tab hidden: rAF stops (so updateWind stops), but WebAudio does NOT — without this flag the wind
+// kept droning at its last gain for as long as the tab stayed backgrounded.
+let windSuspended = false;
+
+// Pure decision for what the wind gain should be right now. Split out for the same reason as
+// windParamsForSpeed: the audio graph is unassertable under test, but the decision isn't.
+function windTargetGain(spd) {
+  if (!soundOn || windSuspended) return 0;
+  return windParamsForSpeed(spd).gain;
+}
 
 // Pure — kept separate from the audio graph so the curve can be asserted on without a real
 // AudioContext (under test the whole graph is a stub and every assignment to it is a no-op).
@@ -2343,15 +2652,27 @@ function updateWind() {
   if (!windGain) return;
   const spd = Math.hypot(player.vx, player.vy, player.vz);
   const p = windParamsForSpeed(spd);
-  // Muting has to zero the gain rather than stop the source: a stopped BufferSource can never be
-  // restarted, so unmuting would leave the wind gone for the rest of the session.
-  const target = soundOn ? p.gain : 0;
+  // Muting/suspending has to zero the gain rather than stop the source: a stopped BufferSource can
+  // never be restarted, so unmuting would leave the wind gone for the rest of the session.
   // setTargetAtTime rather than assigning .value — the mute toggle moves the gain across its whole
   // range in a single frame, and an instantaneous jump on an audio param is an audible click.
   const now = audioCtx.currentTime;
-  windGain.gain.setTargetAtTime(target, now, 0.05);
+  windGain.gain.setTargetAtTime(windTargetGain(spd), now, 0.05);
   windFilter.frequency.setTargetAtTime(p.cutoff, now, 0.08);
 }
+
+// The frame loop is rAF-driven and rAF freezes in a hidden tab; WebAudio doesn't. This is the only
+// place the wind can be silenced once frames stop — updateWind() will not run again until the tab
+// returns. On return, also recover a context the OS suspended (phone call, interruption): nothing
+// else ever calls resume() after the start click, so sound would otherwise stay dead until reload.
+document.addEventListener('visibilitychange', () => {
+  windSuspended = document.hidden;
+  if (windGain && audioCtx) {
+    const spd = Math.hypot(player.vx, player.vy, player.vz);
+    windGain.gain.setTargetAtTime(windTargetGain(spd), audioCtx.currentTime, 0.05);
+  }
+  if (!document.hidden && audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+});
 
 soundToggleBtn.addEventListener('click', () => {
   soundOn = !soundOn;
@@ -2375,6 +2696,7 @@ startBtn.addEventListener('click', () => {
   player.grounded = false;
   // Clear the run-scoped state too, so restarting doesn't inherit a crash or a live near-miss chain.
   player.wipeout = 0;
+  player.rollTimer = 0;
   thrillChain = 0;
   thrillWindow = 0;
   shakeAmp = 0;
@@ -2386,6 +2708,8 @@ startBtn.addEventListener('click', () => {
   pumpMeterShown = false;
   pumpMeterEl.classList.add('hidden');
   pumpMeterEl.classList.remove('hot', 'ready');
+  deactivateBonusOrb();
+  bonusTimer = BONUS_SPAWN_INTERVAL * 0.4;
   gameStarted = true;
   connectSw();
   if (mpRoomCode) { player.health = SW_MAX_HEALTH_CLIENT; renderHealth(); healthBarEl.classList.remove('hidden'); }
