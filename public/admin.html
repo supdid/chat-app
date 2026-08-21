@@ -194,17 +194,28 @@ async function refresh() {
   });
 
   const errorsEl = document.getElementById('errors');
-  errorsEl.innerHTML = errors.length ? '' : '<p class="empty">No errors reported yet.</p>';
-  for (const e of errors) {
+  const openErrors = errors.filter((e) => e.status === 'new');
+  errorsEl.innerHTML = openErrors.length ? '' : '<p class="empty">No open errors.</p>';
+  for (const e of openErrors) {
     const div = document.createElement('div');
     div.className = 'card';
     div.innerHTML = `
-      <div class="meta">[${esc(e.source)}] ${new Date(e.created_at).toLocaleString()} — status: ${esc(e.status)}</div>
+      <div class="meta">[${esc(e.source)}] ${new Date(e.created_at).toLocaleString()}</div>
       <div>${esc(e.message)}</div>
       ${e.stack ? `<pre>${esc(e.stack)}</pre>` : ''}
+      <button class="approve" data-id="${e.id}" data-action="resolve">Mark resolved</button>
+      <button class="reject" data-id="${e.id}" data-action="dismiss">Dismiss</button>
     `;
     errorsEl.appendChild(div);
   }
+  errorsEl.querySelectorAll('button').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      const { ok, data } = await adminPost(`/admin/errors/${btn.dataset.id}/${btn.dataset.action}`);
+      if (!ok) { alert(data.error || 'Failed'); btn.disabled = false; return; }
+      refresh();
+    });
+  });
 }
 
 document.getElementById('cleanup-btn').addEventListener('click', async (e) => {

@@ -607,11 +607,21 @@ window.addEventListener('keydown', (e) => {
 });
 window.addEventListener('keyup', (e) => keys.delete(e.code));
 
+// requestPointerLock() returns a Promise in modern browsers that rejects (harmlessly) if called
+// too soon after a previous exit — browsers impose a short cooldown to stop a page from
+// re-trapping the cursor instantly. Left unhandled, that rejection surfaces as a reported client
+// error — this exact fix (and comment) already exists in fighterplane.js, where it was applied
+// after a real player hit it; every other minigame using pointer lock had the same latent gap.
+function requestPointerLockSafe() {
+  const result = canvas.requestPointerLock();
+  if (result && result.catch) result.catch(() => {});
+}
+
 canvas.addEventListener('click', () => {
   if (isTouchDevice) return;
   if (!menuEl.classList.contains('hidden')) return;
   if (!matchendOverlay.classList.contains('hidden')) return;
-  if (!pointerLocked) canvas.requestPointerLock();
+  if (!pointerLocked) requestPointerLockSafe();
 });
 document.addEventListener('pointerlockchange', () => { pointerLocked = document.pointerLockElement === canvas; });
 

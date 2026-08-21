@@ -6,6 +6,8 @@
 'use strict';
 const { test, describe, before, after } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const WebSocket = require('ws');
 const { startTestServer, connectWs, send, waitFor, sleep, BASE_URL } = require('./helpers');
 
@@ -1093,12 +1095,50 @@ describe('/post-image and /post-media external URL allowlist', () => {
 
 describe('admin routes require the admin key', () => {
   test('every /admin/* route rejects a missing or wrong key', async () => {
-    for (const path of ['/admin/errors', '/admin/reports', '/admin/patches']) {
-      const noKeyRes = await fetch(`${BASE_URL}${path}`);
-      assert.equal(noKeyRes.status, 401, `${path} without a key should 401`);
-      const wrongKeyRes = await fetch(`${BASE_URL}${path}?key=definitely-not-the-real-key`);
-      assert.equal(wrongKeyRes.status, 401, `${path} with a wrong key should 401`);
+    for (const adminPath of ['/admin/errors', '/admin/reports', '/admin/patches']) {
+      const noKeyRes = await fetch(`${BASE_URL}${adminPath}`);
+      assert.equal(noKeyRes.status, 401, `${adminPath} without a key should 401`);
+      const wrongKeyRes = await fetch(`${BASE_URL}${adminPath}?key=definitely-not-the-real-key`);
+      assert.equal(wrongKeyRes.status, 401, `${adminPath} with a wrong key should 401`);
     }
+  });
+});
+
+describe('admin error-report resolve/dismiss', () => {
+  // setErrorReportStatus already existed in db.js but had no route until now — admin.html's error
+  // list had no way to clear a fixed error out of the panel, unlike the reports list right next to
+  // it. Covers both the new routes and the reject-without-a-key path the routes above didn't (they
+  // only exercised the pre-existing GET /admin/errors).
+  //
+  // adminKey is read inside the test, not the describe body — the describe callback runs
+  // synchronously while the file's describe/test tree is still being registered, before the outer
+  // before() hook has populated `server`, so reading server.dir up here would throw.
+  test('resolve and dismiss update status, and both reject a wrong key', async () => {
+    const adminKey = JSON.parse(fs.readFileSync(path.join(server.dir, 'admin-key.json'), 'utf8')).key;
+    await fetch(`${BASE_URL}/errors/report`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'admin-error-resolve-test', stack: null, url: null }),
+    });
+    await sleep(150);
+    const listRes = await fetch(`${BASE_URL}/admin/errors?key=${adminKey}`);
+    const { errors } = await listRes.json();
+    const target = errors.find((e) => e.message === 'admin-error-resolve-test');
+    assert.ok(target, 'the reported error should show up in the admin list');
+    assert.equal(target.status, 'new');
+
+    const wrongKeyRes = await fetch(`${BASE_URL}/admin/errors/${target.id}/resolve?key=wrong`, { method: 'POST' });
+    assert.equal(wrongKeyRes.status, 401);
+
+    const resolveRes = await fetch(`${BASE_URL}/admin/errors/${target.id}/resolve?key=${adminKey}`, { method: 'POST' });
+    assert.equal(resolveRes.status, 200);
+    const afterResolve = await (await fetch(`${BASE_URL}/admin/errors?key=${adminKey}`)).json();
+    assert.equal(afterResolve.errors.find((e) => e.id === target.id).status, 'resolved');
+
+    const dismissRes = await fetch(`${BASE_URL}/admin/errors/${target.id}/dismiss?key=${adminKey}`, { method: 'POST' });
+    assert.equal(dismissRes.status, 200);
+    const afterDismiss = await (await fetch(`${BASE_URL}/admin/errors?key=${adminKey}`)).json();
+    assert.equal(afterDismiss.errors.find((e) => e.id === target.id).status, 'dismissed');
   });
 });
 

@@ -137,6 +137,16 @@ function shakeScale() { return reducedMotion ? 0 : 1; }
 function fovSpeedAdd() { return reducedMotion ? 0 : FOV_SPEED_ADD; }
 function speedFxScale() { return reducedMotion ? REDUCED_SPEED_FX : 1; }
 
+// requestPointerLock() returns a Promise in modern browsers that rejects (harmlessly) if called
+// too soon after a previous exit — browsers impose a short cooldown to stop a page from
+// re-trapping the cursor instantly. Left unhandled, that rejection surfaces as a reported client
+// error — this exact fix already exists in fighterplane.js, where it was applied after a real
+// player hit it; every other minigame using pointer lock had the same latent gap.
+function requestPointerLockSafe() {
+  const result = canvas.requestPointerLock();
+  if (result && result.catch) result.catch(() => {});
+}
+
 // ---- DOM ----
 const canvas = document.getElementById('game-canvas');
 const menuEl = document.getElementById('menu');
@@ -1790,7 +1800,7 @@ window.addEventListener('keyup', (e) => { keys[e.code] = false; });
 
 canvas.addEventListener('click', () => {
   if (!gameStarted || isTouchDevice || pointerLocked) return;
-  canvas.requestPointerLock();
+  requestPointerLockSafe();
 });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 canvas.addEventListener('mousedown', (e) => {
@@ -2722,7 +2732,7 @@ startBtn.addEventListener('click', () => {
   gameStarted = true;
   connectSw();
   if (mpRoomCode) { player.health = SW_MAX_HEALTH_CLIENT; renderHealth(); healthBarEl.classList.remove('hidden'); }
-  if (!isTouchDevice) canvas.requestPointerLock();
+  if (!isTouchDevice) requestPointerLockSafe();
 });
 
 const clock = new THREE.Clock();

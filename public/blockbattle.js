@@ -106,6 +106,18 @@ renderer.setPixelRatio(window.devicePixelRatio || 1);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
+// requestPointerLock() returns a Promise in modern browsers that rejects (harmlessly) if called
+// too soon after a previous exit — browsers impose a short cooldown to stop a page from
+// re-trapping the cursor instantly. Left unhandled, that rejection surfaces as a reported client
+// error — this exact fix already exists in fighterplane.js, where it was applied after a real
+// player hit it; every other minigame using pointer lock had the same latent gap (this file has
+// several call sites: the initial "Click to play", the death/respawn loadout picker, and the
+// mid-round level-up loadout picker all grab the lock again in quick succession).
+function requestPointerLockSafe() {
+  const result = canvas.requestPointerLock();
+  if (result && result.catch) result.catch(() => {});
+}
+
 // Sky: a gradient dome (deep blue overhead melting to a pale horizon) instead
 // of a flat clear color. Fog is dyed the horizon color so the oversized ground
 // plane fades into the same shade the dome ends in — no visible seam.
@@ -1383,7 +1395,7 @@ function damageBot(bot, amount, killCredit) {
         // flow already picks up the loadout correctly once they respawn.
         if (!dead) {
           if (document.pointerLockElement) document.exitPointerLock();
-          openLoadoutPicker(() => canvas.requestPointerLock());
+          openLoadoutPicker(() => requestPointerLockSafe());
         }
         break;
       }
@@ -1823,7 +1835,7 @@ function handleBbMessage(data) {
       duelHud.classList.remove('hidden');
       lobbyHud.classList.add('hidden');
       removeLocalAvatar(); // first-person again — nothing to gain from also rendering yourself
-      if (document.pointerLockElement !== canvas) canvas.requestPointerLock();
+      if (document.pointerLockElement !== canvas) requestPointerLockSafe();
       break;
     }
     case 'bb-hit-confirm': {
@@ -2213,7 +2225,7 @@ window.addEventListener('blur', () => keys.clear());
 const hint = document.getElementById('hint');
 hint.addEventListener('click', () => {
   ensureAudio(); // audio can only start on a user gesture — this is the gesture
-  canvas.requestPointerLock();
+  requestPointerLockSafe();
 });
 // The browser eats Esc while the pointer is locked (Esc *is* how you exit the
 // lock), so pause/resume hangs off pointerlockchange instead of a keydown.
@@ -2278,7 +2290,7 @@ document.addEventListener('click', () => {
   // opens means every tile pick genuinely happens as a live player, exactly like at any other
   // loadout-picker call site.
   respawn();
-  openLoadoutPicker(() => canvas.requestPointerLock());
+  openLoadoutPicker(() => requestPointerLockSafe());
 });
 
 // ---- Collision ----

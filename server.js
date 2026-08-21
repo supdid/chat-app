@@ -239,6 +239,20 @@ app.get('/admin/errors', requireAdmin, (req, res) => {
   res.json({ errors: db.getRecentErrorReports() });
 });
 
+// setErrorReportStatus already existed in db.js (used nowhere until now) but had no route —
+// admin.html's error list had no resolve/dismiss action at all, unlike the reports panel right
+// next to it, so a fixed error just sat there forever on every future page load with no way to
+// clear it out of the list.
+app.post('/admin/errors/:id/resolve', requireAdmin, (req, res) => {
+  db.setErrorReportStatus(req.params.id, 'resolved');
+  res.json({ ok: true });
+});
+
+app.post('/admin/errors/:id/dismiss', requireAdmin, (req, res) => {
+  db.setErrorReportStatus(req.params.id, 'dismissed');
+  res.json({ ok: true });
+});
+
 app.get('/admin/reports', requireAdmin, (req, res) => {
   res.json({ reports: db.getRecentReports() });
 });

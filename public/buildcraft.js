@@ -508,6 +508,16 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 document.body.appendChild(renderer.domElement);
 
+// requestPointerLock() returns a Promise in modern browsers that rejects (harmlessly) if called
+// too soon after a previous exit — browsers impose a short cooldown to stop a page from
+// re-trapping the cursor instantly. Left unhandled, that rejection surfaces as a reported client
+// error — this exact fix already exists in fighterplane.js, where it was applied after a real
+// player hit it; every other minigame using pointer lock had the same latent gap.
+function requestPointerLockSafe() {
+  const result = renderer.domElement.requestPointerLock();
+  if (result && result.catch) result.catch(() => {});
+}
+
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
@@ -2766,7 +2776,7 @@ function buildInventoryGrid() {
       hotbar[selectedSlot].typeIndex = typeIndex;
       renderHotbar();
       closeInventory();
-      if (!isTouchDevice) renderer.domElement.requestPointerLock();
+      if (!isTouchDevice) requestPointerLockSafe();
     });
     inventoryGrid.appendChild(item);
   });
@@ -3100,7 +3110,7 @@ function respawn() {
   if (ridingHorse) dismountHorse();
   yawObject.position.set(0, 4, 0);
   deathOverlayEl.classList.add('hidden');
-  if (!isTouchDevice) renderer.domElement.requestPointerLock();
+  if (!isTouchDevice) requestPointerLockSafe();
 }
 respawnBtn.addEventListener('click', respawn);
 
@@ -3918,7 +3928,7 @@ function openBcChat() {
 function closeBcChat() {
   bcChatForm.classList.add('hidden');
   bcChatInput.blur();
-  if (!isTouchDevice) renderer.domElement.requestPointerLock();
+  if (!isTouchDevice) requestPointerLockSafe();
 }
 
 bcChatForm.addEventListener('submit', (e) => {
@@ -4088,7 +4098,7 @@ function startGame(mode) {
     startOverlay.classList.add('hidden');
     setHudVisible(true);
   } else {
-    renderer.domElement.requestPointerLock();
+    requestPointerLockSafe();
   }
 }
 
@@ -4098,7 +4108,7 @@ document.getElementById('start-survival-btn').addEventListener('click', () => st
 renderer.domElement.addEventListener('click', () => {
   if (isTouchDevice) return;
   if (gameStarted && !inventoryOpen && !craftingOpen && document.pointerLockElement !== renderer.domElement) {
-    renderer.domElement.requestPointerLock();
+    requestPointerLockSafe();
   }
 });
 
