@@ -828,6 +828,10 @@ uploadModal.addEventListener('click', (e) => { if (e.target === uploadModal) upl
 // real upload even starts.
 function captureThumbnail(file) {
   return new Promise((resolve) => {
+    // Picking a different file (or reopening the upload modal for a later video) re-triggers
+    // this and reassigns uploadPreview.src without ever revoking the previous blob URL — leaked
+    // it for the rest of the page's lifetime. Same fix as videoeditor.js's song-preview leak.
+    if (uploadPreview.src && uploadPreview.src.startsWith('blob:')) URL.revokeObjectURL(uploadPreview.src);
     const url = URL.createObjectURL(file);
     uploadPreview.src = url;
     uploadPreview.onloadedmetadata = () => {
