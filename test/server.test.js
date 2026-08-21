@@ -1515,6 +1515,51 @@ describe('Scorpture watch-live and signal-relay rate limits', () => {
   });
 });
 
+describe('Scorpture channel description', () => {
+  test('owner can set, update, and clear a channel description; a stranger cannot', async () => {
+    const signup = async (username) => fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password: 'pass1234', email: `${username.toLowerCase()}@test.com` }),
+    }).then((r) => r.json());
+    const owner = await signup('DescChannelOwner');
+
+    const getChannel = () => fetch(`${BASE_URL}/api/scorpture/channels/DescChannelOwner`).then((r) => r.json());
+
+    assert.equal((await getChannel()).description, null, 'a fresh channel has no description');
+
+    const unauth = await fetch(`${BASE_URL}/api/scorpture/description`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: 'should not be allowed' }),
+    });
+    assert.equal(unauth.status, 401, 'setting a description with no bearer token must be rejected');
+    assert.equal((await getChannel()).description, null, 'unauthenticated attempt must not have changed anything');
+
+    const setRes = await fetch(`${BASE_URL}/api/scorpture/description`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${owner.token}` },
+      body: JSON.stringify({ description: 'Welcome to my channel!' }),
+    }).then((r) => r.json());
+    assert.equal(setRes.description, 'Welcome to my channel!');
+    assert.equal((await getChannel()).description, 'Welcome to my channel!', 'the public channel endpoint must reflect the new description');
+
+    const longDescription = 'x'.repeat(5000);
+    const clampedRes = await fetch(`${BASE_URL}/api/scorpture/description`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${owner.token}` },
+      body: JSON.stringify({ description: longDescription }),
+    }).then((r) => r.json());
+    assert.equal(clampedRes.description.length, 1000, 'an oversized description must be clamped to 1000 chars');
+
+    const clearRes = await fetch(`${BASE_URL}/api/scorpture/description`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${owner.token}` },
+      body: JSON.stringify({ description: '' }),
+    }).then((r) => r.json());
+    assert.equal(clearRes.description, null, 'an empty description clears back to null');
+    assert.equal((await getChannel()).description, null);
+  });
+});
+
 describe('Scorpture video creation is rate-limited', () => {
   // Unlike its siblings (.../comments, .../report — both already rate-limited), POST
   // /api/scorpture/videos had no throttle at all — nothing stopped reusing one already-uploaded
