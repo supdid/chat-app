@@ -2078,6 +2078,13 @@ function bbFindById(bb, id) {
   return null;
 }
 
+// A player is unavailable to challenge or be challenged into a 1v1 while already mid-duel,
+// mid-NvN-match, or queued on a plate — checked on both sides of both bb-challenge/
+// bb-challenge-response.
+function bbIsBusy(p) {
+  return p.dueling || p.matchId || p.plateStation;
+}
+
 function leaveBb(ws) {
   const code = ws.bbRoom;
   if (!code) return;
@@ -4095,11 +4102,11 @@ wss.on('connection', (ws, req) => {
       // vs. dueling separately) would silently apply damage through whichever one fires first,
       // invisible to the other — the exact kind of cross-system state corruption bb-shoot's own
       // matchId-first branch order was never designed to coexist with.
-      if (!me || me.dueling || me.matchId || me.plateStation) return;
+      if (!me || bbIsBusy(me)) return;
       const targetId = String(msg.targetId || '');
       if (targetId === me.id) return; // can't challenge yourself
       const target = bbFindById(bb, targetId);
-      if (!target || target.p.dueling || target.p.matchId || target.p.plateStation) return;
+      if (!target || bbIsBusy(target.p)) return;
       send(target.ws, { type: 'bb-challenged', fromId: me.id, fromName: me.name });
       return;
     }
@@ -4109,13 +4116,13 @@ wss.on('connection', (ws, req) => {
       const room = rooms.get(ws.bbRoom);
       const bb = room && room.bb;
       const me = bb && bb.players.get(ws);
-      if (!me || me.dueling || me.matchId || me.plateStation) return;
+      if (!me || bbIsBusy(me)) return;
       const fromId = String(msg.fromId || '');
       const from = bbFindById(bb, fromId);
       // The challenger may have left, already started a different duel, or (same reasoning as
       // bb-challenge above) joined an NvN match or plate queue in the time since they sent the
       // challenge — either way there's nothing safe to accept into anymore.
-      if (!from || from.p.dueling || from.p.matchId || from.p.plateStation) return;
+      if (!from || bbIsBusy(from.p)) return;
       if (!msg.accept) { send(from.ws, { type: 'bb-challenge-declined', byId: me.id }); return; }
       // Both sides lock into a mutual duel — this pairing (opponentId matching in both
       // directions) is what bb-shoot below trusts as "these two, and only these two, can hurt
@@ -4147,8 +4154,10 @@ wss.on('connection', (ws, req) => {
       // same slot in the same instant) — tell the requester explicitly so it can correct its own
       // optimistic bbCurrentPlate immediately, instead of silently believing it holds a slot it
       // doesn't until it happens to physically walk off that spot.
-      if (station.matchId) { send(ws, { type: 'bb-plate-rejected', stationId, side, slot }); return; }
-      if (station.queue[side][slot]) { send(ws, { type: 'bb-plate-rejected', stationId, side, slot }); return; }
+      if (station.matchId || station.queue[side][slot]) {
+        send(ws, { type: 'bb-plate-rejected', stationId, side, slot });
+        return;
+      }
       bbClearPlate(bb, ws.bbRoom, ws); // step off any other plate first
       station.queue[side][slot] = ws;
       me.plateStation = stationId; me.plateSide = side; me.plateSlot = slot;
