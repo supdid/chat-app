@@ -1624,6 +1624,21 @@ function getRoomMediaUrls(code) {
 
 // One transaction per room so a crash mid-sweep can't leave a room half-deleted (e.g. messages
 // gone but the room row still present, which would resurrect it as an empty room on next visit).
+//
+// reports/fg_stats/account_recent_rooms/room_mutes/room_bans were missing here (found by a data-
+// consistency audit) — reports is the same "stale, unverifiable-but-still-shown" shape as the
+// scorpture_reports gap fixed alongside this, but unlike that case a genuinely-flagged fix wasn't
+// worth it here: by the time a room is 90 days inactive enough to be swept, any still-open report
+// against it has long since blown past any realistic admin response window, so just clearing it
+// out (rather than flagging it forever) is the more proportionate choice. fg_stats is unbounded-
+// growth-shaped (same class as the reactions/whiteboard-strokes issues fixed earlier this
+// session). room_mutes/room_bans are the most important of the five: generateRoomCode() only
+// avoids codes currently in `rooms` or with a live `rooms` DB row — neither check survives a
+// purge — so a purged room's 5-character code was eligible for reuse by a brand-new, unrelated
+// room while its stale bans/mutes lived on, meaning a signed-in account (or matching display
+// name) banned/muted in the old room could silently inherit that ban/mute in the new one that
+// happens to land on the same recycled code. account_recent_rooms just avoids a user's "recent
+// rooms" list silently resurrecting an empty room under a purged code with no explanation.
 const deleteRoomCascade = db.transaction((code) => {
   db.prepare('DELETE FROM reactions WHERE message_id IN (SELECT id FROM messages WHERE room_code = ?)').run(code);
   db.prepare('DELETE FROM poll_votes WHERE message_id IN (SELECT id FROM messages WHERE room_code = ?)').run(code);
@@ -1638,6 +1653,11 @@ const deleteRoomCascade = db.transaction((code) => {
   db.prepare('DELETE FROM bc_blueprints WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM dms WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM push_subscriptions WHERE room_code = ?').run(code);
+  db.prepare('DELETE FROM reports WHERE room_code = ?').run(code);
+  db.prepare('DELETE FROM fg_stats WHERE room_code = ?').run(code);
+  db.prepare('DELETE FROM account_recent_rooms WHERE room_code = ?').run(code);
+  db.prepare('DELETE FROM room_mutes WHERE room_code = ?').run(code);
+  db.prepare('DELETE FROM room_bans WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM rooms WHERE code = ?').run(code);
 });
 

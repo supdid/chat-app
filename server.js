@@ -5917,6 +5917,10 @@ wss.on('connection', (ws, req) => {
 // fully purged: messages, reactions, pins, whiteboard strokes, Build Craft world/blueprints,
 // leaderboard entries, DMs, push subscriptions, and any uploaded media those messages posted.
 const ROOM_RETENTION_DAYS = 90;
+// Overridable in milliseconds so the regression suite can verify a real purge (and everything it
+// should cascade-delete) in milliseconds instead of waiting 90 real days — same pattern as
+// UPLOAD_CLAIM_GRACE_MS below. Unset in production, so this has no effect there.
+const ROOM_RETENTION_MS = Number(process.env.ROOM_RETENTION_MS) || ROOM_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 function deleteUploadFile(mediaUrl) {
@@ -5928,7 +5932,7 @@ function deleteUploadFile(mediaUrl) {
 }
 
 function cleanupInactiveRooms() {
-  const cutoff = Date.now() - ROOM_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  const cutoff = Date.now() - ROOM_RETENTION_MS;
   const codes = db.getInactiveRoomCodes(cutoff);
   let filesDeleted = 0;
   for (const code of codes) {

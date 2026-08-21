@@ -2405,6 +2405,68 @@ describe('orphaned upload sweep', () => {
   });
 });
 
+describe('inactive-room purge cascade', () => {
+  // deleteRoomCascade used to miss reports/fg_stats/account_recent_rooms/room_mutes/room_bans —
+  // found by a data-consistency audit. reports and account_recent_rooms are directly verifiable
+  // through public API (an admin listing, and the account's own recent-rooms list); room_bans/
+  // room_mutes have no equivalent listing that survives the room itself being gone (get-bans
+  // requires being the current host of an existing room), so those two are verified by code
+  // review only — same DELETE-by-room_code pattern, applied identically, right alongside the two
+  // that are tested here. fg_stats (Firefight kill counts) is the lowest-severity of the five
+  // (unbounded-growth-shaped, not a correctness bug) and isn't separately exercised either.
+  test('purging an inactive room also removes its reports and the account recent-rooms entries pointing at it', async () => {
+    const cleanupServer = await startTestServer({ ROOM_RETENTION_MS: '50' }, 3207);
+    try {
+      const base = `http://localhost:${cleanupServer.port}`;
+      const adminKey = JSON.parse(fs.readFileSync(path.join(cleanupServer.dir, 'admin-key.json'), 'utf8')).key;
+
+      const signup = await fetch(`${base}/auth/signup`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'PurgeCascadeUser', password: 'pass1234', email: 'purgecascade@test.com' }),
+      }).then((r) => r.json());
+
+      const ws = new WebSocket(`ws://localhost:${cleanupServer.port}`);
+      await new Promise((resolve) => ws.on('open', resolve));
+      const wsSend = (obj) => ws.send(JSON.stringify(obj));
+      const wsWaitFor = (pred, ms = 3000) => new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('timed out waiting for ' + pred.toString())), ms);
+        const h = (d) => { const m = JSON.parse(d); if (pred(m)) { clearTimeout(t); ws.off('message', h); resolve(m); } };
+        ws.on('message', h);
+      });
+      wsSend({ type: 'join-server', username: 'PurgeCascadeUser', accountToken: signup.token });
+      await wsWaitFor((m) => m.type === 'joined-server');
+      wsSend({ type: 'create-room' });
+      const room = await wsWaitFor((m) => m.type === 'joined-room');
+
+      await fetch(`${base}/account/recent-rooms`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${signup.token}` },
+        body: JSON.stringify({ code: room.code, name: 'Purge Cascade Room' }),
+      });
+      const recentBefore = await fetch(`${base}/account/recent-rooms`, { headers: { Authorization: `Bearer ${signup.token}` } }).then((r) => r.json());
+      assert.ok(recentBefore.rooms.some((r) => r.code === room.code), 'the room must show up in recent-rooms before the purge');
+
+      wsSend({ type: 'report', targetName: 'SomeoneElse', reason: 'purge cascade test' });
+      await wsWaitFor((m) => m.type === 'report-received');
+      const reportsBefore = await fetch(`${base}/admin/reports?key=${adminKey}`).then((r) => r.json());
+      assert.ok(reportsBefore.reports.some((r) => r.room_code === room.code), 'the report must show up in the admin list before the purge');
+
+      await sleep(150); // past the 50ms retention window
+      const cleanupResult = await fetch(`${base}/admin/cleanup/run?key=${adminKey}`, { method: 'POST' }).then((r) => r.json());
+      assert.ok(cleanupResult.codes.includes(room.code), 'the room must actually be the one purged');
+
+      const reportsAfter = await fetch(`${base}/admin/reports?key=${adminKey}`).then((r) => r.json());
+      assert.ok(!reportsAfter.reports.some((r) => r.room_code === room.code), 'the report must be gone after the room is purged');
+
+      const recentAfter = await fetch(`${base}/account/recent-rooms`, { headers: { Authorization: `Bearer ${signup.token}` } }).then((r) => r.json());
+      assert.ok(!recentAfter.rooms.some((r) => r.code === room.code), 'the recent-rooms entry must be gone after the room is purged');
+
+      ws.close();
+    } finally {
+      await cleanupServer.stop();
+    }
+  });
+});
+
 describe('per-username login brute-force throttle', () => {
   // isAuthRateLimited (the pre-existing per-IP limiter) is stricter (8/60s) than a real brute-
   // force threshold needs to be and would trip first if this test just hammered /auth/login
