@@ -1943,6 +1943,121 @@ const BB_WEAPON = { damage: 20, range: 60, cooldownMs: 150 };
 // bb-pos, so without this a shot fired in that window could land using stale position data.
 const BB_RESPAWN_GRACE_MS = Number(process.env.BB_RESPAWN_GRACE_MS ?? 500);
 
+// ---- Block Battle NvN match stations ----
+// Four fixed "match pad" stations along the office's open center aisle (see buildOffice() in
+// blockbattle.js — cubicles sit at x = -9/-6/-3/3/6/9), each aligned with one of those cubicle
+// columns so a station visually reads as "belonging" to that desk; plates themselves sit in the
+// open aisle in front of it (z near 0), never on the cubicle's own solid furniture. Client's own
+// BB_STATIONS mirrors this exactly for rendering — keep both in sync if this ever changes.
+const BB_STATIONS = [
+  { id: 'st1', n: 1, x: -9 },
+  { id: 'st2', n: 2, x: -3 },
+  { id: 'st3', n: 3, x: 3 },
+  { id: 'st4', n: 4, x: 9 },
+];
+
+function bbInitStations() {
+  const stations = {};
+  for (const s of BB_STATIONS) {
+    stations[s.id] = { n: s.n, queue: { a: new Array(s.n).fill(null), b: new Array(s.n).fill(null) }, matchId: null };
+  }
+  return stations;
+}
+
+// What every client needs to render one station's plates: which slots are filled (by name, so a
+// label can be drawn without a second id lookup) and whether it's mid-match (locked — plates stay
+// reserved for that match's own participants until it ends, so a second group can't pile onto the
+// same physical spot while a match is still being fought there).
+function bbStationSnapshot(bb, stationId) {
+  const station = bb.stations[stationId];
+  const nameOf = (ws) => { const p = ws && bb.players.get(ws); return p ? p.name : null; };
+  return { stationId, a: station.queue.a.map(nameOf), b: station.queue.b.map(nameOf), inProgress: !!station.matchId };
+}
+
+function broadcastBbStation(code, stationId) {
+  const room = rooms.get(code);
+  const bb = room && room.bb;
+  if (!bb) return;
+  broadcastBb(code, { type: 'bb-station-update', ...bbStationSnapshot(bb, stationId) });
+}
+
+// Clears whichever plate slot (if any) `ws` currently occupies — called both by an explicit
+// bb-plate-leave and by leaveBb() on disconnect, so a player who vanishes mid-queue doesn't leave
+// a phantom slot nobody else can ever fill.
+function bbClearPlate(bb, code, ws) {
+  const p = bb.players.get(ws);
+  if (!p || !p.plateStation) return;
+  const stationId = p.plateStation, side = p.plateSide, slot = p.plateSlot;
+  p.plateStation = null; p.plateSide = null; p.plateSlot = null;
+  const station = bb.stations[stationId];
+  if (station && station.queue[side][slot] === ws) station.queue[side][slot] = null;
+  broadcastBbStation(code, stationId);
+}
+
+// Once both sides of a station are fully staffed, locks the station and starts a match: every
+// queued connection gets team-match state (mirrors bb-challenge-response's dueling/opponentId
+// pair, generalized to a whole side instead of one opponent) and the queue itself is emptied so
+// the next group can start staffing the instant this match ends.
+function bbTryStartMatch(bb, code, stationId) {
+  const station = bb.stations[stationId];
+  if (!station || station.matchId) return;
+  if (station.queue.a.some((w) => !w) || station.queue.b.some((w) => !w)) return;
+  const matchId = crypto.randomUUID();
+  const sideA = station.queue.a.slice();
+  const sideB = station.queue.b.slice();
+  station.matchId = matchId;
+  station.queue = { a: new Array(station.n).fill(null), b: new Array(station.n).fill(null) };
+  bb.matches.set(matchId, { stationId, sideA: new Set(sideA), sideB: new Set(sideB) });
+  const rosterOf = (wsList) => wsList.map((w) => { const p = bb.players.get(w); return { id: p.id, name: p.name }; });
+  const teamA = rosterOf(sideA), teamB = rosterOf(sideB);
+  const now = Date.now();
+  for (const w of sideA) {
+    const p = bb.players.get(w);
+    p.plateStation = null; p.matchId = matchId; p.matchSide = 'a'; p.eliminated = false; p.health = BB_MAX_HEALTH; p.respawnedAt = now;
+    send(w, { type: 'bb-match-started', matchId, stationId, n: station.n, side: 'a', teammates: teamA.filter((t) => t.id !== p.id), enemies: teamB });
+  }
+  for (const w of sideB) {
+    const p = bb.players.get(w);
+    p.plateStation = null; p.matchId = matchId; p.matchSide = 'b'; p.eliminated = false; p.health = BB_MAX_HEALTH; p.respawnedAt = now;
+    send(w, { type: 'bb-match-started', matchId, stationId, n: station.n, side: 'b', teammates: teamB.filter((t) => t.id !== p.id), enemies: teamA });
+  }
+  broadcastBbStation(code, stationId);
+}
+
+// Sends to just the participants of one match (both sides) — used for elimination updates, which
+// only that match's own roster panels need to know about, unlike a station's occupancy (which the
+// whole room can see forming) or a hit/miss (which only concerns the two people involved).
+function broadcastToBbMatch(bb, matchId, data) {
+  const match = bb.matches.get(matchId);
+  if (!match) return;
+  for (const w of new Set([...match.sideA, ...match.sideB])) {
+    if (w.readyState === w.OPEN) send(w, data);
+  }
+}
+
+// Ends a match the instant one side has zero remaining (non-eliminated, still-connected) members —
+// covers both "shot down to 0 health" and "disconnected mid-match" through the same path, since a
+// disconnected player is simply absent from bb.players by the time this runs (see leaveBb below).
+function bbCheckMatchEnd(bb, code, matchId) {
+  const match = bb.matches.get(matchId);
+  if (!match) return;
+  const aliveCount = (side) => [...side].filter((w) => { const p = bb.players.get(w); return p && p.matchId === matchId && !p.eliminated; }).length;
+  const aliveA = aliveCount(match.sideA), aliveB = aliveCount(match.sideB);
+  if (aliveA > 0 && aliveB > 0) return;
+  const winner = aliveA === 0 && aliveB === 0 ? null : aliveA === 0 ? 'b' : 'a';
+  for (const w of new Set([...match.sideA, ...match.sideB])) {
+    const p = bb.players.get(w);
+    if (!p || p.matchId !== matchId) continue;
+    if (winner) send(w, { type: 'bb-match-ended', matchId, won: p.matchSide === winner });
+    else send(w, { type: 'bb-match-ended', matchId, won: null });
+    p.matchId = null; p.matchSide = null; p.eliminated = false; p.health = BB_MAX_HEALTH;
+  }
+  bb.matches.delete(matchId);
+  const station = bb.stations[match.stationId];
+  if (station && station.matchId === matchId) station.matchId = null;
+  broadcastBbStation(code, match.stationId);
+}
+
 function broadcastBb(code, data, exclude) {
   const room = rooms.get(code);
   if (!room || !room.bb) return;
@@ -1974,7 +2089,14 @@ function leaveBb(ws) {
         const opp = bbFindById(bb, player.opponentId);
         if (opp) { opp.p.dueling = false; opp.p.opponentId = null; send(opp.ws, { type: 'bb-duel-ended', reason: 'opponent-left' }); }
       }
+      // Free a plate the instant its occupant vanishes (so nobody's queue slot is ever stuck on a
+      // disconnected connection), and re-check an in-progress NvN match after removing them from
+      // bb.players below — bbCheckMatchEnd counts survivors straight off that map, so a departed
+      // player is automatically no longer "alive" without any extra bookkeeping here.
+      if (player.plateStation) bbClearPlate(bb, code, ws);
+      const matchId = player.matchId;
       bb.players.delete(ws);
+      if (matchId) bbCheckMatchEnd(bb, code, matchId);
       broadcastBb(code, { type: 'bb-player-left', id: player.id });
       clearRoomActivity(code, player.name);
     }
@@ -3917,7 +4039,7 @@ wss.on('connection', (ws, req) => {
       if (ws.bbRoom === code) return;
       if (ws.bbRoom) leaveBb(ws);
       const room = getOrCreateRoom(code);
-      if (!room.bb) room.bb = { players: new Map() };
+      if (!room.bb) room.bb = { players: new Map(), stations: bbInitStations(), matches: new Map() };
       const bb = room.bb;
       if (bb.players.size >= MAX_GAME_PLAYERS) { send(ws, { type: 'bb-full' }); return; }
       // Real Valk account only — no free-text name field here (unlike bc/fg/etc's `name` param),
@@ -3929,9 +4051,13 @@ wss.on('connection', (ws, req) => {
       const id = crypto.randomUUID();
       ws.bbRoom = code;
       ws.bbId = id;
-      const entry = { id, name, level, x: 0, y: 0, z: 0, yaw: 0, health: BB_MAX_HEALTH, dueling: false, opponentId: null, lastShotAt: 0, respawnedAt: 0 };
+      const entry = {
+        id, name, level, x: 0, y: 0, z: 0, yaw: 0, health: BB_MAX_HEALTH, dueling: false, opponentId: null, lastShotAt: 0, respawnedAt: 0,
+        plateStation: null, plateSide: null, plateSlot: null, matchId: null, matchSide: null, eliminated: false,
+      };
       bb.players.set(ws, entry);
-      send(ws, { type: 'bb-init', id, players: [...bb.players.values()].filter((p) => p.id !== id) });
+      const stations = Object.keys(bb.stations).map((sid) => bbStationSnapshot(bb, sid));
+      send(ws, { type: 'bb-init', id, players: [...bb.players.values()].filter((p) => p.id !== id), stations });
       broadcastBb(code, { type: 'bb-player-joined', id, name, level, x: 0, y: 0, z: 0, yaw: 0 }, ws);
       setRoomActivity(code, name, 'bb');
       return;
@@ -3992,11 +4118,67 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    if (msg.type === 'bb-plate-enter' && ws.bbRoom) {
+      // Not throttled at bb-pos's per-frame rate — this only fires on an actual plate-to-plate
+      // transition (the client tracks that locally), so the ordinary chat-message-rate gate fits.
+      if (isWsMsgRateLimited(ws)) return;
+      const room = rooms.get(ws.bbRoom);
+      const bb = room && room.bb;
+      const me = bb && bb.players.get(ws);
+      if (!me || me.dueling || me.matchId) return; // already fighting elsewhere — can't also queue
+      const station = bb.stations[String(msg.stationId || '')];
+      if (!station || station.matchId) return; // unknown station, or currently locked mid-match
+      const side = msg.side === 'a' || msg.side === 'b' ? msg.side : null;
+      const slot = Math.floor(+msg.slot);
+      if (!side || !Number.isInteger(slot) || slot < 0 || slot >= station.n) return;
+      if (station.queue[side][slot]) return; // already taken by someone else
+      bbClearPlate(bb, ws.bbRoom, ws); // step off any other plate first
+      station.queue[side][slot] = ws;
+      me.plateStation = String(msg.stationId); me.plateSide = side; me.plateSlot = slot;
+      broadcastBbStation(ws.bbRoom, String(msg.stationId));
+      bbTryStartMatch(bb, ws.bbRoom, String(msg.stationId));
+      return;
+    }
+
+    if (msg.type === 'bb-plate-leave' && ws.bbRoom) {
+      const room = rooms.get(ws.bbRoom);
+      const bb = room && room.bb;
+      if (bb) bbClearPlate(bb, ws.bbRoom, ws);
+      return;
+    }
+
     if (msg.type === 'bb-shoot' && ws.bbRoom) {
       const room = rooms.get(ws.bbRoom);
       const bb = room && room.bb;
       const me = bb && bb.players.get(ws);
-      if (!me || !me.dueling || !me.opponentId) return;
+      if (!me) return;
+      if (me.matchId) {
+        // NvN match branch — same loose "trust reported position, server gates cooldown/range/
+        // alive-state" model as the 1v1 branch below, generalized to pick an explicit target
+        // (there's no longer a single implicit opponent once more than one enemy can be in range).
+        if (me.eliminated) return;
+        const now = Date.now();
+        if (now - me.lastShotAt < BB_WEAPON.cooldownMs) return;
+        me.lastShotAt = now;
+        const target = bbFindById(bb, String(msg.targetId || ''));
+        if (!target || target.ws === ws) return;
+        if (target.p.matchId !== me.matchId || target.p.matchSide === me.matchSide || target.p.eliminated) return;
+        if (now - target.p.respawnedAt < BB_RESPAWN_GRACE_MS) return;
+        const dx = me.x - target.p.x, dy = me.y - target.p.y, dz = me.z - target.p.z;
+        if (Math.sqrt(dx * dx + dy * dy + dz * dz) > BB_WEAPON.range) return;
+        target.p.health = Math.max(0, target.p.health - BB_WEAPON.damage);
+        if (target.p.health > 0) {
+          send(target.ws, { type: 'bb-match-hit', health: target.p.health, byId: me.id });
+          send(ws, { type: 'bb-match-hit-confirm', targetId: target.p.id, targetHealth: target.p.health });
+          return;
+        }
+        target.p.eliminated = true;
+        send(target.ws, { type: 'bb-match-eliminated' });
+        broadcastToBbMatch(bb, me.matchId, { type: 'bb-match-player-eliminated', matchId: me.matchId, id: target.p.id });
+        bbCheckMatchEnd(bb, ws.bbRoom, me.matchId);
+        return;
+      }
+      if (!me.dueling || !me.opponentId) return;
       const now = Date.now();
       if (now - me.lastShotAt < BB_WEAPON.cooldownMs) return;
       // Consumed right after the cooldown check clears, not only on a landed hit — same fix (and

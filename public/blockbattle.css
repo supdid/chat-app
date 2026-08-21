@@ -658,6 +658,101 @@ html, body {
   color: #eaf6ff;
 }
 
+#match-hud {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  z-index: 15;
+  width: 220px;
+  padding: 0.6rem 0.7rem;
+  border-radius: 12px;
+  background: rgba(6, 14, 22, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+#match-hud-title {
+  font-weight: 800;
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  color: #eaf6ff;
+  text-align: center;
+  margin-bottom: 0.4rem;
+  opacity: 0.85;
+}
+
+.match-hud-roster {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 0.4rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.match-hud-roster:last-child { margin-bottom: 0; }
+
+.match-hud-roster li {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.72rem;
+  color: #eaf6ff;
+}
+
+.match-hud-roster .match-hud-name {
+  flex: 0 0 auto;
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.match-hud-roster .match-hud-health-wrap {
+  flex: 1;
+  height: 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.match-hud-roster .match-hud-health-fill {
+  height: 100%;
+  transition: width 0.15s;
+}
+
+.match-hud-roster.match-hud-enemies .match-hud-health-fill { background: #f44336; }
+.match-hud-roster.match-hud-teammates .match-hud-health-fill { background: #4caf50; }
+
+.match-hud-roster li.eliminated { opacity: 0.4; text-decoration: line-through; }
+
+#match-result {
+  position: fixed;
+  top: 40%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 29;
+  font-size: 2.2rem;
+  font-weight: 900;
+  text-shadow: 0 3px 12px rgba(0, 0, 0, 0.7);
+  color: #eaf6ff;
+  text-align: center;
+}
+
+#match-eliminated-banner {
+  position: fixed;
+  bottom: 90px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 15;
+  padding: 0.5rem 1rem;
+  border-radius: 10px;
+  background: rgba(90, 10, 10, 0.75);
+  color: #ffe2e2;
+  font-weight: 700;
+  font-size: 0.85rem;
+  text-align: center;
+}
+
 /* A soft vignette over the 3D view (under the HUD) pulls focus to the center. */
 body::after {
   content: '';

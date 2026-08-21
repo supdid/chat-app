@@ -2654,3 +2654,159 @@ describe('fixed-role two-player games reject a same-connection repeat join', () 
     a.close(); b.close();
   });
 });
+
+describe('Block Battle NvN match stations', () => {
+  // Dedicated instance so BB_RESPAWN_GRACE_MS can be zeroed — these tests fire shots within
+  // milliseconds of a match starting, well inside the real 500ms grace window, which would
+  // silently reject the shot and throw off the elimination-count math below.
+  let bbServer;
+  before(async () => { bbServer = await startTestServer({ BB_RESPAWN_GRACE_MS: '0' }, 3202); });
+  after(async () => { await bbServer.stop(); });
+
+  function bbConnect() {
+    return new Promise((resolve) => {
+      const ws = new WebSocket(`ws://localhost:${bbServer.port}`);
+      ws.on('open', () => resolve(ws));
+    });
+  }
+  async function bbJoin(code) {
+    const ws = await bbConnect();
+    send(ws, { type: 'bb-join', code, level: 1 });
+    const init = await waitFor(ws, (m) => m.type === 'bb-init');
+    return { ws, id: init.id, stations: init.stations };
+  }
+  // BB_MAX_HEALTH is 100, BB_WEAPON.damage is 20 — exactly 5 hits eliminate a target. Cooldown is
+  // 150ms, so each shot waits just past that before the next.
+  async function bbShootUntilEliminated(shooter, targetId) {
+    for (let i = 0; i < 5; i++) {
+      send(shooter, { type: 'bb-shoot', targetId });
+      await sleep(160);
+    }
+  }
+
+  test('bb-init reports empty station occupancy; entering and leaving a plate round-trips through bb-station-update', async () => {
+    const code = 'BBPLATE1';
+    const a = await bbJoin(code);
+    const st1 = a.stations.find((s) => s.stationId === 'st1');
+    assert.deepEqual(st1.a, [null], 'a fresh station starts with an empty side A');
+    assert.equal(st1.inProgress, false);
+
+    const enterPromise = waitFor(a.ws, (m) => m.type === 'bb-station-update' && m.stationId === 'st1');
+    send(a.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'a', slot: 0 });
+    const afterEnter = await enterPromise;
+    assert.deepEqual(afterEnter.a, ['Guest']);
+
+    const leavePromise = waitFor(a.ws, (m) => m.type === 'bb-station-update' && m.stationId === 'st1');
+    send(a.ws, { type: 'bb-plate-leave' });
+    const afterLeave = await leavePromise;
+    assert.deepEqual(afterLeave.a, [null]);
+
+    a.ws.close();
+  });
+
+  test('a 1v1 station starts a match once both sides fill, elimination ends it, and the station unlocks afterward', async () => {
+    const code = 'BBMATCH1';
+    const a = await bbJoin(code);
+    const b = await bbJoin(code);
+
+    let matchStartedEarly = false;
+    const aStarted = waitFor(a.ws, (m) => m.type === 'bb-match-started').then((m) => { matchStartedEarly = true; return m; });
+    const bStarted = waitFor(b.ws, (m) => m.type === 'bb-match-started');
+    send(a.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'a', slot: 0 });
+    // Not yet full — no match should start off one side alone.
+    await sleep(150);
+    assert.equal(matchStartedEarly, false, 'a match must not start with only one side filled');
+    send(b.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'b', slot: 0 });
+    const [startA, startB] = await Promise.all([aStarted, bStarted]);
+    assert.equal(startA.side, 'a');
+    assert.equal(startB.side, 'b');
+    assert.deepEqual(startA.enemies.map((e) => e.id), [b.id]);
+    assert.deepEqual(startB.enemies.map((e) => e.id), [a.id]);
+    assert.equal(startA.matchId, startB.matchId);
+
+    const aEnded = waitFor(a.ws, (m) => m.type === 'bb-match-ended');
+    const bEliminated = waitFor(b.ws, (m) => m.type === 'bb-match-eliminated');
+    const bEnded = waitFor(b.ws, (m) => m.type === 'bb-match-ended');
+    await bbShootUntilEliminated(a.ws, b.id);
+    await bEliminated;
+    const [endA, endB] = await Promise.all([aEnded, bEnded]);
+    assert.equal(endA.won, true, 'the shooter\'s side must be told it won');
+    assert.equal(endB.won, false, 'the eliminated side must be told it lost');
+
+    // The station must be unlocked and empty again — a fresh pair can immediately start a new match there.
+    const c = await bbJoin(code);
+    const d = await bbJoin(code);
+    const cStarted = waitFor(c.ws, (m) => m.type === 'bb-match-started');
+    send(c.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'a', slot: 0 });
+    send(d.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'b', slot: 0 });
+    await cStarted;
+
+    a.ws.close(); b.ws.close(); c.ws.close(); d.ws.close();
+  });
+
+  test('leaving a plate before both sides fill frees the slot for a different connection', async () => {
+    const code = 'BBPLATE2';
+    const a = await bbJoin(code);
+    const b = await bbJoin(code);
+    send(a.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'a', slot: 0 });
+    await waitFor(a.ws, (m) => m.type === 'bb-station-update' && m.a[0] === 'Guest');
+    send(a.ws, { type: 'bb-plate-leave' });
+    await waitFor(a.ws, (m) => m.type === 'bb-station-update' && m.a[0] === null);
+
+    const bUpdate = waitFor(b.ws, (m) => m.type === 'bb-station-update' && m.a[0] === 'Guest');
+    send(b.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'a', slot: 0 });
+    await bUpdate;
+
+    a.ws.close(); b.ws.close();
+  });
+
+  test('a 2v2 match reports the right rosters and rejects shooting a teammate', async () => {
+    const code = 'BBMATCH2';
+    const a = await bbJoin(code); // side a slot 0
+    const b = await bbJoin(code); // side a slot 1 — a's teammate
+    const c = await bbJoin(code); // side b slot 0
+    const d = await bbJoin(code); // side b slot 1
+
+    const startedA = waitFor(a.ws, (m) => m.type === 'bb-match-started');
+    const startedC = waitFor(c.ws, (m) => m.type === 'bb-match-started');
+    send(a.ws, { type: 'bb-plate-enter', stationId: 'st2', side: 'a', slot: 0 });
+    send(b.ws, { type: 'bb-plate-enter', stationId: 'st2', side: 'a', slot: 1 });
+    send(c.ws, { type: 'bb-plate-enter', stationId: 'st2', side: 'b', slot: 0 });
+    send(d.ws, { type: 'bb-plate-enter', stationId: 'st2', side: 'b', slot: 1 });
+    const [startA, startC] = await Promise.all([startedA, startedC]);
+    assert.deepEqual(startA.teammates.map((t) => t.id), [b.id]);
+    assert.deepEqual(startA.enemies.map((t) => t.id).sort(), [c.id, d.id].sort());
+    assert.deepEqual(startC.teammates.map((t) => t.id), [d.id]);
+    assert.deepEqual(startC.enemies.map((t) => t.id).sort(), [a.id, b.id].sort());
+
+    // A teammate must be un-shootable — B takes no damage from A's shot.
+    const bHitCheck = (data) => { if (JSON.parse(data).type === 'bb-match-hit') throw new Error('a teammate must never take match damage'); };
+    b.ws.on('message', bHitCheck);
+    send(a.ws, { type: 'bb-shoot', targetId: b.id });
+    await sleep(200);
+    b.ws.off('message', bHitCheck);
+
+    // An enemy IS shootable, and eliminating both of them ends the match for A's side as the winner.
+    const aWon = waitFor(a.ws, (m) => m.type === 'bb-match-ended' && m.won === true);
+    await bbShootUntilEliminated(a.ws, c.id);
+    await bbShootUntilEliminated(b.ws, d.id);
+    await aWon;
+
+    a.ws.close(); b.ws.close(); c.ws.close(); d.ws.close();
+  });
+
+  test('a disconnect mid-match ends it in favor of the remaining side', async () => {
+    const code = 'BBMATCH3';
+    const a = await bbJoin(code);
+    const b = await bbJoin(code);
+    const aStarted = waitFor(a.ws, (m) => m.type === 'bb-match-started');
+    const aWon = waitFor(a.ws, (m) => m.type === 'bb-match-ended' && m.won === true);
+    send(a.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'a', slot: 0 });
+    send(b.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'b', slot: 0 });
+    await aStarted;
+    b.ws.close(); // no bb-leave sent — a raw drop, same as a network blip
+    await aWon;
+
+    a.ws.close();
+  });
+});

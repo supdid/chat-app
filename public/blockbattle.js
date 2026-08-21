@@ -594,6 +594,129 @@ function buildOffice() {
 }
 buildOffice();
 
+// ---- Block Battle NvN match stations ----
+// Mirrors server.js's BB_STATIONS exactly — four match pads along the office's open center aisle,
+// each aligned with one of buildOffice()'s own cubicle columns so it visually reads as "belonging"
+// to that desk. Plates sit in the open aisle itself (z near 0), not on the cubicle's own solid
+// furniture — nothing could stand on top of a 1.3-tall cubicle anyway (JUMP_HEIGHT is 1.15).
+const BB_STATIONS = [
+  { id: 'st1', n: 1, x: -9 },
+  { id: 'st2', n: 2, x: -3 },
+  { id: 'st3', n: 3, x: 3 },
+  { id: 'st4', n: 4, x: 9 },
+];
+const BB_PLATE_GAP = 0.9;      // spacing between adjacent plates on the same side
+const BB_PLATE_RADIUS = 0.4;   // how close the player must stand to count as "on" a plate (< half BB_PLATE_GAP so neighboring plates' zones never overlap)
+const BB_PLATE_ROW_Z = 1.15;   // each side's row sits this far off the station's own center line
+
+function bbPlatePositions(station, side) {
+  const rowZ = side === 'a' ? -BB_PLATE_ROW_Z : BB_PLATE_ROW_Z;
+  const start = -(station.n - 1) / 2;
+  const positions = [];
+  for (let i = 0; i < station.n; i++) positions.push({ x: station.x + (start + i) * BB_PLATE_GAP, z: rowZ });
+  return positions;
+}
+
+function bbSignSprite(text) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256; canvas.height = 96;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = 'rgba(20,24,30,0.72)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+  ctx.lineWidth = 4;
+  ctx.strokeRect(4, 4, canvas.width - 8, canvas.height - 8);
+  ctx.font = 'bold 52px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#ffd54f';
+  ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+  const texture = new THREE.CanvasTexture(canvas);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false }));
+  sprite.scale.set(2.1, 0.8, 1);
+  return sprite;
+}
+
+const BB_PLATE_COLOR = {
+  a: { empty: 0x2d4a66, filled: 0x3d7dff, self: 0x7fb8ff },
+  b: { empty: 0x66302d, filled: 0xff4d4d, self: 0xff9a8a },
+  locked: 0x33363c,
+};
+
+// stationId -> { plates: { a: [mesh,...], b: [mesh,...] } } — the sign itself never changes, only
+// the plate colors/opacity do, driven by bb-station-update broadcasts.
+const bbStationMeshes = new Map();
+
+function buildBbStations() {
+  for (const station of BB_STATIONS) {
+    const sign = bbSignSprite(`${station.n}V${station.n}`);
+    sign.position.set(station.x, 2.4, 0);
+    officeGroup.add(sign);
+    const plates = { a: [], b: [] };
+    for (const side of ['a', 'b']) {
+      for (const pos of bbPlatePositions(station, side)) {
+        const mat = new THREE.MeshBasicMaterial({ color: BB_PLATE_COLOR[side].empty, transparent: true, opacity: 0.6 });
+        const mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 0.06, 16), mat);
+        mesh.position.set(pos.x, 0.03, pos.z);
+        officeGroup.add(mesh);
+        plates[side].push(mesh);
+      }
+    }
+    bbStationMeshes.set(station.id, { plates });
+  }
+}
+buildBbStations();
+
+// Local prediction of which plate (if any) the player is standing on — the source of truth for
+// self-highlighting (see updateBbStationVisual) rather than name-matching, since two connections
+// can share a display name ("Guest") but never this locally-tracked slot assignment.
+let bbCurrentPlate = null; // { stationId, side, slot } | null
+
+function updateBbStationVisual(stationId, data) {
+  const meshes = bbStationMeshes.get(stationId);
+  if (!meshes) return;
+  const locked = !!data.inProgress;
+  for (const side of ['a', 'b']) {
+    const names = data[side] || [];
+    meshes.plates[side].forEach((mesh, i) => {
+      const occupantName = names[i];
+      const isSelf = !locked && bbCurrentPlate && bbCurrentPlate.stationId === stationId && bbCurrentPlate.side === side && bbCurrentPlate.slot === i;
+      let color;
+      if (locked) color = BB_PLATE_COLOR.locked;
+      else if (isSelf) color = BB_PLATE_COLOR[side].self;
+      else if (occupantName) color = BB_PLATE_COLOR[side].filled;
+      else color = BB_PLATE_COLOR[side].empty;
+      mesh.material.color.setHex(color);
+      mesh.material.opacity = locked ? 0.35 : (occupantName ? 0.9 : 0.55);
+    });
+  }
+}
+
+// Checks the player's own x/z against every plate on every station once per free-roam frame (see
+// tick()'s onlineActive-and-not-dueling branch) and tells the server on any actual transition —
+// deliberately not sent every frame, only on stepping onto/off a plate, to keep this as cheap as
+// bb-challenge rather than as chatty as bb-pos.
+function updateBbPlateDetection() {
+  let found = null;
+  outer:
+  for (const station of BB_STATIONS) {
+    for (const side of ['a', 'b']) {
+      const positions = bbPlatePositions(station, side);
+      for (let i = 0; i < positions.length; i++) {
+        const dx = player.x - positions[i].x, dz = player.z - positions[i].z;
+        if (dx * dx + dz * dz <= BB_PLATE_RADIUS * BB_PLATE_RADIUS) { found = { stationId: station.id, side, slot: i }; break outer; }
+      }
+    }
+  }
+  const same = found && bbCurrentPlate && found.stationId === bbCurrentPlate.stationId && found.side === bbCurrentPlate.side && found.slot === bbCurrentPlate.slot;
+  if (same) return;
+  if (bbCurrentPlate && bbWs && bbWs.readyState === WebSocket.OPEN) bbWs.send(JSON.stringify({ type: 'bb-plate-leave' }));
+  bbCurrentPlate = found;
+  if (found && bbWs && bbWs.readyState === WebSocket.OPEN) {
+    bbWs.send(JSON.stringify({ type: 'bb-plate-enter', stationId: found.stationId, side: found.side, slot: found.slot }));
+  }
+}
+
 // ---- Sound ----
 // Every effect is synthesized with WebAudio — no audio files to load. Browsers
 // only allow audio after a user gesture, so the "Click to play" click boots it.
@@ -1545,6 +1668,15 @@ const BB_MAX_HEALTH_CLIENT = 100;
 // server re-checks its own copy of these numbers before ever applying damage, so a modified client
 // can make this local copy lie without gaining anything.
 const BB_WEAPON_CLIENT = { damage: 20, range: 60, cooldownMs: 150 };
+// NvN station-match state — kept alongside (not merged into) the 1v1 fields above since a player
+// is only ever in one or the other. `dueling` is reused as the shared "in first-person combat"
+// gate (camera/gun-visibility/shoot-routing all already branch on it) — see bb-match-started.
+let inMatch = false;
+let myMatchId = null;
+let myMatchSide = null;
+let myMatchEliminated = false;
+let matchTeammates = []; // [{id, name, health, eliminated}]
+let matchEnemies = [];   // [{id, name, health, eliminated}]
 let bbNextShotAt = 0;
 let bbPosSendT = 0;      // counts down to the next throttled bb-pos send
 let bbAvatarPhase = 0;   // local third-person avatar's own walk-cycle clock
@@ -1561,6 +1693,12 @@ const duelOpponentName = document.getElementById('duel-opponent-name');
 const duelOpponentHealthFill = document.getElementById('duel-opponent-health-fill');
 const duelResult = document.getElementById('duel-result');
 const weaponHudEl = document.getElementById('weapon-hud');
+const matchHud = document.getElementById('match-hud');
+const matchHudTitle = document.getElementById('match-hud-title');
+const matchHudEnemies = document.getElementById('match-hud-enemies');
+const matchHudTeammates = document.getElementById('match-hud-teammates');
+const matchResult = document.getElementById('match-result');
+const matchEliminatedBanner = document.getElementById('match-eliminated-banner');
 
 // id -> { group, legs, arms, nameSprite, name, level, target: {x,y,z,yaw}, phase }
 const bbRemotePlayers = new Map();
@@ -1723,6 +1861,7 @@ function updateLocalAvatar(vx, vz, dt) {
 // does its own cooldown/range/alive-state check, so this function is purely cosmetic feedback.
 function tryFireOnline(nowMs) {
   if (nowMs < bbNextShotAt) return;
+  if (inMatch && myMatchEliminated) return; // spectating — no shots to fire
   bbNextShotAt = nowMs + BB_WEAPON_CLIENT.cooldownMs;
   gunKick = 1;
   muzzleT = 0.05;
@@ -1731,7 +1870,24 @@ function tryFireOnline(nowMs) {
   sfxShot('deagle');
   raycaster.setFromCamera(CROSSHAIR_CENTER, camera);
   spawnTracer(raycaster.ray.at(60, new THREE.Vector3()));
-  if (bbWs && bbWs.readyState === WebSocket.OPEN) bbWs.send(JSON.stringify({ type: 'bb-shoot' }));
+  if (!bbWs || bbWs.readyState !== WebSocket.OPEN) return;
+  if (inMatch) {
+    // bb combat has no aim/raycast model at all (see the block comment above — the server only
+    // ever checks range, never direction), so this just picks whichever living enemy is nearest,
+    // matching that same arcade looseness rather than inventing a new targeting scheme.
+    let nearestId = null, nearestDist = Infinity;
+    for (const enemy of matchEnemies) {
+      if (enemy.eliminated) continue;
+      const rp = bbRemotePlayers.get(enemy.id);
+      if (!rp) continue;
+      const dx = player.x - rp.target.x, dz = player.z - rp.target.z;
+      const dist = dx * dx + dz * dz;
+      if (dist < nearestDist) { nearestDist = dist; nearestId = enemy.id; }
+    }
+    if (nearestId) bbWs.send(JSON.stringify({ type: 'bb-shoot', targetId: nearestId }));
+    return;
+  }
+  bbWs.send(JSON.stringify({ type: 'bb-shoot' }));
 }
 
 function sendBbPos(dt) {
@@ -1774,6 +1930,49 @@ function endDuel(message) {
   if (onlineActive) lobbyHud.classList.remove('hidden');
 }
 
+function renderMatchRoster(listEl, roster) {
+  listEl.innerHTML = '';
+  for (const p of roster) {
+    const li = document.createElement('li');
+    if (p.eliminated) li.classList.add('eliminated');
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'match-hud-name';
+    nameSpan.textContent = p.name;
+    const healthWrap = document.createElement('span');
+    healthWrap.className = 'match-hud-health-wrap';
+    const healthFill = document.createElement('span');
+    healthFill.className = 'match-hud-health-fill';
+    healthFill.style.width = `${Math.max(0, p.health) / BB_MAX_HEALTH_CLIENT * 100}%`;
+    healthWrap.appendChild(healthFill);
+    li.append(nameSpan, healthWrap);
+    listEl.appendChild(li);
+  }
+}
+
+function renderMatchHud() {
+  matchHudTitle.textContent = `Your team ${matchTeammates.length + 1} vs ${matchEnemies.length}`;
+  renderMatchRoster(matchHudEnemies, matchEnemies);
+  renderMatchRoster(matchHudTeammates, matchTeammates);
+}
+
+function endMatch(message) {
+  dueling = false;
+  inMatch = false;
+  myMatchId = null;
+  myMatchSide = null;
+  myMatchEliminated = false;
+  matchTeammates = [];
+  matchEnemies = [];
+  matchHud.classList.add('hidden');
+  matchEliminatedBanner.classList.add('hidden');
+  matchResult.textContent = message;
+  matchResult.classList.remove('hidden');
+  setTimeout(() => matchResult.classList.add('hidden'), 2500);
+  health = MAX_HEALTH;
+  updateHealthBar();
+  if (onlineActive) lobbyHud.classList.remove('hidden');
+}
+
 function handleBbMessage(data) {
   switch (data.type) {
     case 'bb-init': {
@@ -1782,6 +1981,18 @@ function handleBbMessage(data) {
       bbPlayers = data.players.map((p) => ({ id: p.id, name: p.name, level: p.level, dueling: p.dueling }));
       lobbyPlayerCount.textContent = String(bbPlayers.length);
       renderLobbyPlayersList();
+      // This connection is authoritative fresh-join state (first join OR a post-drop reconnect) —
+      // any 1v1/match/plate state left over from before the socket died is now stale (the server's
+      // own copy of it was already torn down in leaveBb when the old connection dropped), so reset
+      // every combat/plate flag and the HUD visibility that goes with it. Without this, a mid-duel
+      // or mid-match disconnect left the old HUD frozen on screen forever with no way back to the
+      // free-roam lobby short of leaving the page entirely.
+      dueling = false; myOpponentId = null; duelHud.classList.add('hidden');
+      inMatch = false; myMatchId = null; myMatchSide = null; myMatchEliminated = false;
+      matchTeammates = []; matchEnemies = []; matchHud.classList.add('hidden'); matchEliminatedBanner.classList.add('hidden');
+      bbCurrentPlate = null;
+      lobbyHud.classList.remove('hidden');
+      for (const snapshot of data.stations || []) updateBbStationVisual(snapshot.stationId, snapshot);
       break;
     }
     case 'bb-full': {
@@ -1854,6 +2065,61 @@ function handleBbMessage(data) {
     case 'bb-duel-won': endDuel('🏆 You won the duel!'); break;
     case 'bb-duel-lost': endDuel('💀 You lost the duel'); break;
     case 'bb-duel-ended': endDuel('Duel ended — opponent left'); break;
+    case 'bb-station-update': {
+      updateBbStationVisual(data.stationId, data);
+      break;
+    }
+    case 'bb-match-started': {
+      dueling = true;
+      inMatch = true;
+      myMatchId = data.matchId;
+      myMatchSide = data.side;
+      myMatchEliminated = false;
+      matchTeammates = data.teammates.map((t) => ({ ...t, health: BB_MAX_HEALTH_CLIENT, eliminated: false }));
+      matchEnemies = data.enemies.map((e) => ({ ...e, health: BB_MAX_HEALTH_CLIENT, eliminated: false }));
+      health = MAX_HEALTH;
+      updateHealthBar();
+      lobbyPlayersPanel.classList.add('hidden');
+      challengePopup.classList.add('hidden');
+      matchResult.classList.add('hidden');
+      matchEliminatedBanner.classList.add('hidden');
+      renderMatchHud();
+      matchHud.classList.remove('hidden');
+      lobbyHud.classList.add('hidden');
+      removeLocalAvatar();
+      if (document.pointerLockElement !== canvas) requestPointerLockSafe();
+      break;
+    }
+    case 'bb-match-hit': {
+      health = Math.max(0, health - BB_WEAPON_CLIENT.damage);
+      updateHealthBar();
+      flashDamage();
+      sfxHurt();
+      break;
+    }
+    case 'bb-match-hit-confirm': {
+      const enemy = matchEnemies.find((e) => e.id === data.targetId);
+      if (enemy) { enemy.health = data.targetHealth; renderMatchHud(); }
+      showHitMarker(false);
+      break;
+    }
+    case 'bb-match-player-eliminated': {
+      const teammate = matchTeammates.find((t) => t.id === data.id);
+      if (teammate) teammate.eliminated = true;
+      const enemy = matchEnemies.find((e) => e.id === data.id);
+      if (enemy) enemy.eliminated = true;
+      if (teammate || enemy) renderMatchHud();
+      break;
+    }
+    case 'bb-match-eliminated': {
+      myMatchEliminated = true;
+      matchEliminatedBanner.classList.remove('hidden');
+      break;
+    }
+    case 'bb-match-ended': {
+      endMatch(data.won === true ? '🏆 Your team won!' : data.won === false ? '💀 Your team was eliminated' : 'Match ended');
+      break;
+    }
   }
 }
 
@@ -1892,6 +2158,8 @@ function startOnlinePlay() {
   updateWaveHud();
   onlineActive = true;
   dueling = false;
+  inMatch = false; myMatchId = null; myMatchSide = null; myMatchEliminated = false;
+  matchTeammates = []; matchEnemies = []; bbCurrentPlate = null;
   player.x = 0; player.y = 0; player.z = 0; vy = 0; onGround = true; hasAirMomentum = false;
   health = MAX_HEALTH;
   dead = false;
@@ -1924,11 +2192,16 @@ function leaveOnlineLobby() {
   dueling = false;
   myBbId = null;
   myOpponentId = null;
+  inMatch = false; myMatchId = null; myMatchSide = null; myMatchEliminated = false;
+  matchTeammates = []; matchEnemies = []; bbCurrentPlate = null;
   lobbyHud.classList.add('hidden');
   lobbyPlayersPanel.classList.add('hidden');
   challengePopup.classList.add('hidden');
   duelHud.classList.add('hidden');
   duelResult.classList.add('hidden');
+  matchHud.classList.add('hidden');
+  matchResult.classList.add('hidden');
+  matchEliminatedBanner.classList.add('hidden');
   weaponHudEl.classList.remove('hidden');
   waveCounter.classList.remove('hidden');
   gun.visible = true;
@@ -1970,6 +2243,14 @@ document.getElementById('challenge-decline-btn').addEventListener('click', (e) =
   const fromId = challengePopup.dataset.fromId;
   challengePopup.classList.add('hidden');
   if (bbWs && bbWs.readyState === WebSocket.OPEN) bbWs.send(JSON.stringify({ type: 'bb-challenge-response', fromId, accept: false }));
+});
+// Same Escape-to-close fix already applied to every other overlay in this app — these two didn't
+// have it (Block Battle's own pause overlay is driven by pointer-lock-exit, not this listener, so
+// it was easy to overlook that its two lobby popups never got the same app-wide treatment).
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (!lobbyPlayersPanel.classList.contains('hidden')) document.getElementById('lobby-players-close-btn').click();
+  if (!challengePopup.classList.contains('hidden')) document.getElementById('challenge-decline-btn').click();
 });
 
 // ---- Player shooting (hitscan through the crosshair) ----
@@ -2908,6 +3189,7 @@ function tick(now) {
     sendBbPos(dt);
   }
   if (onlineActive && !dueling) {
+    updateBbPlateDetection();
     // Third-person lobby camera: orbits around a pivot near the avatar's head, same distance in
     // every direction, so mouse-look (yaw AND pitch — the same input that drives first-person
     // aiming everywhere else in this file) swings the camera up/down/around exactly like an
