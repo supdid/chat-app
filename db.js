@@ -1538,8 +1538,18 @@ function getPatchProposal(id) {
   return db.prepare('SELECT * FROM patch_proposals WHERE id = ?').get(id) || null;
 }
 
+// Only ever moves a proposal out of 'pending' — unlike approve (patcher.js's applyProposal, which
+// checks status itself before doing anything), the /admin/patches/:id/reject route used to call
+// this unconditionally with no status check of its own. The admin panel's key is bookmarkable and
+// has no polling/refresh, so two tabs open on the same stale pending list is realistic: if tab A
+// approves a proposal (real file patched, status -> 'applied') and tab B, still showing the old
+// list, then rejects the same id, the row's status would silently become 'rejected' even though
+// the file change is real and permanent — a false audit trail for the one record meant to explain
+// unattended changes to a production file. Returns whether the row was actually still pending, so
+// the reject route can tell a stale click apart from a genuine one.
 function setPatchProposalStatus(id, status) {
-  db.prepare('UPDATE patch_proposals SET status = ?, decided_at = ? WHERE id = ?').run(status, Date.now(), id);
+  const result = db.prepare(`UPDATE patch_proposals SET status = ?, decided_at = ? WHERE id = ? AND status = 'pending'`).run(status, Date.now(), id);
+  return result.changes > 0;
 }
 
 function getPendingPatchProposals() {

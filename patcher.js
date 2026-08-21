@@ -35,13 +35,26 @@ function resolveSourceFile(errorReport) {
   return null;
 }
 
-// The regexes above allow '.'/'/' in the matched path, which admits '../' sequences —
-// context.url on an error report is attacker-controlled (POST /errors/report is public and
-// unauthenticated), so without this check a crafted url like ".../public/../../.ssh/id_rsa"
-// would resolve outside the project directory, letting generateProposal read arbitrary files
-// off disk (and, if later approved, applyProposal write to them). Canonicalizes and requires
-// the result to stay strictly inside ROOT regardless of what the regex above matched.
+// The regexes above allow '.'/'/' in the matched path, which admits '../' sequences — context.url
+// (and stack) on an error report is attacker-controlled (POST /errors/report is public and
+// unauthenticated), so a crafted url like "https://x/../valk.db" or "https://x/../admin-key.json"
+// resolves to a real file that lives directly in ROOT (the live database, the admin key, VAPID
+// keys, google-config.json, backup-db.js, ...) — "stays inside ROOT" is not a strong enough check
+// on its own, since ROOT is exactly where all of this app's secrets live too. Confirmed exploitable
+// end-to-end: an anonymous request could make generateProposal read any of those files off disk
+// and — once ANTHROPIC_API_KEY is ever configured — embed the full contents in an outbound prompt
+// to Anthropic's API and persist an oldString/newString derived from it, which applyProposal would
+// then (if approved) write back over the ORIGINAL file via a plain string .replace(), corrupting a
+// binary SQLite database or a JSON secret file rather than patching a bug in it. Fixed with a real
+// allowlist instead of a containment check: every legitimate self-healing target is either exactly
+// one of the three server-side files, or a flat *.js file directly under public/ (this app has no
+// patchable file in a public/ subdirectory — public/vendor and public/images/uploads hold non-JS
+// assets, never a self-healing target) — nothing else can ever match, regardless of '..' sequences.
+const ALLOWED_TARGET_RE = /^(?:server|db|patcher)\.js$|^public\/[\w.-]+\.js$/;
 function resolveSafePath(targetFile) {
+  if (!ALLOWED_TARGET_RE.test(targetFile)) {
+    throw new Error(`Refusing to touch a path outside the allowed self-healing target set: ${targetFile}`);
+  }
   const absPath = path.resolve(ROOT, targetFile);
   if (absPath !== ROOT && !absPath.startsWith(ROOT + path.sep)) {
     throw new Error(`Refusing to touch a path outside the project: ${targetFile}`);

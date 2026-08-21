@@ -2887,3 +2887,60 @@ describe('Block Battle NvN match stations', () => {
     a.ws.close(); b.ws.close(); c.ws.close(); d.ws.close();
   });
 });
+
+describe('Self-healing patcher: target-file allowlist', () => {
+  // Dedicated instance — SYSTEMD_SERVICE_NAME points at a unit name that doesn't exist, so if any
+  // test here ever exercised a server-file patch approval (none currently do — see the note in
+  // memory about why the approve/reject race isn't covered by an automated test), the resulting
+  // `systemctl --user restart ...` would fail harmlessly instead of touching the real production
+  // chat-app.service. No ANTHROPIC_API_KEY is set, exactly like production today — generateProposal
+  // always bails at the "no credentials" step regardless; what these tests verify is that a
+  // malicious target is refused BEFORE that step (before any file read is even attempted), by
+  // inspecting the scratch server's own stdout/stderr for patcher.js's log lines.
+  let patcherServer;
+  before(async () => { patcherServer = await startTestServer({ SYSTEMD_SERVICE_NAME: 'chat-app-test-harness-does-not-exist' }, 3203); });
+  after(async () => { await patcherServer.stop(); });
+
+  test('a path-traversal target (public/../<file>) is refused before any file read is attempted', async () => {
+    const dirName = path.basename(patcherServer.dir);
+    // vapid-keys.json is a real, freshly-generated secret file that genuinely exists in this
+    // instance's own scratch directory (see startTestServer) — a real stand-in for the live app's
+    // admin-key.json/vapid-keys.json/valk.db, all of which live in the same ROOT directory as
+    // server.js. The 'public/' prefix comes from SERVER_PATH_RE's own public branch, which (unlike
+    // CLIENT_URL_RE) has no required .js suffix, so this doesn't need a fake .js-named target.
+    const res = await fetch(`http://localhost:${patcherServer.port}/errors/report`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: 'test error for traversal check',
+        stack: `at foo (/${dirName}/public/../vapid-keys.json:1:1)`,
+      }),
+    });
+    assert.equal(res.status, 200); // /errors/report always 200s immediately; generateProposal runs after, fire-and-forget
+    await sleep(300);
+    assert.match(patcherServer.getOutput(), /Refusing to touch a path outside the allowed self-healing target set: public\/\.\.\/vapid-keys\.json/);
+  });
+
+  test('a legitimate target still reaches the normal (no-API-key) bail-out, unaffected by the allowlist', async () => {
+    const dirName = path.basename(patcherServer.dir);
+    const before = patcherServer.getOutput().length;
+    const res = await fetch(`http://localhost:${patcherServer.port}/errors/report`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: 'test error for legitimate target',
+        stack: `at foo (/${dirName}/server.js:10:5)`,
+      }),
+    });
+    assert.equal(res.status, 200);
+    await sleep(300);
+    const newOutput = patcherServer.getOutput().slice(before);
+    // Whichever way this environment's Anthropic SDK ends up reporting "no credentials" (this
+    // installed version defers that error to the actual stream() call rather than throwing at
+    // `new Anthropic()`, so it's the "Claude API call failed" catch block, not the "No credentials
+    // configured" one) is fine — what actually matters here is that it got PAST the allowlist and
+    // successfully read the real file, neither of which a malicious target would do.
+    assert.doesNotMatch(newOutput, /Refusing to touch/, 'a legitimate target must not be rejected by the allowlist');
+    assert.doesNotMatch(newOutput, /not readable, skipping/, 'server.js must be read successfully, not fail as a missing/unreadable file');
+  });
+});

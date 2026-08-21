@@ -331,7 +331,8 @@ app.post('/admin/patches/:id/approve', requireAdmin, (req, res) => {
 });
 
 app.post('/admin/patches/:id/reject', requireAdmin, (req, res) => {
-  db.setPatchProposalStatus(req.params.id, 'rejected');
+  const changed = db.setPatchProposalStatus(req.params.id, 'rejected');
+  if (!changed) return res.status(400).json({ error: 'Proposal not found or already decided' });
   res.json({ ok: true });
 });
 
