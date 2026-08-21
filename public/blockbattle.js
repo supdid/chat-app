@@ -113,6 +113,15 @@ const SKY_HORIZON = '#dceef7';
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(SKY_HORIZON);
 scene.fog = new THREE.Fog(SKY_HORIZON, 30, 110);
+
+// Every outdoor-arena mesh built below (sky dome through the random cover structures) is parented
+// under this one group instead of directly under `scene`, so the online lobby can swap the whole
+// look to an office (see buildOffice() and officeGroup further down) by toggling one `.visible`
+// flag each way rather than hiding dozens of individual meshes. The group carries no transform of
+// its own, so every child's world position/raycasting is identical to being added to `scene`
+// directly — purely an on/off switch, not a coordinate change.
+const arenaGroup = new THREE.Group();
+scene.add(arenaGroup);
 {
   const c = document.createElement('canvas');
   c.width = 1;
@@ -128,7 +137,7 @@ scene.fog = new THREE.Fog(SKY_HORIZON, 30, 110);
     new THREE.SphereGeometry(160, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2), // top half only; fog hides the seam
     new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(c), side: THREE.BackSide, fog: false, depthWrite: false })
   );
-  scene.add(dome);
+  arenaGroup.add(dome);
 }
 
 const camera = new THREE.PerspectiveCamera(70, 1, 0.1, 200);
@@ -168,7 +177,7 @@ scene.add(sun);
   }));
   sunSprite.scale.set(28, 28, 1);
   sunSprite.position.copy(sun.position).normalize().multiplyScalar(140);
-  scene.add(sunSprite);
+  arenaGroup.add(sunSprite);
 }
 
 // Everything a shot can stop against (ground, walls, block columns).
@@ -204,7 +213,7 @@ const ground = new THREE.Mesh(
 );
 ground.rotation.x = -Math.PI / 2;
 ground.receiveShadow = true;
-scene.add(ground);
+arenaGroup.add(ground);
 solids.push(ground);
 
 // ---- Crossroad road surface ----
@@ -287,7 +296,7 @@ const roadPlane = new THREE.Mesh(
 roadPlane.rotation.x = -Math.PI / 2;
 roadPlane.position.y = 0.001; // just above the base ground plane, avoids z-fighting
 roadPlane.receiveShadow = true;
-scene.add(roadPlane);
+arenaGroup.add(roadPlane);
 
 // ---- Perimeter walls ----
 // Warmed from the old cool blue-gray to a brick-adjacent tone matching the cover blocks below —
@@ -306,7 +315,7 @@ const wallMat = new THREE.MeshLambertMaterial({ map: wallTex });
   wall.position.set(cx, WALL_HEIGHT / 2, cz);
   wall.castShadow = true;
   wall.receiveShadow = true;
-  scene.add(wall);
+  arenaGroup.add(wall);
   solids.push(wall);
 });
 
@@ -328,7 +337,7 @@ const clouds = [];
     }
     cloud.position.set((Math.random() - 0.5) * 100, 11 + Math.random() * 5, (Math.random() - 0.5) * 100);
     clouds.push(cloud);
-    scene.add(cloud);
+    arenaGroup.add(cloud);
   }
 }
 
@@ -344,7 +353,7 @@ const clouds = [];
     const hill = new THREE.Mesh(new THREE.ConeGeometry(8 + Math.random() * 10, h, 4), hillMat);
     hill.position.set(Math.cos(a) * r, h / 2 - 0.5, Math.sin(a) * r);
     hill.rotation.y = Math.random() * Math.PI;
-    scene.add(hill);
+    arenaGroup.add(hill);
   }
 }
 
@@ -368,7 +377,7 @@ function placeColumn(i, j, height) {
     cube.castShadow = true;
     cube.receiveShadow = true;
     cube.add(new THREE.LineSegments(edgeGeo, edgeMat));
-    scene.add(cube);
+    arenaGroup.add(cube);
     solids.push(cube);
   }
 }
@@ -417,6 +426,161 @@ function randCell() {
     }
   }
 }
+
+// The arena's own collision layout, snapshotted right after the structures above finish — the
+// online lobby's office (below) swaps `occupied`'s live contents out for its own layout while
+// active, and this is what leaveOnlineLobby()/backToModeSelect() restore it from afterward.
+const arenaOccupied = new Map(occupied);
+
+// ---- Online lobby office ----
+// Online Play swaps the whole outdoor crossroad arena for an indoor open-plan office (this is
+// purely a look-and-collision swap between two pre-built, always-in-the-scene groups — see
+// arenaGroup above — toggled by startOnlinePlay()/leaveOnlineLobby(), same pattern used for the
+// camera/gun/HUD switches those functions already make). Duels happen in this same space too
+// (no separate teleport-to-an-arena step exists), so the cubicle rows double as real cover.
+// Tall enough that the third-person lobby camera's own steepest look-up/look-down angle (see
+// tick()'s onlineActive camera branch: pivotY ± sin(camPitch)*camDist, worst case ~4.8) never
+// pokes the camera through the ceiling plane.
+const CEILING_HEIGHT = 5.5;
+const officeGroup = new THREE.Group();
+officeGroup.visible = false;
+scene.add(officeGroup);
+const officeOccupied = new Map(); // swapped into the live `occupied` Map exactly like arenaOccupied
+// A separate, always-off-until-toggled light rather than retuning the shared sun/hemisphere
+// (which the outdoor arena also depends on) — flipping one intensity between 0 and a warm value
+// is enough to read as "fluorescent office lighting" without touching outdoor-mode lighting at all.
+const officeAmbient = new THREE.AmbientLight(0xfff6e0, 0);
+scene.add(officeAmbient);
+
+function officeFloorTexture() {
+  const px = 128;
+  const c = document.createElement('canvas');
+  c.width = c.height = px;
+  const g = c.getContext('2d');
+  g.fillStyle = '#6b7178';
+  g.fillRect(0, 0, px, px);
+  for (let n = 0; n < 2000; n++) {
+    g.fillStyle = `rgba(0,0,0,${Math.random() * 0.05})`;
+    g.fillRect(Math.random() * px, Math.random() * px, 1, 1);
+  }
+  g.strokeStyle = 'rgba(0,0,0,0.08)';
+  for (let x = 0; x <= px; x += 32) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, px); g.stroke(); }
+  for (let y = 0; y <= px; y += 32) { g.beginPath(); g.moveTo(0, y); g.lineTo(px, y); g.stroke(); }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(MAP_BLOCKS / 2, MAP_BLOCKS / 2);
+  return tex;
+}
+
+function officeCeilingTexture() {
+  const px = 128;
+  const c = document.createElement('canvas');
+  c.width = c.height = px;
+  const g = c.getContext('2d');
+  g.fillStyle = '#aeada6';
+  g.fillRect(0, 0, px, px);
+  g.strokeStyle = 'rgba(120,120,110,0.5)';
+  g.lineWidth = 2;
+  for (let x = 0; x <= px; x += 32) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, px); g.stroke(); }
+  for (let y = 0; y <= px; y += 32) { g.beginPath(); g.moveTo(0, y); g.lineTo(px, y); g.stroke(); }
+  g.fillStyle = '#e8e2cf'; // recessed light panel in the middle of every other ceiling tile — still the brightest thing up there, just not full white
+  for (let y = 8; y < px; y += 64) {
+    for (let x = 8; x < px; x += 64) g.fillRect(x, y, 16, 16);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(MAP_BLOCKS / 2, MAP_BLOCKS / 2);
+  return tex;
+}
+
+// Adds a box to officeGroup at a raw world position (unlike placeColumn's grid-cell convention —
+// office furniture is shaped and placed by hand, not stacked unit cubes).
+function officeBox(w, h, d, x, y, z, mat) {
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  mesh.position.set(x, y, z);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  officeGroup.add(mesh);
+  solids.push(mesh);
+  return mesh;
+}
+
+function buildOffice() {
+  const floor = new THREE.Mesh(
+    new THREE.PlaneGeometry(MAP_BLOCKS + 2, MAP_BLOCKS + 2),
+    new THREE.MeshLambertMaterial({ map: officeFloorTexture() })
+  );
+  floor.rotation.x = -Math.PI / 2;
+  floor.receiveShadow = true;
+  officeGroup.add(floor);
+
+  const ceiling = new THREE.Mesh(
+    new THREE.PlaneGeometry(MAP_BLOCKS + 2, MAP_BLOCKS + 2),
+    new THREE.MeshLambertMaterial({ map: officeCeilingTexture() })
+  );
+  ceiling.rotation.x = Math.PI / 2;
+  ceiling.position.y = CEILING_HEIGHT;
+  officeGroup.add(ceiling);
+
+  // Same 4 perimeter positions/sizes as the arena's own walls (so the shared clampToMap() bound
+  // still lines up with what the player can actually see) — just a lighter interior-drywall tone
+  // and shorter, floor-to-ceiling instead of the arena's taller outdoor facade height.
+  const wallMat = new THREE.MeshLambertMaterial({ map: speckleTexture(178, 174, 162, 6, 32) });
+  [
+    [0, -(HALF_MAP + 0.5), MAP_BLOCKS + 2, 1],
+    [0, HALF_MAP + 0.5, MAP_BLOCKS + 2, 1],
+    [-(HALF_MAP + 0.5), 0, 1, MAP_BLOCKS + 2],
+    [HALF_MAP + 0.5, 0, 1, MAP_BLOCKS + 2],
+  ].forEach(([cx, cz, sx, sz]) => {
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(sx, CEILING_HEIGHT, sz), wallMat);
+    wall.position.set(cx, CEILING_HEIGHT / 2, cz);
+    wall.receiveShadow = true;
+    officeGroup.add(wall);
+    solids.push(wall);
+  });
+
+  // Cubicles: desk + monitor + partition + chair, one full unit cell each (same footprint
+  // convention as placeColumn's cover blocks), in two facing rows either side of a clear center
+  // aisle running straight through the spawn point.
+  const deskMat = new THREE.MeshLambertMaterial({ color: 0xc9a06a });
+  const partitionMat = new THREE.MeshLambertMaterial({ color: 0x6d8a99 });
+  const monitorMat = new THREE.MeshLambertMaterial({ color: 0x1c1e22 });
+  const chairMat = new THREE.MeshLambertMaterial({ color: 0x333333 });
+  function cubicle(i, j, facingSouth) {
+    const cx = i + 0.5, cz = j + 0.5;
+    const sign = facingSouth ? -1 : 1; // which edge of the cell the partition sits against
+    officeBox(0.9, 1.3, 0.08, cx, 0.65, cz + sign * 0.3, partitionMat);
+    officeBox(0.8, 0.5, 0.5, cx, 0.25, cz + sign * 0.02, deskMat);
+    officeBox(0.35, 0.2, 0.04, cx, 0.55, cz + sign * 0.15, monitorMat);
+    officeBox(0.4, 0.4, 0.4, cx, 0.2, cz - sign * 0.3, chairMat);
+    // 1.3 blocks movement (JUMP_HEIGHT is 1.15 — unjumpable, a real obstacle to walk around) while
+    // still letting bullets/tracers read it as cover, same collision convention as a tower column.
+    officeOccupied.set(`${i},${j}`, 1.3);
+  }
+  [-9, -6, -3, 3, 6, 9].forEach((i) => { cubicle(i, -6, true); cubicle(i, 6, false); });
+
+  // Potted plants in the corners — decorative only, deliberately not registered in
+  // officeOccupied (same "decoration, not an obstacle" precedent as the arena's clouds/hills).
+  const potMat = new THREE.MeshLambertMaterial({ color: 0x8a5a3c });
+  const leafMat = new THREE.MeshLambertMaterial({ color: 0x3f7d4a });
+  [[-10, -10], [10, -10], [-10, 10], [10, 10]].forEach(([x, z]) => {
+    const pot = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.22, 0.4, 8), potMat);
+    pot.position.set(x, 0.2, z);
+    pot.castShadow = true;
+    officeGroup.add(pot);
+    const leaves = new THREE.Mesh(new THREE.SphereGeometry(0.4, 8, 8), leafMat);
+    leaves.position.set(x, 0.75, z);
+    leaves.scale.y = 1.4;
+    leaves.castShadow = true;
+    officeGroup.add(leaves);
+  });
+
+  // A small break table near the back wall, clear of both cubicle rows.
+  const tableMat = new THREE.MeshLambertMaterial({ color: 0xdad2c4 });
+  officeBox(1.6, 0.5, 1, 0, 0.25, 9.5, tableMat);
+  [[-0.9, 9], [0.9, 9], [-0.9, 10], [0.9, 10]].forEach(([x, z]) => officeBox(0.35, 0.4, 0.35, x, 0.2, z, chairMat));
+}
+buildOffice();
 
 // ---- Sound ----
 // Every effect is synthesized with WebAudio — no audio files to load. Browsers
@@ -1724,6 +1888,13 @@ function startOnlinePlay() {
   waveCounter.classList.add('hidden');
   lobbyHud.classList.remove('hidden');
   lobbyCodeLabel.textContent = bbRoomCode ? `🔗 Room ${bbRoomCode}` : '🌐 Public lobby';
+  // Swap the whole look (and collision layout) from the outdoor crossroad to the indoor office —
+  // see arenaGroup/officeGroup up near buildOffice().
+  arenaGroup.visible = false;
+  officeGroup.visible = true;
+  officeAmbient.intensity = 0.22;
+  occupied.clear();
+  for (const [k, v] of officeOccupied) occupied.set(k, v);
   connectBb();
   document.getElementById('hint-title').textContent = 'Click to play';
   hint.classList.remove('hidden');
@@ -1749,6 +1920,11 @@ function leaveOnlineLobby() {
   weaponHudEl.classList.remove('hidden');
   waveCounter.classList.remove('hidden');
   gun.visible = true;
+  arenaGroup.visible = true;
+  officeGroup.visible = false;
+  officeAmbient.intensity = 0;
+  occupied.clear();
+  for (const [k, v] of arenaOccupied) occupied.set(k, v);
 }
 
 document.getElementById('online-play-btn').addEventListener('click', (e) => {
