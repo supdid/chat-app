@@ -394,6 +394,33 @@ a { color: inherit; text-decoration: none; }
 .channel-header-name { font-size: 1.3rem; font-weight: 800; }
 .channel-header-subs { color: var(--ink-soft); font-size: 0.9rem; }
 
+.channel-description { margin-bottom: 1.4rem; }
+.channel-description-view {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  color: var(--ink-soft);
+  font-size: 0.92rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.channel-description-view span { flex: 1; }
+.pill-btn.small { font-size: 0.78rem; padding: 0.3rem 0.6rem; flex-shrink: 0; }
+.channel-description-edit { display: flex; flex-direction: column; gap: 0.5rem; }
+.channel-description-edit textarea {
+  width: 100%;
+  min-height: 80px;
+  resize: vertical;
+  font: inherit;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--white);
+  color: var(--ink);
+}
+.channel-description-edit-actions { display: flex; gap: 0.5rem; }
+.pill-btn.ghost { background: transparent; border: 1px solid var(--border); }
+
 /* ---------- Live streaming ---------- */
 .live-badge {
   position: absolute;

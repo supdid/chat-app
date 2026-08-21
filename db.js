@@ -419,6 +419,7 @@ ensureColumn('accounts', 'email', 'TEXT');
 ensureColumn('accounts', 'google_id', 'TEXT');
 ensureColumn('accounts', 'scorpture_banner_url', 'TEXT');
 ensureColumn('accounts', 'scorpture_avatar_url', 'TEXT');
+ensureColumn('accounts', 'scorpture_description', 'TEXT');
 ensureColumn('accounts', 'scorpture_bonus_subscribers', 'INTEGER DEFAULT 0');
 ensureColumn('accounts', 'scorpture_overlay_json', 'TEXT');
 ensureColumn('scorpture_comments', 'edited', 'INTEGER DEFAULT 0');
@@ -1374,6 +1375,10 @@ function setScorptureAvatar(accountId, avatarUrl) {
   db.prepare('UPDATE accounts SET scorpture_avatar_url = ? WHERE id = ?').run(avatarUrl, accountId);
 }
 
+function setScorptureDescription(accountId, description) {
+  db.prepare('UPDATE accounts SET scorpture_description = ? WHERE id = ?').run(description, accountId);
+}
+
 // ---- Self-healing: error reports (uncaught server/client errors) and the AI-drafted patch
 // proposals generated from them, see patcher.js. Everything here is admin-reviewed — nothing
 // in this section ever applies a change to the running app by itself. ----
@@ -1712,6 +1717,7 @@ module.exports = {
   isScorptureSubscribed,
   setScorptureBanner,
   setScorptureAvatar,
+  setScorptureDescription,
   setScorptureBonusSubscribers,
   getScorptureBonusSubscribers,
   getScorptureOverlays,

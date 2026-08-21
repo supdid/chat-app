@@ -1528,6 +1528,7 @@ app.get('/api/scorpture/channels/:username', (req, res) => {
     liveTitle: liveStream ? liveStream.title : null,
     bannerUrl: channelAccount.scorpture_banner_url || null,
     avatarUrl: channelAccount.scorpture_avatar_url || null,
+    description: channelAccount.scorpture_description || null,
   });
 });
 
@@ -1564,6 +1565,15 @@ app.post('/api/scorpture/avatar', (req, res) => {
   if (!avatarUrl.startsWith('/uploads/')) return res.status(400).json({ error: 'Missing avatar image' });
   db.setScorptureAvatar(account.id, avatarUrl);
   res.json({ ok: true, avatarUrl });
+});
+
+// Same "own account only" shape as banner/avatar above — plain text, no upload involved.
+app.post('/api/scorpture/description', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  const description = typeof req.body.description === 'string' ? req.body.description.trim().slice(0, 1000) : '';
+  db.setScorptureDescription(account.id, description || null);
+  res.json({ ok: true, description: description || null });
 });
 
 // Cosmetic-only admin panel, hardcoded to one specific account by username *and* email (not just

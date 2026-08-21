@@ -580,6 +580,23 @@ async function renderChannel(username) {
       </div>
       ${channel.isOwner ? `<a href="#/overlays" class="pill-btn" style="margin-left:auto">⚙️ Stream overlays</a>` : `<button id="channel-subscribe-btn" class="pill-btn subscribe-btn${channel.subscribed ? ' subscribed' : ''}" style="margin-left:auto">${channel.subscribed ? 'Subscribed' : 'Subscribe'}</button>`}
     </div>
+    ${channel.isOwner || channel.description ? `
+      <div class="channel-description" id="channel-description-wrap">
+        <div class="channel-description-view" id="channel-description-view">
+          <span id="channel-description-text">${channel.description ? escapeHtml(channel.description) : 'No description yet.'}</span>
+          ${channel.isOwner ? `<button id="edit-description-btn" class="pill-btn small">✏️ Edit</button>` : ''}
+        </div>
+        ${channel.isOwner ? `
+          <div class="channel-description-edit hidden" id="channel-description-edit">
+            <textarea id="channel-description-input" maxlength="1000" placeholder="Tell viewers about your channel...">${channel.description ? escapeHtml(channel.description) : ''}</textarea>
+            <div class="channel-description-edit-actions">
+              <button id="save-description-btn" class="pill-btn">Save</button>
+              <button id="cancel-description-btn" class="pill-btn ghost">Cancel</button>
+            </div>
+          </div>
+        ` : ''}
+      </div>
+    ` : ''}
     ${
       videos.videos.length
         ? `<div class="video-grid">${videos.videos.map(videoCardHtml).join('')}</div>`
@@ -619,6 +636,36 @@ async function renderChannel(username) {
         const avatarUrl = await uploadFile(file, file.name || 'avatar.jpg');
         await api('/api/scorpture/avatar', { method: 'POST', body: JSON.stringify({ avatarUrl }) });
         wrap.querySelector('.channel-header-avatar').outerHTML = avatarHtml(avatarUrl, channel.username, 'channel-header-avatar');
+      } catch (err) {
+        showToast(err.message);
+      }
+    });
+  }
+
+  const editDescriptionBtn = document.getElementById('edit-description-btn');
+  if (editDescriptionBtn) {
+    const viewEl = document.getElementById('channel-description-view');
+    const editEl = document.getElementById('channel-description-edit');
+    const input = document.getElementById('channel-description-input');
+    const textEl = document.getElementById('channel-description-text');
+    editDescriptionBtn.addEventListener('click', () => {
+      viewEl.classList.add('hidden');
+      editEl.classList.remove('hidden');
+      input.focus();
+    });
+    document.getElementById('cancel-description-btn').addEventListener('click', () => {
+      input.value = channel.description || '';
+      editEl.classList.add('hidden');
+      viewEl.classList.remove('hidden');
+    });
+    document.getElementById('save-description-btn').addEventListener('click', async () => {
+      const description = input.value.trim();
+      try {
+        const result = await api('/api/scorpture/description', { method: 'POST', body: JSON.stringify({ description }) });
+        channel.description = result.description;
+        textEl.textContent = result.description || 'No description yet.';
+        editEl.classList.add('hidden');
+        viewEl.classList.remove('hidden');
       } catch (err) {
         showToast(err.message);
       }
