@@ -1,5 +1,17 @@
 'use strict';
 
+// Opened straight from a chat room's game menu (index.html's updateGameLinks, same as every
+// other minigame), this carries ?room=&name= along — if present, Online Play joins THAT room's
+// own Block Battle lobby instead of the public one, so friends who click in from the same chat
+// room land together automatically, and back-link mirrors it right back so "Back to chat" returns
+// to that same room (identical pattern to firefight.js's own roomCode/back-link handling).
+const urlParams = new URLSearchParams(location.search);
+const bbRoomCode = urlParams.get('room');
+const bbPlayerName = urlParams.get('name');
+if (bbRoomCode) {
+  document.getElementById('back-link').href = `index.html?room=${encodeURIComponent(bbRoomCode)}&name=${encodeURIComponent(bbPlayerName || '')}`;
+}
+
 // Asher & Issac's game, step 7: sound, waves, and bots with eyes.
 // First person on the gray block map: click to grab the mouse, WASD/arrows to
 // move, Space jumps, L-Shift sprints, Ctrl (or C) crouches, Ctrl while
@@ -1362,6 +1374,7 @@ let bbPosSendT = 0;      // counts down to the next throttled bb-pos send
 let bbAvatarPhase = 0;   // local third-person avatar's own walk-cycle clock
 
 const lobbyHud = document.getElementById('lobby-hud');
+const lobbyCodeLabel = document.getElementById('lobby-code-label');
 const lobbyPlayerCount = document.getElementById('lobby-player-count');
 const lobbyPlayersPanel = document.getElementById('lobby-players-panel');
 const lobbyPlayersList = document.getElementById('lobby-players-list');
@@ -1673,7 +1686,10 @@ function connectBb() {
   bbWs = new WebSocket(`${protocol}//${location.host}`);
   bbWs.addEventListener('open', () => {
     const accountToken = localStorage.getItem('valk-account-token') || '';
-    bbWs.send(JSON.stringify({ type: 'bb-join', accountToken, level: getLevel() }));
+    // Omitting `code` entirely (not just sending an empty string) matters here — server.js's
+    // bb-join falls back to the shared public 'GLOBAL-LOBBY' only when `code` is falsy, so a
+    // direct/bookmarked visit with no ?room= still works exactly as before this change.
+    bbWs.send(JSON.stringify({ type: 'bb-join', accountToken, level: getLevel(), code: bbRoomCode || undefined }));
   });
   bbWs.addEventListener('message', (event) => {
     let data;
@@ -1707,6 +1723,7 @@ function startOnlinePlay() {
   weaponHudEl.classList.add('hidden');
   waveCounter.classList.add('hidden');
   lobbyHud.classList.remove('hidden');
+  lobbyCodeLabel.textContent = bbRoomCode ? `🔗 Room ${bbRoomCode}` : '🌐 Public lobby';
   connectBb();
   document.getElementById('hint-title').textContent = 'Click to play';
   hint.classList.remove('hidden');
