@@ -244,6 +244,38 @@ describe('friends', () => {
     assert.equal(res.status, 400);
   });
 
+  // The test above this one only ever checked that /friends/block itself returns 200 — never that
+  // blocking actually stops anything. A blocked party retrying a friend request is the most basic
+  // real-world case a block exists to prevent.
+  test('a block actually prevents the blocked party from sending a new friend request', async () => {
+    const signup = async (username, email) => fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password: 'pass1234', email }),
+    }).then((r) => r.json());
+    const blocker = await signup('BlockEnforceA', 'blockenforcea@test.com');
+    const blocked = await signup('BlockEnforceB', 'blockenforceb@test.com');
+
+    const blockRes = await fetch(`${BASE_URL}/friends/block`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${blocker.token}` },
+      body: JSON.stringify({ username: 'BlockEnforceB' }),
+    });
+    assert.equal(blockRes.status, 200);
+
+    const reqRes = await fetch(`${BASE_URL}/friends/request`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${blocked.token}` },
+      body: JSON.stringify({ username: 'BlockEnforceA' }),
+    });
+    assert.equal(reqRes.status, 403, 'the blocked party must not be able to send a fresh friend request to the blocker');
+
+    // The block is symmetric (isBlockedBetween checks both directions) — the blocker also can't
+    // "friend request" their way around their own block.
+    const reverseReqRes = await fetch(`${BASE_URL}/friends/request`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${blocker.token}` },
+      body: JSON.stringify({ username: 'BlockEnforceB' }),
+    });
+    assert.equal(reverseReqRes.status, 403);
+  });
+
   test('signing into a different account on the same connection does not leave the previous account stuck showing online', async () => {
     const signup = async (username, email) => fetch(`${BASE_URL}/auth/signup`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -330,6 +362,70 @@ describe('room moderation', () => {
     const result = await waitFor(rejoin, (m) => m.type === 'join-error' || m.type === 'joined-room');
     assert.equal(result.type, 'join-error');
   });
+
+  // mute-user/ban-user (the forward direction) were already covered above — unmute/unban/get-bans
+  // (their reverse) had zero coverage despite being the same host-only-gate shape.
+  test('mute actually blocks messages; unmute lifts it and is host-only', async () => {
+    const { ws: host, code } = await joinRoom('UnmuteHost');
+    const guest = await joinExistingRoom('UnmuteGuest', code);
+    await sleep(150);
+
+    send(host, { type: 'mute-user', name: 'UnmuteGuest' });
+    await waitFor(host, (m) => m.type === 'user-muted');
+    send(guest, { type: 'message', text: 'should be blocked' });
+    const blocked = await waitFor(guest, (m) => m.type === 'error' || (m.type === 'message' && m.text === 'should be blocked'));
+    assert.equal(blocked.type, 'error', 'a muted user\'s message must be rejected, not echoed');
+
+    // A non-host unmute attempt must be a silent no-op.
+    let guestUnmuteWorked = false;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'user-unmuted') guestUnmuteWorked = true; };
+    guest.on('message', h);
+    send(guest, { type: 'unmute-user', name: 'UnmuteGuest' });
+    await sleep(250);
+    guest.off('message', h);
+    assert.equal(guestUnmuteWorked, false, 'a non-host should not be able to unmute anyone, even themself');
+
+    send(host, { type: 'unmute-user', name: 'UnmuteGuest' });
+    const unmuted = await waitFor(host, (m) => m.type === 'user-unmuted');
+    assert.equal(unmuted.name, 'UnmuteGuest');
+    send(guest, { type: 'message', text: 'should go through now' });
+    const echoed = await waitFor(guest, (m) => m.type === 'message' && m.text === 'should go through now');
+    assert.equal(echoed.text, 'should go through now', 'unmute must actually restore the ability to post');
+  });
+
+  test('get-bans/unban-user are host-only; unban actually lets the target rejoin', async () => {
+    const { ws: host, code } = await joinRoom('UnbanHost');
+    const guest = await joinExistingRoom('UnbanGuest', code);
+    await sleep(150);
+    send(host, { type: 'ban-user', name: 'UnbanGuest' });
+    await sleep(300);
+
+    // A non-host get-bans/unban-user attempt must be a silent no-op.
+    let nonHostGotBans = false;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'bans-result') nonHostGotBans = true; };
+    guest.on('message', h);
+    send(guest, { type: 'get-bans' });
+    await sleep(250);
+    guest.off('message', h);
+    assert.equal(nonHostGotBans, false, 'a non-host must not be able to see the ban list');
+
+    send(host, { type: 'get-bans' });
+    const bansResult = await waitFor(host, (m) => m.type === 'bans-result');
+    const ban = bansResult.bans.find((b) => b.target_name === 'UnbanGuest');
+    assert.ok(ban, 'the ban list must contain the just-issued ban');
+
+    send(host, { type: 'unban-user', banId: ban.id });
+    const afterUnban = await waitFor(host, (m) => m.type === 'bans-result');
+    assert.ok(!afterUnban.bans.some((b) => b.target_name === 'UnbanGuest'), 'unban must actually remove the ban row');
+
+    const rejoin = await connectWs();
+    send(rejoin, { type: 'join-server', username: 'UnbanGuest' });
+    await waitFor(rejoin, (m) => m.type === 'joined-server');
+    send(rejoin, { type: 'join-room', code });
+    const result = await waitFor(rejoin, (m) => m.type === 'join-error' || m.type === 'joined-room');
+    assert.equal(result.type, 'joined-room', 'the unbanned target must actually be able to rejoin now');
+    rejoin.close();
+  });
 });
 
 describe('room rename requires host', () => {
@@ -349,6 +445,99 @@ describe('room rename requires host', () => {
     send(host, { type: 'rename-room', name: 'Legit Name' });
     const renamed = await waitFor(host, (m) => m.type === 'room-renamed');
     assert.equal(renamed.name, 'Legit Name');
+  });
+});
+
+describe('room PIN actually gates join-room', () => {
+  test('no PIN is rejected, wrong PIN is rejected, correct PIN joins', async () => {
+    const { ws: host, code } = await joinRoom('PinHost');
+    send(host, { type: 'set-room-pin', pin: '4242' });
+    await waitFor(host, (m) => m.type === 'room-pin-updated' && m.pinRequired === true);
+
+    const noPin = await connectWs();
+    send(noPin, { type: 'join-server', username: 'PinGuestNone' });
+    await waitFor(noPin, (m) => m.type === 'joined-server');
+    send(noPin, { type: 'join-room', code });
+    const noPinResult = await waitFor(noPin, (m) => m.type === 'join-error' || m.type === 'joined-room');
+    assert.equal(noPinResult.type, 'join-error', 'joining a PIN-locked room with no PIN must be rejected');
+    assert.equal(noPinResult.pinRequired, true);
+
+    const wrongPin = await connectWs();
+    send(wrongPin, { type: 'join-server', username: 'PinGuestWrong' });
+    await waitFor(wrongPin, (m) => m.type === 'joined-server');
+    send(wrongPin, { type: 'join-room', code, pin: '0000' });
+    const wrongPinResult = await waitFor(wrongPin, (m) => m.type === 'join-error' || m.type === 'joined-room');
+    assert.equal(wrongPinResult.type, 'join-error', 'the wrong PIN must be rejected');
+
+    const rightPin = await connectWs();
+    send(rightPin, { type: 'join-server', username: 'PinGuestRight' });
+    await waitFor(rightPin, (m) => m.type === 'joined-server');
+    send(rightPin, { type: 'join-room', code, pin: '4242' });
+    const rightPinResult = await waitFor(rightPin, (m) => m.type === 'join-error' || m.type === 'joined-room');
+    assert.equal(rightPinResult.type, 'joined-room', 'the correct PIN must actually let the join through');
+
+    noPin.close(); wrongPin.close(); rightPin.close();
+  });
+});
+
+describe('set-wallpaper/set-announcement are host-only and enforce the upload allowlist', () => {
+  test('non-host attempts are silent no-ops; host changes broadcast; a non-/uploads/ wallpaper URL is dropped', async () => {
+    const { ws: host, code } = await joinRoom('WallHost');
+    const guest = await joinExistingRoom('WallGuest', code);
+    await sleep(150);
+
+    let guestWallpaperWorked = false;
+    const h1 = (data) => { const m = JSON.parse(data); if (m.type === 'wallpaper-updated') guestWallpaperWorked = true; };
+    guest.on('message', h1);
+    send(guest, { type: 'set-wallpaper', url: '/uploads/guest-tried.jpg' });
+    await sleep(250);
+    guest.off('message', h1);
+    assert.equal(guestWallpaperWorked, false, 'a non-host must not be able to set the wallpaper');
+
+    let guestAnnouncementWorked = false;
+    const h2 = (data) => { const m = JSON.parse(data); if (m.type === 'announcement-updated') guestAnnouncementWorked = true; };
+    guest.on('message', h2);
+    send(guest, { type: 'set-announcement', text: 'guest announcement' });
+    await sleep(250);
+    guest.off('message', h2);
+    assert.equal(guestAnnouncementWorked, false, 'a non-host must not be able to set the announcement');
+
+    // A raw WS client could claim any external URL as the wallpaper — must be silently dropped to null.
+    send(host, { type: 'set-wallpaper', url: 'https://evil.example/tracker.gif' });
+    const trackerResult = await waitFor(host, (m) => m.type === 'wallpaper-updated');
+    assert.equal(trackerResult.url, null, 'a non-/uploads/ wallpaper URL must be rejected, not stored');
+
+    send(host, { type: 'set-wallpaper', url: '/uploads/real-wallpaper.jpg' });
+    const realResult = await waitFor(host, (m) => m.type === 'wallpaper-updated');
+    assert.equal(realResult.url, '/uploads/real-wallpaper.jpg');
+
+    send(host, { type: 'set-announcement', text: 'Host announcement' });
+    const announced = await waitFor(host, (m) => m.type === 'announcement-updated');
+    assert.equal(announced.text, 'Host announcement');
+  });
+});
+
+describe('POST /auth/logout actually invalidates the session', () => {
+  // This exact flow (signup/login/me/logout/logout-invalidates-token) was manually curl-verified
+  // once when accounts were first built, per this app's own project notes — but never captured as
+  // a permanent regression test, so a silent regression here (logout looking successful client-side
+  // while the token stays valid — a real problem on a shared device) would go unnoticed.
+  test('the bearer token stops working immediately after logout', async () => {
+    const signupRes = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'LogoutCheck', password: 'password123', email: 'logoutcheck@test.com' }),
+    });
+    const { token } = await signupRes.json();
+
+    const before = await fetch(`${BASE_URL}/auth/me`, { headers: { Authorization: `Bearer ${token}` } });
+    assert.equal(before.status, 200, 'the freshly-issued token must work');
+    assert.equal((await before.json()).username, 'LogoutCheck');
+
+    const logoutRes = await fetch(`${BASE_URL}/auth/logout`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+    assert.equal(logoutRes.status, 200);
+
+    const after = await fetch(`${BASE_URL}/auth/me`, { headers: { Authorization: `Bearer ${token}` } });
+    assert.equal(after.status, 401, 'the same token must be rejected immediately after logout');
   });
 });
 
@@ -1173,6 +1362,79 @@ describe('admin error-report resolve/dismiss', () => {
   });
 });
 
+describe('WS report -> /admin/reports pipeline', () => {
+  // This is explicitly the pipeline for reaching a moderator when the room host isn't around
+  // (any member can report, not just the host) — had zero coverage despite /admin/errors's
+  // identical resolve/dismiss shape (directly above) being tested. If this silently broke,
+  // reported abuse would vanish with no visible error to the reporter or the admin.
+  test('a submitted report reaches /admin/reports, and resolve/dismiss update its status', async () => {
+    const adminKey = JSON.parse(fs.readFileSync(path.join(server.dir, 'admin-key.json'), 'utf8')).key;
+    const { ws: reporter, code } = await joinRoom('ReportSubmitter');
+    const target = await joinExistingRoom('ReportTargetUser', code);
+    await sleep(150);
+
+    send(reporter, { type: 'report', targetName: 'ReportTargetUser', reason: 'being annoying' });
+    await waitFor(reporter, (m) => m.type === 'report-received');
+
+    const { reports } = await (await fetch(`${BASE_URL}/admin/reports?key=${adminKey}`)).json();
+    const found = reports.find((r) => r.target_name === 'ReportTargetUser' && r.room_code === code);
+    assert.ok(found, 'the submitted report must show up in the admin list');
+    assert.equal(found.status, 'new');
+    assert.equal(found.reason, 'being annoying');
+
+    const resolveRes = await fetch(`${BASE_URL}/admin/reports/${found.id}/resolve?key=${adminKey}`, { method: 'POST' });
+    assert.equal(resolveRes.status, 200);
+    const afterResolve = await (await fetch(`${BASE_URL}/admin/reports?key=${adminKey}`)).json();
+    assert.equal(afterResolve.reports.find((r) => r.id === found.id).status, 'resolved');
+
+    const dismissRes = await fetch(`${BASE_URL}/admin/reports/${found.id}/dismiss?key=${adminKey}`, { method: 'POST' });
+    assert.equal(dismissRes.status, 200);
+    const afterDismiss = await (await fetch(`${BASE_URL}/admin/reports?key=${adminKey}`)).json();
+    assert.equal(afterDismiss.reports.find((r) => r.id === found.id).status, 'dismissed');
+
+    reporter.close(); target.close();
+  });
+});
+
+describe('load-older-messages pagination', () => {
+  // Every room's scrollback depends on this beforeAt/hasMore cursor logic; had zero coverage.
+  // Note: as of this writing, no client anywhere (grepped all of public/*.js) actually sends
+  // load-older-messages — it's a fully-built, never-wired-up feature, so this is currently
+  // unreachable by any real user. Still worth a real test: dead code today doesn't mean dead
+  // forever, and a WS handler this precisely defined deserves the same coverage discipline as a
+  // live one. Also a real, separate finding along the way: getMessagesBefore's `at < ?` comparison
+  // has no tiebreaker — a message sharing the exact millisecond of the cursor (`beforeAt`) is
+  // silently excluded, since `at < beforeAt` is false when they're equal. A rowid tiebreaker was
+  // added to db.js for ORDER BY stability, but that alone can't fix this — the WHERE clause itself
+  // would need the client to pass a compound cursor (at + the boundary message's own id), which
+  // isn't worth doing for a handler nothing currently calls (see db.js's own comment on this). This
+  // test reproduced that exact gap once (two back-to-back sends landing in the same millisecond
+  // under load, even with an awaited round-trip between them) — a small explicit delay between
+  // sends below sidesteps it, since the point of this test is the common case, not that known gap.
+  test('returns exactly the messages older than a given cursor, oldest-first, with correct hasMore', async () => {
+    const { ws } = await joinRoom('LoadOlderHost');
+    // Only 4 messages, not 8 — join-server itself calls isWsMsgRateLimited (a real, if easy to
+    // overlook, shared-budget gotcha: it already spends 1 of RATE_LIMIT_MAX_MESSAGES's 8 slots
+    // before this loop's own sends even start), so a naive loop of 8 here reliably rate-limits its
+    // own 8th send. 4 is comfortably clear of that and is all this test actually needs.
+    const sent = [];
+    for (let i = 0; i < 4; i++) {
+      const text = `loadolder-${i}`;
+      send(ws, { type: 'message', text });
+      sent.push(await waitFor(ws, (m) => m.type === 'message' && m.text === text));
+      await sleep(5); // guarantee distinct `at` millisecond timestamps — see the tiebreaker gap noted above
+    }
+
+    // Cursor = the 4th message (index 3) — messages 0,1,2 are strictly older and must come back.
+    send(ws, { type: 'load-older-messages', beforeAt: sent[3].at });
+    const older = await waitFor(ws, (m) => m.type === 'older-messages');
+    assert.deepEqual(older.messages.map((m) => m.text), ['loadolder-0', 'loadolder-1', 'loadolder-2'], 'must return exactly the messages before the cursor, oldest-first');
+    assert.equal(older.hasMore, false, 'only 3 messages exist before the cursor, well under the page cap — hasMore must be false');
+
+    ws.close();
+  });
+});
+
 describe('Trivia reconnect mid-round', () => {
   test('a reconnected player cannot answer the same question twice, and the rejoin correctly reports alreadyAnswered', async () => {
     const code = 'TVRECONNECT1';
@@ -1658,6 +1920,88 @@ describe('Scorpture comments stay in order after the N+1 fix', () => {
 
     const { comments } = await fetch(`${BASE_URL}/api/scorpture/videos/${video.id}/comments`).then((r) => r.json());
     assert.deepEqual(comments.map((c) => c.text), ['first', 'second', 'third'], 'comments must stay in oldest-first order after the DESC+LIMIT+reverse rewrite');
+  });
+});
+
+describe('Scorpture video edit/delete are ownership-gated', () => {
+  // POST (create) is well covered elsewhere; PUT (edit) and DELETE had zero coverage despite both
+  // being ownership-gated on the uploader_id — a broken check here means any signed-in user could
+  // edit or permanently delete someone else's video (DELETE also removes the files from disk).
+  test('a different account cannot edit or delete someone else\'s video; the owner can', async () => {
+    const signup = async (username) => fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password: 'pass1234', email: `${username.toLowerCase()}@test.com` }),
+    }).then((r) => r.json());
+    const owner = await signup('ScorpOwnerCheck');
+    const stranger = await signup('ScorpStrangerCheck');
+    await sleep(6500); // clear the shared isPostMediaRateLimited budget
+
+    const form = new FormData();
+    form.append('file', new Blob(['ownership test video'], { type: 'video/mp4' }), 'owner.mp4');
+    const { url } = await (await fetch(`${BASE_URL}/upload`, { method: 'POST', body: form })).json();
+    const video = await fetch(`${BASE_URL}/api/scorpture/videos`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${owner.token}` },
+      body: JSON.stringify({ title: 'Original title', videoUrl: url }),
+    }).then((r) => r.json());
+
+    const strangerEditRes = await fetch(`${BASE_URL}/api/scorpture/videos/${video.id}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${stranger.token}` },
+      body: JSON.stringify({ title: 'Hijacked title' }),
+    });
+    assert.equal(strangerEditRes.status, 403, 'a non-owner must not be able to edit the video');
+
+    const strangerDeleteRes = await fetch(`${BASE_URL}/api/scorpture/videos/${video.id}`, {
+      method: 'DELETE', headers: { Authorization: `Bearer ${stranger.token}` },
+    });
+    assert.equal(strangerDeleteRes.status, 403, 'a non-owner must not be able to delete the video');
+
+    const ownerEditRes = await fetch(`${BASE_URL}/api/scorpture/videos/${video.id}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${owner.token}` },
+      body: JSON.stringify({ title: 'Owner-edited title' }),
+    });
+    assert.equal(ownerEditRes.status, 200, 'the real owner must be able to edit their own video');
+    assert.equal((await ownerEditRes.json()).title, 'Owner-edited title');
+
+    const ownerDeleteRes = await fetch(`${BASE_URL}/api/scorpture/videos/${video.id}`, {
+      method: 'DELETE', headers: { Authorization: `Bearer ${owner.token}` },
+    });
+    assert.equal(ownerDeleteRes.status, 200, 'the real owner must be able to delete their own video');
+
+    const gone = await fetch(`${BASE_URL}/api/scorpture/videos/${video.id}`);
+    assert.equal(gone.status, 404, 'the video must actually be gone after the owner deletes it');
+  });
+});
+
+describe('POST /account/username enforces format and uniqueness', () => {
+  test('a valid rename succeeds and is reflected in /auth/me; an invalid or taken name is rejected', async () => {
+    const signup = async (username) => fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password: 'pass1234', email: `${username.toLowerCase()}@test.com` }),
+    }).then((r) => r.json());
+    const a = await signup('UsernameCheckA');
+    const b = await signup('UsernameCheckB');
+
+    const badRes = await fetch(`${BASE_URL}/account/username`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${a.token}` },
+      body: JSON.stringify({ username: 'x' }), // too short for USERNAME_RE
+    });
+    assert.equal(badRes.status, 400);
+
+    const takenRes = await fetch(`${BASE_URL}/account/username`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${a.token}` },
+      body: JSON.stringify({ username: 'UsernameCheckB' }),
+    });
+    assert.equal(takenRes.status, 409, 'a username already taken by another account must be rejected');
+
+    const goodRes = await fetch(`${BASE_URL}/account/username`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${a.token}` },
+      body: JSON.stringify({ username: 'UsernameCheckA2' }),
+    });
+    assert.equal(goodRes.status, 200);
+    assert.equal((await goodRes.json()).username, 'UsernameCheckA2');
+
+    const me = await fetch(`${BASE_URL}/auth/me`, { headers: { Authorization: `Bearer ${a.token}` } }).then((r) => r.json());
+    assert.equal(me.username, 'UsernameCheckA2', 'the rename must actually take effect, not just report success');
   });
 });
 
@@ -2717,6 +3061,73 @@ describe('fixed-role two-player games reject a same-connection repeat join', () 
     assert.equal(bSymbol, 'O', 'O must still be claimable by a genuinely different connection');
 
     a.close(); b.close();
+  });
+});
+
+describe('Block Battle 1v1 duel: challenge, accept/decline, combat', () => {
+  // Zero coverage existed for the original challenge/accept/shoot 1v1 flow before this — every
+  // prior bb test only covered the "can't challenge someone already busy" rejection, or the newer
+  // NvN plate system. Dedicated instance for the same BB_RESPAWN_GRACE_MS=0 reason as the NvN
+  // block above.
+  let duelServer;
+  before(async () => { duelServer = await startTestServer({ BB_RESPAWN_GRACE_MS: '0' }, 3205); });
+  after(async () => { await duelServer.stop(); });
+
+  function duelConnect() {
+    return new Promise((resolve) => {
+      const ws = new WebSocket(`ws://localhost:${duelServer.port}`);
+      ws.on('open', () => resolve(ws));
+    });
+  }
+  async function duelJoin(code) {
+    const ws = await duelConnect();
+    send(ws, { type: 'bb-join', code, level: 1 });
+    const init = await waitFor(ws, (m) => m.type === 'bb-init');
+    return { ws, id: init.id };
+  }
+
+  test('a declined challenge notifies the challenger and leaves both free to duel someone else', async () => {
+    const code = 'BBDUEL-DECLINE';
+    const a = await duelJoin(code);
+    const b = await duelJoin(code);
+
+    send(a.ws, { type: 'bb-challenge', targetId: b.id });
+    const challenged = await waitFor(b.ws, (m) => m.type === 'bb-challenged');
+    assert.equal(challenged.fromId, a.id);
+
+    const declined = waitFor(a.ws, (m) => m.type === 'bb-challenge-declined');
+    send(b.ws, { type: 'bb-challenge-response', fromId: a.id, accept: false });
+    const decline = await declined;
+    assert.equal(decline.byId, b.id);
+
+    a.ws.close(); b.ws.close();
+  });
+
+  test('an accepted challenge pairs opponentId correctly in both directions and a full duel resolves with a winner/loser', async () => {
+    const code = 'BBDUEL-ACCEPT';
+    const a = await duelJoin(code);
+    const b = await duelJoin(code);
+
+    send(a.ws, { type: 'bb-challenge', targetId: b.id });
+    await waitFor(b.ws, (m) => m.type === 'bb-challenged');
+
+    const startA = waitFor(a.ws, (m) => m.type === 'bb-duel-started');
+    const startB = waitFor(b.ws, (m) => m.type === 'bb-duel-started');
+    send(b.ws, { type: 'bb-challenge-response', fromId: a.id, accept: true });
+    const [sa, sb] = await Promise.all([startA, startB]);
+    assert.equal(sa.opponentId, b.id, 'A must be paired with B, not itself or a third party');
+    assert.equal(sb.opponentId, a.id, 'B must be paired with A — the pairing must be mutual');
+
+    // BB_MAX_HEALTH is 100, BB_WEAPON.damage is 20 — exactly 5 hits eliminate a target.
+    const aWon = waitFor(a.ws, (m) => m.type === 'bb-duel-won');
+    const bLost = waitFor(b.ws, (m) => m.type === 'bb-duel-lost');
+    for (let i = 0; i < 5; i++) {
+      send(a.ws, { type: 'bb-shoot' });
+      await sleep(160); // just past BB_WEAPON.cooldownMs (150)
+    }
+    await Promise.all([aWon, bLost]);
+
+    a.ws.close(); b.ws.close();
   });
 });
 

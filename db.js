@@ -564,9 +564,15 @@ function deleteMessageRow(id) {
   db.prepare("UPDATE messages SET text = '', media_url = NULL, media_type = NULL, deleted = 1 WHERE id = ?").run(id);
 }
 
+// `, rowid DESC` breaks ties deterministically when two messages land in the same millisecond
+// (plausible under rapid sends — this table has no INTEGER PRIMARY KEY, so SQLite's own implicit
+// rowid is a real, independent, monotonically-increasing insertion-order column here) — without
+// it, `ORDER BY at DESC` alone leaves tied rows in SQLite's own implementation-defined order,
+// which isn't guaranteed stable across calls. This alone doesn't fully close the gap in
+// getMessagesBefore below (see its own comment) but keeps this function's own output consistent.
 function getRecentMessages(code, limit) {
   const rows = db
-    .prepare('SELECT * FROM messages WHERE room_code = ? ORDER BY at DESC LIMIT ?')
+    .prepare('SELECT * FROM messages WHERE room_code = ? ORDER BY at DESC, rowid DESC LIMIT ?')
     .all(code, limit);
   return rows.reverse().map(rowToHistoryEntry);
 }
@@ -575,9 +581,16 @@ function getRecentMessages(code, limit) {
 // with no way to reach anything older once that window's been shown. beforeAt is the `at`
 // timestamp of the oldest message currently rendered on the client; strictly-less-than so the
 // boundary message itself isn't returned twice.
+// Known gap: the cursor is a bare timestamp with no tiebreaker, so if the boundary message shares
+// its exact millisecond with another message, that other message is silently excluded here (falls
+// on the wrong side of `at < beforeAt`) even though it's chronologically tied with what's already
+// shown. A fully correct fix needs the client to pass a compound cursor (at + the boundary
+// message's own id) instead of a bare timestamp — not done here because, as of this writing, no
+// client anywhere actually calls load-older-messages (grepped all of public/*.js) to begin with;
+// revisit this gap for real if that ever changes.
 function getMessagesBefore(code, beforeAt, limit) {
   const rows = db
-    .prepare('SELECT * FROM messages WHERE room_code = ? AND at < ? ORDER BY at DESC LIMIT ?')
+    .prepare('SELECT * FROM messages WHERE room_code = ? AND at < ? ORDER BY at DESC, rowid DESC LIMIT ?')
     .all(code, beforeAt, limit);
   return rows.reverse().map(rowToHistoryEntry);
 }
