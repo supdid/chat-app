@@ -2809,4 +2809,81 @@ describe('Block Battle NvN match stations', () => {
 
     a.ws.close();
   });
+
+  test('a 1v1 duel challenge to (or from) a player already in an NvN match is silently rejected', async () => {
+    const code = 'BBCROSS1';
+    const a = await bbJoin(code);
+    const b = await bbJoin(code);
+    const c = await bbJoin(code);
+    const aStarted = waitFor(a.ws, (m) => m.type === 'bb-match-started');
+    const bStarted = waitFor(b.ws, (m) => m.type === 'bb-match-started');
+    send(a.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'a', slot: 0 });
+    send(b.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'b', slot: 0 });
+    await Promise.all([aStarted, bStarted]);
+
+    // C challenges A, who is mid-match — A must never see the challenge popup.
+    let aChallenged = false;
+    const aChallengeCheck = (data) => { if (JSON.parse(data).type === 'bb-challenged') aChallenged = true; };
+    a.ws.on('message', aChallengeCheck);
+    send(c.ws, { type: 'bb-challenge', targetId: a.id });
+    await sleep(200);
+    a.ws.off('message', aChallengeCheck);
+    assert.equal(aChallenged, false, 'a player mid-NvN-match must not be challengeable');
+
+    // A (mid-match) tries to challenge C — C must never see it either.
+    let cChallenged = false;
+    const cChallengeCheck = (data) => { if (JSON.parse(data).type === 'bb-challenged') cChallenged = true; };
+    c.ws.on('message', cChallengeCheck);
+    send(a.ws, { type: 'bb-challenge', targetId: c.id });
+    await sleep(200);
+    c.ws.off('message', cChallengeCheck);
+    assert.equal(cChallenged, false, 'a player mid-NvN-match must not be able to issue a challenge');
+
+    a.ws.close(); b.ws.close(); c.ws.close();
+  });
+
+  test('two connections racing for the same plate slot: the loser gets bb-plate-rejected and the winner is unaffected', async () => {
+    const code = 'BBRACE1';
+    const a = await bbJoin(code);
+    const b = await bbJoin(code);
+    const winUpdate = waitFor(a.ws, (m) => m.type === 'bb-station-update' && m.a[0] === 'Guest');
+    send(a.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'a', slot: 0 });
+    await winUpdate;
+
+    const rejected = waitFor(b.ws, (m) => m.type === 'bb-plate-rejected');
+    send(b.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'a', slot: 0 });
+    const rej = await rejected;
+    assert.deepEqual({ stationId: rej.stationId, side: rej.side, slot: rej.slot }, { stationId: 'st1', side: 'a', slot: 0 });
+
+    // The winner's own claim on the slot must be completely untouched by the loser's attempt.
+    const check = waitFor(a.ws, (m) => m.type === 'bb-station-update' && m.stationId === 'st1');
+    send(a.ws, { type: 'bb-plate-leave' }); // trigger a fresh broadcast to inspect current truth
+    const after = await check;
+    assert.deepEqual(after.a, [null], 'leaving must still work normally — the loser\'s rejected attempt never actually held the slot');
+
+    a.ws.close(); b.ws.close();
+  });
+
+  test('a non-participant teammate\'s roster health updates when an ally (not them) is hit', async () => {
+    const code = 'BBROSTER1';
+    const a = await bbJoin(code); // side a slot 0
+    const b = await bbJoin(code); // side a slot 1 — a's teammate, NOT directly involved in the hit below
+    const c = await bbJoin(code); // side b slot 0 — will do the shooting
+    const d = await bbJoin(code); // side b slot 1
+
+    const startedA = waitFor(a.ws, (m) => m.type === 'bb-match-started');
+    send(a.ws, { type: 'bb-plate-enter', stationId: 'st2', side: 'a', slot: 0 });
+    send(b.ws, { type: 'bb-plate-enter', stationId: 'st2', side: 'a', slot: 1 });
+    send(c.ws, { type: 'bb-plate-enter', stationId: 'st2', side: 'b', slot: 0 });
+    send(d.ws, { type: 'bb-plate-enter', stationId: 'st2', side: 'b', slot: 1 });
+    await startedA;
+
+    // C shoots A (not B) — B is a bystander teammate who should still learn A's new health.
+    const bLearnsAHealth = waitFor(b.ws, (m) => m.type === 'bb-match-roster-health' && m.id === a.id);
+    send(c.ws, { type: 'bb-shoot', targetId: a.id });
+    const rosterUpdate = await bLearnsAHealth;
+    assert.equal(rosterUpdate.health, 80, 'B must see A drop to 80 health even though B was not the one shot');
+
+    a.ws.close(); b.ws.close(); c.ws.close(); d.ws.close();
+  });
 });

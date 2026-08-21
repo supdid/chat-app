@@ -671,6 +671,13 @@ buildBbStations();
 // self-highlighting (see updateBbStationVisual) rather than name-matching, since two connections
 // can share a display name ("Guest") but never this locally-tracked slot assignment.
 let bbCurrentPlate = null; // { stationId, side, slot } | null
+// A slot the server just told us we don't actually hold (see 'bb-plate-rejected') — held briefly
+// so updateBbPlateDetection doesn't immediately re-request the exact same slot every frame (a
+// tight reject loop) while the player is still standing on it; a physical step off and back, or
+// this window expiring, clears it.
+let bbBlockedPlateKey = null;
+let bbBlockedPlateUntil = 0;
+function bbPlateKey(p) { return p ? `${p.stationId}:${p.side}:${p.slot}` : null; }
 
 function updateBbStationVisual(stationId, data) {
   const meshes = bbStationMeshes.get(stationId);
@@ -708,6 +715,7 @@ function updateBbPlateDetection() {
       }
     }
   }
+  if (found && bbPlateKey(found) === bbBlockedPlateKey && performance.now() < bbBlockedPlateUntil) found = null;
   const same = found && bbCurrentPlate && found.stationId === bbCurrentPlate.stationId && found.side === bbCurrentPlate.side && found.slot === bbCurrentPlate.slot;
   if (same) return;
   if (bbCurrentPlate && bbWs && bbWs.readyState === WebSocket.OPEN) bbWs.send(JSON.stringify({ type: 'bb-plate-leave' }));
@@ -2067,6 +2075,26 @@ function handleBbMessage(data) {
     case 'bb-duel-ended': endDuel('Duel ended — opponent left'); break;
     case 'bb-station-update': {
       updateBbStationVisual(data.stationId, data);
+      break;
+    }
+    case 'bb-plate-rejected': {
+      // The server refused a plate slot we optimistically thought we'd claimed (station locked
+      // mid-match, or someone else's bb-plate-enter for the same slot won a race) — only correct
+      // local state if this rejection is actually for the slot we currently believe we're on;
+      // a rejection for a slot we've since moved off (or already re-requested) is stale, ignore it.
+      if (bbCurrentPlate && bbCurrentPlate.stationId === data.stationId && bbCurrentPlate.side === data.side && bbCurrentPlate.slot === data.slot) {
+        bbCurrentPlate = null;
+        bbBlockedPlateKey = bbPlateKey(data);
+        bbBlockedPlateUntil = performance.now() + 800;
+      }
+      break;
+    }
+    case 'bb-match-roster-health': {
+      const teammate = matchTeammates.find((t) => t.id === data.id);
+      const enemy = matchEnemies.find((e) => e.id === data.id);
+      if (teammate) teammate.health = data.health;
+      if (enemy) enemy.health = data.health;
+      if (teammate || enemy) renderMatchHud();
       break;
     }
     case 'bb-match-started': {

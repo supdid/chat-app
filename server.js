@@ -4086,11 +4086,17 @@ wss.on('connection', (ws, req) => {
       const room = rooms.get(ws.bbRoom);
       const bb = room && room.bb;
       const me = bb && bb.players.get(ws);
-      if (!me || me.dueling) return;
+      // A player mid-NvN-match (matchId) or still queued on a plate (plateStation) is already
+      // spoken for — without this, accepting a challenge while matchId is still set would leave
+      // `dueling` and `matchId` both live at once, and bb-shoot's two branches (gated on matchId
+      // vs. dueling separately) would silently apply damage through whichever one fires first,
+      // invisible to the other — the exact kind of cross-system state corruption bb-shoot's own
+      // matchId-first branch order was never designed to coexist with.
+      if (!me || me.dueling || me.matchId || me.plateStation) return;
       const targetId = String(msg.targetId || '');
       if (targetId === me.id) return; // can't challenge yourself
       const target = bbFindById(bb, targetId);
-      if (!target || target.p.dueling) return;
+      if (!target || target.p.dueling || target.p.matchId || target.p.plateStation) return;
       send(target.ws, { type: 'bb-challenged', fromId: me.id, fromName: me.name });
       return;
     }
@@ -4100,12 +4106,13 @@ wss.on('connection', (ws, req) => {
       const room = rooms.get(ws.bbRoom);
       const bb = room && room.bb;
       const me = bb && bb.players.get(ws);
-      if (!me || me.dueling) return;
+      if (!me || me.dueling || me.matchId || me.plateStation) return;
       const fromId = String(msg.fromId || '');
       const from = bbFindById(bb, fromId);
-      // The challenger may have left, or already started a different duel, in the time since
-      // they sent the challenge — either way there's nothing to accept into anymore.
-      if (!from || from.p.dueling) return;
+      // The challenger may have left, already started a different duel, or (same reasoning as
+      // bb-challenge above) joined an NvN match or plate queue in the time since they sent the
+      // challenge — either way there's nothing safe to accept into anymore.
+      if (!from || from.p.dueling || from.p.matchId || from.p.plateStation) return;
       if (!msg.accept) { send(from.ws, { type: 'bb-challenge-declined', byId: me.id }); return; }
       // Both sides lock into a mutual duel — this pairing (opponentId matching in both
       // directions) is what bb-shoot below trusts as "these two, and only these two, can hurt
@@ -4126,17 +4133,24 @@ wss.on('connection', (ws, req) => {
       const bb = room && room.bb;
       const me = bb && bb.players.get(ws);
       if (!me || me.dueling || me.matchId) return; // already fighting elsewhere — can't also queue
-      const station = bb.stations[String(msg.stationId || '')];
-      if (!station || station.matchId) return; // unknown station, or currently locked mid-match
+      const stationId = String(msg.stationId || '');
+      const station = bb.stations[stationId];
+      if (!station) return; // unknown station id — not reachable by the real client, no feedback needed
       const side = msg.side === 'a' || msg.side === 'b' ? msg.side : null;
       const slot = Math.floor(+msg.slot);
-      if (!side || !Number.isInteger(slot) || slot < 0 || slot >= station.n) return;
-      if (station.queue[side][slot]) return; // already taken by someone else
+      if (!side || !Number.isInteger(slot) || slot < 0 || slot >= station.n) return; // malformed — same as above
+      // Both of these ARE reachable by the real client (its plate detection is purely distance-
+      // based and doesn't know a station is locked, and two players can physically step onto the
+      // same slot in the same instant) — tell the requester explicitly so it can correct its own
+      // optimistic bbCurrentPlate immediately, instead of silently believing it holds a slot it
+      // doesn't until it happens to physically walk off that spot.
+      if (station.matchId) { send(ws, { type: 'bb-plate-rejected', stationId, side, slot }); return; }
+      if (station.queue[side][slot]) { send(ws, { type: 'bb-plate-rejected', stationId, side, slot }); return; }
       bbClearPlate(bb, ws.bbRoom, ws); // step off any other plate first
       station.queue[side][slot] = ws;
-      me.plateStation = String(msg.stationId); me.plateSide = side; me.plateSlot = slot;
-      broadcastBbStation(ws.bbRoom, String(msg.stationId));
-      bbTryStartMatch(bb, ws.bbRoom, String(msg.stationId));
+      me.plateStation = stationId; me.plateSide = side; me.plateSlot = slot;
+      broadcastBbStation(ws.bbRoom, stationId);
+      bbTryStartMatch(bb, ws.bbRoom, stationId);
       return;
     }
 
@@ -4170,6 +4184,13 @@ wss.on('connection', (ws, req) => {
         if (target.p.health > 0) {
           send(target.ws, { type: 'bb-match-hit', health: target.p.health, byId: me.id });
           send(ws, { type: 'bb-match-hit-confirm', targetId: target.p.id, targetHealth: target.p.health });
+          // The two messages above only ever reach the shooter and the target — everyone else in
+          // the match (teammates on either side) never learns this happened, so their own roster
+          // panel keeps showing this player at full health until they suddenly flip to eliminated.
+          // This broadcast is redundant for the shooter/target (who already got a more specific
+          // message above) but harmless — their client just won't find target.p.id in their own
+          // teammates/enemies list (never includes yourself) and no-ops.
+          broadcastToBbMatch(bb, me.matchId, { type: 'bb-match-roster-health', id: target.p.id, health: target.p.health });
           return;
         }
         target.p.eliminated = true;
