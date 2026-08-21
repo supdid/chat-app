@@ -646,6 +646,11 @@ const BB_PLATE_COLOR = {
 // stationId -> { plates: { a: [mesh,...], b: [mesh,...] } } — the sign itself never changes, only
 // the plate colors/opacity do, driven by bb-station-update broadcasts.
 const bbStationMeshes = new Map();
+// Flat { stationId, side, slot, x, z }[] over every plate on every station, built once here and
+// reused by updateBbPlateDetection() every frame — that function used to call bbPlatePositions()
+// (which allocates a fresh array + fresh {x,z} objects) fresh each frame purely to re-derive
+// numbers that never change after this runs once.
+const bbFlatPlates = [];
 
 function buildBbStations() {
   for (const station of BB_STATIONS) {
@@ -654,13 +659,14 @@ function buildBbStations() {
     officeGroup.add(sign);
     const plates = { a: [], b: [] };
     for (const side of ['a', 'b']) {
-      for (const pos of bbPlatePositions(station, side)) {
+      bbPlatePositions(station, side).forEach((pos, slot) => {
         const mat = new THREE.MeshBasicMaterial({ color: BB_PLATE_COLOR[side].empty, transparent: true, opacity: 0.6 });
         const mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 0.06, 16), mat);
         mesh.position.set(pos.x, 0.03, pos.z);
         officeGroup.add(mesh);
         plates[side].push(mesh);
-      }
+        bbFlatPlates.push({ stationId: station.id, side, slot, x: pos.x, z: pos.z });
+      });
     }
     bbStationMeshes.set(station.id, { plates });
   }
@@ -705,15 +711,9 @@ function updateBbStationVisual(stationId, data) {
 // bb-challenge rather than as chatty as bb-pos.
 function updateBbPlateDetection() {
   let found = null;
-  outer:
-  for (const station of BB_STATIONS) {
-    for (const side of ['a', 'b']) {
-      const positions = bbPlatePositions(station, side);
-      for (let i = 0; i < positions.length; i++) {
-        const dx = player.x - positions[i].x, dz = player.z - positions[i].z;
-        if (dx * dx + dz * dz <= BB_PLATE_RADIUS * BB_PLATE_RADIUS) { found = { stationId: station.id, side, slot: i }; break outer; }
-      }
-    }
+  for (const plate of bbFlatPlates) {
+    const dx = player.x - plate.x, dz = player.z - plate.z;
+    if (dx * dx + dz * dz <= BB_PLATE_RADIUS * BB_PLATE_RADIUS) { found = { stationId: plate.stationId, side: plate.side, slot: plate.slot }; break; }
   }
   if (found && bbPlateKey(found) === bbBlockedPlateKey && performance.now() < bbBlockedPlateUntil) found = null;
   const same = found && bbCurrentPlate && found.stationId === bbCurrentPlate.stationId && found.side === bbCurrentPlate.side && found.slot === bbCurrentPlate.slot;
