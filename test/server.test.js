@@ -352,6 +352,37 @@ describe('room rename requires host', () => {
   });
 });
 
+describe('join-room host auto-claim on a legacy host-less room', () => {
+  // A room can come into existence with no host_name at all — any minigame's own -join handler
+  // (bb-join here) calls setRoomActivity -> db.upsertRoom for a fresh code without ever going
+  // through the main chat's create-room flow that normally claims host immediately. This exercises
+  // the join-room rewrite that consolidated three separate db.getRoom(code) calls into one reused
+  // value, specifically the branch where host claiming happens mid-handler and the isHost field
+  // sent back must reflect that same-request change rather than the stale pre-write row.
+  test('the first chat joiner into a host-less room claims host; a second joiner does not', async () => {
+    const code = 'HOSTCLAIM1';
+    const bb = await connectWs();
+    send(bb, { type: 'bb-join', code, level: 1 });
+    await waitFor(bb, (m) => m.type === 'bb-init'); // creates the room DB row with no host_name
+
+    const first = await connectWs();
+    send(first, { type: 'join-server', username: 'HostClaimFirst' });
+    await waitFor(first, (m) => m.type === 'joined-server');
+    send(first, { type: 'join-room', code });
+    const firstJoin = await waitFor(first, (m) => m.type === 'joined-room');
+    assert.equal(firstJoin.isHost, true, 'the first chat joiner into a host-less room must claim host');
+
+    const second = await connectWs();
+    send(second, { type: 'join-server', username: 'HostClaimSecond' });
+    await waitFor(second, (m) => m.type === 'joined-server');
+    send(second, { type: 'join-room', code });
+    const secondJoin = await waitFor(second, (m) => m.type === 'joined-room');
+    assert.equal(secondJoin.isHost, false, 'a second joiner must not also claim host — it was already taken');
+
+    bb.close(); first.close(); second.close();
+  });
+});
+
 describe('/export', () => {
   test('GET no longer works; POST requires the correct PIN', async () => {
     const { ws, code } = await joinRoom('ExportHost');
@@ -1593,6 +1624,40 @@ describe('Scorpture video creation is rate-limited', () => {
     }
     assert.ok(created > 0, 'at least some video creates should succeed before the limit kicks in');
     assert.ok(sawLimited, 'a burst of 15 creates reusing one upload should eventually hit the rate limit');
+  });
+});
+
+describe('Scorpture comments stay in order after the N+1 fix', () => {
+  // getScorptureComments used to be a plain unbounded ORDER BY created_at ASC — rewritten to a
+  // capped ORDER BY created_at DESC LIMIT + .reverse() (same pattern as getWhiteboardStrokes) so
+  // an unbounded comment thread can't grow forever on a hot read path. Worth a real ordering check
+  // since a DESC-then-reverse rewrite is an easy place to introduce an off-by-one or reversed order.
+  test('comments come back oldest-first', async () => {
+    const signupRes = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'ScorpCommentOrder', password: 'password123', email: 'scorpcommentorder@test.com' }),
+    });
+    const { token } = await signupRes.json();
+    await sleep(6500); // clear the shared isPostMediaRateLimited budget before this test's own requests
+
+    const form = new FormData();
+    form.append('file', new Blob(['comment order test video'], { type: 'video/mp4' }), 'order.mp4');
+    const { url } = await (await fetch(`${BASE_URL}/upload`, { method: 'POST', body: form })).json();
+
+    const video = await fetch(`${BASE_URL}/api/scorpture/videos`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ title: 'Comment order test', videoUrl: url }),
+    }).then((r) => r.json());
+
+    for (const text of ['first', 'second', 'third']) {
+      await fetch(`${BASE_URL}/api/scorpture/videos/${video.id}/comments`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ text }),
+      });
+    }
+
+    const { comments } = await fetch(`${BASE_URL}/api/scorpture/videos/${video.id}/comments`).then((r) => r.json());
+    assert.deepEqual(comments.map((c) => c.text), ['first', 'second', 'third'], 'comments must stay in oldest-first order after the DESC+LIMIT+reverse rewrite');
   });
 });
 

@@ -1224,9 +1224,11 @@ app.post('/friends/unblock', (req, res) => {
 app.get('/friends/presence', (req, res) => {
   const account = getAccountFromReq(req);
   if (!account) return res.status(401).json({ error: 'Not signed in' });
+  // getFriends already JOINs accounts for the username — it now also selects the id directly,
+  // so this no longer needs a second getAccountByUsername lookup per friend (an N+1 that ran on
+  // every 8s presence poll while the friends panel is open).
   const presence = db.getFriends(account.id).map((f) => {
-    const friendAccount = db.getAccountByUsername(f.username);
-    const p = friendAccount ? getAccountPresence(friendAccount.id) : { online: false, roomCode: null, roomName: null };
+    const p = getAccountPresence(f.accountId);
     return { username: f.username, ...p };
   });
   res.json({ presence });
@@ -5041,8 +5043,10 @@ wss.on('connection', (ws, req) => {
       // Same block filter as live delivery in sendGroupDm — without it, reopening/reloading the
       // thread would show every message a blocked member ever sent even though none of them were
       // delivered live, which is worse than doing nothing (the block would look broken, not just
-      // incomplete).
-      const messages = db.getGroupDmMessages(groupId).filter((m) => !db.isBlockedBetween(ws.accountId, m.fromAccountId));
+      // incomplete). getBlockedAccountIds fetches both-directions-blocked-with-me once instead of
+      // an isBlockedBetween query per message (up to 200, the default history limit).
+      const blockedIds = db.getBlockedAccountIds(ws.accountId);
+      const messages = db.getGroupDmMessages(groupId).filter((m) => !blockedIds.has(m.fromAccountId));
       send(ws, { type: 'group-dm-messages', groupId, messages });
       return;
     }
@@ -5128,11 +5132,15 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'join-room') {
       const code = String(msg.code || '').toUpperCase().trim();
-      if (!rooms.has(code) && !db.getRoom(code)) {
+      // One fetch, reused below — this used to call db.getRoom(code) three separate times for
+      // the same code within one handler (existence check, this assignment, and again just to
+      // read host_name near the end). Each is a cheap PK point-lookup so the cost was never high,
+      // but there's no reason not to reuse a value already in hand.
+      const dbRoom = db.getRoom(code);
+      if (!rooms.has(code) && !dbRoom) {
         send(ws, { type: 'join-error', message: 'Room not found' });
         return;
       }
-      const dbRoom = db.getRoom(code);
       if (db.isBannedFromRoom(code, ws.accountId || null, ws.profile.name)) {
         send(ws, { type: 'join-error', message: "You've been banned from this room" });
         return;
@@ -5166,7 +5174,14 @@ wss.on('connection', (ws, req) => {
       ws.room = code;
       // Rooms created before this feature existed have no host_name yet — the first person
       // to (re)join effectively becomes the host rather than leaving the room host-less forever.
-      if (dbRoom && !dbRoom.host_name) db.setRoomHostIfUnset(code, ws.profile.name);
+      // hostName tracks whichever value is now actually true in the DB, since setRoomHostIfUnset
+      // below can change it out from under the stale `dbRoom` object fetched above — this avoids
+      // a third db.getRoom(code) purely to re-read the field it itself just wrote.
+      let hostName = dbRoom ? dbRoom.host_name : null;
+      if (dbRoom && !dbRoom.host_name) {
+        db.setRoomHostIfUnset(code, ws.profile.name);
+        hostName = ws.profile.name;
+      }
       // Re-apply a persistent (account-based) mute even if they rejoined under a new display
       // name — otherwise a signed-in target could dodge a mute just by picking a new name.
       if (ws.accountId && db.isPersistentlyMuted(code, ws.accountId)) {
@@ -5182,7 +5197,7 @@ wss.on('connection', (ws, req) => {
         reactions: db.getReactionsForRoom(code, HISTORY_LIMIT),
         pins: db.getPins(code),
         activity: roomActivityList(room),
-        isHost: (db.getRoom(code) || {}).host_name === ws.profile.name,
+        isHost: hostName === ws.profile.name,
         announcement: dbRoom ? dbRoom.announcement : null,
         wallpaperUrl: dbRoom ? dbRoom.wallpaper_url : null,
         voiceCallActive: !!(room.voice && room.voice.size > 0),

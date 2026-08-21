@@ -85,6 +85,12 @@ db.exec(`
     created_at INTEGER
   );
 
+  -- Every sibling per-room table gets room_code as a PK prefix or an explicit index (see
+  -- idx_wb_room, idx_blueprints_room, idx_room_bans_room, ...) — this one was missed, so
+  -- getBcClaims/deleteBcClaims (called on bc-join, a hot path) full-scanned the entire
+  -- cross-room table instead of an indexed lookup.
+  CREATE INDEX IF NOT EXISTS idx_bc_claims_room ON bc_claims(room_code);
+
   CREATE TABLE IF NOT EXISTS profiles (
     name TEXT PRIMARY KEY,
     avatar_url TEXT,
@@ -653,14 +659,21 @@ function unpinMessage(code, messageId) {
   db.prepare('DELETE FROM pins WHERE room_code = ? AND message_id = ?').run(code, messageId);
 }
 
+// Was one getMessage() point-query per pin (N+1) — this runs on every join-room AND every
+// pin/unpin broadcast to the whole room, with no cap on how many messages a room can have
+// pinned (any member can pin, not just the host). A single JOIN replaces N+1 queries with 1;
+// the INNER JOIN naturally drops a pin whose message row is missing, same as the old
+// .filter(Boolean) did (soft-deleted messages still have a row, so this only ever excludes a
+// pin whose message was somehow hard-removed).
 function getPins(code) {
-  const rows = db.prepare('SELECT * FROM pins WHERE room_code = ? ORDER BY at ASC').all(code);
-  return rows
-    .map((pin) => {
-      const message = getMessage(pin.message_id);
-      return message ? { pinnedBy: pin.pinned_by, message: rowToHistoryEntry(message) } : null;
-    })
-    .filter(Boolean);
+  const rows = db
+    .prepare(
+      `SELECT m.*, p.pinned_by as pinnedBy FROM pins p
+       JOIN messages m ON m.id = p.message_id
+       WHERE p.room_code = ? ORDER BY p.at ASC`
+    )
+    .all(code);
+  return rows.map((r) => ({ pinnedBy: r.pinnedBy, message: rowToHistoryEntry(r) }));
 }
 
 // ---- read receipts ----
@@ -1027,6 +1040,21 @@ function isBlockedBetween(userA, userB) {
     .get(userA, userB, userB, userA);
 }
 
+// Every account id blocked-with `accountId` in either direction (they blocked me, or I blocked
+// them) — for filtering a whole list of messages against isBlockedBetween in one query instead of
+// one per message. get-group-dm-messages used to call isBlockedBetween per message (up to 200,
+// the default history limit) every time a thread was opened; this replaces that N+1 with a single
+// query plus an in-memory Set.has() per message.
+function getBlockedAccountIds(accountId) {
+  const rows = db
+    .prepare(
+      `SELECT CASE WHEN requester_id = ? THEN addressee_id ELSE requester_id END as otherId
+       FROM friendships WHERE status = 'blocked' AND (requester_id = ? OR addressee_id = ?)`
+    )
+    .all(accountId, accountId, accountId);
+  return new Set(rows.map((r) => r.otherId));
+}
+
 function upsertFriendRequest(requesterId, addresseeId) {
   const now = Date.now();
   db.prepare(
@@ -1073,7 +1101,7 @@ function unblock(blockerId, blockedId) {
 function getFriends(accountId) {
   return db
     .prepare(
-      `SELECT a.username, f.updated_at as since
+      `SELECT a.id as accountId, a.username, f.updated_at as since
        FROM friendships f
        JOIN accounts a ON a.id = (CASE WHEN f.requester_id = ? THEN f.addressee_id ELSE f.requester_id END)
        WHERE f.status = 'accepted' AND (f.requester_id = ? OR f.addressee_id = ?)
@@ -1274,8 +1302,15 @@ function insertScorptureComment(c) {
   ).run(c);
 }
 
+// Generous cap, not real pagination (no "load more" UI exists for comments) — purely a safety net
+// against the same unbounded-growth-on-a-hot-path shape already fixed once for reactions/whiteboard
+// strokes, at a size well beyond anything this app's realistic comment volume would ever reach.
+const SCORPTURE_COMMENTS_CAP = 2000;
 function getScorptureComments(videoId) {
-  return db.prepare('SELECT * FROM scorpture_comments WHERE video_id = ? ORDER BY created_at ASC').all(videoId);
+  const rows = db
+    .prepare('SELECT * FROM scorpture_comments WHERE video_id = ? ORDER BY created_at DESC LIMIT ?')
+    .all(videoId, SCORPTURE_COMMENTS_CAP);
+  return rows.reverse();
 }
 
 // The account_id match in the WHERE clause *is* the ownership check — a mismatched id just
@@ -1662,6 +1697,7 @@ module.exports = {
   getAccountRecentRooms,
   getFriendshipBetween,
   isBlockedBetween,
+  getBlockedAccountIds,
   upsertFriendRequest,
   acceptFriendRequest,
   removeFriendship,
