@@ -542,6 +542,11 @@ async function togglePreview(song, btn) {
   try {
     const blob = await getSongBlob(song);
     if (!previewAudioEl) previewAudioEl = new Audio();
+    // Every previous preview's object URL leaked here — reassigning .src without revoking the
+    // old one first — since previewAudioEl is reused across previews rather than recreated.
+    // getSongBlob's own cache means the underlying Blob was going to stay in memory either way,
+    // but browsing several songs before picking one still piled up one un-revoked URL per click.
+    if (previewAudioEl.src) URL.revokeObjectURL(previewAudioEl.src);
     previewAudioEl.src = URL.createObjectURL(blob);
     previewAudioEl.currentTime = 0;
     previewAudioEl.volume = 0.7;
