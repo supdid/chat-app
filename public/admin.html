@@ -78,7 +78,9 @@ document.getElementById('key-input').addEventListener('input', async (e) => {
 });
 
 function esc(s) {
-  return String(s || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  // Also escapes " and ' (not just &/</>) — see public/app.js's escapeHtml for the same fix and
+  // its reasoning, kept in sync across every escaper this app has.
+  return String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
 // Shared by every approve/reject/resolve/dismiss button below — a network failure (offline, or

@@ -2520,7 +2520,9 @@ function sendScore() {
 function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
-  return div.innerHTML;
+  // See app.js's escapeHtml for why " and ' also need escaping here, not just &/</> — same fix,
+  // same reasoning, kept in sync across every file that duplicates this helper.
+  return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 // The server already coerces sw-score to a clamped integer (server.js:2612), so this is

@@ -93,7 +93,9 @@ async function api(path, options = {}) {
 function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str == null ? '' : String(str);
-  return div.innerHTML;
+  // See app.js's escapeHtml for why " and ' also need escaping here, not just &/</> — same fix,
+  // same reasoning, kept in sync across every file that duplicates this helper.
+  return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 function timeAgo(ms) {

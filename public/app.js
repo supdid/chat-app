@@ -2413,7 +2413,15 @@ window.addEventListener('storage', (e) => {
 function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
-  return div.innerHTML;
+  // A Text node's innerHTML getter only escapes &/</> (per the HTML fragment-serialization spec) —
+  // not " or ' — which is fine for placement as element text content, but every call site here that
+  // interpolates this into a double-quoted HTML *attribute* (e.g. an <input value="...">) needs
+  // those escaped too, or an embedded " breaks out of the attribute. No currently-reachable call
+  // site in this app can actually exploit that gap (every attribute-context use is server-validated
+  // content — usernames, upload paths, enum values), but relying on that staying true forever for
+  // every *future* free-text field wired through this same "trusted" helper is exactly the kind of
+  // landmine worth closing now while it's free and harmless to every existing caller.
+  return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 // presence is only ever set on entries in the "Your friends" list (requests/outgoing/blocked
