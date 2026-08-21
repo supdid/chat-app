@@ -268,7 +268,12 @@ app.post('/admin/reports/:id/dismiss', requireAdmin, (req, res) => {
 });
 
 app.get('/admin/scorpture-reports', requireAdmin, (req, res) => {
-  res.json({ reports: db.getRecentScorptureReports() });
+  // deleteScorptureVideo() never cleaned up scorpture_reports (unlike comments/likes, which it
+  // does) — a report for a video that's since been deleted (including by the reported uploader
+  // themselves, right after being reported) used to look identical to one for a still-live video,
+  // with no way for the admin to tell the difference. videoDeleted lets admin.html show that.
+  const reports = db.getRecentScorptureReports().map((r) => ({ ...r, videoDeleted: !db.getScorptureVideo(r.video_id) }));
+  res.json({ reports });
 });
 
 app.post('/admin/scorpture-reports/:id/resolve', requireAdmin, (req, res) => {

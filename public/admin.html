@@ -131,6 +131,7 @@ async function refresh() {
       <div class="meta">${new Date(r.created_at).toLocaleString()}</div>
       <div><strong>${esc(r.reporter_username)}</strong> reported a video by <strong>${esc(r.uploader_username)}</strong></div>
       ${r.reason ? `<div class="explanation">Reason: ${esc(r.reason)}</div>` : ''}
+      ${r.videoDeleted ? `<div class="explanation">⚠️ The video has since been deleted (possibly by the uploader, after this report)</div>` : ''}
       <button class="approve" data-id="${r.id}" data-action="resolve">Mark resolved</button>
       <button class="reject" data-id="${r.id}" data-action="dismiss">Dismiss</button>
     `;

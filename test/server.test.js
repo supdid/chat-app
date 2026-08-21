@@ -2600,6 +2600,42 @@ describe('more previously-unprotected HTTP routes are now rate-limited', () => {
     assert.ok(sawLimited, 'a burst of 12 requests should eventually hit the rate limit');
   });
 
+  test('/admin/scorpture-reports flags a report whose video has since been deleted', async () => {
+    // The rate-limit test right above this one deliberately burns through the shared
+    // isPostMediaRateLimited budget — let it fully clear first (same discipline used elsewhere in
+    // this file for this exact shared limiter) so this test's own upload/create/report/delete
+    // calls aren't spuriously 429'd by the previous test's own burst.
+    await sleep(6500);
+    const adminKey = JSON.parse(fs.readFileSync(path.join(server.dir, 'admin-key.json'), 'utf8')).key;
+    const signup = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'ReportDeleteCheck', password: 'pass1234', email: 'reportdeletecheck@test.com' }),
+    }).then((r) => r.json());
+    const authHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${signup.token}` };
+
+    const form = new FormData();
+    form.append('file', new Blob(['fake video bytes'], { type: 'video/mp4' }), 'clip.mp4');
+    const { url: videoUrl } = await fetch(`${BASE_URL}/upload`, { method: 'POST', body: form }).then((r) => r.json());
+    const video = await fetch(`${BASE_URL}/api/scorpture/videos`, {
+      method: 'POST', headers: authHeaders,
+      body: JSON.stringify({ title: 'Report Delete Check Video', videoUrl }),
+    }).then((r) => r.json());
+    await fetch(`${BASE_URL}/api/scorpture/videos/${video.id}/report`, {
+      method: 'POST', headers: authHeaders, body: JSON.stringify({ reason: 'will be deleted' }),
+    });
+
+    const before = await fetch(`${BASE_URL}/admin/scorpture-reports?key=${adminKey}`).then((r) => r.json());
+    const reportBefore = before.reports.find((r) => r.reason === 'will be deleted');
+    assert.ok(reportBefore, 'the report must show up in the admin list');
+    assert.equal(reportBefore.videoDeleted, false, 'the video still exists at this point');
+
+    await fetch(`${BASE_URL}/api/scorpture/videos/${video.id}`, { method: 'DELETE', headers: authHeaders });
+
+    const after = await fetch(`${BASE_URL}/admin/scorpture-reports?key=${adminKey}`).then((r) => r.json());
+    const reportAfter = after.reports.find((r) => r.id === reportBefore.id);
+    assert.equal(reportAfter.videoDeleted, true, 'the same report must now flag that its video was deleted');
+  });
+
   test('/auth/google is rate-limited, same as its /auth/signup and /auth/login siblings', async () => {
     // The shared instance every other test in this file uses defaults AUTH_LIMIT_MAX to
     // effectively unlimited (see test/helpers.js) so unrelated tests' own signups/logins never
