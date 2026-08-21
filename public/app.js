@@ -1924,10 +1924,15 @@ function renderOnlineList(users) {
       const muteBtn = document.createElement('button');
       muteBtn.type = 'button';
       muteBtn.className = 'mod-btn';
-      muteBtn.textContent = '🔇';
-      muteBtn.title = `Mute ${u.name}`;
+      // Toggles between mute/unmute (mirrors the block/unblock button above) — unmute-user has
+      // always existed and worked server-side, but the client never tracked who was already muted,
+      // so this button could only ever mute, never undo it. u.muted comes from roomUsers() (see
+      // server.js), refreshed on every 'presence' broadcast, so this is accurate even right after
+      // a page refresh mid-session, not just for mutes issued during the current tab's lifetime.
+      muteBtn.textContent = u.muted ? '🔊' : '🔇';
+      muteBtn.title = u.muted ? `Unmute ${u.name}` : `Mute ${u.name}`;
       muteBtn.addEventListener('click', () => {
-        if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'mute-user', name: u.name }));
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: u.muted ? 'unmute-user' : 'mute-user', name: u.name }));
       });
       const kickBtn = document.createElement('button');
       kickBtn.type = 'button';

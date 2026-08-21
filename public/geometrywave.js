@@ -447,6 +447,15 @@ if (typeof document !== 'undefined') {
       });
     }
 
+    // Every other multiplayer minigame in this app explicitly sends its own xx-leave on unload
+    // (chess.js/pictionary.js/hangman.js/trivia.js's `beforeunload` -> send('xx-leave')) — Geometry
+    // Wave never did. Harmless in practice (the server's ws.on('close') handler already runs the
+    // same leaveGw() cleanup unconditionally on disconnect), but matching the established pattern
+    // costs nothing.
+    window.addEventListener('beforeunload', () => {
+      if (gwSocket && gwSocket.readyState === WebSocket.OPEN) gwSocket.send(JSON.stringify({ type: 'gw-leave' }));
+    });
+
     // --- Original background music: a small synth loop generated live via Web Audio
     // oscillators + a filtered-noise hi-hat — no audio files, nothing external.
     const MUSIC_MUTE_KEY = 'geometrywave_music_muted';

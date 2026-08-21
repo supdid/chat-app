@@ -3192,7 +3192,12 @@ function connect() {
   });
 }
 
-window.addEventListener('beforeunload', () => send({ type: 'arcade-leave' }));
+// arcade-leave clears the shared arcade-lobby-activity state; fg-leave is the separate,
+// fighter-plane-specific cleanup (duelist slot, in-progress match state — see leaveFg in
+// server.js) that this file never sent on unload despite arcade-leave being wired up right next
+// to it. Harmless in practice (the server's ws.on('close') handler already runs leaveFg()
+// unconditionally on disconnect), but matching the established pattern costs nothing.
+window.addEventListener('beforeunload', () => { send({ type: 'arcade-leave' }); send({ type: 'fg-leave' }); });
 
 // ---------- Start / restart ----------
 function beginGame() {

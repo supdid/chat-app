@@ -2267,6 +2267,15 @@ let swSocket = null;
 let swMyId = null;
 const remotePlayers = new Map();
 
+// Every other multiplayer minigame in this app explicitly sends its own xx-leave on unload
+// (chess.js/pictionary.js/hangman.js/trivia.js's `beforeunload` -> send('xx-leave')) — Web Swing
+// never did. Harmless in practice (the server's ws.on('close') handler already runs the same
+// leaveSw() cleanup unconditionally on disconnect), but matching the established pattern costs
+// nothing.
+window.addEventListener('beforeunload', () => {
+  if (swSocket && swSocket.readyState === WebSocket.OPEN) swSocket.send(JSON.stringify({ type: 'sw-leave' }));
+});
+
 // Ghost liveness. A player who drops without a clean sw-player-left used to leave a frozen statue
 // in the city forever. The fix needs no protocol change: sendPosBroadcast() already streams at
 // ~10/s from a foreground tab and ~1/s from a backgrounded one (rAF throttling), so the position

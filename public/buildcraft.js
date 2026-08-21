@@ -1053,6 +1053,20 @@ if (mpRoomCode) {
 }
 
 let bcSocket = null;
+// Every other multiplayer minigame in this app explicitly sends its own xx-leave on unload
+// (chess.js/pictionary.js/hangman.js/trivia.js's `beforeunload` -> send('xx-leave')) — Build Craft
+// never did. Harmless in practice (the server's own ws.on('close') handler already calls the same
+// leaveBc()/leaveBcVoice() cleanup unconditionally on disconnect, so nothing was actually broken —
+// this was purely dead server-side code, not a live bug), but matching the established pattern
+// costs nothing and means a closing tab signals its departure a little sooner than waiting on the
+// socket to actually drop. Guarded since bcSocket may not exist yet (solo play, never joined
+// multiplayer) or may have already closed.
+window.addEventListener('beforeunload', () => {
+  if (bcSocket && bcSocket.readyState === WebSocket.OPEN) {
+    bcSocket.send(JSON.stringify({ type: 'bc-voice-leave' }));
+    bcSocket.send(JSON.stringify({ type: 'bc-leave' }));
+  }
+});
 let bcMyId = null;
 let myShirtColor = localStorage.getItem('valk-bc-skin-color') || '#2fb6ac';
 let bcReady = false; // world generated (from seed or solo random) — gates the start-overlay buttons

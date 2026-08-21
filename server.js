@@ -2277,7 +2277,17 @@ function broadcastRoom(code, data, exclude) {
 function roomUsers(code) {
   const room = rooms.get(code);
   if (!room) return [];
-  return [...room.clients].map((c) => ({ name: c.profile.name, avatarUrl: c.profile.avatarUrl, status: c.profile.status }));
+  // `muted` lets the host's own client render an unmute option — unmute-user has always existed
+  // server-side (and is fully tested), but the client never had any way to know who was already
+  // muted (not even freshly after clicking mute-user, and definitely not after a page refresh
+  // mid-session), so the mute button had no toggle-back path and hosts had no way to undo a mute
+  // from the UI at all.
+  return [...room.clients].map((c) => ({
+    name: c.profile.name,
+    avatarUrl: c.profile.avatarUrl,
+    status: c.profile.status,
+    muted: !!(room.muted && room.muted.has(c.profile.name)),
+  }));
 }
 
 // ---- "Who's in a minigame right now" activity, shown as a badge in the chat menu's
@@ -5383,6 +5393,10 @@ wss.on('connection', (ws, req) => {
         db.addPersistentMute(ws.room, targetAccountId, targetName, ws.profile.name);
       }
       broadcastRoom(ws.room, { type: 'user-muted', name: targetName });
+      // Without this, the host's own mute button never flipped to "unmute" until some unrelated
+      // event (someone else joining/leaving) happened to trigger the next presence refresh —
+      // roomUsers()'s new `muted` field is otherwise correct but stale until then.
+      broadcastRoom(ws.room, { type: 'presence', users: roomUsers(ws.room) });
       return;
     }
 
@@ -5399,6 +5413,7 @@ wss.on('connection', (ws, req) => {
         : (db.getPersistentMuteByName(ws.room, targetName) || {}).target_account_id;
       if (targetAccountId) db.removePersistentMute(ws.room, targetAccountId);
       broadcastRoom(ws.room, { type: 'user-unmuted', name: targetName });
+      broadcastRoom(ws.room, { type: 'presence', users: roomUsers(ws.room) });
       return;
     }
 

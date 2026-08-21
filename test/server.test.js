@@ -370,8 +370,14 @@ describe('room moderation', () => {
     const guest = await joinExistingRoom('UnmuteGuest', code);
     await sleep(150);
 
+    // roomUsers()'s `muted` field (and the presence broadcast mute/unmute now fire, added
+    // alongside the client-side mute-button toggle that reads it) is what lets a host's own UI
+    // flip between mute/unmute — verify both the field and that it actually refreshes promptly.
+    const presenceAfterMute = waitFor(host, (m) => m.type === 'presence');
     send(host, { type: 'mute-user', name: 'UnmuteGuest' });
     await waitFor(host, (m) => m.type === 'user-muted');
+    const presence1 = await presenceAfterMute;
+    assert.equal(presence1.users.find((u) => u.name === 'UnmuteGuest').muted, true, 'roomUsers must report the target as muted right after mute-user');
     send(guest, { type: 'message', text: 'should be blocked' });
     const blocked = await waitFor(guest, (m) => m.type === 'error' || (m.type === 'message' && m.text === 'should be blocked'));
     assert.equal(blocked.type, 'error', 'a muted user\'s message must be rejected, not echoed');
@@ -385,9 +391,12 @@ describe('room moderation', () => {
     guest.off('message', h);
     assert.equal(guestUnmuteWorked, false, 'a non-host should not be able to unmute anyone, even themself');
 
+    const presenceAfterUnmute = waitFor(host, (m) => m.type === 'presence');
     send(host, { type: 'unmute-user', name: 'UnmuteGuest' });
     const unmuted = await waitFor(host, (m) => m.type === 'user-unmuted');
     assert.equal(unmuted.name, 'UnmuteGuest');
+    const presence2 = await presenceAfterUnmute;
+    assert.equal(presence2.users.find((u) => u.name === 'UnmuteGuest').muted, false, 'roomUsers must report the target as no longer muted right after unmute-user');
     send(guest, { type: 'message', text: 'should go through now' });
     const echoed = await waitFor(guest, (m) => m.type === 'message' && m.text === 'should go through now');
     assert.equal(echoed.text, 'should go through now', 'unmute must actually restore the ability to post');
