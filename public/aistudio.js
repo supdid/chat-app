@@ -472,10 +472,25 @@ function saveGallery(items) {
   }
 }
 
+// The gallery is entirely client-side (localStorage) with no server-side record at all — a
+// captioned meme's uploaded composite (see loadAndMaybeComposite's own /upload call) only ever
+// gets "claimed" server-side by actually posting it to a room. Without this, keeping one in the
+// gallery without ever posting it would let the server's orphaned-upload sweep delete the file
+// out from under it. Fire-and-forget: a failure here just means this item stays vulnerable to
+// the sweep until the next claim attempt, not a user-visible error worth surfacing.
+function claimUploadUrl(url) {
+  if (!url || !url.startsWith('/uploads/')) return;
+  fetch('/claim-upload', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  }).catch(() => {});
+}
+
 function addToGallery(url, prompt) {
   const items = loadGallery().filter((item) => item.url !== url);
   items.unshift({ url, prompt, at: Date.now() });
   saveGallery(items.slice(0, GALLERY_LIMIT));
+  claimUploadUrl(url); // this one item is genuinely new — claim it right away, same as before
   renderGallery();
 }
 
@@ -483,20 +498,6 @@ function renderGallery() {
   const items = loadGallery();
   gallerySection.classList.toggle('hidden', items.length === 0);
   galleryGrid.innerHTML = '';
-  // The gallery is entirely client-side (localStorage) with no server-side record at all — a
-  // captioned meme's uploaded composite (see loadAndMaybeComposite's own /upload call) only ever
-  // gets "claimed" server-side by actually posting it to a room. Without this, keeping one in the
-  // gallery without ever posting it would let the server's orphaned-upload sweep delete the file
-  // out from under it. Fire-and-forget: a failure here just means this item stays vulnerable to
-  // the sweep until the next render, not a user-visible error worth surfacing.
-  for (const item of items) {
-    if (item.url && item.url.startsWith('/uploads/')) {
-      fetch('/claim-upload', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: item.url }),
-      }).catch(() => {});
-    }
-  }
   for (const item of items) {
     const cell = document.createElement('div');
     cell.className = 'gallery-item';
@@ -550,3 +551,12 @@ clearGalleryBtn.addEventListener('click', () => {
 });
 
 renderGallery();
+// A one-time retry sweep for the whole gallery, on page load only — not on every renderGallery()
+// call (regenerating an image, removing an item, etc. all call renderGallery() far more often
+// than that). Each item was already claimed the moment it was added (see addToGallery), so this
+// only matters for the rare case where that original claim silently failed (e.g. offline at the
+// time); re-firing it on every render burst-fired one request per gallery item every single time,
+// easily exceeding the shared per-IP rate limit /post-image and /upload also draw from — a user
+// with several captioned memes saved could get their very next "Send to chat" or regenerate
+// spuriously 429'd by a burst their own gallery just triggered.
+for (const item of loadGallery()) claimUploadUrl(item.url);
