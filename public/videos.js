@@ -1010,13 +1010,22 @@ editSubmitBtn.addEventListener('click', async () => {
 // STUN alone only works when both sides can find a direct P2P path — if the broadcaster and
 // viewer are behind NATs/firewalls that block that (common when they're on unrelated networks,
 // e.g. this app's public tunnel URL), ICE just hangs forever with no video/audio and no error.
-// These TURN relays are the fallback for that case.
-const ICE_SERVERS = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-  { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-  { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-];
+// The TURN entry (fetched fresh per connection below, see getIceServers) is the fallback for that.
+const STUN_SERVER = { urls: 'stun:stun.l.google.com:19302' };
+
+// Ephemeral TURN credentials, minted server-side per connection attempt (see server.js's
+// /api/scorpture/turn-credentials and ~/valk-turn) rather than a static secret hardcoded here —
+// a leaked static credential baked into client JS would let anyone use this relay indefinitely.
+// Best-effort: if the TURN service is down, still return STUN-only rather than failing the whole
+// connection attempt (a direct P2P path may still work fine).
+async function getIceServers() {
+  try {
+    const cred = await api('/api/scorpture/turn-credentials', { method: 'POST' });
+    return [STUN_SERVER, { urls: cred.urls, username: cred.username, credential: cred.credential }];
+  } catch {
+    return [STUN_SERVER];
+  }
+}
 
 let ws = null;
 let broadcastState = null; // { localStream, screenStream, peers: Map<viewerId, RTCPeerConnection>, title }
@@ -1084,7 +1093,9 @@ function handleWsMessage(data) {
 
 async function handleViewerJoined(viewerId) {
   if (!broadcastState) return;
-  const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  const iceServers = await getIceServers();
+  if (!broadcastState) return; // broadcast may have ended while the credential fetch was in flight
+  const pc = new RTCPeerConnection({ iceServers });
   broadcastState.peers.set(viewerId, pc);
   for (const track of broadcastState.localStream.getTracks()) pc.addTrack(track, broadcastState.localStream);
   pc.onicecandidate = (e) => {
@@ -1469,27 +1480,34 @@ function renderWatchLive(username) {
     })
     .catch(() => {});
 
-  const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
   const token = ++watchTokenSeq;
-  watchState = { pc, username, token };
-  watchAckQueue.push(token);
-  pc.ontrack = (e) => {
-    const player = document.getElementById('live-player');
-    if (player) player.srcObject = e.streams[0];
-  };
-  pc.onicecandidate = (e) => {
-    if (e.candidate) wsSend({ type: 'scorpture-signal', signal: { kind: 'ice', candidate: iceToJson(e.candidate) } });
-  };
-  // Without this, a connection neither side can ever complete (e.g. TURN relay also blocked)
-  // just leaves the black player box up forever with no indication anything went wrong.
-  pc.onconnectionstatechange = () => {
-    if (!watchState || watchState.pc !== pc) return; // stale pc from a superseded watch attempt
-    if (pc.connectionState === 'failed') {
-      const titleEl = document.getElementById('live-title');
-      if (titleEl) titleEl.textContent = "Couldn't connect to this stream (network issue) — try refreshing.";
-    }
-  };
-  wsSend({ type: 'scorpture-watch-live', streamerUsername: username });
+  // ICE servers (including the TURN credential mint) are fetched before the RTCPeerConnection
+  // exists at all, so this can't race handleSignal — there's no pc for an early offer/ice message
+  // to land on until this resolves, and handleSignal's `if (watchState)` guard just no-ops until
+  // watchState is set below.
+  getIceServers().then((iceServers) => {
+    if (token !== watchTokenSeq) return; // superseded/cancelled while the credential fetch was in flight
+    const pc = new RTCPeerConnection({ iceServers });
+    watchState = { pc, username, token };
+    watchAckQueue.push(token);
+    pc.ontrack = (e) => {
+      const player = document.getElementById('live-player');
+      if (player) player.srcObject = e.streams[0];
+    };
+    pc.onicecandidate = (e) => {
+      if (e.candidate) wsSend({ type: 'scorpture-signal', signal: { kind: 'ice', candidate: iceToJson(e.candidate) } });
+    };
+    // Without this, a connection neither side can ever complete (e.g. TURN relay also blocked)
+    // just leaves the black player box up forever with no indication anything went wrong.
+    pc.onconnectionstatechange = () => {
+      if (!watchState || watchState.pc !== pc) return; // stale pc from a superseded watch attempt
+      if (pc.connectionState === 'failed') {
+        const titleEl = document.getElementById('live-title');
+        if (titleEl) titleEl.textContent = "Couldn't connect to this stream (network issue) — try refreshing.";
+      }
+    };
+    wsSend({ type: 'scorpture-watch-live', streamerUsername: username });
+  });
   enableLiveChat();
 }
 
@@ -1515,7 +1533,7 @@ liveChatWidgetCloseBtn.addEventListener('click', () => liveChatWidget.classList.
 
 // Whichever live chat is currently active — watching someone else's stream (watchState) takes
 // precedence since you can't watch your own stream in the same tab you're broadcasting from
-// (see the comment above ICE_SERVERS), so the two states are already mutually exclusive; this
+// (see the comment above renderWatchLive's own-stream branch), so the two states are already mutually exclusive; this
 // just picks whichever one is actually set.
 function currentLiveChatUsername() {
   if (watchState) return watchState.username;
@@ -1690,6 +1708,10 @@ function handleStreamEnded() {
 }
 
 function stopWatching() {
+  // Bumped unconditionally (even if watchState isn't set yet) so an in-flight getIceServers()
+  // fetch from a watch attempt that's being cancelled mid-flight — see renderWatchLive — notices
+  // via the token mismatch and discards its result instead of resurrecting a stale connection.
+  ++watchTokenSeq;
   if (!watchState) return;
   wsSend({ type: 'scorpture-leave-live' });
   watchState.pc.close();

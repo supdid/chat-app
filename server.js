@@ -1812,6 +1812,28 @@ app.get('/api/scorpture/live', (req, res) => {
   res.json({ streams });
 });
 
+// Mints a short-lived TURN credential from the local valk-turn service (see ~/valk-turn — a
+// separate always-on process shared by every local Valk instance) so live-stream viewers/
+// broadcasters can relay through it when a direct WebRTC P2P path can't be found (e.g. across
+// unrelated networks). Ephemeral rather than a single static secret baked into client JS — a
+// leaked static TURN credential would let anyone use this connection as an open relay forever.
+app.post('/api/scorpture/turn-credentials', async (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many requests too quickly' });
+  try {
+    const turnRes = await fetch('http://127.0.0.1:3479/credential', { method: 'POST' });
+    if (!turnRes.ok) throw new Error('valk-turn admin API returned ' + turnRes.status);
+    const cred = await turnRes.json();
+    res.json({ username: cred.username, credential: cred.credential, urls: cred.urls });
+  } catch (err) {
+    // valk-turn being down shouldn't break live streaming entirely — callers fall back to
+    // STUN-only (works when a direct P2P path exists) rather than getting a hard error.
+    reportError('server', { message: 'turn-credentials: valk-turn unreachable: ' + err.message }, {});
+    res.status(503).json({ error: 'TURN relay unavailable' });
+  }
+});
+
 // Friend DMs are deliberately not persisted anywhere (no thread/inbox to load later) — this is
 // a one-shot "poke" a friend with a message, delivered live to any open tab/device they have
 // (accountConnections) and, since the ask is to notify them "if they are offline or online",
