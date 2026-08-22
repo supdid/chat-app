@@ -1076,8 +1076,20 @@ app.post('/auth/google', async (req, res) => {
   if (!account) {
     const id = crypto.randomUUID();
     const username = uniqueUsernameFrom(payload.name || (email ? email.split('@')[0] : 'user'));
-    db.createAccountWithGoogle(id, username, email, googleId);
-    account = db.getAccountById(id);
+    try {
+      db.createAccountWithGoogle(id, username, email, googleId);
+      account = db.getAccountById(id);
+    } catch (err) {
+      // Two tabs finishing Google sign-in for the same brand-new account at once can both pass the
+      // "no existing account" checks above before either insert lands — the DB's own UNIQUE index
+      // on google_id (see db.js) is what actually closes the race, but nothing here used to catch
+      // that constraint violation, so the losing request fell through to Express's generic 500
+      // instead of completing sign-in the way the winner did. Re-checking here turns "the second
+      // tab silently fails to log in" into "both tabs end up signed in to the same account" — the
+      // actually-correct outcome for two concurrent submissions of the same credential.
+      account = db.getAccountByGoogleId(googleId);
+      if (!account) return res.status(500).json({ error: 'Could not complete sign-in — try again' });
+    }
   }
 
   const token = crypto.randomUUID();
@@ -6042,9 +6054,10 @@ app.post('/admin/cleanup/run', requireAdmin, (req, res) => {
 });
 
 // Express error-handling middleware — must be registered after every route above. Catches
-// synchronous throws and anything passed to next(err); async route handlers that don't
-// catch their own rejections won't reach this (Express doesn't await handlers), but every
-// route in this file uses synchronous db calls, so a thrown error here is the common case.
+// synchronous throws, anything passed to next(err), AND a rejected promise from an async route
+// handler (Express 5+ wraps every handler and forwards a rejection to next(err) automatically —
+// unlike Express 4, where an uncaught async rejection needed its own try/catch or it just hung).
+// Verified against this project's actual installed version (5.2.1), not assumed from changelog.
 app.use((err, req, res, next) => {
   console.error('Express error:', err);
   reportError('server', err, { path: req.path, method: req.method });
