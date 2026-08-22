@@ -95,6 +95,78 @@ const WEAPONS = {
 // slow motion, a blade twirl, and the bot launched spinning across the arena.
 const KNIFE = { title: 'Knife', melee: true, interval: 0.45, damage: 25, range: 1.9 };
 
+// ---- Weapon Shop: 100 purchasable weapons, browsable via the lobby's "View Weapons" button and
+// bought with coins earned by clearing waves/matches (see the coin-award call sites below). A
+// separate track from the 8-weapon kill-unlock ladder above — deliberately merged into the SAME
+// WEAPONS lookup table (never into WEAPON_ORDER, so they can't show up in the ladder itself) so
+// every bit of existing fire/reload/ammo/scope/explosive logic that already reads WEAPONS[weapon]
+// works unmodified for a purchased weapon too. 10 archetypes x 10 tiers each: stats and price both
+// scale up per tier within an archetype, so this reads as 10 real, coherent weapon families with
+// genuine progression, not 100 interchangeable reskins.
+const SHOP_ARCHETYPES = [
+  { key: 'pistol', label: 'Pistols', icon: '🔫', basePrice: 40,
+    base: { damage: 8, interval: 0.28, mag: 8, reload: 1.1, headshot: 20 },
+    names: ['Peacemaker', 'Snub 38', 'Viper P9', 'Talon Auto', 'Nightfall 45', 'Widowmaker', 'Apex Custom', 'Oblivion Mk1', 'Zenith Prime', 'Eclipse Omega'] },
+  { key: 'revolver', label: 'Revolvers', icon: '🔫', basePrice: 70,
+    base: { damage: 22, interval: 0.55, mag: 6, reload: 1.7, headshot: 45 },
+    names: ['Rustbelt Six', 'Copperhead', 'Judge 44', 'Longhorn', 'Coyote Special', 'Deadbolt', 'Iron Vulture', 'Graveyard King', 'Last Rites', 'Meridian 500'] },
+  { key: 'smg', label: 'SMGs', icon: '🔫', basePrice: 60,
+    base: { damage: 6, interval: 0.09, mag: 25, reload: 1.5, headshot: 12, auto: true },
+    names: ['Wasp-9', 'Riptide', 'Scrapper', 'Buzzcut', 'Nailgun X', 'Static Storm', 'Hornet Mk2', 'Vortex SMG', 'Chainlight', 'Ravager Prime'] },
+  { key: 'ar', label: 'Assault Rifles', icon: '🔫', basePrice: 90,
+    base: { damage: 9, interval: 0.13, mag: 30, reload: 2.0, headshot: 18, auto: true },
+    names: ['Ironclad', 'Redline', 'Sentinel-7', 'Warhawk', 'Brimstone', 'Falcon Guard', 'Vanguard X', 'Thunderclap', 'Titan Edge', 'Apocrypha'] },
+  { key: 'shotgun', label: 'Shotguns', icon: '🔫', basePrice: 100,
+    base: { damage: 32, interval: 0.65, mag: 6, reload: 2.2, headshot: 40 },
+    names: ['Widow Kiss', 'Bonecrusher', 'Doomsayer', 'Scattergun Mk1', 'Blast Reaper', 'Hellmouth', 'Fracture', 'Judgement Day', 'Cataclysm', 'Armageddon-12'] },
+  { key: 'lmg', label: 'LMGs', icon: '🔫', basePrice: 130,
+    base: { damage: 8, interval: 0.1, mag: 60, reload: 3.3, headshot: 16, auto: true },
+    names: ['Grindstone', 'Ironhail', 'Tempest-60', 'Juggernaut', 'Devastator', 'Meatgrinder', 'Stormbringer', 'Behemoth', 'World Ender', 'Omega Storm'] },
+  { key: 'sniper', label: 'Sniper Rifles', icon: '🎯', basePrice: 160,
+    base: { damage: 42, interval: 1.0, mag: 5, reload: 2.4, headshot: 90, scope: true },
+    names: ['Longshot', 'Deadeye', 'Nightstalker', 'Silent Reaper', 'Vantage Point', 'Horizon', 'Perfect Silence', 'Last Word', 'Oblivion Reach', 'Eternity'] },
+  { key: 'dmr', label: 'Marksman Rifles', icon: '🎯', basePrice: 140,
+    base: { damage: 20, interval: 0.38, mag: 10, reload: 1.9, headshot: 45, scope: true },
+    names: ['Crossfire', 'Steady Hand', 'Farsight', 'Pinpoint', 'True North', 'Clear Skies', 'Precision X', 'Keen Eye', 'Sharp Edge', 'Dead Center'] },
+  { key: 'launcher', label: 'Launchers', icon: '🚀', basePrice: 220,
+    base: { damage: 55, interval: 1.5, mag: 1, reload: 2.8, headshot: 55, explosive: true, headshotDoubleKill: true },
+    names: ['Fat Boy', 'Hellstorm', 'Wrecking Ball', 'Meteor Strike', 'Skyfall', 'Cataclysm-9', 'Big Bertha', 'Ragnarok', 'Doomsday Device', 'World End'] },
+  { key: 'energy', label: 'Energy Weapons', icon: '⚡', basePrice: 180,
+    base: { damage: 11, interval: 0.09, mag: 40, reload: 2.0, headshot: 22, auto: true },
+    names: ['Photon Lance', 'Plasma Whisper', 'Ion Storm', 'Volt Reaper', 'Quantum Spike', 'Neutron Flare', 'Static Fang', 'Solar Flare', 'Voidbreaker', 'Singularity'] },
+];
+// Tier scaling applied within each archetype (tier 1 = base stats as written above): damage/mag/
+// price climb, interval/reload shrink (faster fire, faster reload) — every tier is a genuine,
+// meaningful upgrade over the last, not just a name change.
+const SHOP_TIER_SCALE = { damage: 1.09, interval: 0.965, mag: 1.08, reload: 0.975, headshot: 1.07, price: 1.45 };
+const SHOP_WEAPONS = [];
+for (const arch of SHOP_ARCHETYPES) {
+  for (let tier = 1; tier <= 10; tier++) {
+    const n = tier - 1;
+    const id = `shop_${arch.key}_${tier}`;
+    const w = {
+      id,
+      title: arch.names[n],
+      icon: arch.icon,
+      archKey: arch.key,
+      archetype: arch.label,
+      tier,
+      price: Math.round(arch.basePrice * Math.pow(SHOP_TIER_SCALE.price, n)),
+      mag: Math.max(1, Math.round(arch.base.mag * Math.pow(SHOP_TIER_SCALE.mag, n))),
+      interval: +(arch.base.interval * Math.pow(SHOP_TIER_SCALE.interval, n)).toFixed(3),
+      reload: +(arch.base.reload * Math.pow(SHOP_TIER_SCALE.reload, n)).toFixed(2),
+      damage: Math.round(arch.base.damage * Math.pow(SHOP_TIER_SCALE.damage, n)),
+      headshot: Math.round(arch.base.headshot * Math.pow(SHOP_TIER_SCALE.headshot, n)),
+    };
+    if (arch.base.auto) w.auto = true;
+    if (arch.base.scope) w.scope = true;
+    if (arch.base.explosive) w.explosive = true;
+    if (arch.base.headshotDoubleKill) w.headshotDoubleKill = true;
+    SHOP_WEAPONS.push(w);
+    WEAPONS[id] = w; // merge into the shared lookup — see the comment block above for why
+  }
+}
+
 // Weapons marked `scope: true` (the snipers) zoom while right-click is held:
 // FOV shrinks to 60% — a 40% zoom in — and mouse sensitivity scales down with
 // it so the magnified view doesn't turn every nudge into a flick.
@@ -793,10 +865,27 @@ const GUN_SOUNDS = {
   sniper:  [0.3, 500, 0.8, 120, 35, 0.28, 0.4],
   sniper3: [0.25, 550, 0.7, 130, 40, 0.24, 0.35],
   rpg:     [0.35, 400, 0.5, 90, 45, 0.3, 0.3],
+  // One profile per shop archetype (not per weapon — 100 individually-designed gunshots is the
+  // same disproportionate ask as 100 individual viewmodels) — every weapon in that archetype
+  // shares its family's report, which is how plenty of real shooters handle large weapon rosters
+  // anyway (a "pistol" sounds like a pistol regardless of which specific one it is).
+  shoparch_pistol:   [0.12, 900, 0.5, 220, 90, 0.1, 0.25],
+  shoparch_revolver: [0.2, 650, 0.7, 150, 50, 0.18, 0.38],
+  shoparch_smg:      [0.05, 1500, 0.28, 320, 150, 0.05, 0.12],
+  shoparch_ar:       [0.08, 1000, 0.42, 240, 100, 0.07, 0.2],
+  shoparch_shotgun:  [0.28, 350, 0.85, 130, 45, 0.22, 0.35],
+  shoparch_lmg:      [0.1, 800, 0.5, 200, 80, 0.08, 0.22],
+  shoparch_sniper:   [0.3, 500, 0.8, 120, 35, 0.28, 0.4],
+  shoparch_dmr:      [0.22, 600, 0.65, 140, 50, 0.2, 0.32],
+  shoparch_launcher: [0.35, 400, 0.5, 90, 45, 0.3, 0.3],
+  shoparch_energy:   [0.05, 1800, 0.25, 400, 900, 0.06, 0.16], // rising pitch — a charged zap, not a bang
 };
 
 function sfxShot(type) {
-  const [nd, nc, nv, f0, f1, td, tv] = GUN_SOUNDS[type];
+  const shopW = WEAPONS[type];
+  const profile = GUN_SOUNDS[type] || (shopW && GUN_SOUNDS['shoparch_' + shopW.archKey]);
+  if (!profile) return; // knife/fists and anything else with no gunshot have no entry — silent is correct, not a bug
+  const [nd, nc, nv, f0, f1, td, tv] = profile;
   playNoise(nd, nc, nv);
   playTone(f0, f1, td, 'square', tv);
 }
@@ -878,6 +967,16 @@ const WEAPON_ICONS = {
   glock: '🔫', deagle: '🔫', uzi: '🔫', mp90: '🔫', ak47: '🔫',
   sniper: '🎯', sniper3: '🎯', rpg: '🚀', knife: '🥊',
 };
+
+// Shared between a shop weapon's in-hand viewmodel tint (equipGun) and its card accent color in
+// the shop UI, so what you see in the menu is what you see in your hands. Four bands reading as
+// bronze -> silver -> gold -> a vivid "this is the best one" accent, independent of archetype.
+function shopTierColor(tier) {
+  if (tier >= 10) return 0x2fe0ff;
+  if (tier >= 7) return 0xd4af37;
+  if (tier >= 4) return 0xaeb4bb;
+  return 0x8a715a;
+}
 const loadoutOverlay = document.getElementById('loadout');
 const loadoutGrid = document.getElementById('loadout-grid');
 
@@ -908,6 +1007,12 @@ function openLoadoutPicker(onDone) {
     if (kills < WEAPONS[key].unlock) continue;
     addTile(WEAPON_ICONS[key], WEAPONS[key].title, () => equipWeapon(key));
   }
+  // Purchased shop weapons stand alongside the kill-unlock ladder here — both are just "things
+  // you've unlocked," equipped through the exact same equipWeapon() either way.
+  for (const w of SHOP_WEAPONS) {
+    if (!purchasedWeapons.has(w.id)) continue;
+    addTile(w.icon, w.title, () => equipWeapon(w.id));
+  }
   addTile(WEAPON_ICONS.knife, 'Fists', () => selectFists());
   loadoutOverlay.classList.remove('hidden');
 }
@@ -918,6 +1023,138 @@ function showWaveBanner(text) {
   void waveBanner.offsetWidth; // restart the CSS animation
   waveBanner.classList.add('show');
 }
+
+// ---- Weapon Shop currency + ownership ----
+// Coins are earned per wave cleared, per FS life ended, and per online duel/match win (see the
+// award call sites near each of those events) and spent in the shop overlay below. Both persist in
+// localStorage, same "survives refreshes, no account needed" convention as best-run/save-game —
+// Block Battle has always been playable with zero sign-in, and coins/ownership shouldn't be the
+// one thing that suddenly requires an account.
+const COINS_KEY = 'valk-bb-coins';
+function loadCoins() {
+  try { return Math.max(0, parseInt(localStorage.getItem(COINS_KEY), 10)) || 0; } catch { return 0; }
+}
+function saveCoins(n) {
+  try { localStorage.setItem(COINS_KEY, String(Math.max(0, n | 0))); } catch {}
+}
+let coins = loadCoins();
+
+const PURCHASED_KEY = 'valk-bb-purchased';
+function loadPurchased() {
+  try { return new Set(JSON.parse(localStorage.getItem(PURCHASED_KEY)) || []); } catch { return new Set(); }
+}
+function savePurchased(set) {
+  try { localStorage.setItem(PURCHASED_KEY, JSON.stringify([...set])); } catch {}
+}
+let purchasedWeapons = loadPurchased();
+
+function updateCoinDisplays() {
+  document.querySelectorAll('.bb-coin-count').forEach((el) => { el.textContent = coins.toLocaleString(); });
+}
+updateCoinDisplays();
+
+// Shared by every "you did a thing, here's coins" call site (wave cleared, FS life ended, online
+// duel/match won) so the state-update/persist logic can't drift out of sync between them. Doesn't
+// show its own banner — each call site already shows (or is about to show) its own "you did the
+// thing" message, and showWaveBanner replaces whatever's currently showing rather than queuing, so
+// a second call right after would just clobber the first before it's readable.
+function awardCoins(amount) {
+  if (amount <= 0) return;
+  coins += amount;
+  saveCoins(coins);
+  updateCoinDisplays();
+}
+
+// ---- Weapon Shop UI ----
+const weaponShopOverlay = document.getElementById('weapon-shop');
+const weaponShopTabs = document.getElementById('weapon-shop-tabs');
+const weaponShopGrid = document.getElementById('weapon-shop-grid');
+let weaponShopActiveArch = SHOP_ARCHETYPES[0].key;
+
+function renderWeaponShopTabs() {
+  weaponShopTabs.innerHTML = '';
+  for (const arch of SHOP_ARCHETYPES) {
+    const tab = document.createElement('button');
+    tab.type = 'button';
+    tab.className = 'weapon-shop-tab' + (arch.key === weaponShopActiveArch ? ' active' : '');
+    tab.textContent = `${arch.icon} ${arch.label}`;
+    tab.addEventListener('click', () => {
+      weaponShopActiveArch = arch.key;
+      renderWeaponShopTabs();
+      renderWeaponShopGrid();
+    });
+    weaponShopTabs.appendChild(tab);
+  }
+}
+
+function renderWeaponShopGrid() {
+  weaponShopGrid.innerHTML = '';
+  const weapons = SHOP_WEAPONS.filter((w) => w.archKey === weaponShopActiveArch);
+  for (const w of weapons) {
+    const card = document.createElement('div');
+    card.className = 'weapon-card';
+    card.style.setProperty('--tier-color', `#${shopTierColor(w.tier).toString(16).padStart(6, '0')}`);
+
+    const top = document.createElement('div');
+    top.className = 'weapon-card-top';
+    const icon = document.createElement('div');
+    icon.className = 'weapon-card-icon';
+    icon.textContent = w.icon;
+    const name = document.createElement('div');
+    name.className = 'weapon-card-name';
+    name.textContent = w.title;
+    const tier = document.createElement('div');
+    tier.className = 'weapon-card-tier';
+    tier.textContent = `T${w.tier}`;
+    top.append(icon, name, tier);
+
+    const stats = document.createElement('div');
+    stats.className = 'weapon-card-stats';
+    const dps = w.mag === 1
+      ? `${w.damage} dmg / shot`
+      : `${w.damage} dmg · ${Math.round(1 / Math.max(w.interval, 0.01))}/s`;
+    stats.innerHTML = `${dps}<br>Mag ${w.mag} · Reload ${w.reload}s<br>Headshot ${w.headshot}`;
+
+    const action = document.createElement('button');
+    action.type = 'button';
+    const owned = purchasedWeapons.has(w.id);
+    if (owned) {
+      action.className = 'weapon-card-action owned';
+      action.textContent = '✓ Owned';
+      action.disabled = true;
+    } else {
+      action.className = 'weapon-card-action buy';
+      action.textContent = `🪙 ${w.price.toLocaleString()}`;
+      action.disabled = coins < w.price;
+      action.addEventListener('click', () => {
+        if (coins < w.price) return;
+        coins -= w.price;
+        saveCoins(coins);
+        purchasedWeapons.add(w.id);
+        savePurchased(purchasedWeapons);
+        updateCoinDisplays();
+        renderWeaponShopGrid();
+      });
+    }
+
+    card.append(top, stats, action);
+    weaponShopGrid.appendChild(card);
+  }
+}
+
+document.getElementById('view-weapons-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  renderWeaponShopTabs();
+  renderWeaponShopGrid();
+  weaponShopOverlay.classList.remove('hidden');
+});
+document.getElementById('weapon-shop-close-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  weaponShopOverlay.classList.add('hidden');
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !weaponShopOverlay.classList.contains('hidden')) weaponShopOverlay.classList.add('hidden');
+});
 
 // ---- Best run ----
 // localStorage, so the number to beat survives refreshes. A run is one life;
@@ -1000,6 +1237,11 @@ function flashDamage() {
 
 function nextWeaponKey() {
   const idx = WEAPON_ORDER.indexOf(weapon);
+  // -1 (not on the ladder at all — a shop weapon, or fists) used to fall through to
+  // WEAPON_ORDER[0] (Glock), since -1 < length-1 is true — meaning the U-key/Upgrade button would
+  // silently swap a shop weapon back to Glock the instant it was equipped. Shop weapons aren't
+  // part of the kill-unlock ladder at all, so there's genuinely no "next" one to offer here.
+  if (idx === -1) return null;
   return idx < WEAPON_ORDER.length - 1 ? WEAPON_ORDER[idx + 1] : null;
 }
 
@@ -1120,6 +1362,67 @@ function equipGun(type) {
     addBox(gun, 0.13, 0.13, 0.12, 0x8a2f23, 0, 0, -0.31);         // warhead
     addBox(gun, 0.04, 0.1, 0.05, GRIP, 0, -0.09, 0.05, 0.25);
     muzzleZ = -0.38;
+  } else if (type.startsWith('shop_')) {
+    // 100 individually-modeled viewmodels isn't a reasonable ask — instead, one real, distinct
+    // model per archetype (10 total, in the same addBox-box-kit style as every gun above), with a
+    // tier-based color tint standing in for "this is a better one" the same way a fresh coat of
+    // paint reads as an upgrade in plenty of real shooters. shopTierColor is shared with the shop
+    // UI's own weapon-card accents, so a card's color actually matches what you see in-hand.
+    const shopW = WEAPONS[type];
+    const tint = shopTierColor(shopW.tier);
+    if (shopW.archKey === 'pistol') {
+      addBox(gun, 0.052, 0.052, 0.17, tint, 0, 0, 0);
+      addBox(gun, 0.045, 0.1, 0.05, GRIP, 0, -0.07, 0.05, 0.25);
+    } else if (shopW.archKey === 'revolver') {
+      addBox(gun, 0.06, 0.06, 0.2, tint, 0, 0, 0);
+      addBox(gun, 0.075, 0.075, 0.075, DARK, 0, 0, 0.05);          // cylinder
+      addBox(gun, 0.05, 0.11, 0.05, GRIP, 0, -0.08, 0.07, 0.28);
+      muzzleZ = -0.13;
+    } else if (shopW.archKey === 'smg') {
+      addBox(gun, 0.05, 0.06, 0.21, tint, 0, 0, 0);
+      addBox(gun, 0.04, 0.12, 0.04, GRIP, 0, -0.08, 0.01);
+      addBox(gun, 0.035, 0.1, 0.035, DARK, 0, -0.08, -0.05);
+      muzzleZ = -0.14;
+    } else if (shopW.archKey === 'ar') {
+      addBox(gun, 0.05, 0.06, 0.34, tint, 0, 0, -0.02);
+      addBox(gun, 0.045, 0.09, 0.05, GRIP, 0, -0.07, 0.06, 0.25);
+      addBox(gun, 0.05, 0.06, 0.1, tint, 0, 0.005, 0.16);
+      addBox(gun, 0.045, 0.12, 0.05, DARK, 0, -0.08, -0.03, 0.35);
+      muzzleZ = -0.21;
+    } else if (shopW.archKey === 'shotgun') {
+      addBox(gun, 0.075, 0.075, 0.26, tint, 0, 0, -0.02);
+      addBox(gun, 0.045, 0.045, 0.16, WOOD, 0, -0.045, 0.02);      // pump foregrip
+      addBox(gun, 0.05, 0.1, 0.06, WOOD, 0, -0.03, 0.16);          // stock
+      muzzleZ = -0.17;
+    } else if (shopW.archKey === 'lmg') {
+      addBox(gun, 0.06, 0.07, 0.36, tint, 0, 0, -0.02);
+      addBox(gun, 0.05, 0.1, 0.05, GRIP, 0, -0.08, 0.08, 0.25);
+      addBox(gun, 0.11, 0.11, 0.09, DARK, 0, -0.1, -0.08);         // drum mag
+      addBox(gun, 0.05, 0.06, 0.1, DARK, 0, 0.005, 0.17);          // stock
+      muzzleZ = -0.22;
+    } else if (shopW.archKey === 'sniper') {
+      addBox(gun, 0.04, 0.045, 0.48, tint, 0, 0, -0.06);
+      addBox(gun, 0.045, 0.05, 0.13, GRIP, 0, 0.05, 0.02);         // scope
+      addBox(gun, 0.05, 0.06, 0.12, WOOD, 0, -0.01, 0.17);         // stock
+      addBox(gun, 0.04, 0.08, 0.05, GRIP, 0, -0.06, 0.08, 0.3);
+      muzzleZ = -0.31;
+    } else if (shopW.archKey === 'dmr') {
+      addBox(gun, 0.045, 0.05, 0.36, tint, 0, 0, -0.03);
+      addBox(gun, 0.038, 0.042, 0.1, GRIP, 0, 0.045, 0.02);        // shorter scope
+      addBox(gun, 0.045, 0.1, 0.05, GRIP, 0, -0.07, 0.08, 0.25);
+      addBox(gun, 0.045, 0.1, 0.045, DARK, 0, -0.08, -0.02, 0.3);
+      muzzleZ = -0.23;
+    } else if (shopW.archKey === 'launcher') {
+      addBox(gun, 0.09, 0.09, 0.5, tint, 0, 0, -0.02);
+      addBox(gun, 0.13, 0.13, 0.12, 0x8a2f23, 0, 0, -0.31);        // warhead
+      addBox(gun, 0.04, 0.1, 0.05, GRIP, 0, -0.09, 0.05, 0.25);
+      muzzleZ = -0.38;
+    } else { // energy
+      addBox(gun, 0.045, 0.05, 0.3, 0x14181c, 0, 0, -0.02);        // dark chassis
+      addBox(gun, 0.018, 0.018, 0.26, tint, 0, 0.01, -0.02);       // glowing core strip along the top
+      addBox(gun, 0.04, 0.09, 0.045, GRIP, 0, -0.07, 0.06, 0.25);
+      muzzleZ = -0.19;
+    }
   } else if (type === 'knife') {
     addBox(gun, 0.028, 0.012, 0.2, 0xd7dde2, 0, 0.01, -0.06);     // blade
     addBox(gun, 0.032, 0.022, 0.045, 0xb9c2c9, 0, 0.01, 0.05);    // guard
@@ -1611,7 +1914,12 @@ function takeDamage(amount) {
       const best = loadBestFs();
       const record = runKills > best;
       if (record) saveBestFs(runKills);
-      deathStats.textContent = `${runKills} kills this run`;
+      // FS has no discrete waves to reward per-clear like Wave Challenge does below — a life
+      // ending IS the "match completed" event here, so the reward is paid on death, scaled to
+      // how much was actually accomplished this run rather than a flat amount.
+      const fsCoins = 15 + runKills * 4;
+      awardCoins(fsCoins);
+      deathStats.textContent = `${runKills} kills this run · 🪙 +${fsCoins}`;
       deathBest.textContent = record ? '' : `Best: ${best} kills`;
       deathRecord.classList.toggle('hidden', !record);
     } else {
@@ -2070,7 +2378,7 @@ function handleBbMessage(data) {
       sfxHurt();
       break;
     }
-    case 'bb-duel-won': endDuel('🏆 You won the duel!'); break;
+    case 'bb-duel-won': awardCoins(30); endDuel('🏆 You won the duel! 🪙 +30'); break;
     case 'bb-duel-lost': endDuel('💀 You lost the duel'); break;
     case 'bb-duel-ended': endDuel('Duel ended — opponent left'); break;
     case 'bb-station-update': {
@@ -2145,7 +2453,8 @@ function handleBbMessage(data) {
       break;
     }
     case 'bb-match-ended': {
-      endMatch(data.won === true ? '🏆 Your team won!' : data.won === false ? '💀 Your team was eliminated' : 'Match ended');
+      if (data.won === true) awardCoins(30);
+      endMatch(data.won === true ? '🏆 Your team won! 🪙 +30' : data.won === false ? '💀 Your team was eliminated' : 'Match ended');
       break;
     }
   }
@@ -3017,7 +3326,9 @@ function tick(now) {
   // Between waves (Wave Challenge only): hail the clear, breathe, send the next
   // (bigger) one. FS never runs this — its bots respawn individually instead.
   if (mode === 'wave' && !dead && nextWaveT < 0 && bots.length === 0) {
-    showWaveBanner(`Wave ${wave} cleared!`);
+    const waveCoins = 20 + wave * 4; // later waves are harder-earned, so they pay a bit more
+    awardCoins(waveCoins);
+    showWaveBanner(`Wave ${wave} cleared! 🪙 +${waveCoins}`);
     sfxWaveClear();
     nextWaveT = WAVE_BREAK;
   }

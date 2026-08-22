@@ -408,6 +408,179 @@ html, body {
   cursor: default;
 }
 
+#mode-select-footer {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin-top: 0.3rem;
+}
+
+#mode-select-coins {
+  font-size: 1rem;
+  font-weight: 800;
+  color: #ffd54f;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+#view-weapons-btn {
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 12px;
+  padding: 0.55rem 1rem;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #eaf6ff;
+  background: rgba(6, 14, 22, 0.65);
+  cursor: pointer;
+}
+
+#view-weapons-btn:hover {
+  background: #2fb6ac;
+  color: #04211e;
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+/* The shop: same "solid near-black, sits above everything" treatment as #loadout, one z-index
+   higher since it can be opened from mode-select and needs to cover it fully. */
+#weapon-shop {
+  position: fixed;
+  inset: 0;
+  z-index: 28;
+  display: flex;
+  flex-direction: column;
+  background: rgba(4, 4, 6, 0.97);
+  color: #eaf6ff;
+}
+
+#weapon-shop-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 1.2rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+  flex-shrink: 0;
+}
+
+#weapon-shop-title {
+  font-size: 1.3rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+
+#weapon-shop-coins {
+  margin-left: auto;
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: #ffd54f;
+}
+
+#weapon-shop-close-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.08);
+  color: #eaf6ff;
+  font-size: 1rem;
+  cursor: pointer;
+}
+#weapon-shop-close-btn:hover { background: rgba(255, 255, 255, 0.18); }
+
+#weapon-shop-tabs {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.8rem 1.2rem;
+  overflow-x: auto;
+  flex-shrink: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.weapon-shop-tab {
+  flex-shrink: 0;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #eaf6ff;
+  background: rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.weapon-shop-tab:hover { background: rgba(255, 255, 255, 0.14); }
+
+.weapon-shop-tab.active {
+  background: #2fb6ac;
+  color: #04211e;
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+#weapon-shop-grid {
+  flex: 1;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 0.9rem;
+  padding: 1rem 1.2rem 1.6rem;
+  align-content: start;
+}
+
+.weapon-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  border-radius: 14px;
+  padding: 0.9rem 0.8rem;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--tier-color, rgba(255, 255, 255, 0.2));
+}
+
+.weapon-card-top {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.weapon-card-icon { font-size: 1.7rem; }
+
+.weapon-card-name {
+  font-size: 0.88rem;
+  font-weight: 800;
+  line-height: 1.15;
+}
+
+.weapon-card-tier {
+  margin-left: auto;
+  font-size: 0.68rem;
+  font-weight: 800;
+  padding: 0.15rem 0.4rem;
+  border-radius: 999px;
+  background: var(--tier-color, #888);
+  color: #04211e;
+  flex-shrink: 0;
+}
+
+.weapon-card-stats {
+  font-size: 0.72rem;
+  color: rgba(234, 246, 255, 0.75);
+  line-height: 1.5;
+}
+
+.weapon-card-action {
+  margin-top: auto;
+  border: none;
+  border-radius: 10px;
+  padding: 0.5rem;
+  font-size: 0.82rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.weapon-card-action.buy { background: #ffd54f; color: #3a2a00; }
+.weapon-card-action.buy:hover { background: #ffdf7a; }
+.weapon-card-action.buy:disabled { background: rgba(255, 255, 255, 0.12); color: rgba(234, 246, 255, 0.4); cursor: default; }
+.weapon-card-action.owned { background: rgba(47, 182, 172, 0.25); color: #6fe0d3; cursor: default; }
+
 /* Sits above everything else in-game (hint 20, death 25, mode-select 26) — it can be triggered
    from either of the first two (a fresh unlock mid-round, or picking a loadout before a new
    life) and needs to fully cover whichever is currently showing underneath. Solid near-black,
