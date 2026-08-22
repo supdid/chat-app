@@ -1982,6 +1982,40 @@ describe('Scorpture comments stay in order after the N+1 fix', () => {
     const { comments } = await fetch(`${BASE_URL}/api/scorpture/videos/${video.id}/comments`).then((r) => r.json());
     assert.deepEqual(comments.map((c) => c.text), ['first', 'second', 'third'], 'comments must stay in oldest-first order after the DESC+LIMIT+reverse rewrite');
   });
+
+  // getScorptureComments used to be a raw `SELECT *`, shipping account_id/video_id straight to
+  // res.json — this route has no auth check at all, so any anonymous caller got a commenter's
+  // permanent internal account id, a stable identifier that (unlike username) survives a name
+  // change. The client never reads either field (it compares c.username to tell "is this mine").
+  test('GET .../comments never leaks a commenter\'s internal account_id (or video_id) to an anonymous caller', async () => {
+    const signupRes = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'ScorpCommentPriv', password: 'password123', email: 'scorpcommentpriv@test.com' }),
+    });
+    const { token } = await signupRes.json();
+    await sleep(6500); // clear the shared isPostMediaRateLimited budget before this test's own requests
+
+    const form = new FormData();
+    form.append('file', new Blob(['comment privacy test video'], { type: 'video/mp4' }), 'priv.mp4');
+    const { url } = await (await fetch(`${BASE_URL}/upload`, { method: 'POST', body: form })).json();
+
+    const video = await fetch(`${BASE_URL}/api/scorpture/videos`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ title: 'Comment privacy test', videoUrl: url }),
+    }).then((r) => r.json());
+
+    await fetch(`${BASE_URL}/api/scorpture/videos/${video.id}/comments`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ text: 'no peeking at my account id' }),
+    });
+
+    // Deliberately no Authorization header — this route is reachable anonymously.
+    const { comments } = await fetch(`${BASE_URL}/api/scorpture/videos/${video.id}/comments`).then((r) => r.json());
+    assert.equal(comments.length, 1);
+    assert.equal(comments[0].username, 'ScorpCommentPriv');
+    assert.equal('account_id' in comments[0], false, 'account_id must not be present on the comment object');
+    assert.equal('video_id' in comments[0], false, 'video_id must not be present on the comment object');
+  });
 });
 
 describe('Scorpture video edit/delete are ownership-gated', () => {

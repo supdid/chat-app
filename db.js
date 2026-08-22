@@ -1323,7 +1323,11 @@ function getScorptureComments(videoId) {
   const rows = db
     .prepare('SELECT * FROM scorpture_comments WHERE video_id = ? ORDER BY created_at DESC LIMIT ?')
     .all(videoId, SCORPTURE_COMMENTS_CAP);
-  return rows.reverse();
+  // account_id is only needed internally (updateScorptureComment/deleteScorptureComment's ownership
+  // check) — this is the only read path, and it's unauthenticated, so the raw row must not go out
+  // as-is: it'd hand every viewer a commenter's permanent internal account id, a stable identifier
+  // that (unlike the username) survives a name change, letting activity be correlated across one.
+  return rows.reverse().map((r) => ({ id: r.id, username: r.username, text: r.text, created_at: r.created_at, edited: !!r.edited }));
 }
 
 // The account_id match in the WHERE clause *is* the ownership check — a mismatched id just
