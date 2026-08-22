@@ -1007,7 +1007,16 @@ editSubmitBtn.addEventListener('click', async () => {
 // viewer (broadcastState.peers); as a viewer, exactly one RTCPeerConnection back to the
 // broadcaster (watchState.pc). Only one of these two states is ever active at a time on a given
 // tab — you can't watch your own stream in the same tab you're broadcasting from.
-const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
+// STUN alone only works when both sides can find a direct P2P path — if the broadcaster and
+// viewer are behind NATs/firewalls that block that (common when they're on unrelated networks,
+// e.g. this app's public tunnel URL), ICE just hangs forever with no video/audio and no error.
+// These TURN relays are the fallback for that case.
+const ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+];
 
 let ws = null;
 let broadcastState = null; // { localStream, screenStream, peers: Map<viewerId, RTCPeerConnection>, title }
@@ -1470,6 +1479,15 @@ function renderWatchLive(username) {
   };
   pc.onicecandidate = (e) => {
     if (e.candidate) wsSend({ type: 'scorpture-signal', signal: { kind: 'ice', candidate: iceToJson(e.candidate) } });
+  };
+  // Without this, a connection neither side can ever complete (e.g. TURN relay also blocked)
+  // just leaves the black player box up forever with no indication anything went wrong.
+  pc.onconnectionstatechange = () => {
+    if (!watchState || watchState.pc !== pc) return; // stale pc from a superseded watch attempt
+    if (pc.connectionState === 'failed') {
+      const titleEl = document.getElementById('live-title');
+      if (titleEl) titleEl.textContent = "Couldn't connect to this stream (network issue) — try refreshing.";
+    }
   };
   wsSend({ type: 'scorpture-watch-live', streamerUsername: username });
   enableLiveChat();
