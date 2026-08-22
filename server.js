@@ -2026,14 +2026,14 @@ function bbInitStations() {
 }
 
 // ---- Block Battle map voting ----
-// Every fresh room.bb (created the moment a first player bb-joins an empty/never-used lobby, see
-// below) opens with a short map vote among whoever's present; late joiners after the window
-// closes skip straight into the already-decided map, so a running lobby's map never changes out
-// from under people already in it — a second vote only ever happens once the lobby fully empties
-// and gets recreated (bb.players.size === 0 already deletes room.bb in leaveBb, same as every
-// other minigame's room-scoped session state). Only the id list lives here for validating a vote
-// against a real fixed set — the actual visual kits are entirely client-side (blockbattle.js's
-// BB_MAPS/BB_MAP_KITS); the server never needs to know what a map looks like, only that it's real.
+// Every 1v1 duel and NvN station match opens with a short map vote among just its own
+// participants (not the whole lobby) before any fighting starts; once it resolves, the WHOLE
+// lobby's shared space switches to the winning map (bb-lobby-map-changed) — everyone free-roaming
+// sees the world change, not just the match's own players, since there's only ever one shared
+// space (no separate teleport-to-an-arena instance, matching every other duel/match design in this
+// file). Only the id list lives here for validating a vote against a real fixed set — the actual
+// visual kits are entirely client-side (blockbattle.js's BB_MAPS/BB_MAP_KITS); the server never
+// needs to know what a map looks like, only that it's real.
 const BB_MAP_IDS = [
   'office', 'office_night', 'office_alert',
   'warehouse_day', 'warehouse_dusk', 'warehouse_flood', 'warehouse_frost',
@@ -2042,22 +2042,24 @@ const BB_MAP_IDS = [
   'plaza_day', 'plaza_rain', 'plaza_dusk',
   'gym_basketball', 'gym_volleyball', 'gym_boxing',
 ];
-const BB_MAP_VOTE_MS = Number(process.env.BB_MAP_VOTE_MS) || 12000;
+const BB_MATCH_VOTE_MS = Number(process.env.BB_MATCH_VOTE_MS) || 10000;
+// First side to win this many rounds takes the match — same "kill ends the round, respawn,
+// continue" shape as Firefight's FG_ROUNDS_TO_WIN, just without a round time limit (BB combat has
+// never had one; a round here only ends on an elimination).
+const BB_ROUNDS_TO_WIN = Number(process.env.BB_ROUNDS_TO_WIN) || 5;
 
-function bbMapTally(bb) {
+function bbMapTally(votesMap) {
   const tally = {};
-  for (const mapId of bb.mapVotes.values()) tally[mapId] = (tally[mapId] || 0) + 1;
+  for (const mapId of votesMap.values()) tally[mapId] = (tally[mapId] || 0) + 1;
   return tally;
 }
 
-// Deliberately a fixed-duration window rather than "finalize early once everyone connected has
-// voted" — tracking that against players joining/leaving mid-vote is real extra state for a
-// marginal UX win; a flat timer is simpler and can't drift out of sync with itself.
-function finalizeBbMapVote(code) {
-  const room = rooms.get(code);
-  const bb = room && room.bb;
-  if (!bb || bb.mapId) return; // room emptied out already, or somehow already decided
-  const tally = bbMapTally(bb);
+// Deliberately a fixed-duration window rather than "finalize early once everyone's voted" —
+// tracking that against players joining/leaving mid-vote is real extra state for a marginal UX
+// win; a flat timer is simpler and can't drift out of sync with itself. Falls back to a uniformly
+// random map if literally nobody voted, so a match/duel can never get stuck map-less forever.
+function bbPickMap(votesMap) {
+  const tally = bbMapTally(votesMap);
   let winners = [];
   let best = 0;
   for (const mapId of BB_MAP_IDS) {
@@ -2065,12 +2067,32 @@ function finalizeBbMapVote(code) {
     if (count > best) { best = count; winners = [mapId]; }
     else if (count === best && count > 0) winners.push(mapId);
   }
-  // Nobody voted at all (e.g. a lone player who never clicked) — a real map still has to be
-  // picked, so fall back to a uniformly random one rather than leaving the lobby map-less forever.
-  bb.mapId = winners.length ? winners[Math.floor(Math.random() * winners.length)] : BB_MAP_IDS[Math.floor(Math.random() * BB_MAP_IDS.length)];
-  bb.mapVotes.clear();
-  bb.mapVoteTimer = null;
-  broadcastBb(code, { type: 'bb-map-decided', mapId: bb.mapId });
+  return winners.length ? winners[Math.floor(Math.random() * winners.length)] : BB_MAP_IDS[Math.floor(Math.random() * BB_MAP_IDS.length)];
+}
+
+// The vote-closes half of bb-challenge-response's accept branch — resets both duelists' health,
+// sends bb-duel-started (round 1, now carrying the decided map), and tells the whole lobby (not
+// just these two) to switch to it, same "one shared space" reasoning as finalizeBbMatchVote.
+function finalizeBbDuelVote(code, duelId) {
+  const room = rooms.get(code);
+  const bb = room && room.bb;
+  const duel = bb && bb.duels.get(duelId);
+  if (!duel || duel.phase !== 'voting') return;
+  const mapId = bbPickMap(duel.mapVotes);
+  duel.phase = 'active';
+  duel.mapVotes.clear();
+  duel.voteTimer = null;
+  bb.currentMapId = mapId;
+  const aP = bb.players.get(duel.aWs), bP = bb.players.get(duel.bWs);
+  // One side vanished mid-vote — leaveBb's own duel-cleanup already ended this duel and deleted
+  // this bb.duels entry for the departure itself; nothing left to finalize.
+  if (!aP || !bP) return;
+  const now = Date.now();
+  aP.health = BB_MAX_HEALTH; aP.respawnedAt = now;
+  bP.health = BB_MAX_HEALTH; bP.respawnedAt = now;
+  send(duel.aWs, { type: 'bb-duel-started', opponentId: bP.id, opponentName: bP.name, roundsWon: 0, roundsLost: 0, mapId });
+  send(duel.bWs, { type: 'bb-duel-started', opponentId: aP.id, opponentName: aP.name, roundsWon: 0, roundsLost: 0, mapId });
+  broadcastBb(code, { type: 'bb-lobby-map-changed', mapId });
 }
 
 // What every client needs to render one station's plates: which slots are filled (by name, so a
@@ -2103,10 +2125,12 @@ function bbClearPlate(bb, code, ws) {
   broadcastBbStation(code, stationId);
 }
 
-// Once both sides of a station are fully staffed, locks the station and starts a match: every
-// queued connection gets team-match state (mirrors bb-challenge-response's dueling/opponentId
-// pair, generalized to a whole side instead of one opponent) and the queue itself is emptied so
-// the next group can start staffing the instant this match ends.
+// Once both sides of a station are fully staffed, locks the station and opens a map vote among
+// just this match's own participants (mirrors bb-challenge-response's dueling/opponentId pair,
+// generalized to a whole side instead of one opponent) — the queue itself is emptied so the next
+// group can start staffing the instant this one ends. Combat doesn't actually start yet; see
+// finalizeBbMatchVote for the part that used to happen here directly (team assignment, health
+// reset, bb-match-started) before per-match voting existed.
 function bbTryStartMatch(bb, code, stationId) {
   const station = bb.stations[stationId];
   if (!station || station.matchId) return;
@@ -2116,26 +2140,60 @@ function bbTryStartMatch(bb, code, stationId) {
   const sideB = station.queue.b.slice();
   station.matchId = matchId;
   station.queue = { a: new Array(station.n).fill(null), b: new Array(station.n).fill(null) };
-  bb.matches.set(matchId, { stationId, sideA: new Set(sideA), sideB: new Set(sideB) });
-  const rosterOf = (wsList) => wsList.map((w) => { const p = bb.players.get(w); return { id: p.id, name: p.name }; });
-  const teamA = rosterOf(sideA), teamB = rosterOf(sideB);
-  const now = Date.now();
-  for (const w of sideA) {
-    const p = bb.players.get(w);
-    p.plateStation = null; p.matchId = matchId; p.matchSide = 'a'; p.eliminated = false; p.health = BB_MAX_HEALTH; p.respawnedAt = now;
-    send(w, { type: 'bb-match-started', matchId, stationId, n: station.n, side: 'a', teammates: teamA.filter((t) => t.id !== p.id), enemies: teamB });
-  }
-  for (const w of sideB) {
-    const p = bb.players.get(w);
-    p.plateStation = null; p.matchId = matchId; p.matchSide = 'b'; p.eliminated = false; p.health = BB_MAX_HEALTH; p.respawnedAt = now;
-    send(w, { type: 'bb-match-started', matchId, stationId, n: station.n, side: 'b', teammates: teamB.filter((t) => t.id !== p.id), enemies: teamA });
-  }
+  const voteEndsAt = Date.now() + BB_MATCH_VOTE_MS;
+  const match = {
+    stationId, sideA: new Set(sideA), sideB: new Set(sideB),
+    roundsWonA: 0, roundsWonB: 0, phase: 'voting', mapVotes: new Map(), voteEndsAt, voteTimer: null,
+  };
+  bb.matches.set(matchId, match);
+  // eliminated/health are reset here too (not just once voting resolves in finalizeBbMatchVote) so
+  // a disconnect during the vote window — or bb-shoot's own myMatch.phase !== 'active' guard,
+  // belt-and-suspenders — never has to reason about a stale value left over from whatever this
+  // player was doing right before queueing up (free-roaming, or a just-finished previous match).
+  for (const w of sideA) { const p = bb.players.get(w); p.plateStation = null; p.matchId = matchId; p.matchSide = 'a'; p.eliminated = false; p.health = BB_MAX_HEALTH; }
+  for (const w of sideB) { const p = bb.players.get(w); p.plateStation = null; p.matchId = matchId; p.matchSide = 'b'; p.eliminated = false; p.health = BB_MAX_HEALTH; }
+  match.voteTimer = setTimeout(() => finalizeBbMatchVote(code, matchId), BB_MATCH_VOTE_MS);
+  broadcastToBbMatch(bb, matchId, { type: 'bb-match-map-vote', matchId, voteEndsAt, tally: {} });
   broadcastBbStation(code, stationId);
 }
 
-// Sends to just the participants of one match (both sides) — used for elimination updates, which
-// only that match's own roster panels need to know about, unlike a station's occupancy (which the
-// whole room can see forming) or a hit/miss (which only concerns the two people involved).
+// The vote-closes half of what bbTryStartMatch used to do all at once: assigns rosters, resets
+// health/elimination, sends bb-match-started (now carrying the decided map), and tells the whole
+// lobby (not just this match's players) to switch to it — there's only one shared space, no
+// separate teleport-to-an-arena instance, so a match's map really is the whole lobby's map for as
+// long as that match is running.
+function finalizeBbMatchVote(code, matchId) {
+  const room = rooms.get(code);
+  const bb = room && room.bb;
+  const match = bb && bb.matches.get(matchId);
+  if (!match || match.phase !== 'voting') return;
+  const mapId = bbPickMap(match.mapVotes);
+  match.phase = 'active';
+  match.mapVotes.clear();
+  match.voteTimer = null;
+  bb.currentMapId = mapId;
+  const rosterOf = (wsSet) => [...wsSet].map((w) => { const p = bb.players.get(w); return p ? { id: p.id, name: p.name } : null; }).filter(Boolean);
+  const teamA = rosterOf(match.sideA), teamB = rosterOf(match.sideB);
+  const station = bb.stations[match.stationId];
+  const now = Date.now();
+  for (const w of match.sideA) {
+    const p = bb.players.get(w);
+    if (!p) continue;
+    p.eliminated = false; p.health = BB_MAX_HEALTH; p.respawnedAt = now;
+    send(w, { type: 'bb-match-started', matchId, stationId: match.stationId, n: station ? station.n : teamA.length, side: 'a', teammates: teamA.filter((t) => t.id !== p.id), enemies: teamB, mapId });
+  }
+  for (const w of match.sideB) {
+    const p = bb.players.get(w);
+    if (!p) continue;
+    p.eliminated = false; p.health = BB_MAX_HEALTH; p.respawnedAt = now;
+    send(w, { type: 'bb-match-started', matchId, stationId: match.stationId, n: station ? station.n : teamB.length, side: 'b', teammates: teamB.filter((t) => t.id !== p.id), enemies: teamA, mapId });
+  }
+  broadcastBb(code, { type: 'bb-lobby-map-changed', mapId });
+}
+
+// Sends to just the participants of one match (both sides) — used for elimination/vote updates,
+// which only that match's own roster/vote panels need to know about, unlike a station's occupancy
+// (which the whole room can see forming) or a hit/miss (which only concerns the two people involved).
 function broadcastToBbMatch(bb, matchId, data) {
   const match = bb.matches.get(matchId);
   if (!match) return;
@@ -2144,27 +2202,65 @@ function broadcastToBbMatch(bb, matchId, data) {
   }
 }
 
-// Ends a match the instant one side has zero remaining (non-eliminated, still-connected) members —
-// covers both "shot down to 0 health" and "disconnected mid-match" through the same path, since a
-// disconnected player is simply absent from bb.players by the time this runs (see leaveBb below).
-function bbCheckMatchEnd(bb, code, matchId) {
+// Fully ends a match (5th round win, both sides simultaneously wiped, or a disconnect that empties
+// a side before any round was actually played) — the part bbCheckMatchEnd used to do unconditionally
+// on any single elimination, before rounds existed.
+function bbEndMatch(bb, code, matchId, winnerSlot) {
   const match = bb.matches.get(matchId);
   if (!match) return;
-  const aliveCount = (side) => [...side].filter((w) => { const p = bb.players.get(w); return p && p.matchId === matchId && !p.eliminated; }).length;
-  const aliveA = aliveCount(match.sideA), aliveB = aliveCount(match.sideB);
-  if (aliveA > 0 && aliveB > 0) return;
-  const winner = aliveA === 0 && aliveB === 0 ? null : aliveA === 0 ? 'b' : 'a';
+  if (match.voteTimer) clearTimeout(match.voteTimer);
   for (const w of new Set([...match.sideA, ...match.sideB])) {
     const p = bb.players.get(w);
     if (!p || p.matchId !== matchId) continue;
-    if (winner) send(w, { type: 'bb-match-ended', matchId, won: p.matchSide === winner });
-    else send(w, { type: 'bb-match-ended', matchId, won: null });
+    send(w, { type: 'bb-match-ended', matchId, won: winnerSlot ? p.matchSide === winnerSlot : null, roundsWonA: match.roundsWonA, roundsWonB: match.roundsWonB });
     p.matchId = null; p.matchSide = null; p.eliminated = false; p.health = BB_MAX_HEALTH;
   }
   bb.matches.delete(matchId);
   const station = bb.stations[match.stationId];
   if (station && station.matchId === matchId) station.matchId = null;
   broadcastBbStation(code, match.stationId);
+}
+
+// Respawns everyone still in the match (same map, same teams) to start the next round — called
+// both right after a round win (bbCheckMatchEnd) and never on the match's own initial start (that
+// path already resets health itself in finalizeBbMatchVote, since round 1 needs the roster/started
+// message finalizeBbMatchVote sends, which this function deliberately doesn't duplicate).
+function bbRestartMatchRound(bb, matchId) {
+  const match = bb.matches.get(matchId);
+  if (!match) return;
+  const now = Date.now();
+  for (const w of new Set([...match.sideA, ...match.sideB])) {
+    const p = bb.players.get(w);
+    if (!p || p.matchId !== matchId) continue;
+    p.eliminated = false; p.health = BB_MAX_HEALTH; p.respawnedAt = now;
+  }
+  broadcastToBbMatch(bb, matchId, { type: 'bb-match-round-start', roundsWonA: match.roundsWonA, roundsWonB: match.roundsWonB });
+}
+
+// Ends a match the instant one side has zero remaining (non-eliminated, still-connected) members —
+// covers both "shot down to 0 health" and "disconnected mid-match" through the same path, since a
+// disconnected player is simply absent from bb.players by the time this runs (see leaveBb below).
+// A single elimination-to-zero used to end the whole match; now it's just a round win — the match
+// itself only ends once a side reaches BB_ROUNDS_TO_WIN.
+function bbCheckMatchEnd(bb, code, matchId) {
+  const match = bb.matches.get(matchId);
+  if (!match) return;
+  const aliveCount = (side) => [...side].filter((w) => { const p = bb.players.get(w); return p && p.matchId === matchId && !p.eliminated; }).length;
+  const aliveA = aliveCount(match.sideA), aliveB = aliveCount(match.sideB);
+  if (aliveA > 0 && aliveB > 0) return;
+  // A disconnect during the pre-match map vote (phase still 'voting', nobody's actually fought
+  // yet) just ends the match outright rather than crediting a round nobody played.
+  if (match.phase !== 'active') {
+    bbEndMatch(bb, code, matchId, aliveA === 0 && aliveB === 0 ? null : aliveA === 0 ? 'b' : 'a');
+    return;
+  }
+  if (aliveA === 0 && aliveB === 0) { bbEndMatch(bb, code, matchId, null); return; }
+  const winnerSlot = aliveA === 0 ? 'b' : 'a';
+  if (winnerSlot === 'a') match.roundsWonA += 1; else match.roundsWonB += 1;
+  const winnerRounds = winnerSlot === 'a' ? match.roundsWonA : match.roundsWonB;
+  if (winnerRounds >= BB_ROUNDS_TO_WIN) { bbEndMatch(bb, code, matchId, winnerSlot); return; }
+  broadcastToBbMatch(bb, matchId, { type: 'bb-match-round-end', winnerSlot, roundsWonA: match.roundsWonA, roundsWonB: match.roundsWonB });
+  bbRestartMatchRound(bb, matchId);
 }
 
 function broadcastBb(code, data, exclude) {
@@ -2200,15 +2296,23 @@ function leaveBb(ws) {
     const player = bb.players.get(ws);
     if (player) {
       // Mid-duel departure ends it for the other side too — same as leaveFg resetting an
-      // in-progress match when a duelist disconnects, so nobody's left dueling a ghost.
+      // in-progress match when a duelist disconnects, so nobody's left dueling a ghost. Also tears
+      // down the bb.duels entry itself (including a still-pending pre-duel map vote timer) —
+      // without clearing that timer, it would fire later against a stale/deleted duel object.
       if (player.opponentId) {
         const opp = bbFindById(bb, player.opponentId);
-        if (opp) { opp.p.dueling = false; opp.p.opponentId = null; send(opp.ws, { type: 'bb-duel-ended', reason: 'opponent-left' }); }
+        if (opp) { opp.p.dueling = false; opp.p.opponentId = null; opp.p.duelId = null; send(opp.ws, { type: 'bb-duel-ended', reason: 'opponent-left' }); }
+        if (player.duelId) {
+          const duel = bb.duels.get(player.duelId);
+          if (duel && duel.voteTimer) clearTimeout(duel.voteTimer);
+          bb.duels.delete(player.duelId);
+        }
       }
       // Free a plate the instant its occupant vanishes (so nobody's queue slot is ever stuck on a
       // disconnected connection), and re-check an in-progress NvN match after removing them from
       // bb.players below — bbCheckMatchEnd counts survivors straight off that map, so a departed
-      // player is automatically no longer "alive" without any extra bookkeeping here.
+      // player is automatically no longer "alive" without any extra bookkeeping here (including a
+      // still-pending pre-match vote timer, cleared via bbEndMatch when that leaves a side empty).
       if (player.plateStation) bbClearPlate(bb, code, ws);
       const matchId = player.matchId;
       bb.players.delete(ws);
@@ -2216,14 +2320,7 @@ function leaveBb(ws) {
       broadcastBb(code, { type: 'bb-player-left', id: player.id });
       clearRoomActivity(code, player.name);
     }
-    if (bb.players.size === 0) {
-      // A pending vote timer (finalizeBbMapVote) captured `code` in its closure and would otherwise
-      // fire against a deleted room.bb — rooms.get(code) would find the room again if it's ever
-      // recreated with a fresh room.bb before the old timer fires, so without this it could finalize
-      // a *new* lobby's vote using zero real votes from anyone actually in that new lobby.
-      if (bb.mapVoteTimer) clearTimeout(bb.mapVoteTimer);
-      delete room.bb;
-    }
+    if (bb.players.size === 0) delete room.bb;
   }
   ws.bbRoom = null;
   ws.bbId = null;
@@ -4201,13 +4298,10 @@ wss.on('connection', (ws, req) => {
       if (ws.bbRoom === code) return;
       if (ws.bbRoom) leaveBb(ws);
       const room = getOrCreateRoom(code);
-      if (!room.bb) {
-        room.bb = {
-          players: new Map(), stations: bbInitStations(), matches: new Map(),
-          mapId: null, mapVotes: new Map(), mapVoteEndsAt: Date.now() + BB_MAP_VOTE_MS, mapVoteTimer: null,
-        };
-        room.bb.mapVoteTimer = setTimeout(() => finalizeBbMapVote(code), BB_MAP_VOTE_MS);
-      }
+      // currentMapId defaults to 'office' — there's no lobby-wide vote anymore (see the map-voting
+      // comment above); the shared space just starts on the office and only ever changes when a
+      // 1v1/2v2/3v3/4v4's own pre-match vote resolves (finalizeBbDuelVote/finalizeBbMatchVote).
+      if (!room.bb) room.bb = { players: new Map(), stations: bbInitStations(), matches: new Map(), duels: new Map(), currentMapId: 'office' };
       const bb = room.bb;
       if (bb.players.size >= MAX_GAME_PLAYERS) { send(ws, { type: 'bb-full' }); return; }
       // Real Valk account only — no free-text name field here (unlike bc/fg/etc's `name` param),
@@ -4220,30 +4314,43 @@ wss.on('connection', (ws, req) => {
       ws.bbRoom = code;
       ws.bbId = id;
       const entry = {
-        id, name, level, x: 0, y: 0, z: 0, yaw: 0, health: BB_MAX_HEALTH, dueling: false, opponentId: null, lastShotAt: 0, respawnedAt: 0,
+        id, name, level, x: 0, y: 0, z: 0, yaw: 0, health: BB_MAX_HEALTH, dueling: false, opponentId: null, duelId: null, lastShotAt: 0, respawnedAt: 0,
         plateStation: null, plateSide: null, plateSlot: null, matchId: null, matchSide: null, eliminated: false,
       };
       bb.players.set(ws, entry);
       const stations = Object.keys(bb.stations).map((sid) => bbStationSnapshot(bb, sid));
-      send(ws, {
-        type: 'bb-init', id, players: [...bb.players.values()].filter((p) => p.id !== id), stations,
-        mapId: bb.mapId, votingOpen: !bb.mapId, voteEndsAt: bb.mapId ? null : bb.mapVoteEndsAt,
-        mapTally: bb.mapId ? null : bbMapTally(bb),
-      });
+      send(ws, { type: 'bb-init', id, players: [...bb.players.values()].filter((p) => p.id !== id), stations, mapId: bb.currentMapId });
       broadcastBb(code, { type: 'bb-player-joined', id, name, level, x: 0, y: 0, z: 0, yaw: 0 }, ws);
       setRoomActivity(code, name, 'bb');
       return;
     }
 
-    if (msg.type === 'bb-vote-map' && ws.bbRoom) {
+    // Casts/changes a vote in whichever pre-match map vote the sender is currently part of — a
+    // 1v1 duel (duelId) or an NvN station match (matchId), whichever is actually set; a connection
+    // can only ever be in one at a time (bbIsBusy already prevents both from being live together).
+    if (msg.type === 'bb-vote-match-map' && ws.bbRoom) {
       if (isWsMsgRateLimited(ws)) return;
       const room = rooms.get(ws.bbRoom);
       const bb = room && room.bb;
-      if (!bb || bb.mapId) return; // voting already closed — a late vote can't reopen or change it
+      const me = bb && bb.players.get(ws);
+      if (!me) return;
       const mapId = String(msg.mapId || '');
       if (!BB_MAP_IDS.includes(mapId)) return;
-      bb.mapVotes.set(ws, mapId);
-      broadcastBb(ws.bbRoom, { type: 'bb-map-vote-update', tally: bbMapTally(bb) });
+      if (me.duelId) {
+        const duel = bb.duels.get(me.duelId);
+        if (!duel || duel.phase !== 'voting') return;
+        duel.mapVotes.set(ws, mapId);
+        const tally = bbMapTally(duel.mapVotes);
+        send(duel.aWs, { type: 'bb-match-map-vote-update', tally });
+        send(duel.bWs, { type: 'bb-match-map-vote-update', tally });
+        return;
+      }
+      if (me.matchId) {
+        const match = bb.matches.get(me.matchId);
+        if (!match || match.phase !== 'voting') return;
+        match.mapVotes.set(ws, mapId);
+        broadcastToBbMatch(bb, me.matchId, { type: 'bb-match-map-vote-update', tally: bbMapTally(match.mapVotes) });
+      }
       return;
     }
 
@@ -4302,10 +4409,18 @@ wss.on('connection', (ws, req) => {
       // directions) is what bb-shoot below trusts as "these two, and only these two, can hurt
       // each other right now". Mirrors fg-join's own self-target-exploit fix: opponentId is only
       // ever set here, to the OTHER connection's id, never able to end up pointing at yourself.
-      me.dueling = true; me.opponentId = from.p.id; me.health = BB_MAX_HEALTH; me.respawnedAt = Date.now();
-      from.p.dueling = true; from.p.opponentId = me.id; from.p.health = BB_MAX_HEALTH; from.p.respawnedAt = Date.now();
-      send(ws, { type: 'bb-duel-started', opponentId: from.p.id, opponentName: from.p.name });
-      send(from.ws, { type: 'bb-duel-started', opponentId: me.id, opponentName: me.name });
+      // Combat doesn't start yet, though — a short map vote between just these two comes first
+      // (see finalizeBbDuelVote); dueling/opponentId are still set immediately so bbIsBusy locks
+      // both of them out of a second challenge/plate-queue during that window.
+      const duelId = crypto.randomUUID();
+      me.dueling = true; me.opponentId = from.p.id; me.duelId = duelId;
+      from.p.dueling = true; from.p.opponentId = me.id; from.p.duelId = duelId;
+      const voteEndsAt = Date.now() + BB_MATCH_VOTE_MS;
+      const duel = { aWs: ws, bWs: from.ws, roundsWonA: 0, roundsWonB: 0, phase: 'voting', mapVotes: new Map(), voteEndsAt, voteTimer: null };
+      bb.duels.set(duelId, duel);
+      duel.voteTimer = setTimeout(() => finalizeBbDuelVote(ws.bbRoom, duelId), BB_MATCH_VOTE_MS);
+      send(ws, { type: 'bb-duel-map-vote', opponentId: from.p.id, opponentName: from.p.name, voteEndsAt, tally: {} });
+      send(from.ws, { type: 'bb-duel-map-vote', opponentId: me.id, opponentName: me.name, voteEndsAt, tally: {} });
       return;
     }
 
@@ -4356,7 +4471,8 @@ wss.on('connection', (ws, req) => {
         // NvN match branch — same loose "trust reported position, server gates cooldown/range/
         // alive-state" model as the 1v1 branch below, generalized to pick an explicit target
         // (there's no longer a single implicit opponent once more than one enemy can be in range).
-        if (me.eliminated) return;
+        const myMatch = bb.matches.get(me.matchId);
+        if (!myMatch || myMatch.phase !== 'active' || me.eliminated) return; // still mid pre-match map vote, or already dead
         const now = Date.now();
         if (now - me.lastShotAt < BB_WEAPON.cooldownMs) return;
         me.lastShotAt = now;
@@ -4385,7 +4501,9 @@ wss.on('connection', (ws, req) => {
         bbCheckMatchEnd(bb, ws.bbRoom, me.matchId);
         return;
       }
-      if (!me.dueling || !me.opponentId) return;
+      if (!me.dueling || !me.opponentId || !me.duelId) return;
+      const duel = bb.duels.get(me.duelId);
+      if (!duel || duel.phase !== 'active') return; // still mid pre-duel map vote
       const now = Date.now();
       if (now - me.lastShotAt < BB_WEAPON.cooldownMs) return;
       // Consumed right after the cooldown check clears, not only on a landed hit — same fix (and
@@ -4410,10 +4528,26 @@ wss.on('connection', (ws, req) => {
         send(ws, { type: 'bb-hit-confirm', opponentHealth: target.p.health });
         return;
       }
-      me.dueling = false; me.opponentId = null;
-      target.p.dueling = false; target.p.opponentId = null;
-      send(ws, { type: 'bb-duel-won' });
-      send(target.ws, { type: 'bb-duel-lost' });
+      // A knockdown wins the round, not the whole duel — first to BB_ROUNDS_TO_WIN round wins
+      // takes the match (see the map-voting comment above for why: a duel now opens with its own
+      // pre-fight map vote, so "5 rounds on the map you picked" is worth more than a single kill).
+      const iAmA = duel.aWs === ws;
+      if (iAmA) duel.roundsWonA += 1; else duel.roundsWonB += 1;
+      const myRounds = iAmA ? duel.roundsWonA : duel.roundsWonB;
+      const oppRounds = iAmA ? duel.roundsWonB : duel.roundsWonA;
+      if (myRounds >= BB_ROUNDS_TO_WIN) {
+        const finishedDuelId = me.duelId;
+        me.dueling = false; me.opponentId = null; me.duelId = null;
+        target.p.dueling = false; target.p.opponentId = null; target.p.duelId = null;
+        send(ws, { type: 'bb-duel-won', roundsWon: myRounds, roundsLost: oppRounds });
+        send(target.ws, { type: 'bb-duel-lost', roundsWon: oppRounds, roundsLost: myRounds });
+        bb.duels.delete(finishedDuelId);
+        return;
+      }
+      me.health = BB_MAX_HEALTH; me.respawnedAt = now;
+      target.p.health = BB_MAX_HEALTH; target.p.respawnedAt = now;
+      send(ws, { type: 'bb-duel-round-end', won: true, roundsWon: myRounds, roundsLost: oppRounds });
+      send(target.ws, { type: 'bb-duel-round-end', won: false, roundsWon: oppRounds, roundsLost: myRounds });
       return;
     }
 

@@ -1026,11 +1026,11 @@ const BB_MAP_KITS = {
   gym: buildGymKit,
 };
 
-// The 20 named maps voted on in the online lobby (see bb-vote-map/bb-map-decided) — keep the id
-// list in sync with server.js's own BB_MAP_IDS, which validates votes against it but never renders
-// anything itself. 'office' alone is special: it's the original, always-in-the-scene officeGroup
-// built by buildOffice() above, not one of these procedurally-assembled kit instances — see
-// activateMap.
+// The 20 named maps voted on before each 1v1/2v2/3v3/4v4 (see bb-vote-match-map/bb-duel-map-vote/
+// bb-match-map-vote) — keep the id list in sync with server.js's own BB_MAP_IDS, which validates
+// votes against it but never renders anything itself. 'office' alone is special: it's the
+// original, always-in-the-scene officeGroup built by buildOffice() above, not one of these
+// procedurally-assembled kit instances — see activateMap.
 const BB_MAPS = [
   { id: 'office', name: 'Open-Plan Office', icon: '🏢' },
   { id: 'office_night', name: 'Night Shift', icon: '🌃', kit: 'office', floorTint: '#3a3f4a', ceilingTint: '#2c2f38', wallRgb: [58, 64, 78], deskColor: 0x445066, partitionColor: 0x2c333d },
@@ -1158,8 +1158,10 @@ function activateMap(mapId) {
 }
 
 // ---- Map vote overlay ----
-// Shown the instant bb-init reports voting is still open (see handleBbMessage's 'bb-init' case),
-// hidden the moment bb-map-decided (or an already-decided bb-init, for a late joiner) arrives.
+// Shown to just a match's own participants the instant a 1v1 accepts (bb-duel-map-vote) or an
+// NvN station fills (bb-match-map-vote) — never to lobby bystanders, who instead get a quiet
+// bb-lobby-map-changed heads-up once it resolves. Hidden the moment combat actually starts
+// (bb-duel-started/bb-match-started).
 const mapVoteOverlay = document.getElementById('map-vote');
 const mapVoteGrid = document.getElementById('map-vote-grid');
 const mapVoteTimerEl = document.getElementById('map-vote-timer');
@@ -1187,7 +1189,7 @@ function renderMapVoteGrid(tally) {
     card.addEventListener('click', (e) => {
       e.stopPropagation();
       myMapVote = m.id;
-      if (bbWs && bbWs.readyState === WebSocket.OPEN) bbWs.send(JSON.stringify({ type: 'bb-vote-map', mapId: m.id }));
+      if (bbWs && bbWs.readyState === WebSocket.OPEN) bbWs.send(JSON.stringify({ type: 'bb-vote-match-map', mapId: m.id }));
       renderMapVoteGrid(lastMapVoteTally); // instant "picked" highlight; the real broadcast tally follows moments later
     });
     mapVoteGrid.appendChild(card);
@@ -2471,6 +2473,8 @@ let myBbId = null;
 let myOpponentId = null;
 let myOpponentName = '';
 let opponentHealth = 100;
+let duelRoundsWon = 0;
+let duelRoundsLost = 0;
 const BB_MAX_HEALTH_CLIENT = 100;
 // Mirrors server.js's BB_WEAPON exactly for local cosmetics (sound/tracer/cooldown gating) — the
 // server re-checks its own copy of these numbers before ever applying damage, so a modified client
@@ -2485,6 +2489,8 @@ let myMatchSide = null;
 let myMatchEliminated = false;
 let matchTeammates = []; // [{id, name, health, eliminated}]
 let matchEnemies = [];   // [{id, name, health, eliminated}]
+let matchRoundsWonMine = 0;
+let matchRoundsWonTheirs = 0; // both derived from bb-match-round-*'s roundsWonA/B via myMatchSide
 let bbNextShotAt = 0;
 let bbPosSendT = 0;      // counts down to the next throttled bb-pos send
 let bbAvatarPhase = 0;   // local third-person avatar's own walk-cycle clock
@@ -2498,14 +2504,18 @@ const challengePopup = document.getElementById('challenge-popup');
 const challengeText = document.getElementById('challenge-text');
 const duelHud = document.getElementById('duel-hud');
 const duelOpponentName = document.getElementById('duel-opponent-name');
+const duelRoundScoreEl = document.getElementById('duel-round-score');
 const duelOpponentHealthFill = document.getElementById('duel-opponent-health-fill');
 const duelResult = document.getElementById('duel-result');
+const duelRoundBanner = document.getElementById('duel-round-banner');
 const weaponHudEl = document.getElementById('weapon-hud');
 const matchHud = document.getElementById('match-hud');
 const matchHudTitle = document.getElementById('match-hud-title');
+const matchHudRoundScore = document.getElementById('match-hud-round-score');
 const matchHudEnemies = document.getElementById('match-hud-enemies');
 const matchHudTeammates = document.getElementById('match-hud-teammates');
 const matchResult = document.getElementById('match-result');
+const matchRoundBanner = document.getElementById('match-round-banner');
 const matchEliminatedBanner = document.getElementById('match-eliminated-banner');
 
 // id -> { group, legs, arms, nameSprite, name, level, target: {x,y,z,yaw}, phase }
@@ -2726,9 +2736,21 @@ function renderLobbyPlayersList() {
   }
 }
 
+function renderDuelRoundScore() {
+  duelRoundScoreEl.textContent = `Round ${duelRoundsWon + duelRoundsLost + 1} · You ${duelRoundsWon} – ${duelRoundsLost} Them`;
+}
+
+function showDuelRoundBanner(message) {
+  duelRoundBanner.textContent = message;
+  duelRoundBanner.classList.remove('hidden');
+  setTimeout(() => duelRoundBanner.classList.add('hidden'), 1800);
+}
+
 function endDuel(message) {
   dueling = false;
   myOpponentId = null;
+  duelRoundsWon = 0;
+  duelRoundsLost = 0;
   duelHud.classList.add('hidden');
   duelResult.textContent = message;
   duelResult.classList.remove('hidden');
@@ -2759,8 +2781,15 @@ function renderMatchRoster(listEl, roster) {
 
 function renderMatchHud() {
   matchHudTitle.textContent = `Your team ${matchTeammates.length + 1} vs ${matchEnemies.length}`;
+  matchHudRoundScore.textContent = `Round ${matchRoundsWonMine + matchRoundsWonTheirs + 1} · You ${matchRoundsWonMine} – ${matchRoundsWonTheirs} Them`;
   renderMatchRoster(matchHudEnemies, matchEnemies);
   renderMatchRoster(matchHudTeammates, matchTeammates);
+}
+
+function showMatchRoundBanner(message) {
+  matchRoundBanner.textContent = message;
+  matchRoundBanner.classList.remove('hidden');
+  setTimeout(() => matchRoundBanner.classList.add('hidden'), 1800);
 }
 
 function endMatch(message) {
@@ -2771,6 +2800,8 @@ function endMatch(message) {
   myMatchEliminated = false;
   matchTeammates = [];
   matchEnemies = [];
+  matchRoundsWonMine = 0;
+  matchRoundsWonTheirs = 0;
   matchHud.classList.add('hidden');
   matchEliminatedBanner.classList.add('hidden');
   matchResult.textContent = message;
@@ -2795,23 +2826,46 @@ function handleBbMessage(data) {
       // every combat/plate flag and the HUD visibility that goes with it. Without this, a mid-duel
       // or mid-match disconnect left the old HUD frozen on screen forever with no way back to the
       // free-roam lobby short of leaving the page entirely.
-      dueling = false; myOpponentId = null; duelHud.classList.add('hidden');
+      dueling = false; myOpponentId = null; duelHud.classList.add('hidden'); hideMapVote();
       inMatch = false; myMatchId = null; myMatchSide = null; myMatchEliminated = false;
       matchTeammates = []; matchEnemies = []; matchHud.classList.add('hidden'); matchEliminatedBanner.classList.add('hidden');
       bbCurrentPlate = null;
       lobbyHud.classList.remove('hidden');
       for (const snapshot of data.stations || []) updateBbStationVisual(snapshot.stationId, snapshot);
-      if (data.votingOpen) showMapVote(data.voteEndsAt, data.mapTally || {});
-      else { hideMapVote(); activateMap(data.mapId || 'office'); }
-      break;
-    }
-    case 'bb-map-vote-update': {
-      updateMapVoteTally(data.tally || {});
-      break;
-    }
-    case 'bb-map-decided': {
-      hideMapVote();
+      // No lobby-wide vote anymore — the shared space just starts on whatever it already is
+      // (bb.currentMapId server-side, 'office' until any match's own pre-fight vote has ever
+      // resolved). See bb-duel-map-vote/bb-match-map-vote for where voting now actually happens.
       activateMap(data.mapId || 'office');
+      break;
+    }
+    case 'bb-lobby-map-changed': {
+      // Broadcast to literally everyone in the lobby, not just a match's own participants — there's
+      // only one shared space, so a match's own pre-fight vote changes the world for free-roamers
+      // too. A bystander (not this match's own participant, who already got bb-duel-started/
+      // bb-match-started with the same mapId) gets a quiet heads-up instead of the vote screen.
+      activateMap(data.mapId || 'office');
+      if (!dueling && !inMatch) {
+        const mapInfo = BB_MAPS.find((m) => m.id === data.mapId);
+        showWaveBanner(`🗺️ Lobby map changed: ${mapInfo ? mapInfo.name : data.mapId}`);
+      }
+      break;
+    }
+    case 'bb-duel-map-vote': {
+      myOpponentId = data.opponentId;
+      myOpponentName = data.opponentName;
+      lobbyPlayersPanel.classList.add('hidden');
+      challengePopup.classList.add('hidden');
+      showMapVote(data.voteEndsAt, data.tally || {});
+      break;
+    }
+    case 'bb-match-map-vote': {
+      lobbyPlayersPanel.classList.add('hidden');
+      challengePopup.classList.add('hidden');
+      showMapVote(data.voteEndsAt, data.tally || {});
+      break;
+    }
+    case 'bb-match-map-vote-update': {
+      updateMapVoteTally(data.tally || {});
       break;
     }
     case 'bb-full': {
@@ -2851,16 +2905,18 @@ function handleBbMessage(data) {
       break;
     }
     case 'bb-duel-started': {
+      hideMapVote();
       dueling = true;
       myOpponentId = data.opponentId;
       myOpponentName = data.opponentName;
+      duelRoundsWon = data.roundsWon || 0;
+      duelRoundsLost = data.roundsLost || 0;
       opponentHealth = BB_MAX_HEALTH_CLIENT;
       health = MAX_HEALTH;
       updateHealthBar();
-      lobbyPlayersPanel.classList.add('hidden');
-      challengePopup.classList.add('hidden');
       duelResult.classList.add('hidden');
       duelOpponentName.textContent = myOpponentName;
+      renderDuelRoundScore();
       duelOpponentHealthFill.style.width = '100%';
       duelHud.classList.remove('hidden');
       lobbyHud.classList.add('hidden');
@@ -2881,8 +2937,21 @@ function handleBbMessage(data) {
       sfxHurt();
       break;
     }
-    case 'bb-duel-won': awardCoins(30); endDuel('🏆 You won the duel! 🪙 +30'); break;
-    case 'bb-duel-lost': endDuel('💀 You lost the duel'); break;
+    // A round win/loss — the duel itself keeps going (first to 5 round wins takes the match), so
+    // this just refreshes the score/health and shows a quick banner, unlike bb-duel-won/lost below.
+    case 'bb-duel-round-end': {
+      duelRoundsWon = data.roundsWon;
+      duelRoundsLost = data.roundsLost;
+      renderDuelRoundScore();
+      opponentHealth = BB_MAX_HEALTH_CLIENT;
+      health = MAX_HEALTH;
+      updateHealthBar();
+      duelOpponentHealthFill.style.width = '100%';
+      showDuelRoundBanner(data.won ? `🎯 Round won! ${duelRoundsWon}–${duelRoundsLost}` : `Round lost — ${duelRoundsWon}–${duelRoundsLost}`);
+      break;
+    }
+    case 'bb-duel-won': awardCoins(30); endDuel(`🏆 You won the duel ${data.roundsWon}–${data.roundsLost}! 🪙 +30`); break;
+    case 'bb-duel-lost': endDuel(`💀 You lost the duel ${data.roundsWon}–${data.roundsLost}`); break;
     case 'bb-duel-ended': endDuel('Duel ended — opponent left'); break;
     case 'bb-station-update': {
       updateBbStationVisual(data.stationId, data);
@@ -2909,6 +2978,7 @@ function handleBbMessage(data) {
       break;
     }
     case 'bb-match-started': {
+      hideMapVote();
       dueling = true;
       inMatch = true;
       myMatchId = data.matchId;
@@ -2916,6 +2986,8 @@ function handleBbMessage(data) {
       myMatchEliminated = false;
       matchTeammates = data.teammates.map((t) => ({ ...t, health: BB_MAX_HEALTH_CLIENT, eliminated: false }));
       matchEnemies = data.enemies.map((e) => ({ ...e, health: BB_MAX_HEALTH_CLIENT, eliminated: false }));
+      matchRoundsWonMine = 0;
+      matchRoundsWonTheirs = 0;
       health = MAX_HEALTH;
       updateHealthBar();
       lobbyPlayersPanel.classList.add('hidden');
@@ -2955,9 +3027,32 @@ function handleBbMessage(data) {
       matchEliminatedBanner.classList.remove('hidden');
       break;
     }
+    // A round win/loss — the match itself keeps going (first to 5 round wins takes it), so this
+    // just updates the score and shows a quick banner; the actual respawn/reset follows right
+    // behind as its own bb-match-round-start broadcast.
+    case 'bb-match-round-end': {
+      matchRoundsWonMine = myMatchSide === 'a' ? data.roundsWonA : data.roundsWonB;
+      matchRoundsWonTheirs = myMatchSide === 'a' ? data.roundsWonB : data.roundsWonA;
+      renderMatchHud();
+      const won = data.winnerSlot === myMatchSide;
+      showMatchRoundBanner(won ? `🎯 Round won! ${matchRoundsWonMine}–${matchRoundsWonTheirs}` : `Round lost — ${matchRoundsWonMine}–${matchRoundsWonTheirs}`);
+      break;
+    }
+    case 'bb-match-round-start': {
+      myMatchEliminated = false;
+      matchEliminatedBanner.classList.add('hidden');
+      for (const t of matchTeammates) { t.health = BB_MAX_HEALTH_CLIENT; t.eliminated = false; }
+      for (const e of matchEnemies) { e.health = BB_MAX_HEALTH_CLIENT; e.eliminated = false; }
+      health = MAX_HEALTH;
+      updateHealthBar();
+      renderMatchHud();
+      break;
+    }
     case 'bb-match-ended': {
       if (data.won === true) awardCoins(30);
-      endMatch(data.won === true ? '🏆 Your team won! 🪙 +30' : data.won === false ? '💀 Your team was eliminated' : 'Match ended');
+      const mine = myMatchSide === 'a' ? data.roundsWonA : data.roundsWonB;
+      const theirs = myMatchSide === 'a' ? data.roundsWonB : data.roundsWonA;
+      endMatch(data.won === true ? `🏆 Your team won ${mine}–${theirs}! 🪙 +30` : data.won === false ? `💀 Your team lost ${mine}–${theirs}` : 'Match ended');
       break;
     }
   }

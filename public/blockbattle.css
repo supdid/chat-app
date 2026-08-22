@@ -881,6 +881,29 @@ html, body {
   margin-bottom: 0.2rem;
 }
 
+#duel-round-score {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #ffd54f;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+  margin-bottom: 0.3rem;
+}
+
+/* Same "big centered toast" treatment as #duel-result/#match-result, one z-index lower — a round
+   win/loss is a smaller beat than the full match ending, so it shouldn't visually outrank it. */
+#duel-round-banner, #match-round-banner {
+  position: fixed;
+  top: 33%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 28;
+  font-size: 1.5rem;
+  font-weight: 800;
+  text-shadow: 0 3px 12px rgba(0, 0, 0, 0.7);
+  color: #eaf6ff;
+  text-align: center;
+}
+
 #duel-opponent-health-wrap {
   height: 10px;
   border-radius: 6px;
@@ -927,6 +950,14 @@ html, body {
   text-align: center;
   margin-bottom: 0.4rem;
   opacity: 0.85;
+}
+
+#match-hud-round-score {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #ffd54f;
+  text-align: center;
+  margin-bottom: 0.4rem;
 }
 
 .match-hud-roster {

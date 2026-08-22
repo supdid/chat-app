@@ -15,6 +15,18 @@ let server;
 before(async () => { server = await startTestServer(); });
 after(async () => { await server.stop(); });
 
+// Mirrors server.js's own BB_MAP_IDS (Block Battle online-lobby map ids) — used only to assert a
+// pre-match/pre-duel map vote actually resolved to one of the real ids, not to exercise the list
+// itself (that's server.js's own concern). Keep in sync if that list ever changes.
+const BB_MAP_IDS_FOR_TEST = [
+  'office', 'office_night', 'office_alert',
+  'warehouse_day', 'warehouse_dusk', 'warehouse_flood', 'warehouse_frost',
+  'rooftop_day', 'rooftop_sunset', 'rooftop_night',
+  'garage_a', 'garage_b', 'garage_c', 'garage_d',
+  'plaza_day', 'plaza_rain', 'plaza_dusk',
+  'gym_basketball', 'gym_volleyball', 'gym_boxing',
+];
+
 async function joinRoom(username) {
   const ws = await connectWs();
   send(ws, { type: 'join-server', username });
@@ -3364,13 +3376,18 @@ describe('fixed-role two-player games reject a same-connection repeat join', () 
   });
 });
 
-describe('Block Battle 1v1 duel: challenge, accept/decline, combat', () => {
+describe('Block Battle 1v1 duel: challenge, accept/decline, pre-duel map vote, rounds', () => {
   // Zero coverage existed for the original challenge/accept/shoot 1v1 flow before this — every
   // prior bb test only covered the "can't challenge someone already busy" rejection, or the newer
   // NvN plate system. Dedicated instance for the same BB_RESPAWN_GRACE_MS=0 reason as the NvN
-  // block above.
+  // block below, plus BB_MATCH_VOTE_MS shrunk so the pre-duel map vote resolves in well under a
+  // second instead of the real 10s production value, and BB_ROUNDS_TO_WIN shrunk to 2 (not 1 —
+  // needs at least one real round-continues-the-duel transition to be worth testing) so a full
+  // duel doesn't need 5 rounds x 5 hits = 25 shots to finish.
   let duelServer;
-  before(async () => { duelServer = await startTestServer({ BB_RESPAWN_GRACE_MS: '0' }, 3205); });
+  before(async () => {
+    duelServer = await startTestServer({ BB_RESPAWN_GRACE_MS: '0', BB_MATCH_VOTE_MS: '200', BB_ROUNDS_TO_WIN: '2' }, 3205);
+  });
   after(async () => { await duelServer.stop(); });
 
   function duelConnect() {
@@ -3384,6 +3401,13 @@ describe('Block Battle 1v1 duel: challenge, accept/decline, combat', () => {
     send(ws, { type: 'bb-join', code, level: 1 });
     const init = await waitFor(ws, (m) => m.type === 'bb-init');
     return { ws, id: init.id };
+  }
+  // 5 shots at BB_WEAPON.damage=20 eliminate a target (BB_MAX_HEALTH=100) and win the round.
+  async function fireRound(shooter) {
+    for (let i = 0; i < 5; i++) {
+      send(shooter, { type: 'bb-shoot' });
+      await sleep(160); // just past BB_WEAPON.cooldownMs (150)
+    }
   }
 
   test('a declined challenge notifies the challenger and leaves both free to duel someone else', async () => {
@@ -3403,174 +3427,109 @@ describe('Block Battle 1v1 duel: challenge, accept/decline, combat', () => {
     a.ws.close(); b.ws.close();
   });
 
-  test('an accepted challenge pairs opponentId correctly in both directions and a full duel resolves with a winner/loser', async () => {
-    const code = 'BBDUEL-ACCEPT';
+  test('an accepted challenge opens a map vote (not combat) first, pairing opponentId correctly in both directions', async () => {
+    const code = 'BBDUEL-VOTE';
     const a = await duelJoin(code);
     const b = await duelJoin(code);
 
     send(a.ws, { type: 'bb-challenge', targetId: b.id });
     await waitFor(b.ws, (m) => m.type === 'bb-challenged');
 
-    const startA = waitFor(a.ws, (m) => m.type === 'bb-duel-started');
-    const startB = waitFor(b.ws, (m) => m.type === 'bb-duel-started');
+    const voteA = waitFor(a.ws, (m) => m.type === 'bb-duel-map-vote');
+    const voteB = waitFor(b.ws, (m) => m.type === 'bb-duel-map-vote');
     send(b.ws, { type: 'bb-challenge-response', fromId: a.id, accept: true });
-    const [sa, sb] = await Promise.all([startA, startB]);
-    assert.equal(sa.opponentId, b.id, 'A must be paired with B, not itself or a third party');
-    assert.equal(sb.opponentId, a.id, 'B must be paired with A — the pairing must be mutual');
+    const [va, vb] = await Promise.all([voteA, voteB]);
+    assert.equal(va.opponentId, b.id, 'A must be paired with B, not itself or a third party');
+    assert.equal(vb.opponentId, a.id, 'B must be paired with A — the pairing must be mutual');
 
-    // BB_MAX_HEALTH is 100, BB_WEAPON.damage is 20 — exactly 5 hits eliminate a target.
-    const aWon = waitFor(a.ws, (m) => m.type === 'bb-duel-won');
-    const bLost = waitFor(b.ws, (m) => m.type === 'bb-duel-lost');
-    for (let i = 0; i < 5; i++) {
-      send(a.ws, { type: 'bb-shoot' });
-      await sleep(160); // just past BB_WEAPON.cooldownMs (150)
-    }
-    await Promise.all([aWon, bLost]);
+    // Shooting before the vote resolves must be rejected — there's no map/round to fight on yet.
+    let sawHit = false;
+    const h = (data) => { if (JSON.parse(data).type === 'bb-hit-confirm') sawHit = true; };
+    a.ws.on('message', h);
+    send(a.ws, { type: 'bb-shoot' });
+    await sleep(150);
+    a.ws.off('message', h);
+    assert.equal(sawHit, false, 'a shot fired during the pre-duel map vote must not land');
+
+    const started = await waitFor(a.ws, (m) => m.type === 'bb-duel-started', 3000);
+    assert.ok(BB_MAP_IDS_FOR_TEST.includes(started.mapId), 'the vote must resolve to a real map id');
+    assert.equal(started.roundsWon, 0);
+    assert.equal(started.roundsLost, 0);
 
     a.ws.close(); b.ws.close();
   });
-});
 
-describe('Block Battle online-lobby map voting', () => {
-  // Dedicated instance with the vote window shrunk via env override, so a full vote-then-decide
-  // cycle doesn't have to wait on the real 12s production value. Port 3206 specifically — every
-  // port from 3193 through 3205, plus 3207, is already claimed by another dedicated instance
-  // elsewhere in this file; 3199 (TEST_PORT, the *default* port startTestServer() binds to when
-  // no port is given — see helpers.js) is the one this suite first tried and must never reuse:
-  // reusing it meant every WS connection here silently talked to the main shared server instead
-  // (which was ALSO listening on 3199), so votes were tallied fine (that server works normally)
-  // but never resolved within any reasonable test timeout — the shared server's BB_MAP_VOTE_MS is
-  // the real, un-shrunk 12s production default, not this describe's override.
-  let bbServer;
-  before(async () => { bbServer = await startTestServer({ BB_MAP_VOTE_MS: '1500' }, 3206); });
-  after(async () => { await bbServer.stop(); });
+  test('casting a vote in the pre-duel window broadcasts the tally to both duelists', async () => {
+    const code = 'BBDUEL-TALLY';
+    const a = await duelJoin(code);
+    const b = await duelJoin(code);
 
-  function bbConnect() {
-    return new Promise((resolve) => {
-      const ws = new WebSocket(`ws://localhost:${bbServer.port}`);
-      ws.on('open', () => resolve(ws));
-    });
-  }
+    send(a.ws, { type: 'bb-challenge', targetId: b.id });
+    await waitFor(b.ws, (m) => m.type === 'bb-challenged');
+    // Both waitFor calls must attach their listeners BEFORE the send below triggers the server to
+    // reply to both sockets in the same tick — awaiting them one at a time would let the second
+    // socket's message arrive (and be dropped, nothing listening yet) while still awaiting the first.
+    const voteA = waitFor(a.ws, (m) => m.type === 'bb-duel-map-vote');
+    const voteB = waitFor(b.ws, (m) => m.type === 'bb-duel-map-vote');
+    send(b.ws, { type: 'bb-challenge-response', fromId: a.id, accept: true });
+    await Promise.all([voteA, voteB]);
 
-  test('a fresh lobby opens with voting; the first bb-init reports votingOpen and no mapId yet', async () => {
-    const a = await bbConnect();
-    send(a, { type: 'bb-join', code: 'BBMAPVOTE1', name: 'MapVoteA' });
-    const init = await waitFor(a, (m) => m.type === 'bb-init');
-    assert.equal(init.votingOpen, true);
-    assert.equal(init.mapId, null);
-    assert.ok(init.voteEndsAt > Date.now(), 'voteEndsAt should be a real near-future timestamp');
-    assert.deepEqual(init.mapTally, {});
-    a.close();
+    const updateB = waitFor(b.ws, (m) => m.type === 'bb-match-map-vote-update');
+    send(a.ws, { type: 'bb-vote-match-map', mapId: 'garage_a' });
+    const update = await updateB;
+    assert.deepEqual(update.tally, { garage_a: 1 });
+
+    await waitFor(a.ws, (m) => m.type === 'bb-duel-started', 3000); // let the vote resolve before closing
+    a.ws.close(); b.ws.close();
   });
 
-  test('casting a vote broadcasts the updated tally to everyone in the lobby', async () => {
-    const code = 'BBMAPVOTE2';
-    const a = await bbConnect();
-    send(a, { type: 'bb-join', code, name: 'MapVoteTallyA' });
-    await waitFor(a, (m) => m.type === 'bb-init');
-    const b = await bbConnect();
-    send(b, { type: 'bb-join', code, name: 'MapVoteTallyB' });
-    await waitFor(b, (m) => m.type === 'bb-init');
+  test('first to BB_ROUNDS_TO_WIN (2) round wins takes the duel; a round win respawns and continues it', async () => {
+    const code = 'BBDUEL-ROUNDS';
+    const a = await duelJoin(code);
+    const b = await duelJoin(code);
 
-    send(a, { type: 'bb-vote-map', mapId: 'warehouse_day' });
-    const update = await waitFor(b, (m) => m.type === 'bb-map-vote-update');
-    assert.deepEqual(update.tally, { warehouse_day: 1 });
-    a.close(); b.close();
-  });
+    send(a.ws, { type: 'bb-challenge', targetId: b.id });
+    await waitFor(b.ws, (m) => m.type === 'bb-challenged');
+    send(b.ws, { type: 'bb-challenge-response', fromId: a.id, accept: true });
+    // Both listeners attached before either is awaited — see the tally test above's comment on why.
+    const startedA = waitFor(a.ws, (m) => m.type === 'bb-duel-started', 3000);
+    const startedB = waitFor(b.ws, (m) => m.type === 'bb-duel-started', 3000);
+    await Promise.all([startedA, startedB]);
 
-  test('an invalid mapId is ignored, not tallied', async () => {
-    const a = await bbConnect();
-    send(a, { type: 'bb-join', code: 'BBMAPVOTE3', name: 'MapVoteBadA' });
-    await waitFor(a, (m) => m.type === 'bb-init');
+    // Round 1: A wins — the duel must NOT end yet (BB_ROUNDS_TO_WIN is 2), both respawn instead.
+    const roundEndA = waitFor(a.ws, (m) => m.type === 'bb-duel-round-end');
+    const roundEndB = waitFor(b.ws, (m) => m.type === 'bb-duel-round-end');
+    await fireRound(a.ws);
+    const [reA, reB] = await Promise.all([roundEndA, roundEndB]);
+    assert.equal(reA.won, true); assert.equal(reA.roundsWon, 1); assert.equal(reA.roundsLost, 0);
+    assert.equal(reB.won, false); assert.equal(reB.roundsWon, 0); assert.equal(reB.roundsLost, 1);
 
-    let sawUpdate = false;
-    const h = (data) => { if (JSON.parse(data).type === 'bb-map-vote-update') sawUpdate = true; };
-    a.on('message', h);
-    send(a, { type: 'bb-vote-map', mapId: 'not-a-real-map' });
-    await sleep(200);
-    a.off('message', h);
-    assert.equal(sawUpdate, false, 'an invalid mapId must not produce a tally broadcast');
-    a.close();
-  });
+    // Round 2: A wins again — 2 round wins reached, the whole duel ends now.
+    const aWon = waitFor(a.ws, (m) => m.type === 'bb-duel-won');
+    const bLost = waitFor(b.ws, (m) => m.type === 'bb-duel-lost');
+    await fireRound(a.ws);
+    const [won, lost] = await Promise.all([aWon, bLost]);
+    assert.equal(won.roundsWon, 2); assert.equal(won.roundsLost, 0);
+    assert.equal(lost.roundsWon, 0); assert.equal(lost.roundsLost, 2);
 
-  test('the vote resolves to the map with the most votes once the window closes', async () => {
-    const code = 'BBMAPVOTE4';
-    const a = await bbConnect();
-    send(a, { type: 'bb-join', code, name: 'MapVoteWinA' });
-    await waitFor(a, (m) => m.type === 'bb-init');
-    const b = await bbConnect();
-    send(b, { type: 'bb-join', code, name: 'MapVoteWinB' });
-    await waitFor(b, (m) => m.type === 'bb-init');
-    const c = await bbConnect();
-    send(c, { type: 'bb-join', code, name: 'MapVoteWinC' });
-    await waitFor(c, (m) => m.type === 'bb-init');
-
-    send(a, { type: 'bb-vote-map', mapId: 'garage_a' });
-    send(b, { type: 'bb-vote-map', mapId: 'garage_a' });
-    send(c, { type: 'bb-vote-map', mapId: 'gym_boxing' });
-
-    const decided = await waitFor(a, (m) => m.type === 'bb-map-decided', 5000);
-    assert.equal(decided.mapId, 'garage_a', 'the map with 2 votes should beat the map with 1');
-    a.close(); b.close(); c.close();
-  });
-
-  test('a tied vote resolves to one of the tied maps, not a third', async () => {
-    const code = 'BBMAPVOTE5';
-    const a = await bbConnect();
-    send(a, { type: 'bb-join', code, name: 'MapVoteTieA' });
-    await waitFor(a, (m) => m.type === 'bb-init');
-    const b = await bbConnect();
-    send(b, { type: 'bb-join', code, name: 'MapVoteTieB' });
-    await waitFor(b, (m) => m.type === 'bb-init');
-
-    send(a, { type: 'bb-vote-map', mapId: 'plaza_day' });
-    send(b, { type: 'bb-vote-map', mapId: 'plaza_rain' });
-
-    const decided = await waitFor(a, (m) => m.type === 'bb-map-decided', 5000);
-    assert.ok(['plaza_day', 'plaza_rain'].includes(decided.mapId), 'a 1-1 tie must resolve to one of the two tied maps');
-    a.close(); b.close();
-  });
-
-  test('a late joiner after the vote is decided skips voting and gets the already-decided map', async () => {
-    const code = 'BBMAPVOTE6';
-    const a = await bbConnect();
-    send(a, { type: 'bb-join', code, name: 'MapVoteLateA' });
-    await waitFor(a, (m) => m.type === 'bb-init');
-    send(a, { type: 'bb-vote-map', mapId: 'rooftop_day' });
-    const decided = await waitFor(a, (m) => m.type === 'bb-map-decided', 5000);
-    assert.equal(decided.mapId, 'rooftop_day');
-
-    const late = await bbConnect();
-    send(late, { type: 'bb-join', code, name: 'MapVoteLateJoiner' });
-    const lateInit = await waitFor(late, (m) => m.type === 'bb-init');
-    assert.equal(lateInit.votingOpen, false);
-    assert.equal(lateInit.mapId, 'rooftop_day');
-    a.close(); late.close();
-  });
-
-  test('a lobby recreated after fully emptying opens a brand-new vote, not a stale decided map', async () => {
-    const code = 'BBMAPVOTE7';
-    const a = await bbConnect();
-    send(a, { type: 'bb-join', code, name: 'MapVoteFreshA' });
-    await waitFor(a, (m) => m.type === 'bb-init');
-    a.close();
-    await sleep(200); // let the server's close handler run leaveBb, clearing the pending vote timer
-
-    const b = await bbConnect();
-    send(b, { type: 'bb-join', code, name: 'MapVoteFreshB' });
-    const init = await waitFor(b, (m) => m.type === 'bb-init');
-    assert.equal(init.votingOpen, true, 'a recreated lobby must open its own fresh vote, not inherit a decided map from before');
-    assert.equal(init.mapId, null);
-    b.close();
+    a.ws.close(); b.ws.close();
   });
 });
 
 describe('Block Battle NvN match stations', () => {
   // Dedicated instance so BB_RESPAWN_GRACE_MS can be zeroed — these tests fire shots within
   // milliseconds of a match starting, well inside the real 500ms grace window, which would
-  // silently reject the shot and throw off the elimination-count math below.
+  // silently reject the shot and throw off the elimination-count math below. BB_MATCH_VOTE_MS is
+  // shrunk so each match's own pre-fight map vote resolves in well under a second (every test
+  // below just waits for bb-match-started, which now only fires once that vote resolves — the
+  // default 3000ms waitFor timeout comfortably covers the shrunk window, no other test changes
+  // needed). BB_ROUNDS_TO_WIN is set to 1 so a single elimination still ends the whole match
+  // immediately, preserving every existing test's "elimination ends it" assertions unchanged — the
+  // actual multi-round-continues behavior has its own dedicated test further down instead.
   let bbServer;
-  before(async () => { bbServer = await startTestServer({ BB_RESPAWN_GRACE_MS: '0' }, 3202); });
+  before(async () => {
+    bbServer = await startTestServer({ BB_RESPAWN_GRACE_MS: '0', BB_MATCH_VOTE_MS: '150', BB_ROUNDS_TO_WIN: '1' }, 3202);
+  });
   after(async () => { await bbServer.stop(); });
 
   function bbConnect() {
@@ -3795,6 +3754,92 @@ describe('Block Battle NvN match stations', () => {
     assert.equal(rosterUpdate.health, 80, 'B must see A drop to 80 health even though B was not the one shot');
 
     a.ws.close(); b.ws.close(); c.ws.close(); d.ws.close();
+  });
+});
+
+describe('Block Battle NvN match: pre-match map vote and multi-round continuation', () => {
+  // Own dedicated instance (distinct BB_ROUNDS_TO_WIN from the block above, which deliberately
+  // uses 1 to keep its existing single-elimination-ends-it assertions unchanged) — this is the
+  // test that actually exercises "a round win respawns and continues the match instead of ending
+  // it," the NvN equivalent of the duel suite's own rounds test above. The two share the same
+  // underlying shape (bbCheckMatchEnd's round-scoring/bbRestartMatchRound) but reach it through
+  // genuinely different code (team alive-counts, not a single opponentId), so it's worth its own
+  // coverage rather than assuming the duel test alone proves this half of the file too.
+  let roundsServer;
+  before(async () => {
+    roundsServer = await startTestServer({ BB_RESPAWN_GRACE_MS: '0', BB_MATCH_VOTE_MS: '150', BB_ROUNDS_TO_WIN: '2' }, 3208);
+  });
+  after(async () => { await roundsServer.stop(); });
+
+  function roundsConnect() {
+    return new Promise((resolve) => {
+      const ws = new WebSocket(`ws://localhost:${roundsServer.port}`);
+      ws.on('open', () => resolve(ws));
+    });
+  }
+  async function roundsJoin(code) {
+    const ws = await roundsConnect();
+    send(ws, { type: 'bb-join', code, level: 1 });
+    const init = await waitFor(ws, (m) => m.type === 'bb-init');
+    return { ws, id: init.id };
+  }
+  async function eliminate(shooter, targetId) {
+    for (let i = 0; i < 5; i++) {
+      send(shooter, { type: 'bb-shoot', targetId });
+      await sleep(160);
+    }
+  }
+
+  test('a 1v1 station opens its own map vote before the match, and the map vote resolves to a real map', async () => {
+    const code = 'BBSTATIONVOTE1';
+    const a = await roundsJoin(code);
+    const b = await roundsJoin(code);
+
+    const voteA = waitFor(a.ws, (m) => m.type === 'bb-match-map-vote');
+    const voteB = waitFor(b.ws, (m) => m.type === 'bb-match-map-vote');
+    send(a.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'a', slot: 0 });
+    send(b.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'b', slot: 0 });
+    const [va, vb] = await Promise.all([voteA, voteB]);
+    assert.equal(va.matchId, vb.matchId, 'both sides must be voting on the same pending match');
+
+    const startA = await waitFor(a.ws, (m) => m.type === 'bb-match-started', 3000);
+    assert.ok(BB_MAP_IDS_FOR_TEST.includes(startA.mapId), 'the vote must resolve to a real map id');
+
+    a.ws.close(); b.ws.close();
+  });
+
+  test('a round win respawns both sides and continues the match; the 2nd round win ends it', async () => {
+    const code = 'BBSTATIONROUNDS1';
+    const a = await roundsJoin(code);
+    const b = await roundsJoin(code);
+    // Both listeners attached before either plate-enter — see the duel suite's tally test comment
+    // on why (both sockets get bb-match-started in the same tick once the vote resolves).
+    const startedA = waitFor(a.ws, (m) => m.type === 'bb-match-started', 3000);
+    const startedB = waitFor(b.ws, (m) => m.type === 'bb-match-started', 3000);
+    send(a.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'a', slot: 0 });
+    send(b.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'b', slot: 0 });
+    await Promise.all([startedA, startedB]);
+
+    // Round 1: A eliminates B — the match must NOT end yet (BB_ROUNDS_TO_WIN is 2).
+    const roundEndA = waitFor(a.ws, (m) => m.type === 'bb-match-round-end');
+    const roundStartA = waitFor(a.ws, (m) => m.type === 'bb-match-round-start');
+    const roundStartB = waitFor(b.ws, (m) => m.type === 'bb-match-round-start');
+    await eliminate(a.ws, b.id);
+    const re = await roundEndA;
+    assert.equal(re.winnerSlot, 'a');
+    assert.equal(re.roundsWonA, 1);
+    assert.equal(re.roundsWonB, 0);
+    await Promise.all([roundStartA, roundStartB]); // both sides respawn for round 2
+
+    // Round 2: A eliminates B again — 2 round wins reached, the whole match ends now.
+    const endA = waitFor(a.ws, (m) => m.type === 'bb-match-ended');
+    const endB = waitFor(b.ws, (m) => m.type === 'bb-match-ended');
+    await eliminate(a.ws, b.id);
+    const [ea, eb] = await Promise.all([endA, endB]);
+    assert.equal(ea.won, true); assert.equal(ea.roundsWonA, 2); assert.equal(ea.roundsWonB, 0);
+    assert.equal(eb.won, false);
+
+    a.ws.close(); b.ws.close();
   });
 });
 
