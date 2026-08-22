@@ -12,10 +12,13 @@ const db = require('./db');
 const patcher = require('./patcher');
 
 const app = express();
-// Only trust X-Forwarded-For from the local reverse proxy (nginx in front of this process in
-// production) — without this, req.ip (used by isAuthRateLimited) resolves to the proxy's own
-// loopback address for every request, collapsing every visitor into one shared rate-limit bucket.
+// Only trust X-Forwarded-For/X-Forwarded-Proto from a local reverse proxy (a cloudflared quick
+// tunnel in front of this process in production, see chat-app-tunnel.service — not nginx, despite
+// what an earlier version of this comment claimed) — without this, req.ip (used by
+// isAuthRateLimited) resolves to the proxy's own loopback address for every request, collapsing
+// every visitor into one shared rate-limit bucket.
 app.set('trust proxy', 'loopback');
+app.disable('x-powered-by'); // no reason to hand out the framework/version for free
 const server = http.createServer(app);
 // ws defaults to a 100MiB maxPayload when unset — any connected client (getting one just needs an
 // open WS connection, no auth) could send a single message up to that size, which the server
@@ -182,7 +185,12 @@ if (fs.existsSync(ADMIN_KEY_PATH)) {
 } else {
   adminKey = crypto.randomBytes(24).toString('hex');
   fs.writeFileSync(ADMIN_KEY_PATH, JSON.stringify({ key: adminKey }));
-  console.log(`Admin panel key generated — bookmark this: http://localhost:${process.env.PORT || 3001}/admin.html?key=${adminKey}`);
+  // The ?key= URL is a one-time bootstrap only — admin.html reads it client-side on first load and
+  // saves it to that browser's localStorage, then every actual admin API call goes out as a Bearer
+  // header from there on (requireAdmin below no longer accepts the key via query string). Don't
+  // bookmark or reuse this URL: unlike localStorage, a bookmark/history entry keeps the plaintext
+  // key around indefinitely in a spot that can sync to the cloud if browser sync is enabled.
+  console.log(`Admin panel key generated: ${adminKey}\nOpen http://localhost:${process.env.PORT || 3001}/admin.html?key=${adminKey} once to save it into that browser — don't bookmark the URL itself.`);
 }
 
 // Google sign-in (optional, alongside username/password accounts) — same gitignored-JSON pattern
@@ -207,8 +215,13 @@ const { OAuth2Client } = require('google-auth-library');
 const googleClient = googleConfig.clientId ? new OAuth2Client(googleConfig.clientId) : null;
 
 function requireAdmin(req, res, next) {
+  // Bearer-only: a ?key= query-string fallback used to also be accepted here, but admin.html's own
+  // API calls never actually relied on it (it only reads ?key= client-side once, to seed
+  // localStorage — see the boot-log comment above), and a query string is a materially weaker place
+  // for a permanent, non-rotating credential to live — it lands in server access logs and any
+  // Referer header a linked-out page might send, neither of which localStorage-via-header does.
   const header = req.get('authorization') || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : String(req.query.key || '');
+  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
   const tokenBuf = Buffer.from(token);
   const keyBuf = Buffer.from(adminKey);
   if (!token || tokenBuf.length !== keyBuf.length || !crypto.timingSafeEqual(tokenBuf, keyBuf)) {
@@ -395,6 +408,23 @@ const upload = multer({
 // defense against a crafted direct request landing a mismatched file in /uploads/.
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
+  // This app never frames itself, and there are real single-click state-changing actions —
+  // including the admin panel, whose auth token lives in this origin's own localStorage and would
+  // still be reachable from inside a same-origin iframe an admin was tricked into clicking through.
+  res.setHeader('X-Frame-Options', 'DENY');
+  // Deliberately narrow for now: a real script-src policy needs nonces/hashes for the four pages
+  // with an inline <script> block (admin/aistudio/index/videoeditor.html), which is a bigger,
+  // separate rollout. frame-ancestors/object-src are safe to add immediately regardless of that,
+  // and frame-ancestors is the modern (CSP) equivalent of X-Frame-Options above, kept alongside it
+  // since older browsers only honor the header form.
+  res.setHeader('Content-Security-Policy', "frame-ancestors 'none'; object-src 'none'");
+  // Quick-tunnel hostnames rotate on every restart (see chat-app-tunnel.service), so HSTS's
+  // host-pinning barely applies here, but it's still correct to send when a request genuinely
+  // arrived over HTTPS — trust proxy is scoped to 'loopback' above, so req.secure only reflects a
+  // real X-Forwarded-Proto from the tunnel process itself, never an arbitrary client-supplied
+  // header — and it's skipped otherwise, since plain-HTTP localhost/LAN access is a real, intended
+  // way to reach this app, not something to coerce into HTTPS.
+  if (req.secure) res.setHeader('Strict-Transport-Security', 'max-age=15552000; includeSubDomains');
   next();
 });
 app.use(express.static(path.join(__dirname, 'public')));

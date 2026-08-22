@@ -44,6 +44,12 @@ async function joinAsAccount(username, accountToken, code) {
   }
   return ws;
 }
+// requireAdmin only accepts the key via this header (a ?key= query-string fallback used to also
+// work, but the real client — admin.html — never sent it that way either, and it was a materially
+// weaker place for a permanent credential to sit: server access logs, Referer headers, etc.).
+function adminAuth(key) {
+  return { Authorization: `Bearer ${key}` };
+}
 
 describe('room chat', () => {
   test('a message round-trips to the sender', async () => {
@@ -1355,9 +1361,28 @@ describe('admin routes require the admin key', () => {
     for (const adminPath of ['/admin/errors', '/admin/reports', '/admin/patches']) {
       const noKeyRes = await fetch(`${BASE_URL}${adminPath}`);
       assert.equal(noKeyRes.status, 401, `${adminPath} without a key should 401`);
-      const wrongKeyRes = await fetch(`${BASE_URL}${adminPath}?key=definitely-not-the-real-key`);
+      const wrongKeyRes = await fetch(`${BASE_URL}${adminPath}`, { headers: adminAuth('definitely-not-the-real-key') });
       assert.equal(wrongKeyRes.status, 401, `${adminPath} with a wrong key should 401`);
     }
+  });
+
+  // ?key= used to also work as a fallback — a materially weaker place for a permanent credential
+  // to live (server access logs, Referer headers) than the Authorization header admin.html's real
+  // fetch calls actually use. Confirms the fallback is really gone, not just untested.
+  test('the real admin key via ?key= query string alone is no longer accepted (Bearer-only)', async () => {
+    const adminKey = JSON.parse(fs.readFileSync(path.join(server.dir, 'admin-key.json'), 'utf8')).key;
+    const res = await fetch(`${BASE_URL}/admin/errors?key=${adminKey}`);
+    assert.equal(res.status, 401, 'the real key in the query string, with no Authorization header, must be rejected');
+  });
+});
+
+describe('security response headers', () => {
+  test('every response carries clickjacking/sniffing protections and no framework fingerprint', async () => {
+    const res = await fetch(`${BASE_URL}/`);
+    assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(res.headers.get('x-frame-options'), 'DENY');
+    assert.match(res.headers.get('content-security-policy') || '', /frame-ancestors 'none'/);
+    assert.equal(res.headers.get('x-powered-by'), null, 'Express should not identify itself');
   });
 });
 
@@ -1378,23 +1403,23 @@ describe('admin error-report resolve/dismiss', () => {
       body: JSON.stringify({ message: 'admin-error-resolve-test', stack: null, url: null }),
     });
     await sleep(150);
-    const listRes = await fetch(`${BASE_URL}/admin/errors?key=${adminKey}`);
+    const listRes = await fetch(`${BASE_URL}/admin/errors`, { headers: adminAuth(adminKey) });
     const { errors } = await listRes.json();
     const target = errors.find((e) => e.message === 'admin-error-resolve-test');
     assert.ok(target, 'the reported error should show up in the admin list');
     assert.equal(target.status, 'new');
 
-    const wrongKeyRes = await fetch(`${BASE_URL}/admin/errors/${target.id}/resolve?key=wrong`, { method: 'POST' });
+    const wrongKeyRes = await fetch(`${BASE_URL}/admin/errors/${target.id}/resolve`, { method: 'POST', headers: adminAuth('wrong') });
     assert.equal(wrongKeyRes.status, 401);
 
-    const resolveRes = await fetch(`${BASE_URL}/admin/errors/${target.id}/resolve?key=${adminKey}`, { method: 'POST' });
+    const resolveRes = await fetch(`${BASE_URL}/admin/errors/${target.id}/resolve`, { method: 'POST', headers: adminAuth(adminKey) });
     assert.equal(resolveRes.status, 200);
-    const afterResolve = await (await fetch(`${BASE_URL}/admin/errors?key=${adminKey}`)).json();
+    const afterResolve = await (await fetch(`${BASE_URL}/admin/errors`, { headers: adminAuth(adminKey) })).json();
     assert.equal(afterResolve.errors.find((e) => e.id === target.id).status, 'resolved');
 
-    const dismissRes = await fetch(`${BASE_URL}/admin/errors/${target.id}/dismiss?key=${adminKey}`, { method: 'POST' });
+    const dismissRes = await fetch(`${BASE_URL}/admin/errors/${target.id}/dismiss`, { method: 'POST', headers: adminAuth(adminKey) });
     assert.equal(dismissRes.status, 200);
-    const afterDismiss = await (await fetch(`${BASE_URL}/admin/errors?key=${adminKey}`)).json();
+    const afterDismiss = await (await fetch(`${BASE_URL}/admin/errors`, { headers: adminAuth(adminKey) })).json();
     assert.equal(afterDismiss.errors.find((e) => e.id === target.id).status, 'dismissed');
   });
 });
@@ -1413,20 +1438,20 @@ describe('WS report -> /admin/reports pipeline', () => {
     send(reporter, { type: 'report', targetName: 'ReportTargetUser', reason: 'being annoying' });
     await waitFor(reporter, (m) => m.type === 'report-received');
 
-    const { reports } = await (await fetch(`${BASE_URL}/admin/reports?key=${adminKey}`)).json();
+    const { reports } = await (await fetch(`${BASE_URL}/admin/reports`, { headers: adminAuth(adminKey) })).json();
     const found = reports.find((r) => r.target_name === 'ReportTargetUser' && r.room_code === code);
     assert.ok(found, 'the submitted report must show up in the admin list');
     assert.equal(found.status, 'new');
     assert.equal(found.reason, 'being annoying');
 
-    const resolveRes = await fetch(`${BASE_URL}/admin/reports/${found.id}/resolve?key=${adminKey}`, { method: 'POST' });
+    const resolveRes = await fetch(`${BASE_URL}/admin/reports/${found.id}/resolve`, { method: 'POST', headers: adminAuth(adminKey) });
     assert.equal(resolveRes.status, 200);
-    const afterResolve = await (await fetch(`${BASE_URL}/admin/reports?key=${adminKey}`)).json();
+    const afterResolve = await (await fetch(`${BASE_URL}/admin/reports`, { headers: adminAuth(adminKey) })).json();
     assert.equal(afterResolve.reports.find((r) => r.id === found.id).status, 'resolved');
 
-    const dismissRes = await fetch(`${BASE_URL}/admin/reports/${found.id}/dismiss?key=${adminKey}`, { method: 'POST' });
+    const dismissRes = await fetch(`${BASE_URL}/admin/reports/${found.id}/dismiss`, { method: 'POST', headers: adminAuth(adminKey) });
     assert.equal(dismissRes.status, 200);
-    const afterDismiss = await (await fetch(`${BASE_URL}/admin/reports?key=${adminKey}`)).json();
+    const afterDismiss = await (await fetch(`${BASE_URL}/admin/reports`, { headers: adminAuth(adminKey) })).json();
     assert.equal(afterDismiss.reports.find((r) => r.id === found.id).status, 'dismissed');
 
     reporter.close(); target.close();
@@ -2574,14 +2599,14 @@ describe('inactive-room purge cascade', () => {
 
       wsSend({ type: 'report', targetName: 'SomeoneElse', reason: 'purge cascade test' });
       await wsWaitFor((m) => m.type === 'report-received');
-      const reportsBefore = await fetch(`${base}/admin/reports?key=${adminKey}`).then((r) => r.json());
+      const reportsBefore = await fetch(`${base}/admin/reports`, { headers: adminAuth(adminKey) }).then((r) => r.json());
       assert.ok(reportsBefore.reports.some((r) => r.room_code === room.code), 'the report must show up in the admin list before the purge');
 
       await sleep(150); // past the 50ms retention window
-      const cleanupResult = await fetch(`${base}/admin/cleanup/run?key=${adminKey}`, { method: 'POST' }).then((r) => r.json());
+      const cleanupResult = await fetch(`${base}/admin/cleanup/run`, { method: 'POST', headers: adminAuth(adminKey) }).then((r) => r.json());
       assert.ok(cleanupResult.codes.includes(room.code), 'the room must actually be the one purged');
 
-      const reportsAfter = await fetch(`${base}/admin/reports?key=${adminKey}`).then((r) => r.json());
+      const reportsAfter = await fetch(`${base}/admin/reports`, { headers: adminAuth(adminKey) }).then((r) => r.json());
       assert.ok(!reportsAfter.reports.some((r) => r.room_code === room.code), 'the report must be gone after the room is purged');
 
       const recentAfter = await fetch(`${base}/account/recent-rooms`, { headers: { Authorization: `Bearer ${signup.token}` } }).then((r) => r.json());
@@ -2813,14 +2838,14 @@ describe('more previously-unprotected HTTP routes are now rate-limited', () => {
       method: 'POST', headers: authHeaders, body: JSON.stringify({ reason: 'will be deleted' }),
     });
 
-    const before = await fetch(`${BASE_URL}/admin/scorpture-reports?key=${adminKey}`).then((r) => r.json());
+    const before = await fetch(`${BASE_URL}/admin/scorpture-reports`, { headers: adminAuth(adminKey) }).then((r) => r.json());
     const reportBefore = before.reports.find((r) => r.reason === 'will be deleted');
     assert.ok(reportBefore, 'the report must show up in the admin list');
     assert.equal(reportBefore.videoDeleted, false, 'the video still exists at this point');
 
     await fetch(`${BASE_URL}/api/scorpture/videos/${video.id}`, { method: 'DELETE', headers: authHeaders });
 
-    const after = await fetch(`${BASE_URL}/admin/scorpture-reports?key=${adminKey}`).then((r) => r.json());
+    const after = await fetch(`${BASE_URL}/admin/scorpture-reports`, { headers: adminAuth(adminKey) }).then((r) => r.json());
     const reportAfter = after.reports.find((r) => r.id === reportBefore.id);
     assert.equal(reportAfter.videoDeleted, true, 'the same report must now flag that its video was deleted');
   });
