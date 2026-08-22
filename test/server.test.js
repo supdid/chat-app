@@ -3431,6 +3431,140 @@ describe('Block Battle 1v1 duel: challenge, accept/decline, combat', () => {
   });
 });
 
+describe('Block Battle online-lobby map voting', () => {
+  // Dedicated instance with the vote window shrunk via env override, so a full vote-then-decide
+  // cycle doesn't have to wait on the real 12s production value. Port 3206 specifically — every
+  // port from 3193 through 3205, plus 3207, is already claimed by another dedicated instance
+  // elsewhere in this file; 3199 (TEST_PORT, the *default* port startTestServer() binds to when
+  // no port is given — see helpers.js) is the one this suite first tried and must never reuse:
+  // reusing it meant every WS connection here silently talked to the main shared server instead
+  // (which was ALSO listening on 3199), so votes were tallied fine (that server works normally)
+  // but never resolved within any reasonable test timeout — the shared server's BB_MAP_VOTE_MS is
+  // the real, un-shrunk 12s production default, not this describe's override.
+  let bbServer;
+  before(async () => { bbServer = await startTestServer({ BB_MAP_VOTE_MS: '1500' }, 3206); });
+  after(async () => { await bbServer.stop(); });
+
+  function bbConnect() {
+    return new Promise((resolve) => {
+      const ws = new WebSocket(`ws://localhost:${bbServer.port}`);
+      ws.on('open', () => resolve(ws));
+    });
+  }
+
+  test('a fresh lobby opens with voting; the first bb-init reports votingOpen and no mapId yet', async () => {
+    const a = await bbConnect();
+    send(a, { type: 'bb-join', code: 'BBMAPVOTE1', name: 'MapVoteA' });
+    const init = await waitFor(a, (m) => m.type === 'bb-init');
+    assert.equal(init.votingOpen, true);
+    assert.equal(init.mapId, null);
+    assert.ok(init.voteEndsAt > Date.now(), 'voteEndsAt should be a real near-future timestamp');
+    assert.deepEqual(init.mapTally, {});
+    a.close();
+  });
+
+  test('casting a vote broadcasts the updated tally to everyone in the lobby', async () => {
+    const code = 'BBMAPVOTE2';
+    const a = await bbConnect();
+    send(a, { type: 'bb-join', code, name: 'MapVoteTallyA' });
+    await waitFor(a, (m) => m.type === 'bb-init');
+    const b = await bbConnect();
+    send(b, { type: 'bb-join', code, name: 'MapVoteTallyB' });
+    await waitFor(b, (m) => m.type === 'bb-init');
+
+    send(a, { type: 'bb-vote-map', mapId: 'warehouse_day' });
+    const update = await waitFor(b, (m) => m.type === 'bb-map-vote-update');
+    assert.deepEqual(update.tally, { warehouse_day: 1 });
+    a.close(); b.close();
+  });
+
+  test('an invalid mapId is ignored, not tallied', async () => {
+    const a = await bbConnect();
+    send(a, { type: 'bb-join', code: 'BBMAPVOTE3', name: 'MapVoteBadA' });
+    await waitFor(a, (m) => m.type === 'bb-init');
+
+    let sawUpdate = false;
+    const h = (data) => { if (JSON.parse(data).type === 'bb-map-vote-update') sawUpdate = true; };
+    a.on('message', h);
+    send(a, { type: 'bb-vote-map', mapId: 'not-a-real-map' });
+    await sleep(200);
+    a.off('message', h);
+    assert.equal(sawUpdate, false, 'an invalid mapId must not produce a tally broadcast');
+    a.close();
+  });
+
+  test('the vote resolves to the map with the most votes once the window closes', async () => {
+    const code = 'BBMAPVOTE4';
+    const a = await bbConnect();
+    send(a, { type: 'bb-join', code, name: 'MapVoteWinA' });
+    await waitFor(a, (m) => m.type === 'bb-init');
+    const b = await bbConnect();
+    send(b, { type: 'bb-join', code, name: 'MapVoteWinB' });
+    await waitFor(b, (m) => m.type === 'bb-init');
+    const c = await bbConnect();
+    send(c, { type: 'bb-join', code, name: 'MapVoteWinC' });
+    await waitFor(c, (m) => m.type === 'bb-init');
+
+    send(a, { type: 'bb-vote-map', mapId: 'garage_a' });
+    send(b, { type: 'bb-vote-map', mapId: 'garage_a' });
+    send(c, { type: 'bb-vote-map', mapId: 'gym_boxing' });
+
+    const decided = await waitFor(a, (m) => m.type === 'bb-map-decided', 5000);
+    assert.equal(decided.mapId, 'garage_a', 'the map with 2 votes should beat the map with 1');
+    a.close(); b.close(); c.close();
+  });
+
+  test('a tied vote resolves to one of the tied maps, not a third', async () => {
+    const code = 'BBMAPVOTE5';
+    const a = await bbConnect();
+    send(a, { type: 'bb-join', code, name: 'MapVoteTieA' });
+    await waitFor(a, (m) => m.type === 'bb-init');
+    const b = await bbConnect();
+    send(b, { type: 'bb-join', code, name: 'MapVoteTieB' });
+    await waitFor(b, (m) => m.type === 'bb-init');
+
+    send(a, { type: 'bb-vote-map', mapId: 'plaza_day' });
+    send(b, { type: 'bb-vote-map', mapId: 'plaza_rain' });
+
+    const decided = await waitFor(a, (m) => m.type === 'bb-map-decided', 5000);
+    assert.ok(['plaza_day', 'plaza_rain'].includes(decided.mapId), 'a 1-1 tie must resolve to one of the two tied maps');
+    a.close(); b.close();
+  });
+
+  test('a late joiner after the vote is decided skips voting and gets the already-decided map', async () => {
+    const code = 'BBMAPVOTE6';
+    const a = await bbConnect();
+    send(a, { type: 'bb-join', code, name: 'MapVoteLateA' });
+    await waitFor(a, (m) => m.type === 'bb-init');
+    send(a, { type: 'bb-vote-map', mapId: 'rooftop_day' });
+    const decided = await waitFor(a, (m) => m.type === 'bb-map-decided', 5000);
+    assert.equal(decided.mapId, 'rooftop_day');
+
+    const late = await bbConnect();
+    send(late, { type: 'bb-join', code, name: 'MapVoteLateJoiner' });
+    const lateInit = await waitFor(late, (m) => m.type === 'bb-init');
+    assert.equal(lateInit.votingOpen, false);
+    assert.equal(lateInit.mapId, 'rooftop_day');
+    a.close(); late.close();
+  });
+
+  test('a lobby recreated after fully emptying opens a brand-new vote, not a stale decided map', async () => {
+    const code = 'BBMAPVOTE7';
+    const a = await bbConnect();
+    send(a, { type: 'bb-join', code, name: 'MapVoteFreshA' });
+    await waitFor(a, (m) => m.type === 'bb-init');
+    a.close();
+    await sleep(200); // let the server's close handler run leaveBb, clearing the pending vote timer
+
+    const b = await bbConnect();
+    send(b, { type: 'bb-join', code, name: 'MapVoteFreshB' });
+    const init = await waitFor(b, (m) => m.type === 'bb-init');
+    assert.equal(init.votingOpen, true, 'a recreated lobby must open its own fresh vote, not inherit a decided map from before');
+    assert.equal(init.mapId, null);
+    b.close();
+  });
+});
+
 describe('Block Battle NvN match stations', () => {
   // Dedicated instance so BB_RESPAWN_GRACE_MS can be zeroed — these tests fire shots within
   // milliseconds of a match starting, well inside the real 500ms grace window, which would

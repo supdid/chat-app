@@ -2025,6 +2025,54 @@ function bbInitStations() {
   return stations;
 }
 
+// ---- Block Battle map voting ----
+// Every fresh room.bb (created the moment a first player bb-joins an empty/never-used lobby, see
+// below) opens with a short map vote among whoever's present; late joiners after the window
+// closes skip straight into the already-decided map, so a running lobby's map never changes out
+// from under people already in it — a second vote only ever happens once the lobby fully empties
+// and gets recreated (bb.players.size === 0 already deletes room.bb in leaveBb, same as every
+// other minigame's room-scoped session state). Only the id list lives here for validating a vote
+// against a real fixed set — the actual visual kits are entirely client-side (blockbattle.js's
+// BB_MAPS/BB_MAP_KITS); the server never needs to know what a map looks like, only that it's real.
+const BB_MAP_IDS = [
+  'office', 'office_night', 'office_alert',
+  'warehouse_day', 'warehouse_dusk', 'warehouse_flood', 'warehouse_frost',
+  'rooftop_day', 'rooftop_sunset', 'rooftop_night',
+  'garage_a', 'garage_b', 'garage_c', 'garage_d',
+  'plaza_day', 'plaza_rain', 'plaza_dusk',
+  'gym_basketball', 'gym_volleyball', 'gym_boxing',
+];
+const BB_MAP_VOTE_MS = Number(process.env.BB_MAP_VOTE_MS) || 12000;
+
+function bbMapTally(bb) {
+  const tally = {};
+  for (const mapId of bb.mapVotes.values()) tally[mapId] = (tally[mapId] || 0) + 1;
+  return tally;
+}
+
+// Deliberately a fixed-duration window rather than "finalize early once everyone connected has
+// voted" — tracking that against players joining/leaving mid-vote is real extra state for a
+// marginal UX win; a flat timer is simpler and can't drift out of sync with itself.
+function finalizeBbMapVote(code) {
+  const room = rooms.get(code);
+  const bb = room && room.bb;
+  if (!bb || bb.mapId) return; // room emptied out already, or somehow already decided
+  const tally = bbMapTally(bb);
+  let winners = [];
+  let best = 0;
+  for (const mapId of BB_MAP_IDS) {
+    const count = tally[mapId] || 0;
+    if (count > best) { best = count; winners = [mapId]; }
+    else if (count === best && count > 0) winners.push(mapId);
+  }
+  // Nobody voted at all (e.g. a lone player who never clicked) — a real map still has to be
+  // picked, so fall back to a uniformly random one rather than leaving the lobby map-less forever.
+  bb.mapId = winners.length ? winners[Math.floor(Math.random() * winners.length)] : BB_MAP_IDS[Math.floor(Math.random() * BB_MAP_IDS.length)];
+  bb.mapVotes.clear();
+  bb.mapVoteTimer = null;
+  broadcastBb(code, { type: 'bb-map-decided', mapId: bb.mapId });
+}
+
 // What every client needs to render one station's plates: which slots are filled (by name, so a
 // label can be drawn without a second id lookup) and whether it's mid-match (locked — plates stay
 // reserved for that match's own participants until it ends, so a second group can't pile onto the
@@ -2168,7 +2216,14 @@ function leaveBb(ws) {
       broadcastBb(code, { type: 'bb-player-left', id: player.id });
       clearRoomActivity(code, player.name);
     }
-    if (bb.players.size === 0) delete room.bb;
+    if (bb.players.size === 0) {
+      // A pending vote timer (finalizeBbMapVote) captured `code` in its closure and would otherwise
+      // fire against a deleted room.bb — rooms.get(code) would find the room again if it's ever
+      // recreated with a fresh room.bb before the old timer fires, so without this it could finalize
+      // a *new* lobby's vote using zero real votes from anyone actually in that new lobby.
+      if (bb.mapVoteTimer) clearTimeout(bb.mapVoteTimer);
+      delete room.bb;
+    }
   }
   ws.bbRoom = null;
   ws.bbId = null;
@@ -4146,7 +4201,13 @@ wss.on('connection', (ws, req) => {
       if (ws.bbRoom === code) return;
       if (ws.bbRoom) leaveBb(ws);
       const room = getOrCreateRoom(code);
-      if (!room.bb) room.bb = { players: new Map(), stations: bbInitStations(), matches: new Map() };
+      if (!room.bb) {
+        room.bb = {
+          players: new Map(), stations: bbInitStations(), matches: new Map(),
+          mapId: null, mapVotes: new Map(), mapVoteEndsAt: Date.now() + BB_MAP_VOTE_MS, mapVoteTimer: null,
+        };
+        room.bb.mapVoteTimer = setTimeout(() => finalizeBbMapVote(code), BB_MAP_VOTE_MS);
+      }
       const bb = room.bb;
       if (bb.players.size >= MAX_GAME_PLAYERS) { send(ws, { type: 'bb-full' }); return; }
       // Real Valk account only — no free-text name field here (unlike bc/fg/etc's `name` param),
@@ -4164,9 +4225,25 @@ wss.on('connection', (ws, req) => {
       };
       bb.players.set(ws, entry);
       const stations = Object.keys(bb.stations).map((sid) => bbStationSnapshot(bb, sid));
-      send(ws, { type: 'bb-init', id, players: [...bb.players.values()].filter((p) => p.id !== id), stations });
+      send(ws, {
+        type: 'bb-init', id, players: [...bb.players.values()].filter((p) => p.id !== id), stations,
+        mapId: bb.mapId, votingOpen: !bb.mapId, voteEndsAt: bb.mapId ? null : bb.mapVoteEndsAt,
+        mapTally: bb.mapId ? null : bbMapTally(bb),
+      });
       broadcastBb(code, { type: 'bb-player-joined', id, name, level, x: 0, y: 0, z: 0, yaw: 0 }, ws);
       setRoomActivity(code, name, 'bb');
+      return;
+    }
+
+    if (msg.type === 'bb-vote-map' && ws.bbRoom) {
+      if (isWsMsgRateLimited(ws)) return;
+      const room = rooms.get(ws.bbRoom);
+      const bb = room && room.bb;
+      if (!bb || bb.mapId) return; // voting already closed — a late vote can't reopen or change it
+      const mapId = String(msg.mapId || '');
+      if (!BB_MAP_IDS.includes(mapId)) return;
+      bb.mapVotes.set(ws, mapId);
+      broadcastBb(ws.bbRoom, { type: 'bb-map-vote-update', tally: bbMapTally(bb) });
       return;
     }
 

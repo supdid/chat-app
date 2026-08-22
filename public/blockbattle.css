@@ -581,6 +581,82 @@ html, body {
 .weapon-card-action.buy:disabled { background: rgba(255, 255, 255, 0.12); color: rgba(234, 246, 255, 0.4); cursor: default; }
 .weapon-card-action.owned { background: rgba(47, 182, 172, 0.25); color: #6fe0d3; cursor: default; }
 
+/* Same "solid near-black, sits above everything" treatment as #weapon-shop — shown the instant
+   online mode starts (before any duel/match popup could possibly be relevant yet), so it doesn't
+   need a higher z-index than the shop/players panel it shares one with. */
+#map-vote {
+  position: fixed;
+  inset: 0;
+  z-index: 28;
+  display: flex;
+  flex-direction: column;
+  background: rgba(4, 4, 6, 0.97);
+  color: #eaf6ff;
+}
+
+#map-vote-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 1.2rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+  flex-shrink: 0;
+}
+
+#map-vote-title {
+  font-size: 1.3rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+
+#map-vote-timer {
+  margin-left: auto;
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: #ffd54f;
+  font-variant-numeric: tabular-nums;
+}
+
+#map-vote-grid {
+  flex: 1;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 0.9rem;
+  padding: 1rem 1.2rem 1.6rem;
+  align-content: start;
+}
+
+.map-vote-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 14px;
+  padding: 1rem 0.8rem;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #eaf6ff;
+  cursor: pointer;
+  text-align: center;
+}
+.map-vote-card:hover { background: rgba(255, 255, 255, 0.1); }
+.map-vote-card.picked { background: rgba(47, 182, 172, 0.22); border-color: #2fb6ac; }
+
+.map-vote-icon { font-size: 2rem; }
+
+.map-vote-name {
+  font-size: 0.86rem;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.map-vote-count {
+  font-size: 0.74rem;
+  color: rgba(234, 246, 255, 0.7);
+}
+.map-vote-card.picked .map-vote-count { color: #6fe0d3; font-weight: 700; }
+
 /* Sits above everything else in-game (hint 20, death 25, mode-select 26) — it can be triggered
    from either of the first two (a fresh unlock mid-round, or picking a loadout before a new
    life) and needs to fully cover whichever is currently showing underneath. Solid near-black,

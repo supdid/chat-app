@@ -536,18 +536,21 @@ const officeOccupied = new Map(); // swapped into the live `occupied` Map exactl
 const officeAmbient = new THREE.AmbientLight(0xfff6e0, 0);
 scene.add(officeAmbient);
 
-function officeFloorTexture() {
+// base/grid are optional so buildOffice()'s own no-arg calls below produce byte-for-byte the same
+// texture they always have — the online-lobby map system (further down) reuses these two
+// generators for its own office-family variants (office_night/office_alert) by passing a tint.
+function officeFloorTexture(base, grid) {
   const px = 128;
   const c = document.createElement('canvas');
   c.width = c.height = px;
   const g = c.getContext('2d');
-  g.fillStyle = '#6b7178';
+  g.fillStyle = base || '#6b7178';
   g.fillRect(0, 0, px, px);
   for (let n = 0; n < 2000; n++) {
     g.fillStyle = `rgba(0,0,0,${Math.random() * 0.05})`;
     g.fillRect(Math.random() * px, Math.random() * px, 1, 1);
   }
-  g.strokeStyle = 'rgba(0,0,0,0.08)';
+  g.strokeStyle = grid || 'rgba(0,0,0,0.08)';
   for (let x = 0; x <= px; x += 32) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, px); g.stroke(); }
   for (let y = 0; y <= px; y += 32) { g.beginPath(); g.moveTo(0, y); g.lineTo(px, y); g.stroke(); }
   const tex = new THREE.CanvasTexture(c);
@@ -556,18 +559,18 @@ function officeFloorTexture() {
   return tex;
 }
 
-function officeCeilingTexture() {
+function officeCeilingTexture(base, panel) {
   const px = 128;
   const c = document.createElement('canvas');
   c.width = c.height = px;
   const g = c.getContext('2d');
-  g.fillStyle = '#aeada6';
+  g.fillStyle = base || '#aeada6';
   g.fillRect(0, 0, px, px);
   g.strokeStyle = 'rgba(120,120,110,0.5)';
   g.lineWidth = 2;
   for (let x = 0; x <= px; x += 32) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, px); g.stroke(); }
   for (let y = 0; y <= px; y += 32) { g.beginPath(); g.moveTo(0, y); g.lineTo(px, y); g.stroke(); }
-  g.fillStyle = '#e8e2cf'; // recessed light panel in the middle of every other ceiling tile — still the brightest thing up there, just not full white
+  g.fillStyle = panel || '#e8e2cf'; // recessed light panel in the middle of every other ceiling tile — still the brightest thing up there, just not full white
   for (let y = 8; y < px; y += 64) {
     for (let x = 8; x < px; x += 64) g.fillRect(x, y, 16, 16);
   }
@@ -716,34 +719,504 @@ const BB_PLATE_COLOR = {
 };
 
 // stationId -> { plates: { a: [mesh,...], b: [mesh,...] } } — the sign itself never changes, only
-// the plate colors/opacity do, driven by bb-station-update broadcasts.
-const bbStationMeshes = new Map();
+// the plate colors/opacity do, driven by bb-station-update broadcasts. `let`, not `const`: with
+// multiple online-lobby maps (see BB_MAPS further down), this gets reassigned to whichever map's
+// own plate meshes are currently live — only one map is ever visible at a time, so only one set of
+// these actually needs to exist.
+let bbStationMeshes = new Map();
 // Flat { stationId, side, slot, x, z }[] over every plate on every station, built once here and
-// reused by updateBbPlateDetection() every frame — that function used to call bbPlatePositions()
-// (which allocates a fresh array + fresh {x,z} objects) fresh each frame purely to re-derive
-// numbers that never change after this runs once.
+// reused by updateBbPlateDetection() every frame — plate positions are identical on every map (see
+// BB_MAP_KITS: only the cosmetic shell around them differs), so unlike bbStationMeshes this never
+// needs rebuilding when the active map changes.
 const bbFlatPlates = [];
+for (const station of BB_STATIONS) {
+  for (const side of ['a', 'b']) {
+    bbPlatePositions(station, side).forEach((pos, slot) => {
+      bbFlatPlates.push({ stationId: station.id, side, slot, x: pos.x, z: pos.z });
+    });
+  }
+}
 
-function buildBbStations() {
+// Adds this map's own plate/sign meshes into `group` and returns the stationId -> {plates} map for
+// bbStationMeshes. Called once per map activation (see activateMap) rather than once ever, since
+// each online-lobby map needs its own copy of these visible meshes.
+function buildBbStations(group) {
+  const meshes = new Map();
   for (const station of BB_STATIONS) {
     const sign = bbSignSprite(`${station.n}V${station.n}`);
     sign.position.set(station.x, 2.4, 0);
-    officeGroup.add(sign);
+    group.add(sign);
     const plates = { a: [], b: [] };
     for (const side of ['a', 'b']) {
-      bbPlatePositions(station, side).forEach((pos, slot) => {
+      bbPlatePositions(station, side).forEach((pos) => {
         const mat = new THREE.MeshBasicMaterial({ color: BB_PLATE_COLOR[side].empty, transparent: true, opacity: 0.6 });
         const mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 0.06, 16), mat);
         mesh.position.set(pos.x, 0.03, pos.z);
-        officeGroup.add(mesh);
+        group.add(mesh);
         plates[side].push(mesh);
-        bbFlatPlates.push({ stationId: station.id, side, slot, x: pos.x, z: pos.z });
       });
     }
-    bbStationMeshes.set(station.id, { plates });
+    meshes.set(station.id, { plates });
+  }
+  return meshes;
+}
+bbStationMeshes = buildBbStations(officeGroup);
+// Cached so re-selecting the 'office' map later (see activateMap) can just restore this reference
+// instead of re-building duplicate plate/sign meshes into the never-disposed officeGroup.
+const officeStationMeshes = bbStationMeshes;
+
+// ---- Online lobby maps ----
+// 6 structural "kits" (genuinely distinct wall/floor/prop layouts) x color/prop-variant configs =
+// 20 named maps, all sharing the exact same match-station plate positions/mechanics (BB_STATIONS,
+// bbFlatPlates above) — only the cosmetic shell around them differs per map, same "same underlying
+// mechanics, different look" tradeoff already used for the 100 shop weapons (10 archetypes x 10
+// tiers, not 100 bespoke guns). The server (see BB_MAP_IDS in server.js — keep both lists in sync)
+// only ever needs to know these ids exist, never what they look like; all rendering is client-only.
+//
+// A deterministic PRNG (not Math.random) for any per-map prop scattering, so every client renders
+// the identical layout for a given map id — purely cosmetic (no server-side collision exists for
+// Block Battle online, see bb-pos's plain clamp-and-relay), but two people standing in "the same"
+// room seeing different crate placements would look broken.
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function genericCeilingTexture(base, panel) {
+  const px = 128;
+  const c = document.createElement('canvas');
+  c.width = c.height = px;
+  const g = c.getContext('2d');
+  g.fillStyle = base;
+  g.fillRect(0, 0, px, px);
+  g.strokeStyle = 'rgba(0,0,0,0.15)';
+  g.lineWidth = 2;
+  for (let x = 0; x <= px; x += 32) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, px); g.stroke(); }
+  for (let y = 0; y <= px; y += 32) { g.beginPath(); g.moveTo(0, y); g.lineTo(px, y); g.stroke(); }
+  g.fillStyle = panel;
+  for (let y = 8; y < px; y += 64) for (let x = 8; x < px; x += 64) g.fillRect(x, y, 16, 16);
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(MAP_BLOCKS / 2, MAP_BLOCKS / 2);
+  return tex;
+}
+
+function baseFloorCanvas(base, grid) {
+  const px = 128;
+  const c = document.createElement('canvas');
+  c.width = c.height = px;
+  const g = c.getContext('2d');
+  g.fillStyle = base;
+  g.fillRect(0, 0, px, px);
+  for (let n = 0; n < 1500; n++) {
+    g.fillStyle = `rgba(0,0,0,${Math.random() * 0.05})`;
+    g.fillRect(Math.random() * px, Math.random() * px, 1, 1);
+  }
+  if (grid) {
+    g.strokeStyle = grid;
+    for (let x = 0; x <= px; x += 32) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, px); g.stroke(); }
+    for (let y = 0; y <= px; y += 32) { g.beginPath(); g.moveTo(0, y); g.lineTo(px, y); g.stroke(); }
+  }
+  return { c, g, px };
+}
+function finishFloorTexture(c) {
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(MAP_BLOCKS / 2, MAP_BLOCKS / 2);
+  return tex;
+}
+function warehouseFloorTexture(base) {
+  const { c, g, px } = baseFloorCanvas(base, 'rgba(0,0,0,0.12)');
+  g.strokeStyle = '#e0b23c'; g.lineWidth = 3;
+  g.strokeRect(6, 6, px - 12, px - 12); // hazard-stripe border
+  return finishFloorTexture(c);
+}
+function rooftopFloorTexture(base) {
+  const { c, g, px } = baseFloorCanvas(base, null);
+  g.strokeStyle = 'rgba(255,255,255,0.4)'; g.lineWidth = 3;
+  g.beginPath(); g.arc(px / 2, px / 2, px * 0.3, 0, Math.PI * 2); g.stroke();
+  g.font = 'bold 40px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillStyle = 'rgba(255,255,255,0.4)'; g.fillText('H', px / 2, px / 2);
+  return finishFloorTexture(c);
+}
+function garageFloorTexture(base) {
+  const { c, g, px } = baseFloorCanvas(base, null);
+  g.strokeStyle = '#e8d24a'; g.lineWidth = 3;
+  for (let x = 16; x < px; x += 32) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, px); g.stroke(); }
+  return finishFloorTexture(c);
+}
+function plazaFloorTexture(base) {
+  const { c, g, px } = baseFloorCanvas(base, null);
+  g.fillStyle = 'rgba(150,150,150,0.35)';
+  for (let y = 0; y < px; y += 32) for (let x = 0; x < px; x += 32) if ((x + y) % 64 === 0) g.fillRect(x, y, 32, 32); // checkerboard pavement patches
+  return finishFloorTexture(c);
+}
+function gymFloorTexture(base) {
+  const { c, g, px } = baseFloorCanvas(base, null);
+  g.strokeStyle = 'rgba(255,255,255,0.6)'; g.lineWidth = 3;
+  g.strokeRect(10, 10, px - 20, px - 20);
+  g.beginPath(); g.arc(px / 2, px / 2, px * 0.15, 0, Math.PI * 2); g.stroke();
+  return finishFloorTexture(c);
+}
+
+// Adds a box prop to `group`, registered as a collider via `addSolid` — the shared building block
+// every kit below uses, matching officeBox's own castShadow/receiveShadow convention.
+function kitBox(group, addSolid, w, h, d, mat, x, y, z) {
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  mesh.position.set(x, y, z);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  group.add(mesh);
+  addSolid(mesh);
+  return mesh;
+}
+
+function buildOfficeKit(group, occupiedMap, addSolid, config) {
+  const deskMat = new THREE.MeshLambertMaterial({ color: config.deskColor || 0xc9a06a });
+  const partitionMat = new THREE.MeshLambertMaterial({ color: config.partitionColor || 0x6d8a99 });
+  const monitorMat = new THREE.MeshLambertMaterial({ color: 0x1c1e22 });
+  const chairMat = new THREE.MeshLambertMaterial({ color: 0x333333 });
+  function cubicle(i, j, facingSouth) {
+    const cx = i + 0.5, cz = j + 0.5;
+    const sign = facingSouth ? -1 : 1;
+    kitBox(group, addSolid, 0.9, 1.3, 0.08, partitionMat, cx, 0.65, cz + sign * 0.3);
+    kitBox(group, addSolid, 0.8, 0.5, 0.5, deskMat, cx, 0.25, cz + sign * 0.02);
+    kitBox(group, addSolid, 0.35, 0.2, 0.04, monitorMat, cx, 0.55, cz + sign * 0.15);
+    kitBox(group, addSolid, 0.4, 0.4, 0.4, chairMat, cx, 0.2, cz - sign * 0.3);
+    occupiedMap.set(`${i},${j}`, 1.3);
+  }
+  [-9, -6, -3, 3, 6, 9].forEach((i) => { cubicle(i, -6, true); cubicle(i, 6, false); });
+  const tableMat = new THREE.MeshLambertMaterial({ color: 0xdad2c4 });
+  kitBox(group, addSolid, 1.6, 0.5, 1, tableMat, 0, 0.25, 9.5);
+  [[-0.9, 9], [0.9, 9], [-0.9, 10], [0.9, 10]].forEach(([x, z]) => kitBox(group, addSolid, 0.35, 0.4, 0.35, chairMat, x, 0.2, z));
+}
+
+function buildWarehouseKit(group, occupiedMap, addSolid, config) {
+  const shelfMat = new THREE.MeshLambertMaterial({ color: config.accent || 0x8a6a3c });
+  const crateMat = new THREE.MeshLambertMaterial({ color: config.crateColor || 0xb98a4a });
+  [-7, -2, 3, 8].forEach((j) => {
+    [-7, 7].forEach((i) => {
+      kitBox(group, addSolid, 1.6, 3.4, 1.6, shelfMat, i + 0.5, 1.7, j + 0.5);
+      occupiedMap.set(`${i},${j}`, 3.4);
+    });
+  });
+  const seed = mulberry32(config.seed || 1);
+  for (let n = 0; n < 10; n++) {
+    const i = Math.floor(seed() * 20 - 10);
+    const j = Math.floor(seed() * 20 - 10);
+    if (Math.abs(i) < 2 && Math.abs(j) < 2) continue; // keep the spawn area clear
+    if (occupiedMap.has(`${i},${j}`)) continue;
+    const h = 0.9 + Math.floor(seed() * 2) * 0.9;
+    kitBox(group, addSolid, 0.9, h, 0.9, crateMat, i + 0.5, h / 2, j + 0.5);
+    occupiedMap.set(`${i},${j}`, h);
   }
 }
-buildBbStations();
+
+function buildRooftopKit(group, occupiedMap, addSolid, config) {
+  const acMat = new THREE.MeshLambertMaterial({ color: 0x555b61 });
+  const seed = mulberry32(config.seed || 1);
+  for (let n = 0; n < 8; n++) {
+    const i = Math.floor(seed() * 18 - 9);
+    const j = Math.floor(seed() * 18 - 9);
+    if (Math.abs(i) < 2 && Math.abs(j) < 2) continue;
+    if (occupiedMap.has(`${i},${j}`)) continue;
+    kitBox(group, addSolid, 1.1, 1.0, 1.1, acMat, i + 0.5, 0.5, j + 0.5);
+    occupiedMap.set(`${i},${j}`, 1.0);
+  }
+  const shedMat = new THREE.MeshLambertMaterial({ color: config.accent || 0x6a5648 });
+  kitBox(group, addSolid, 2.2, 1.6, 2.2, shedMat, 0, 0.8, 0);
+  ['0,0', '-1,0', '0,-1', '-1,-1'].forEach((k) => occupiedMap.set(k, 1.6));
+}
+
+function buildGarageKit(group, occupiedMap, addSolid, config) {
+  const pillarMat = new THREE.MeshLambertMaterial({ color: 0x8a8d92 });
+  [[-8, -8], [-8, 0], [-8, 8], [0, -8], [0, 8], [8, -8], [8, 0], [8, 8]].forEach(([i, j]) => {
+    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, CEILING_HEIGHT, 12), pillarMat);
+    mesh.position.set(i + 0.5, CEILING_HEIGHT / 2, j + 0.5);
+    mesh.castShadow = true; mesh.receiveShadow = true;
+    group.add(mesh); addSolid(mesh);
+    occupiedMap.set(`${i},${j}`, CEILING_HEIGHT);
+  });
+  const carMat = new THREE.MeshLambertMaterial({ color: config.carColor || 0xb23a3a });
+  const seed = mulberry32(config.seed || 1);
+  for (let n = 0; n < 6; n++) {
+    const i = Math.floor(seed() * 16 - 8);
+    const j = Math.floor(seed() * 16 - 8);
+    if (Math.abs(i) < 2 && Math.abs(j) < 2) continue;
+    if (occupiedMap.has(`${i},${j}`)) continue;
+    kitBox(group, addSolid, 1.8, 0.6, 0.9, carMat, i + 0.5, 0.3, j + 0.5);
+    occupiedMap.set(`${i},${j}`, 0.6);
+  }
+}
+
+function buildPlazaKit(group, occupiedMap, addSolid, config) {
+  const benchMat = new THREE.MeshLambertMaterial({ color: 0x6a4a30 });
+  const trunkMat = new THREE.MeshLambertMaterial({ color: 0x5a4028 });
+  const leafMat = new THREE.MeshLambertMaterial({ color: config.leafColor || 0x3f7d4a });
+  const seed = mulberry32(config.seed || 1);
+  for (let n = 0; n < 9; n++) {
+    const i = Math.floor(seed() * 18 - 9);
+    const j = Math.floor(seed() * 18 - 9);
+    if (Math.abs(i) < 2 && Math.abs(j) < 2) continue;
+    if (occupiedMap.has(`${i},${j}`)) continue;
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.28, 1.6, 8), trunkMat);
+    trunk.position.set(i + 0.5, 0.8, j + 0.5);
+    trunk.castShadow = true;
+    group.add(trunk); addSolid(trunk);
+    const leaves = new THREE.Mesh(new THREE.SphereGeometry(0.85, 8, 8), leafMat);
+    leaves.position.set(i + 0.5, 1.9, j + 0.5);
+    leaves.scale.y = 1.2;
+    leaves.castShadow = true;
+    group.add(leaves); // canopy overhead — decorative, not a collider, same precedent as buildOffice's potted plants
+    occupiedMap.set(`${i},${j}`, 1.6);
+  }
+  [[-6, -6], [6, -6], [-6, 6], [6, 6]].forEach(([x, z]) => kitBox(group, addSolid, 1.4, 0.45, 0.4, benchMat, x, 0.22, z));
+  const fountainMat = new THREE.MeshLambertMaterial({ color: 0x9aa4ab });
+  const fountain = new THREE.Mesh(new THREE.CylinderGeometry(1.4, 1.5, 0.5, 16), fountainMat);
+  fountain.position.set(0, 0.25, 0);
+  fountain.castShadow = true; fountain.receiveShadow = true;
+  group.add(fountain); addSolid(fountain);
+  ['0,0', '-1,0', '0,-1', '-1,-1'].forEach((k) => occupiedMap.set(k, 0.5));
+}
+
+function buildGymKit(group, occupiedMap, addSolid, config) {
+  const rackMat = new THREE.MeshLambertMaterial({ color: 0x33363c });
+  [[-10, -4], [-10, 4], [10, -4], [10, 4]].forEach(([x, z]) => {
+    kitBox(group, addSolid, 0.6, 1.4, 2.2, rackMat, x, 0.7, z);
+    occupiedMap.set(`${Math.floor(x)},${Math.floor(z)}`, 1.4);
+  });
+  if (config.centerpiece === 'basketball') {
+    const backboardMat = new THREE.MeshLambertMaterial({ color: 0xe8e8e8 });
+    [[-10, 0], [10, 0]].forEach(([x, z]) => {
+      kitBox(group, addSolid, 0.3, 3, 0.3, rackMat, x, 1.5, z);
+      const board = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.1, 1.6), backboardMat);
+      board.position.set(x - Math.sign(x) * 0.3, 2.6, z);
+      group.add(board); addSolid(board);
+      occupiedMap.set(`${Math.floor(x)},${Math.floor(z)}`, 3);
+    });
+  } else if (config.centerpiece === 'volleyball') {
+    const postMat = new THREE.MeshLambertMaterial({ color: 0x33363c });
+    const netMat = new THREE.MeshLambertMaterial({ color: 0xe8e8e8, transparent: true, opacity: 0.5 });
+    [[0, -5.5], [0, 5.5]].forEach(([x, z]) => kitBox(group, addSolid, 0.25, 2.4, 0.25, postMat, x, 1.2, z));
+    const net = new THREE.Mesh(new THREE.BoxGeometry(0.05, 1, 11), netMat);
+    net.position.set(0, 1.8, 0);
+    group.add(net); addSolid(net);
+  } else { // boxing
+    const ropeMat = new THREE.MeshLambertMaterial({ color: 0xcc3b3b });
+    const ringFloorMat = new THREE.MeshLambertMaterial({ color: 0x1e2126 });
+    const ring = new THREE.Mesh(new THREE.BoxGeometry(6, 0.3, 6), ringFloorMat);
+    ring.position.set(0, 0.15, 0);
+    group.add(ring); addSolid(ring);
+    [[-3, -3], [3, -3], [-3, 3], [3, 3]].forEach(([x, z]) => kitBox(group, addSolid, 0.2, 1.4, 0.2, ropeMat, x, 0.9, z));
+    ['0,0', '-1,0', '0,-1', '-1,-1', '1,0', '1,-1', '0,1', '-1,1', '1,1'].forEach((k) => occupiedMap.set(k, 0.3));
+  }
+}
+
+const BB_MAP_KITS = {
+  office: buildOfficeKit,
+  warehouse: buildWarehouseKit,
+  rooftop: buildRooftopKit,
+  garage: buildGarageKit,
+  plaza: buildPlazaKit,
+  gym: buildGymKit,
+};
+
+// The 20 named maps voted on in the online lobby (see bb-vote-map/bb-map-decided) — keep the id
+// list in sync with server.js's own BB_MAP_IDS, which validates votes against it but never renders
+// anything itself. 'office' alone is special: it's the original, always-in-the-scene officeGroup
+// built by buildOffice() above, not one of these procedurally-assembled kit instances — see
+// activateMap.
+const BB_MAPS = [
+  { id: 'office', name: 'Open-Plan Office', icon: '🏢' },
+  { id: 'office_night', name: 'Night Shift', icon: '🌃', kit: 'office', floorTint: '#3a3f4a', ceilingTint: '#2c2f38', wallRgb: [58, 64, 78], deskColor: 0x445066, partitionColor: 0x2c333d },
+  { id: 'office_alert', name: 'Red Alert Office', icon: '🚨', kit: 'office', floorTint: '#4a2f30', ceilingTint: '#3a2426', wallRgb: [120, 70, 68], deskColor: 0x8a3a3a, partitionColor: 0x662a2a },
+  { id: 'warehouse_day', name: 'Cold Storage', icon: '📦', kit: 'warehouse', floorTint: '#54555a', wallRgb: [140, 142, 148], accent: 0x8a6a3c, crateColor: 0xb98a4a, seed: 11 },
+  { id: 'warehouse_dusk', name: 'Dockside Warehouse', icon: '🚚', kit: 'warehouse', floorTint: '#4a4238', wallRgb: [120, 108, 92], accent: 0x6a4a2c, crateColor: 0x9a6a38, seed: 22 },
+  { id: 'warehouse_flood', name: 'Floodlit Depot', icon: '💡', kit: 'warehouse', floorTint: '#3f4448', wallRgb: [100, 112, 118], accent: 0x3c6a8a, crateColor: 0x4a8ab9, seed: 33 },
+  { id: 'warehouse_frost', name: 'Frost Warehouse', icon: '❄️', kit: 'warehouse', floorTint: '#6b7680', wallRgb: [180, 190, 198], accent: 0x5a7a8a, crateColor: 0x8ab0c0, seed: 44 },
+  { id: 'rooftop_day', name: 'Sunny Rooftop', icon: '☀️', kit: 'rooftop', floorTint: '#7a7d82', wallRgb: [170, 172, 176], wallHeight: 1.4, noCeiling: true, accent: 0x6a5648, seed: 55 },
+  { id: 'rooftop_sunset', name: 'Sunset Heights', icon: '🌇', kit: 'rooftop', floorTint: '#8a6f68', wallRgb: [190, 140, 110], wallHeight: 1.4, noCeiling: true, accent: 0x8a5a48, seed: 66 },
+  { id: 'rooftop_night', name: 'Neon Skyline', icon: '🌃', kit: 'rooftop', floorTint: '#33363f', wallRgb: [60, 64, 90], wallHeight: 1.4, noCeiling: true, accent: 0x4a3a6a, seed: 77 },
+  { id: 'garage_a', name: 'Level B1 Garage', icon: '🅿️', kit: 'garage', floorTint: '#5c5f63', wallRgb: [130, 132, 138], carColor: 0xb23a3a, seed: 88 },
+  { id: 'garage_b', name: 'Level B2 Garage', icon: '🚗', kit: 'garage', floorTint: '#4f5054', wallRgb: [110, 112, 118], carColor: 0x3a6ab2, seed: 99 },
+  { id: 'garage_c', name: 'Valet Garage', icon: '🎫', kit: 'garage', floorTint: '#67564a', wallRgb: [150, 130, 108], carColor: 0xb2913a, seed: 111 },
+  { id: 'garage_d', name: 'Impound Garage', icon: '🚔', kit: 'garage', floorTint: '#464a4f', wallRgb: [95, 100, 108], carColor: 0x4a4d52, seed: 122 },
+  { id: 'plaza_day', name: 'Sunny Plaza', icon: '🌳', kit: 'plaza', floorTint: '#8a9a6a', wallRgb: [180, 176, 150], leafColor: 0x3f7d4a, seed: 133 },
+  { id: 'plaza_rain', name: 'Rainy Plaza', icon: '🌧️', kit: 'plaza', floorTint: '#5c6a5e', wallRgb: [110, 116, 112], leafColor: 0x2f5a3a, seed: 144 },
+  { id: 'plaza_dusk', name: 'Dusk Plaza', icon: '🌆', kit: 'plaza', floorTint: '#7a6a5a', wallRgb: [160, 128, 110], leafColor: 0x4a5a3a, seed: 155 },
+  { id: 'gym_basketball', name: 'Hardwood Court', icon: '🏀', kit: 'gym', floorTint: '#b9793f', wallRgb: [180, 150, 110], centerpiece: 'basketball' },
+  { id: 'gym_volleyball', name: 'Sand Court', icon: '🏐', kit: 'gym', floorTint: '#d8c48a', wallRgb: [190, 200, 210], centerpiece: 'volleyball' },
+  { id: 'gym_boxing', name: 'Fight Night', icon: '🥊', kit: 'gym', floorTint: '#8a2a2a', wallRgb: [60, 30, 32], centerpiece: 'boxing' },
+];
+const BB_MAP_FLOOR_TEXTURE = {
+  office: officeFloorTexture, warehouse: warehouseFloorTexture, rooftop: rooftopFloorTexture,
+  garage: garageFloorTexture, plaza: plazaFloorTexture, gym: gymFloorTexture,
+};
+
+// Builds one non-office map fresh: shell (floor/ceiling/walls, tinted per config) + this kit's own
+// obstacle layout + this map's own copy of the match-station plates/signs. Returns everything
+// activateMap needs to wire in and later tear back out again — solids specifically, since three.js
+// r128's Raycaster.intersectObject (checked directly: no `.visible` check anywhere in it) tests
+// every mesh handed to it regardless of visibility, so a torn-down map's meshes MUST actually be
+// spliced back out of the shared `solids` array, not just hidden, or they'd silently keep blocking
+// bullets/movement in whichever map replaces them.
+function buildExtraMap(config) {
+  const group = new THREE.Group();
+  const occupiedMap = new Map();
+  const solidsAdded = [];
+  const addSolid = (mesh) => { solidsAdded.push(mesh); };
+
+  const wallHeight = config.wallHeight || CEILING_HEIGHT;
+  const floorTexFn = BB_MAP_FLOOR_TEXTURE[config.kit];
+  const floor = new THREE.Mesh(
+    new THREE.PlaneGeometry(MAP_BLOCKS + 2, MAP_BLOCKS + 2),
+    new THREE.MeshLambertMaterial({ map: floorTexFn(config.floorTint) })
+  );
+  floor.rotation.x = -Math.PI / 2;
+  floor.receiveShadow = true;
+  group.add(floor);
+
+  if (!config.noCeiling) {
+    const ceiling = new THREE.Mesh(
+      new THREE.PlaneGeometry(MAP_BLOCKS + 2, MAP_BLOCKS + 2),
+      new THREE.MeshLambertMaterial({ map: genericCeilingTexture(config.ceilingTint || '#aeada6', '#e8e2cf') })
+    );
+    ceiling.rotation.x = Math.PI / 2;
+    ceiling.position.y = wallHeight;
+    group.add(ceiling);
+  }
+
+  const wallMat = new THREE.MeshLambertMaterial({ map: speckleTexture(...config.wallRgb, 6, 32) });
+  [
+    [0, -(HALF_MAP + 0.5), MAP_BLOCKS + 2, 1],
+    [0, HALF_MAP + 0.5, MAP_BLOCKS + 2, 1],
+    [-(HALF_MAP + 0.5), 0, 1, MAP_BLOCKS + 2],
+    [HALF_MAP + 0.5, 0, 1, MAP_BLOCKS + 2],
+  ].forEach(([cx, cz, sx, sz]) => {
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(sx, wallHeight, sz), wallMat);
+    wall.position.set(cx, wallHeight / 2, cz);
+    wall.receiveShadow = true;
+    group.add(wall);
+    addSolid(wall);
+  });
+
+  BB_MAP_KITS[config.kit](group, occupiedMap, addSolid, config);
+  const stationMeshes = buildBbStations(group);
+
+  return { group, occupiedMap, solids: solidsAdded, stationMeshes };
+}
+
+let activeMapId = null;
+let extraMapGroup = null;
+let extraMapSolids = [];
+
+function teardownExtraMap() {
+  if (!extraMapGroup) return;
+  scene.remove(extraMapGroup);
+  disposeObject3D(extraMapGroup);
+  if (extraMapSolids.length) {
+    const toRemove = new Set(extraMapSolids);
+    for (let i = solids.length - 1; i >= 0; i--) if (toRemove.has(solids[i])) solids.splice(i, 1);
+  }
+  extraMapGroup = null;
+  extraMapSolids = [];
+}
+
+// Switches the online lobby's visible/collidable space to `mapId` — tears down whatever non-office
+// map was previously built (office itself is never torn down, it's permanent, see buildOffice/
+// officeGroup) and lazily builds the new one only if it hasn't been already. Safe to call with the
+// same id twice (no-op) and with an unrecognized id (falls back to 'office' rather than leaving the
+// lobby with no floor at all).
+function activateMap(mapId) {
+  if (mapId === activeMapId) return;
+  teardownExtraMap();
+  officeGroup.visible = false;
+  if (mapId === 'office' || !mapId) {
+    officeGroup.visible = true;
+    occupied.clear();
+    for (const [k, v] of officeOccupied) occupied.set(k, v);
+    bbStationMeshes = officeStationMeshes;
+    activeMapId = 'office';
+    return;
+  }
+  const config = BB_MAPS.find((m) => m.id === mapId);
+  if (!config) { activateMap('office'); return; }
+  const built = buildExtraMap(config);
+  scene.add(built.group);
+  extraMapGroup = built.group;
+  extraMapSolids = built.solids;
+  occupied.clear();
+  for (const [k, v] of built.occupiedMap) occupied.set(k, v);
+  solids.push(...built.solids);
+  bbStationMeshes = built.stationMeshes;
+  activeMapId = mapId;
+}
+
+// ---- Map vote overlay ----
+// Shown the instant bb-init reports voting is still open (see handleBbMessage's 'bb-init' case),
+// hidden the moment bb-map-decided (or an already-decided bb-init, for a late joiner) arrives.
+const mapVoteOverlay = document.getElementById('map-vote');
+const mapVoteGrid = document.getElementById('map-vote-grid');
+const mapVoteTimerEl = document.getElementById('map-vote-timer');
+let mapVoteCountdownTimer = null;
+let myMapVote = null;
+let lastMapVoteTally = {};
+
+function renderMapVoteGrid(tally) {
+  mapVoteGrid.innerHTML = '';
+  for (const m of BB_MAPS) {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'map-vote-card' + (myMapVote === m.id ? ' picked' : '');
+    const count = tally[m.id] || 0;
+    const icon = document.createElement('div');
+    icon.className = 'map-vote-icon';
+    icon.textContent = m.icon;
+    const name = document.createElement('div');
+    name.className = 'map-vote-name';
+    name.textContent = m.name;
+    const countEl = document.createElement('div');
+    countEl.className = 'map-vote-count';
+    countEl.textContent = `${count} vote${count === 1 ? '' : 's'}`;
+    card.append(icon, name, countEl);
+    card.addEventListener('click', (e) => {
+      e.stopPropagation();
+      myMapVote = m.id;
+      if (bbWs && bbWs.readyState === WebSocket.OPEN) bbWs.send(JSON.stringify({ type: 'bb-vote-map', mapId: m.id }));
+      renderMapVoteGrid(lastMapVoteTally); // instant "picked" highlight; the real broadcast tally follows moments later
+    });
+    mapVoteGrid.appendChild(card);
+  }
+}
+
+function updateMapVoteTally(tally) {
+  lastMapVoteTally = tally;
+  renderMapVoteGrid(tally);
+}
+
+function showMapVote(voteEndsAt, tally) {
+  myMapVote = null;
+  updateMapVoteTally(tally);
+  mapVoteOverlay.classList.remove('hidden');
+  if (mapVoteCountdownTimer) clearInterval(mapVoteCountdownTimer);
+  const tick = () => {
+    const remaining = Math.max(0, Math.ceil((voteEndsAt - Date.now()) / 1000));
+    mapVoteTimerEl.textContent = `${remaining}s`;
+    if (remaining <= 0) clearInterval(mapVoteCountdownTimer);
+  };
+  tick();
+  mapVoteCountdownTimer = setInterval(tick, 250);
+}
+
+function hideMapVote() {
+  mapVoteOverlay.classList.add('hidden');
+  if (mapVoteCountdownTimer) { clearInterval(mapVoteCountdownTimer); mapVoteCountdownTimer = null; }
+}
 
 // Local prediction of which plate (if any) the player is standing on — the source of truth for
 // self-highlighting (see updateBbStationVisual) rather than name-matching, since two connections
@@ -1320,7 +1793,10 @@ function markMag(gunGroup, mesh) {
 function disposeObject3D(obj) {
   if (!obj) return;
   obj.traverse((o) => {
-    if (!o.isMesh) return;
+    // Every online-lobby map's station signs (see buildBbStations) are THREE.Sprite, not Mesh —
+    // .isMesh is false for those, so they'd silently skip disposal (leaking their CanvasTexture +
+    // SpriteMaterial on every map switch) without this also checking .isSprite.
+    if (!o.isMesh && !o.isSprite) return;
     if (o.geometry) o.geometry.dispose();
     if (o.material) {
       if (o.material.map) o.material.map.dispose();
@@ -2325,6 +2801,17 @@ function handleBbMessage(data) {
       bbCurrentPlate = null;
       lobbyHud.classList.remove('hidden');
       for (const snapshot of data.stations || []) updateBbStationVisual(snapshot.stationId, snapshot);
+      if (data.votingOpen) showMapVote(data.voteEndsAt, data.mapTally || {});
+      else { hideMapVote(); activateMap(data.mapId || 'office'); }
+      break;
+    }
+    case 'bb-map-vote-update': {
+      updateMapVoteTally(data.tally || {});
+      break;
+    }
+    case 'bb-map-decided': {
+      hideMapVote();
+      activateMap(data.mapId || 'office');
       break;
     }
     case 'bb-full': {
@@ -2521,13 +3008,14 @@ function startOnlinePlay() {
   waveCounter.classList.add('hidden');
   lobbyHud.classList.remove('hidden');
   lobbyCodeLabel.textContent = bbRoomCode ? `🔗 Room ${bbRoomCode}` : '🌐 Public lobby';
-  // Swap the whole look (and collision layout) from the outdoor crossroad to the indoor office —
-  // see arenaGroup/officeGroup up near buildOffice().
+  // Swap the whole look (and collision layout) from the outdoor crossroad to whichever online-lobby
+  // map ends up active — see arenaGroup/officeGroup up near buildOffice() and activateMap further
+  // down. Defaults to the office as a neutral backdrop the instant online mode starts (the map vote
+  // overlay covers the screen the whole time it's undecided anyway, so what's rendered behind it
+  // doesn't matter) — bb-init/bb-map-decided calls activateMap again once a real map is settled.
   arenaGroup.visible = false;
-  officeGroup.visible = true;
+  activateMap('office');
   officeAmbient.intensity = 0.22;
-  occupied.clear();
-  for (const [k, v] of officeOccupied) occupied.set(k, v);
   connectBb();
   document.getElementById('hint-title').textContent = 'Click to play';
   hint.classList.remove('hidden');
@@ -2558,8 +3046,11 @@ function leaveOnlineLobby() {
   weaponHudEl.classList.remove('hidden');
   waveCounter.classList.remove('hidden');
   gun.visible = true;
-  arenaGroup.visible = true;
+  teardownExtraMap();
   officeGroup.visible = false;
+  activeMapId = null;
+  hideMapVote();
+  arenaGroup.visible = true;
   officeAmbient.intensity = 0;
   occupied.clear();
   for (const [k, v] of arenaOccupied) occupied.set(k, v);
