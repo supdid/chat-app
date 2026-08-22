@@ -3242,6 +3242,9 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'scorpture-go-live') {
       if (!ws.accountId) return;
+      // Fans out a real push notification to every subscriber on every call (notifyScorptureSubscribers
+      // below) — same reason POST /api/scorpture/videos gates this with isPostMediaRateLimited.
+      if (isWsMsgRateLimited(ws)) return;
       const title = String(msg.title || 'Untitled stream').slice(0, 100).trim() || 'Untitled stream';
       const account = db.getAccountById(ws.accountId);
       if (!account) return;
@@ -3640,6 +3643,7 @@ wss.on('connection', (ws, req) => {
       const bc = room && room.bc;
       const me = bc && bc.players.get(ws);
       if (!bc || !me) return;
+      if (isWsMsgRateLimited(ws)) return; // see voice-join's comment on this same guard
       if (!bc.voice) bc.voice = new Map();
       const existing = [...bc.voice.entries()].map(([id, p]) => ({ id, name: p.name }));
       bc.voice.set(ws.bcId, { ws, name: me.name });
@@ -3653,7 +3657,11 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'bc-voice-signal' && ws.bcRoom) {
       const room = rooms.get(ws.bcRoom);
       const voice = room && room.bc && room.bc.voice;
-      const target = voice && voice.get(String(msg.to || ''));
+      // Mirrors voice-signal's own check: without this, anyone in the Build Craft room (never
+      // having sent bc-voice-join) could forge a signal to a real voice participant's id.
+      if (!voice || !voice.has(ws.bcId)) return;
+      if (isStrokeRateLimited(ws)) return; // see voice-signal's comment on this same guard
+      const target = voice.get(String(msg.to || ''));
       if (!target) return;
       send(target.ws, { type: 'bc-voice-signal', from: ws.bcId, signal: msg.signal });
       return;
@@ -5155,6 +5163,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'join-room') {
+      if (isWsMsgRateLimited(ws)) return; // see bc-join's comment on this same guard
       const code = String(msg.code || '').toUpperCase().trim();
       // One fetch, reused below — this used to call db.getRoom(code) three separate times for
       // the same code within one handler (existence check, this assignment, and again just to
@@ -5329,6 +5338,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'set-room-pin' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return; // see rename-room's comment on this same guard
       const dbRoom = db.getRoom(ws.room);
       if (!dbRoom || dbRoom.host_name !== ws.profile.name) return;
       const pin = String(msg.pin || '').slice(0, 12).trim() || null;
@@ -5535,6 +5545,10 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'voice-join' && ws.room) {
+      // Same shape scorpture-watch-live is gated for: a repeated join loop without an intervening
+      // voice-leave re-fires voice-peer-joined at every existing peer each time, forcing every
+      // participant's browser to spin up a fresh RTCPeerConnection.
+      if (isWsMsgRateLimited(ws)) return;
       const code = ws.room;
       const voice = voiceRoom(code, true);
       const sub = ws.profile.sub;
@@ -5563,6 +5577,11 @@ wss.on('connection', (ws, req) => {
       // ghost call tile for a "peer" that never actually joined. That ghost never gets cleaned up
       // by the normal voice-peer-left path (the forger was never in the `voice` Map to begin with).
       if (!voice || !voice.has(ws.profile.sub)) return;
+      // The bc-pos/whiteboard-stroke gate, not the tight chat one — real ICE-candidate exchange
+      // during connection setup (especially with several peers already on the call) legitimately
+      // bursts well past the chat gate's ~1.3/sec, and this is only reachable by an already-
+      // verified call participant (the voice.has check above), not an arbitrary client.
+      if (isStrokeRateLimited(ws)) return;
       const target = voice.get(String(msg.to || ''));
       if (!target) return;
       send(target.ws, { type: 'voice-signal', from: ws.profile.sub, signal: msg.signal });
@@ -5573,6 +5592,7 @@ wss.on('connection', (ws, req) => {
       const voice = voiceRoom(ws.room, false);
       const sub = ws.profile.sub;
       if (!voice || !voice.has(sub)) return;
+      if (isWsMsgRateLimited(ws)) return;
       for (const [s, p] of voice) {
         if (s !== sub) send(p.ws, { type: 'voice-share', sub, sharing: !!msg.sharing });
       }
@@ -5583,6 +5603,7 @@ wss.on('connection', (ws, req) => {
       const voice = voiceRoom(ws.room, false);
       const sub = ws.profile.sub;
       if (!voice || !voice.has(sub)) return;
+      if (isWsMsgRateLimited(ws)) return;
       const raised = msg.type === 'raise-hand';
       for (const [s, p] of voice) {
         if (s !== sub) send(p.ws, { type: raised ? 'hand-raised' : 'hand-lowered', sub, name: ws.profile.name });
@@ -5599,6 +5620,7 @@ wss.on('connection', (ws, req) => {
       const voice = voiceRoom(ws.room, false);
       const sub = ws.profile.sub;
       if (!voice || !voice.has(sub)) return;
+      if (isWsMsgRateLimited(ws)) return;
       for (const [s, p] of voice) {
         if (s !== sub) send(p.ws, { type: 'mute-all-request', fromName: ws.profile.name });
       }
