@@ -431,9 +431,20 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // The WS join-room handler is the only place that used to check a room's PIN — these four plain
 // HTTP routes (below) could read or post into a PIN-protected room without ever supplying it.
-// Shared here so all four check it the same way join-room already does.
+// Shared here so all four check it the same way join-room already does (join-room itself was
+// switched to call this too — see its own comment — so the check now has exactly one implementation).
 function roomPinOk(dbRoom, suppliedPin) {
-  return !dbRoom || !dbRoom.pin_required || String(suppliedPin || '').trim() === dbRoom.pin_required;
+  if (!dbRoom || !dbRoom.pin_required) return true;
+  // Same reasoning as verifyPassword/requireAdmin's use of timingSafeEqual — a naive === here would
+  // let a remote attacker's response-time samples leak how many leading characters of a guessed PIN
+  // were correct. Lower-severity than those two (this feature is explicitly documented elsewhere as
+  // "not real security," and every reachable call site is now rate-limited), but a PIN's low entropy
+  // relative to a randomUUID session token makes it the more realistic timing-attack target of the
+  // two, so it's still worth the same one-line fix rather than leaving the one gap in an otherwise
+  // consistently-applied pattern.
+  const supplied = Buffer.from(String(suppliedPin || '').trim());
+  const real = Buffer.from(dbRoom.pin_required);
+  return supplied.length === real.length && crypto.timingSafeEqual(supplied, real);
 }
 
 // A message row's account_id (see insertMessage) is a much sturdier ownership check than its
@@ -5253,7 +5264,7 @@ wss.on('connection', (ws, req) => {
       // just enough to keep a room from being joined by anyone who guesses/finds the 5-char code.
       if (dbRoom && dbRoom.pin_required) {
         const suppliedPin = String(msg.pin || '').trim();
-        if (suppliedPin !== dbRoom.pin_required) {
+        if (!roomPinOk(dbRoom, suppliedPin)) {
           send(ws, { type: 'join-error', message: suppliedPin ? 'Incorrect PIN' : 'This room requires a PIN', pinRequired: true });
           return;
         }

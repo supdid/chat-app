@@ -521,6 +521,47 @@ describe('room PIN actually gates join-room', () => {
 
     noPin.close(); wrongPin.close(); rightPin.close();
   });
+
+  // roomPinOk switched from a naive === to crypto.timingSafeEqual (avoids a timing side-channel
+  // leaking how many leading characters of a guessed PIN were correct) — timingSafeEqual throws if
+  // the two buffers aren't the same length, which a length check must guard against first. A PIN
+  // shorter or longer than the real one is exactly the input that would trigger that throw if the
+  // guard were missing or wrong, so it's worth its own case rather than relying on the same-length
+  // '0000' vs '4242' mismatch above to exercise this.
+  test('a PIN of a different length than the real one is rejected, not a server error', async () => {
+    const { ws: host, code } = await joinRoom('PinLenHost');
+    send(host, { type: 'set-room-pin', pin: '4242' });
+    await waitFor(host, (m) => m.type === 'room-pin-updated' && m.pinRequired === true);
+
+    const shortPin = await connectWs();
+    send(shortPin, { type: 'join-server', username: 'PinLenShort' });
+    await waitFor(shortPin, (m) => m.type === 'joined-server');
+    send(shortPin, { type: 'join-room', code, pin: '42' });
+    const shortResult = await waitFor(shortPin, (m) => m.type === 'join-error' || m.type === 'joined-room');
+    assert.equal(shortResult.type, 'join-error', 'a shorter-than-real PIN must be rejected, not crash the handler');
+
+    const longPin = await connectWs();
+    send(longPin, { type: 'join-server', username: 'PinLenLong' });
+    await waitFor(longPin, (m) => m.type === 'joined-server');
+    send(longPin, { type: 'join-room', code, pin: '424242' });
+    const longResult = await waitFor(longPin, (m) => m.type === 'join-error' || m.type === 'joined-room');
+    assert.equal(longResult.type, 'join-error', 'a longer-than-real PIN must be rejected, not crash the handler');
+
+    shortPin.close(); longPin.close();
+  });
+
+  test('the HTTP /export route also enforces the PIN with a length-mismatched guess', async () => {
+    const { ws: host, code } = await joinRoom('PinHttpHost');
+    send(host, { type: 'set-room-pin', pin: '4242' });
+    await waitFor(host, (m) => m.type === 'room-pin-updated' && m.pinRequired === true);
+
+    const res = await fetch(`${BASE_URL}/export`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, pin: '42' }),
+    });
+    assert.equal(res.status, 403, 'a length-mismatched PIN over HTTP must 403, not 500');
+  });
 });
 
 describe('set-wallpaper/set-announcement are host-only and enforce the upload allowlist', () => {
