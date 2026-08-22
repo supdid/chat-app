@@ -5532,7 +5532,12 @@ wss.on('connection', (ws, req) => {
       let options;
       try { options = JSON.parse(target.text).options; } catch { return; }
       const optionIndex = Math.floor(+msg.optionIndex);
-      if (!Array.isArray(options) || optionIndex < 0 || optionIndex >= options.length) return;
+      // Number.isInteger rejects NaN explicitly — without it, a non-numeric optionIndex (e.g. an
+      // object/array/string) makes both bounds comparisons below false (NaN comparisons always
+      // are), so the check never trips and NaN gets bound straight into the DB, where better-
+      // sqlite3 silently stores it as SQL NULL instead of throwing — a corrupted-looking vote
+      // broadcast to the whole room for an option that was never actually selected.
+      if (!Array.isArray(options) || !Number.isInteger(optionIndex) || optionIndex < 0 || optionIndex >= options.length) return;
       db.setPollVote(messageId, ws.profile.name, optionIndex);
       broadcastRoom(ws.room, { type: 'poll-voted', messageId, votes: db.getPollVotes(messageId) });
       return;

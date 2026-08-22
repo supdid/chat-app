@@ -1676,6 +1676,30 @@ describe('polls', () => {
     assert.ok(pollMsg, 'the poll message should be in the room history');
     assert.ok(pollMsg.votes.some((v) => v.name === 'PollVoter' && v.optionIndex === 1), 'the recorded vote should survive a fresh join');
   });
+
+  test('vote-poll rejects a non-numeric optionIndex instead of writing NaN into the DB', async () => {
+    const { ws: creator, code } = await joinRoom('PollNaNCreator');
+    const voter = await joinExistingRoom('PollNaNVoter', code);
+    await sleep(150);
+
+    send(creator, {
+      type: 'message',
+      mediaType: 'poll',
+      mediaUrl: 'poll',
+      text: JSON.stringify({ question: 'NaN test?', options: ['A', 'B'] }),
+    });
+    const posted = await waitFor(creator, (m) => m.type === 'message' && m.mediaType === 'poll');
+
+    // +'not-a-number' is NaN, and both `NaN < 0` and `NaN >= options.length` are false, so a bare
+    // disjunction-of-bounds check would never trip and NaN would get bound straight into the DB.
+    let voteBroadcast = false;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'poll-voted' && m.messageId === posted.id) voteBroadcast = true; };
+    creator.on('message', h);
+    send(voter, { type: 'vote-poll', messageId: posted.id, optionIndex: 'not-a-number' });
+    await sleep(300);
+    creator.off('message', h);
+    assert.equal(voteBroadcast, false, 'a non-numeric optionIndex must not produce a vote');
+  });
 });
 
 describe('pin and unpin', () => {
