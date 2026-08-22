@@ -435,6 +435,34 @@ describe('room moderation', () => {
     assert.equal(result.type, 'joined-room', 'the unbanned target must actually be able to rejoin now');
     rejoin.close();
   });
+
+  // unbanFromRoom used to delete by ban id alone, with no room_code check — every other id-based
+  // handler in this app (delete-message, pin-message, etc.) already scopes to the caller's own
+  // room, but this one didn't. Found by an authorization-enforcement audit.
+  test('unban-user cannot be used to lift a ban belonging to a DIFFERENT room', async () => {
+    const roomA = await joinRoom('UnbanScopeHostA');
+    const roomB = await joinRoom('UnbanScopeHostB');
+    const targetInA = await joinExistingRoom('UnbanScopeTarget', roomA.code);
+    await sleep(150);
+
+    send(roomA.ws, { type: 'ban-user', name: 'UnbanScopeTarget' });
+    await sleep(300);
+    send(roomA.ws, { type: 'get-bans' });
+    const bansA = await waitFor(roomA.ws, (m) => m.type === 'bans-result');
+    const ban = bansA.bans.find((b) => b.target_name === 'UnbanScopeTarget');
+    assert.ok(ban, 'the ban must exist in room A');
+
+    // Host B (a different room entirely) tries to unban using room A's ban id.
+    send(roomB.ws, { type: 'unban-user', banId: ban.id });
+    await sleep(300);
+
+    // The ban must still be present in room A — host B's attempt must not have touched it.
+    send(roomA.ws, { type: 'get-bans' });
+    const bansAfter = await waitFor(roomA.ws, (m) => m.type === 'bans-result');
+    assert.ok(bansAfter.bans.some((b) => b.id === ban.id), "a different room's host must not be able to lift this room's ban");
+
+    targetInA.close();
+  });
 });
 
 describe('room rename requires host', () => {

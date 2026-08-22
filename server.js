@@ -5482,7 +5482,7 @@ wss.on('connection', (ws, req) => {
       if (!dbRoom || dbRoom.host_name !== ws.profile.name) return;
       const banId = String(msg.banId || '');
       if (!banId) return;
-      db.unbanFromRoom(banId);
+      db.unbanFromRoom(banId, ws.room);
       send(ws, { type: 'bans-result', bans: db.getRoomBans(ws.room) });
       return;
     }

@@ -1526,8 +1526,14 @@ function banFromRoom(id, roomCode, targetAccountId, targetName, bannedBy) {
   );
 }
 
-function unbanFromRoom(banId) {
-  db.prepare('DELETE FROM room_bans WHERE id = ?').run(banId);
+// roomCode scopes the delete to the caller's own room — without it, a host of Room A who also
+// somehow knew a ban id belonging to Room B (ban ids are random UUIDs never broadcast to anyone
+// but a room's own host via get-bans/bans-result, so this was low-exploitability, but every
+// sibling id-based handler in server.js — delete-message, pin-message, get-thread, etc. — already
+// enforces this same room-ownership check before acting on an id) could unban that row while
+// connected to Room A, without ever being validated as Room B's actual host.
+function unbanFromRoom(banId, roomCode) {
+  db.prepare('DELETE FROM room_bans WHERE id = ? AND room_code = ?').run(banId, roomCode);
 }
 
 function getRoomBans(roomCode) {
