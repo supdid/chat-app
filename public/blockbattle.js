@@ -1305,6 +1305,15 @@ function addBox(parent, w, h, d, color, x, y, z, rx) {
   return m;
 }
 
+// Tags a box as "the magazine" for the reload animation: it drops free, disappears for a beat,
+// then a fresh one slides back up to this same resting height. Revolvers/pump/tube-fed weapons
+// (cylinder, shotgun, RPG, launcher) don't call this — they just get the gun-wide dip/tilt.
+function markMag(gunGroup, mesh) {
+  mesh.userData.restY = mesh.position.y;
+  gunGroup.userData.mag = mesh;
+  return mesh;
+}
+
 // Every mesh in a bot/ally/gun group owns its own geometry and material (none of it is a shared
 // module-level singleton like packMat below), so a plain traverse-and-dispose-everything is safe
 // here — matches fighterplane.js's disposeObject3D exactly.
@@ -1330,25 +1339,28 @@ function equipGun(type) {
   if (type === 'glock') {
     addBox(gun, 0.05, 0.05, 0.16, DARK, 0, 0, 0);
     addBox(gun, 0.045, 0.1, 0.05, GRIP, 0, -0.07, 0.05, 0.25);
+    markMag(gun, addBox(gun, 0.03, 0.07, 0.03, DARK, 0, -0.14, 0.05));
   } else if (type === 'deagle') {
     addBox(gun, 0.06, 0.06, 0.22, 0xb9c2c9, 0, 0, 0);
     addBox(gun, 0.05, 0.1, 0.05, GRIP, 0, -0.07, 0.06, 0.25);
+    markMag(gun, addBox(gun, 0.035, 0.08, 0.035, DARK, 0, -0.14, 0.06));
     muzzleZ = -0.14;
   } else if (type === 'uzi') {
     addBox(gun, 0.05, 0.06, 0.2, 0x24282c, 0, 0, 0);
     addBox(gun, 0.04, 0.12, 0.04, GRIP, 0, -0.08, 0.01);
-    addBox(gun, 0.035, 0.1, 0.035, DARK, 0, -0.08, -0.05); // the long stick magazine
+    markMag(gun, addBox(gun, 0.035, 0.1, 0.035, DARK, 0, -0.08, -0.05)); // the long stick magazine
     muzzleZ = -0.13;
   } else if (type === 'mp90') {
     addBox(gun, 0.055, 0.07, 0.28, 0x3a4652, 0, 0, 0);
     addBox(gun, 0.045, 0.1, 0.05, GRIP, 0, -0.08, 0.04, 0.2);
     addBox(gun, 0.04, 0.09, 0.04, 0x2c363f, 0, -0.07, -0.06, -0.25);
+    markMag(gun, addBox(gun, 0.035, 0.1, 0.035, DARK, 0, -0.1, -0.02));
     muzzleZ = -0.17;
   } else if (type === 'ak47') {
     addBox(gun, 0.05, 0.06, 0.34, 0x2e2a26, 0, 0, -0.02);
     addBox(gun, 0.045, 0.09, 0.05, WOOD, 0, -0.07, 0.06, 0.25);   // grip
     addBox(gun, 0.05, 0.06, 0.1, WOOD, 0, 0.005, 0.16);           // stock
-    addBox(gun, 0.045, 0.12, 0.05, DARK, 0, -0.08, -0.03, 0.35);  // curved mag
+    markMag(gun, addBox(gun, 0.045, 0.12, 0.05, DARK, 0, -0.08, -0.03, 0.35));  // curved mag
     muzzleZ = -0.21;
   } else if (type === 'sniper' || type === 'sniper3') {
     const body = type === 'sniper' ? 0x32363a : 0x1f2933;
@@ -1356,6 +1368,7 @@ function equipGun(type) {
     addBox(gun, 0.045, 0.05, 0.12, GRIP, 0, 0.05, 0.03);          // scope
     addBox(gun, 0.05, 0.06, 0.12, type === 'sniper' ? WOOD : 0x2fb6ac, 0, -0.01, 0.16); // stock
     addBox(gun, 0.04, 0.08, 0.05, GRIP, 0, -0.06, 0.08, 0.3);
+    markMag(gun, addBox(gun, 0.03, 0.05, 0.03, DARK, 0, -0.07, 0));
     muzzleZ = -0.3;
   } else if (type === 'rpg') {
     addBox(gun, 0.09, 0.09, 0.5, 0x4a5d3a, 0, 0, -0.02);
@@ -1373,6 +1386,7 @@ function equipGun(type) {
     if (shopW.archKey === 'pistol') {
       addBox(gun, 0.052, 0.052, 0.17, tint, 0, 0, 0);
       addBox(gun, 0.045, 0.1, 0.05, GRIP, 0, -0.07, 0.05, 0.25);
+      markMag(gun, addBox(gun, 0.03, 0.07, 0.03, DARK, 0, -0.14, 0.05));
     } else if (shopW.archKey === 'revolver') {
       addBox(gun, 0.06, 0.06, 0.2, tint, 0, 0, 0);
       addBox(gun, 0.075, 0.075, 0.075, DARK, 0, 0, 0.05);          // cylinder
@@ -1381,13 +1395,13 @@ function equipGun(type) {
     } else if (shopW.archKey === 'smg') {
       addBox(gun, 0.05, 0.06, 0.21, tint, 0, 0, 0);
       addBox(gun, 0.04, 0.12, 0.04, GRIP, 0, -0.08, 0.01);
-      addBox(gun, 0.035, 0.1, 0.035, DARK, 0, -0.08, -0.05);
+      markMag(gun, addBox(gun, 0.035, 0.1, 0.035, DARK, 0, -0.08, -0.05));
       muzzleZ = -0.14;
     } else if (shopW.archKey === 'ar') {
       addBox(gun, 0.05, 0.06, 0.34, tint, 0, 0, -0.02);
       addBox(gun, 0.045, 0.09, 0.05, GRIP, 0, -0.07, 0.06, 0.25);
       addBox(gun, 0.05, 0.06, 0.1, tint, 0, 0.005, 0.16);
-      addBox(gun, 0.045, 0.12, 0.05, DARK, 0, -0.08, -0.03, 0.35);
+      markMag(gun, addBox(gun, 0.045, 0.12, 0.05, DARK, 0, -0.08, -0.03, 0.35));
       muzzleZ = -0.21;
     } else if (shopW.archKey === 'shotgun') {
       addBox(gun, 0.075, 0.075, 0.26, tint, 0, 0, -0.02);
@@ -1397,7 +1411,7 @@ function equipGun(type) {
     } else if (shopW.archKey === 'lmg') {
       addBox(gun, 0.06, 0.07, 0.36, tint, 0, 0, -0.02);
       addBox(gun, 0.05, 0.1, 0.05, GRIP, 0, -0.08, 0.08, 0.25);
-      addBox(gun, 0.11, 0.11, 0.09, DARK, 0, -0.1, -0.08);         // drum mag
+      markMag(gun, addBox(gun, 0.11, 0.11, 0.09, DARK, 0, -0.1, -0.08));         // drum mag
       addBox(gun, 0.05, 0.06, 0.1, DARK, 0, 0.005, 0.17);          // stock
       muzzleZ = -0.22;
     } else if (shopW.archKey === 'sniper') {
@@ -1405,12 +1419,13 @@ function equipGun(type) {
       addBox(gun, 0.045, 0.05, 0.13, GRIP, 0, 0.05, 0.02);         // scope
       addBox(gun, 0.05, 0.06, 0.12, WOOD, 0, -0.01, 0.17);         // stock
       addBox(gun, 0.04, 0.08, 0.05, GRIP, 0, -0.06, 0.08, 0.3);
+      markMag(gun, addBox(gun, 0.03, 0.05, 0.03, DARK, 0, -0.07, 0));
       muzzleZ = -0.31;
     } else if (shopW.archKey === 'dmr') {
       addBox(gun, 0.045, 0.05, 0.36, tint, 0, 0, -0.03);
       addBox(gun, 0.038, 0.042, 0.1, GRIP, 0, 0.045, 0.02);        // shorter scope
       addBox(gun, 0.045, 0.1, 0.05, GRIP, 0, -0.07, 0.08, 0.25);
-      addBox(gun, 0.045, 0.1, 0.045, DARK, 0, -0.08, -0.02, 0.3);
+      markMag(gun, addBox(gun, 0.045, 0.1, 0.045, DARK, 0, -0.08, -0.02, 0.3));
       muzzleZ = -0.23;
     } else if (shopW.archKey === 'launcher') {
       addBox(gun, 0.09, 0.09, 0.5, tint, 0, 0, -0.02);
@@ -1421,6 +1436,7 @@ function equipGun(type) {
       addBox(gun, 0.045, 0.05, 0.3, 0x14181c, 0, 0, -0.02);        // dark chassis
       addBox(gun, 0.018, 0.018, 0.26, tint, 0, 0.01, -0.02);       // glowing core strip along the top
       addBox(gun, 0.04, 0.09, 0.045, GRIP, 0, -0.07, 0.06, 0.25);
+      markMag(gun, addBox(gun, 0.035, 0.07, 0.035, tint, 0, -0.14, 0.06));  // battery cell, tinted like the core
       muzzleZ = -0.19;
     }
   } else if (type === 'knife') {
@@ -3482,6 +3498,32 @@ function tick(now) {
     muzzleT -= dt;
     gun.userData.flash.intensity = Math.max(0, muzzleT / 0.05) * 2.2;
     if (muzzleT <= 0) gun.userData.muzzle.visible = false;
+  }
+
+  // Reload animation: the old magazine drops free, there's a beat where the gun is empty, then a
+  // fresh one slides back up into place, while the whole gun dips and tilts down like you're
+  // looking at your hands to do it. Weapons with no gun.userData.mag (revolvers, pump/tube-fed
+  // shotgun, RPG/launcher — see markMag) just get the dip/tilt with no magazine to swap.
+  if (!knifeOut) {
+    const reloadSpec = WEAPONS[weapon];
+    if (isReloading && reloadSpec.reload > 0) {
+      const p = Math.min(1, Math.max(0, 1 - (reloadEndAt - now) / (reloadSpec.reload * 1000)));
+      if (gun.userData.mag) {
+        const mag = gun.userData.mag;
+        let drop, visible = true;
+        if (p < 0.35) drop = (p / 0.35) * -0.3;
+        else if (p < 0.55) { visible = false; drop = -0.3; }
+        else drop = (1 - (p - 0.55) / 0.45) * -0.3;
+        mag.position.y = mag.userData.restY + drop;
+        mag.visible = visible;
+      }
+      const dip = Math.sin(p * Math.PI);
+      gun.position.y -= dip * 0.05;
+      gun.rotation.x += dip * 0.35;
+    } else if (gun.userData.mag) {
+      gun.userData.mag.position.y = gun.userData.mag.userData.restY;
+      gun.userData.mag.visible = true;
+    }
   }
 
   // Knife choreography: a diagonal slash on attack, a full twirl on a finisher.
