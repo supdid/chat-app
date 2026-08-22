@@ -177,6 +177,16 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio || 1);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// Filmic tone mapping: without it, every material's raw lit color goes straight to the screen,
+// so anything bright (the sun sprite, a muzzle flash, sunlit walls) just hard-clips to flat white
+// instead of rolling off — the classic "flat, video-gamey" look. ACES gives the same soft
+// highlight rolloff a camera/film would, which reads as more realistic across the board with zero
+// changes to any individual material or light. Deliberately NOT touching renderer.outputEncoding
+// alongside it — that half of Three.js r128's (pre-color-management-overhaul) legacy pipeline only
+// looks right if every texture's own .encoding is ALSO set to match, which nothing in this file
+// currently does; flipping outputEncoding alone would wash the whole scene out too bright instead
+// of fixing anything, and that's not something to guess at while unable to actually look at it.
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
 
 // requestPointerLock() returns a Promise in modern browsers that rejects (harmlessly) if called
 // too soon after a previous exit — browsers impose a short cooldown to stop a page from
@@ -242,6 +252,20 @@ sun.shadow.camera.bottom = -24;
 sun.shadow.camera.near = 5;
 sun.shadow.camera.far = 70;
 sun.shadow.bias = -0.0005;
+// normalBias (distinct from the plain bias above) pushes the shadow sample along each surface's
+// own normal rather than straight down the light ray — bias alone already stops most shadow acne
+// on flat ground, but every box in this game has edges/corners facing the sun at a shallow angle
+// (cover crates, cubicle desks, garage pillars), and those are exactly where plain bias alone
+// tends to leave "peter-panning" (the shadow visibly detached from its own object's base).
+sun.shadow.normalBias = 0.02;
+// A second, much dimmer light from roughly the opposite side of the sun, no shadow of its own —
+// real outdoor light always has SOME bounce/sky fill hitting a surface's shadow side, so a face
+// fully turned away from the sun currently goes essentially flat black once the hemisphere light's
+// ground-color contribution runs out; this softens that without touching the sun/hemisphere
+// numbers everything else was already tuned against.
+const fillLight = new THREE.DirectionalLight(0xcfe0f2, 0.18);
+fillLight.position.set(-14, 16, -10);
+scene.add(fillLight);
 scene.add(sun);
 
 // The sun you can actually see: a soft radial-gradient sprite hung out along
