@@ -2968,10 +2968,11 @@ function connectBb() {
   bbWs = new WebSocket(`${protocol}//${location.host}`);
   bbWs.addEventListener('open', () => {
     const accountToken = localStorage.getItem('valk-account-token') || '';
-    // Omitting `code` entirely (not just sending an empty string) matters here — server.js's
-    // bb-join falls back to the shared public 'GLOBAL-LOBBY' only when `code` is falsy, so a
-    // direct/bookmarked visit with no ?room= still works exactly as before this change.
-    bbWs.send(JSON.stringify({ type: 'bb-join', accountToken, level: getLevel(), code: bbRoomCode || undefined }));
+    // Deliberately never sends `code` (even when launched from inside a specific chat room via
+    // ?room=) — Online Play is one shared world across every room/server, not siloed per room, so
+    // server.js's bb-join always falls back to the single public 'GLOBAL-LOBBY'. bbRoomCode is
+    // still used elsewhere on this page (the "back to room" link above) — just not here anymore.
+    bbWs.send(JSON.stringify({ type: 'bb-join', accountToken, level: getLevel() }));
   });
   bbWs.addEventListener('message', (event) => {
     let data;
@@ -3007,7 +3008,8 @@ function startOnlinePlay() {
   weaponHudEl.classList.add('hidden');
   waveCounter.classList.add('hidden');
   lobbyHud.classList.remove('hidden');
-  lobbyCodeLabel.textContent = bbRoomCode ? `🔗 Room ${bbRoomCode}` : '🌐 Public lobby';
+  // Always the one shared public lobby now (see connectBb's own comment) — never room-specific.
+  lobbyCodeLabel.textContent = '🌐 Public lobby';
   // Swap the whole look (and collision layout) from the outdoor crossroad to whichever online-lobby
   // map ends up active — see arenaGroup/officeGroup up near buildOffice() and activateMap further
   // down. Defaults to the office as a neutral backdrop the instant online mode starts (the map vote
