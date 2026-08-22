@@ -3132,6 +3132,11 @@ function leaveWb(ws) {
       broadcastWb(code, { type: 'wb-player-left', id: ws.wbId });
       clearRoomActivity(code, player.name);
     }
+    // Strokes are already persisted (db.getWhiteboardStrokes rehydrates them on the next wb-join),
+    // so it's safe to drop this in-memory session once nobody's left drawing — otherwise the
+    // cached stroke array (up to 3000 entries) stays resident for as long as the room itself does,
+    // same pattern leaveBc/leaveTv/leaveDg already use.
+    if (room.wb.players.size === 0) delete room.wb;
   }
   ws.wbRoom = null;
 }
@@ -3388,6 +3393,13 @@ wss.on('connection', (ws, req) => {
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       const color = /^#[0-9a-fA-F]{6}$/.test(msg.color || '') ? msg.color : '#2fb6ac';
       if (!code) return;
+      // Without this, a second bc-join on the same connection for a different room overwrites
+      // ws.bcRoom without ever removing this ws from the OLD room's bc.players Map — same class of
+      // bug fg-join's own comment documents. The stale entry is unreachable (its ws no longer
+      // reports ws.bcRoom === that room), so real disconnect cleanup never finds it, permanently
+      // pinning that old room's whole state (chat history, voice, every other minigame) in memory.
+      if (ws.bcRoom === code) return;
+      if (ws.bcRoom) leaveBc(ws);
       const room = getOrCreateRoom(code);
       if (!room.bc) {
         // A room absent from memory (server restart) might still have a saved world in
@@ -3732,6 +3744,13 @@ wss.on('connection', (ws, req) => {
       const level = String(msg.level || 'easy').slice(0, 20);
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
+      // See bc-join's comment on this same guard — a second gw-join for a different room/level
+      // combo would otherwise overwrite ws.gwRoom/ws.gwLevel without ever clearing this ws from
+      // the OLD level session's players Map, orphaning it (and everything that keeps that room
+      // resident) forever. Sessions here are addressed by code+level together, so both must match
+      // to skip re-joining.
+      if (ws.gwRoom === code && ws.gwLevel === level) return;
+      if (ws.gwRoom) leaveGw(ws);
       const room = getOrCreateRoom(code);
       if (!room.gw) room.gw = new Map();
       if (!room.gw.has(level)) room.gw.set(level, { players: new Map() });
@@ -3806,6 +3825,8 @@ wss.on('connection', (ws, req) => {
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
+      if (ws.swRoom === code) return; // see bc-join's comment on this same guard
+      if (ws.swRoom) leaveSw(ws);
       const room = getOrCreateRoom(code);
       if (!room.sw) room.sw = { players: new Map() };
       if (room.sw.players.size >= MAX_GAME_PLAYERS) {
@@ -4271,6 +4292,8 @@ wss.on('connection', (ws, req) => {
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
+      if (ws.tvRoom === code) return; // see bc-join's comment on this same guard
+      if (ws.tvRoom) leaveTv(ws);
       const room = getOrCreateRoom(code);
       if (!room.tv) {
         room.tv = { players: new Map(), currentQuestion: null, usedQuestions: new Set(), answeredThisRound: new Map(), roundEndAt: null, timer: null };
@@ -4396,6 +4419,8 @@ wss.on('connection', (ws, req) => {
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
+      if (ws.hmRoom === code) return; // see bc-join's comment on this same guard
+      if (ws.hmRoom) leaveHm(ws);
       const room = getOrCreateRoom(code);
       if (!room.hm) {
         room.hm = { players: new Map(), word: null, guessedLetters: new Set(), wrongCount: 0, roundActive: false };
@@ -4720,6 +4745,8 @@ wss.on('connection', (ws, req) => {
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
+      if (ws.dgRoom === code) return; // see bc-join's comment on this same guard
+      if (ws.dgRoom) leaveDg(ws);
       const room = getOrCreateRoom(code);
       if (!room.dg) {
         room.dg = {
@@ -4907,6 +4934,8 @@ wss.on('connection', (ws, req) => {
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
+      if (ws.wbRoom === code) return; // see bc-join's comment on this same guard
+      if (ws.wbRoom) leaveWb(ws);
       const room = getOrCreateRoom(code);
       if (!room.wb) room.wb = { strokes: db.getWhiteboardStrokes(code), players: new Map() };
       if (room.wb.players.size >= MAX_GAME_PLAYERS) {

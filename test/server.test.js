@@ -2158,6 +2158,47 @@ describe('Build Craft position broadcast flood gate', () => {
   });
 });
 
+describe('minigame *-join leaves the previous session before joining a new one', () => {
+  // Without this guard, a second *-join on the same connection for a different room/level
+  // overwrites ws.XRoom without ever removing this ws from the OLD session's players Map — the
+  // stale entry is then unreachable (its ws no longer reports ws.XRoom === that room), so real
+  // disconnect cleanup never finds it, permanently pinning the old room's whole state in memory.
+  // fg-join/bb-join/ch-join/tt-join already had this guard; bc/gw/sw/tv/hm/dg/wb-join did not.
+  // The observable proof the guard works: a bystander left behind in the OLD room/level sees the
+  // departing player's *-player-left broadcast the moment the second join fires, without ever
+  // sending an explicit *-leave.
+  test('bc-join: joining a second room leaves the first (bystander sees bc-player-left)', async () => {
+    const mover = await connectWs();
+    const bystander = await connectWs();
+    send(mover, { type: 'bc-join', code: 'BCREJOINOLD', name: 'BcRejoinMover' });
+    await waitFor(mover, (m) => m.type === 'bc-init');
+    send(bystander, { type: 'bc-join', code: 'BCREJOINOLD', name: 'BcRejoinBystander' });
+    await waitFor(bystander, (m) => m.type === 'bc-init');
+    await sleep(150);
+
+    send(mover, { type: 'bc-join', code: 'BCREJOINNEW', name: 'BcRejoinMover' });
+    const left = await waitFor(bystander, (m) => m.type === 'bc-player-left');
+    assert.ok(left, 'the old room should see the mover leave once it joins a different room');
+    await waitFor(mover, (m) => m.type === 'bc-init');
+  });
+
+  test('gw-join: joining a different level in the same room leaves the old level session (bystander sees gw-player-left)', async () => {
+    const mover = await connectWs();
+    const bystander = await connectWs();
+    const code = 'GWREJOIN1';
+    send(mover, { type: 'gw-join', code, level: 'easy', name: 'GwRejoinMover' });
+    await waitFor(mover, (m) => m.type === 'gw-init');
+    send(bystander, { type: 'gw-join', code, level: 'easy', name: 'GwRejoinBystander' });
+    await waitFor(bystander, (m) => m.type === 'gw-init');
+    await sleep(150);
+
+    send(mover, { type: 'gw-join', code, level: 'hard', name: 'GwRejoinMover' });
+    const left = await waitFor(bystander, (m) => m.type === 'gw-player-left');
+    assert.ok(left, 'the old level session should see the mover leave once it joins a different level');
+    await waitFor(mover, (m) => m.type === 'gw-init');
+  });
+});
+
 describe('cosmetic/settings toggles without natural bounding are rate-limited', () => {
   // Unlike bc-claim (capped at BC_MAX_CLAIMS_PER_PLAYER) or dg-start/tv-start (can't restart an
   // active round), these have no such natural limit — freely toggleable at will, each broadcasting
