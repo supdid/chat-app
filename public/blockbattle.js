@@ -2747,6 +2747,12 @@ function showDuelRoundBanner(message) {
 }
 
 function endDuel(message) {
+  // A duel that ends while its pre-fight map vote was still open (e.g. the opponent disconnects
+  // mid-vote, see bb-duel-ended) never got as far as bb-duel-started, which is the only other
+  // place this overlay closes on the combat-starting path — without this, the survivor is left
+  // staring at the opaque, full-viewport #map-vote screen with no way back to the lobby short of
+  // a reload, since it also has no close/cancel button of its own by design.
+  hideMapVote();
   dueling = false;
   myOpponentId = null;
   duelRoundsWon = 0;
@@ -2793,6 +2799,10 @@ function showMatchRoundBanner(message) {
 }
 
 function endMatch(message) {
+  // Same reasoning as endDuel's own hideMapVote() call — a match that ends while its pre-fight map
+  // vote was still open (e.g. a whole side disconnects before it resolves, see bbCheckMatchEnd's
+  // phase !== 'active' branch) never reaches bb-match-started, the only other place this closes.
+  hideMapVote();
   dueling = false;
   inMatch = false;
   myMatchId = null;

@@ -2315,6 +2315,16 @@ function leaveBb(ws) {
       // still-pending pre-match vote timer, cleared via bbEndMatch when that leaves a side empty).
       if (player.plateStation) bbClearPlate(bb, code, ws);
       const matchId = player.matchId;
+      // A 2v2+ match survives one side losing a member (unlike a duel, which always ends outright
+      // above) — if this player had already cast a vote in that match's still-open pre-fight
+      // window, it would otherwise keep counting in every future tally/tie-break forever, a
+      // phantom voter biasing the map choice for teammates who are still actually there.
+      if (matchId) {
+        const match = bb.matches.get(matchId);
+        if (match && match.phase === 'voting' && match.mapVotes.delete(ws)) {
+          broadcastToBbMatch(bb, matchId, { type: 'bb-match-map-vote-update', tally: bbMapTally(match.mapVotes) });
+        }
+      }
       bb.players.delete(ws);
       if (matchId) bbCheckMatchEnd(bb, code, matchId);
       broadcastBb(code, { type: 'bb-player-left', id: player.id });

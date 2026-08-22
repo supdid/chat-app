@@ -3843,6 +3843,64 @@ describe('Block Battle NvN match: pre-match map vote and multi-round continuatio
   });
 });
 
+describe('Block Battle NvN match: a departed voter is dropped from the tally', () => {
+  // A 2v2+ match survives one side losing a member (unlike a duel, which always ends outright on
+  // either side's departure) — if that departing player had already voted in the match's still-
+  // open pre-fight window, their vote used to keep counting in every later tally/tie-break
+  // forever, a phantom voter biasing the map choice for teammates who are still actually there.
+  // Own dedicated instance with a comfortably long vote window (unlike the 150ms used elsewhere in
+  // this file's Block Battle suites) — this test needs several sequential round-trips (vote,
+  // disconnect, a second vote, then check the broadcast tally) to all land inside one still-open
+  // voting phase, and a razor-thin window risks flaking that sequencing under load.
+  let dropServer;
+  before(async () => { dropServer = await startTestServer({ BB_MATCH_VOTE_MS: '3000' }, 3209); });
+  after(async () => { await dropServer.stop(); });
+
+  function dropConnect() {
+    return new Promise((resolve) => {
+      const ws = new WebSocket(`ws://localhost:${dropServer.port}`);
+      ws.on('open', () => resolve(ws));
+    });
+  }
+  async function dropJoin(code) {
+    const ws = await dropConnect();
+    send(ws, { type: 'bb-join', code, level: 1 });
+    const init = await waitFor(ws, (m) => m.type === 'bb-init');
+    return { ws, id: init.id };
+  }
+
+  test('a 2v2 match drops a departed player\'s vote from subsequent tally broadcasts', async () => {
+    const code = 'BBVOTEDROP1';
+    const a = await dropJoin(code); // side a slot 0 — will vote, then disconnect
+    const b = await dropJoin(code); // side a slot 1 — a's teammate, stays
+    const c = await dropJoin(code); // side b slot 0
+    const d = await dropJoin(code); // side b slot 1
+
+    const voteA = waitFor(a.ws, (m) => m.type === 'bb-match-map-vote');
+    const voteB = waitFor(b.ws, (m) => m.type === 'bb-match-map-vote');
+    send(a.ws, { type: 'bb-plate-enter', stationId: 'st2', side: 'a', slot: 0 });
+    send(b.ws, { type: 'bb-plate-enter', stationId: 'st2', side: 'a', slot: 1 });
+    send(c.ws, { type: 'bb-plate-enter', stationId: 'st2', side: 'b', slot: 0 });
+    send(d.ws, { type: 'bb-plate-enter', stationId: 'st2', side: 'b', slot: 1 });
+    await Promise.all([voteA, voteB]);
+
+    // A votes, then vanishes mid-vote (a raw drop, same as a network blip) — no bb-leave sent.
+    const dropUpdateB = waitFor(b.ws, (m) => m.type === 'bb-match-map-vote-update');
+    send(a.ws, { type: 'bb-vote-match-map', mapId: 'garage_a' });
+    await dropUpdateB; // A's own vote landing first, before the disconnect
+    a.ws.close();
+    await sleep(200); // let the server's close handler run leaveBb
+
+    // B casts a different vote — the resulting tally must show only B's vote, not a stale A entry.
+    const tallyAfterDrop = waitFor(b.ws, (m) => m.type === 'bb-match-map-vote-update');
+    send(b.ws, { type: 'bb-vote-match-map', mapId: 'plaza_day' });
+    const tally = await tallyAfterDrop;
+    assert.deepEqual(tally.tally, { plaza_day: 1 }, 'the departed A\'s garage_a vote must not still be counted');
+
+    b.ws.close(); c.ws.close(); d.ws.close();
+  });
+});
+
 describe('Self-healing patcher: target-file allowlist', () => {
   // Dedicated instance — SYSTEMD_SERVICE_NAME points at a unit name that doesn't exist, so if any
   // test here ever exercised a server-file patch approval (none currently do — see the note in
