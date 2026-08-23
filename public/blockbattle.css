@@ -51,11 +51,22 @@ html, body {
   height: 6px;
   margin: -3px 0 0 -3px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.85);
+  background: var(--crosshair-color, rgba(255, 255, 255, 0.85));
   box-shadow: 0 0 3px rgba(0, 0, 0, 0.6);
   pointer-events: none;
   z-index: 10;
   transition: transform 0.15s, background 0.15s;
+}
+
+/* Outline crosshair style: a ring around the center dot, same color, drawn via ::after so it
+   doesn't interfere with the dot's own hit/headshot flash animation. */
+#crosshair.outline::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  border: 1.5px solid var(--crosshair-color, rgba(255, 255, 255, 0.85));
+  opacity: 0.8;
 }
 
 #crosshair.hit {
@@ -439,6 +450,152 @@ html, body {
   border-color: rgba(255, 255, 255, 0.4);
 }
 
+#settings-btn {
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 12px;
+  padding: 0.55rem 1rem;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #eaf6ff;
+  background: rgba(6, 14, 22, 0.65);
+  cursor: pointer;
+}
+
+#settings-btn:hover {
+  background: #2fb6ac;
+  color: #04211e;
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+#mode-select-shards {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #9fe0ff;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+/* Same "solid near-black, sits above everything" overlay treatment as #weapon-shop, sharing its
+   z-index — opened from the same mode-select footer, never both at once. */
+#settings-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 28;
+  display: flex;
+  flex-direction: column;
+  background: rgba(4, 4, 6, 0.97);
+  color: #eaf6ff;
+}
+
+#settings-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 1.2rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+  flex-shrink: 0;
+}
+
+#settings-title {
+  font-size: 1.3rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+
+#settings-close-btn {
+  margin-left: auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.08);
+  color: #eaf6ff;
+  font-size: 1rem;
+  cursor: pointer;
+}
+#settings-close-btn:hover { background: rgba(255, 255, 255, 0.18); }
+
+#settings-body {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+  padding: 1.4rem 1.2rem 2rem;
+  max-width: 480px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.settings-row input[type="checkbox"] {
+  width: 22px;
+  height: 22px;
+  accent-color: #2fb6ac;
+  cursor: pointer;
+}
+
+.settings-row input[type="range"] {
+  flex: 1;
+  accent-color: #2fb6ac;
+  cursor: pointer;
+}
+
+#setting-fov-value {
+  min-width: 2.4em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
+.settings-choice-group {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.settings-choice-btn {
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 999px;
+  padding: 0.4rem 0.85rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #eaf6ff;
+  background: rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+}
+.settings-choice-btn:hover { background: rgba(255, 255, 255, 0.14); }
+.settings-choice-btn.active {
+  background: #2fb6ac;
+  color: #04211e;
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.settings-swatch-group {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.settings-swatch {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--swatch);
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  cursor: pointer;
+  padding: 0;
+}
+.settings-swatch.active {
+  border-color: #ffffff;
+  box-shadow: 0 0 0 2px rgba(47, 182, 172, 0.8);
+}
+
 /* The shop: same "solid near-black, sits above everything" treatment as #loadout, one z-index
    higher since it can be opened from mode-select and needs to cover it fully. */
 #weapon-shop {
@@ -579,6 +736,11 @@ html, body {
 .weapon-card-action.buy { background: #ffd54f; color: #3a2a00; }
 .weapon-card-action.buy:hover { background: #ffdf7a; }
 .weapon-card-action.buy:disabled { background: rgba(255, 255, 255, 0.12); color: rgba(234, 246, 255, 0.4); cursor: default; }
+/* Armed by a first click, needs a second deliberate click to actually spend coins — see
+   renderWeaponShopGrid's purchase handler. Warm/orange reads as "are you sure", distinct from the
+   normal yellow buy state. */
+.weapon-card-action.buy.confirming { background: #ff7043; color: #2a0f00; }
+.weapon-card-action.buy.confirming:hover { background: #ff8a5c; }
 .weapon-card-action.owned { background: rgba(47, 182, 172, 0.25); color: #6fe0d3; cursor: default; }
 
 /* Same "solid near-black, sits above everything" treatment as #weapon-shop — shown the instant

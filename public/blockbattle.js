@@ -1564,6 +1564,95 @@ function awardCoins(amount) {
   updateCoinDisplays();
 }
 
+// ---- Settings ----
+// Persisted like coins/purchasedWeapons above — survives refreshes, no account needed. Applied
+// live in tick() (movement/FOV/recoil) and wherever the crosshair/HUD reads it, so a change takes
+// effect immediately without needing a respawn.
+const SETTINGS_KEY = 'valk-bb-settings';
+const DEFAULT_SETTINGS = {
+  autoSprint: false,
+  easySlide: false,
+  fov: 70,
+  cameraEffects: true,
+  crosshairStyle: 'static',
+  crosshairColor: '#ffffff',
+};
+function loadSettings() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY));
+    return { ...DEFAULT_SETTINGS, ...(saved || {}) };
+  } catch { return { ...DEFAULT_SETTINGS }; }
+}
+function saveSettings() {
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch {}
+}
+let settings = loadSettings();
+
+function applyCrosshairSettings() {
+  crosshair.style.setProperty('--crosshair-color', settings.crosshairColor);
+  crosshair.classList.toggle('outline', settings.crosshairStyle === 'outline');
+}
+
+const settingsPanel = document.getElementById('settings-panel');
+const settingAutoSprintEl = document.getElementById('setting-auto-sprint');
+const settingEasySlideEl = document.getElementById('setting-easy-slide');
+const settingFovEl = document.getElementById('setting-fov');
+const settingFovValueEl = document.getElementById('setting-fov-value');
+const settingCameraEffectsEl = document.getElementById('setting-camera-effects');
+
+function renderSettingsPanel() {
+  settingAutoSprintEl.checked = settings.autoSprint;
+  settingEasySlideEl.checked = settings.easySlide;
+  settingFovEl.value = settings.fov;
+  settingFovValueEl.textContent = settings.fov;
+  settingCameraEffectsEl.checked = settings.cameraEffects;
+  document.querySelectorAll('#setting-crosshair-style .settings-choice-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.style === settings.crosshairStyle);
+  });
+  document.querySelectorAll('#setting-crosshair-color .settings-swatch').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.color === settings.crosshairColor);
+  });
+}
+
+settingAutoSprintEl.addEventListener('change', () => { settings.autoSprint = settingAutoSprintEl.checked; saveSettings(); });
+settingEasySlideEl.addEventListener('change', () => { settings.easySlide = settingEasySlideEl.checked; saveSettings(); });
+settingFovEl.addEventListener('input', () => {
+  settings.fov = parseInt(settingFovEl.value, 10);
+  settingFovValueEl.textContent = settings.fov;
+  saveSettings();
+});
+settingCameraEffectsEl.addEventListener('change', () => { settings.cameraEffects = settingCameraEffectsEl.checked; saveSettings(); });
+document.querySelectorAll('#setting-crosshair-style .settings-choice-btn').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    settings.crosshairStyle = btn.dataset.style;
+    saveSettings();
+    applyCrosshairSettings();
+    renderSettingsPanel();
+  });
+});
+document.querySelectorAll('#setting-crosshair-color .settings-swatch').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    settings.crosshairColor = btn.dataset.color;
+    saveSettings();
+    applyCrosshairSettings();
+    renderSettingsPanel();
+  });
+});
+
+document.getElementById('settings-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  renderSettingsPanel();
+  settingsPanel.classList.remove('hidden');
+});
+document.getElementById('settings-close-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  settingsPanel.classList.add('hidden');
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !settingsPanel.classList.contains('hidden')) settingsPanel.classList.add('hidden');
+});
+applyCrosshairSettings();
+
 // ---- Weapon Shop UI ----
 const weaponShopOverlay = document.getElementById('weapon-shop');
 const weaponShopTabs = document.getElementById('weapon-shop-tabs');
@@ -1625,14 +1714,30 @@ function renderWeaponShopGrid() {
       action.className = 'weapon-card-action buy';
       action.textContent = `🪙 ${w.price.toLocaleString()}`;
       action.disabled = coins < w.price;
+      // Two clicks to actually spend coins: the first only arms a short confirm window (button
+      // flips to "Tap to confirm" in orange) so a stray/misclick never silently buys something —
+      // only a second, deliberate click inside that window does. Times back out to the normal buy
+      // state on its own if you change your mind or just move on.
       action.addEventListener('click', () => {
         if (coins < w.price) return;
-        coins -= w.price;
-        saveCoins(coins);
-        purchasedWeapons.add(w.id);
-        savePurchased(purchasedWeapons);
-        updateCoinDisplays();
-        renderWeaponShopGrid();
+        if (action.dataset.confirm === '1') {
+          coins -= w.price;
+          saveCoins(coins);
+          purchasedWeapons.add(w.id);
+          savePurchased(purchasedWeapons);
+          updateCoinDisplays();
+          renderWeaponShopGrid();
+          return;
+        }
+        action.dataset.confirm = '1';
+        action.textContent = 'Tap to confirm';
+        action.classList.add('confirming');
+        clearTimeout(action._confirmTimer);
+        action._confirmTimer = setTimeout(() => {
+          action.dataset.confirm = '0';
+          action.textContent = `🪙 ${w.price.toLocaleString()}`;
+          action.classList.remove('confirming');
+        }, 2500);
       });
     }
 
@@ -1963,6 +2068,35 @@ function equipGun(type) {
   camera.add(gun);
 }
 equipGun('glock');
+
+// ---- First-person slide legs ----
+// The player has no first-person body at all normally (the camera IS the player's head, per the
+// "First person: the player has no mesh" note above) — a full always-visible body would be a much
+// bigger undertaking (arms/legs tracked every frame, matching every stance). Sliding is the one
+// moment it's worth the trouble: two blocky legs, camera-attached exactly like the gun viewmodel,
+// that appear only during a slide in a kicked-out baseball-slide pose, then vanish again.
+const slideLegs = new THREE.Group();
+const slideLegLeft = new THREE.Group();
+const slideLegRight = new THREE.Group();
+{
+  const pantsMat = new THREE.MeshLambertMaterial({ color: 0x2b3a4a });
+  const shoeMat = new THREE.MeshLambertMaterial({ color: 0x1c1f22 });
+  function buildLeg(pivot) {
+    const thigh = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.5, 0.15), pantsMat);
+    thigh.position.set(0, -0.25, 0); // hangs down from the hip pivot, so rotating the pivot kicks the whole leg
+    pivot.add(thigh);
+    const shoe = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.11, 0.24), shoeMat);
+    shoe.position.set(0, -0.5, 0.07);
+    pivot.add(shoe);
+  }
+  buildLeg(slideLegLeft);
+  buildLeg(slideLegRight);
+  slideLegLeft.position.set(-0.13, -0.4, -0.12);
+  slideLegRight.position.set(0.13, -0.4, -0.12);
+  slideLegs.add(slideLegLeft, slideLegRight);
+  slideLegs.visible = false;
+  camera.add(slideLegs);
+}
 
 // Shared by tryUpgrade() (the U-key ladder climb) and trySelectWeapon() (the 1/2/3 quick-swap
 // hotkeys, and the loadout picker's own tile clicks) — every path that puts a specific ladder
@@ -3621,6 +3755,11 @@ function tick(now) {
     if (keys.has('left')) strafe -= 1;
   }
 
+  // Settings' Auto Sprint treats sprint as always-held (the physical Shift key still works too,
+  // it's just redundant); computed once here so both the speed calc below and the slide-trigger
+  // gating further down agree on whether "sprinting" is currently true.
+  const sprintActive = settings.autoSprint || keys.has('sprint');
+
   // Horizontal velocity: a slide owns it completely; otherwise it's input
   // rotated by where you're looking, scaled by the current stance.
   let vx = 0;
@@ -3639,7 +3778,7 @@ function tick(now) {
     const sinY = Math.sin(yaw);
     const cosY = Math.cos(yaw);
     const speed = keys.has('crouch') ? CROUCH_SPEED
-      : keys.has('sprint') ? SPRINT_SPEED
+      : sprintActive ? SPRINT_SPEED
       : WALK_SPEED;
     vx = (-sinY * f + cosY * s) * speed;
     vz = (-cosY * f - sinY * s) * speed;
@@ -3651,10 +3790,14 @@ function tick(now) {
     vz = airMomZ + vz * 0.25;
   }
 
-  // A fresh Ctrl tap while sprinting on the ground converts the run into a slide.
+  // A fresh Ctrl tap while sprinting on the ground converts the run into a slide. Settings' Easy
+  // Slide drops the "must be sprinting" requirement entirely — any crouch-tap while moving at
+  // walk speed or faster slides, matching Auto Sprint/Easy Slide's "seamless single-taps" pitch.
   if (wantSlide) {
     wantSlide = false;
-    if (!dead && !sliding && onGround && keys.has('sprint') && (vx !== 0 || vz !== 0)) {
+    const movingFast = (vx !== 0 || vz !== 0) && Math.hypot(vx, vz) >= WALK_SPEED - 0.01;
+    const slideAllowed = sprintActive || (settings.easySlide && movingFast);
+    if (!dead && !sliding && onGround && slideAllowed && movingFast) {
       sliding = true;
       slideT = 0;
       const inv = 1 / Math.hypot(vx, vz);
@@ -4112,10 +4255,13 @@ function tick(now) {
     gun.position.y = -0.18 + Math.abs(Math.cos(bobPhase)) * bobAmp * 0.8;
   }
 
-  // Gun recoil eases back; muzzle flash is a couple frames long.
+  // Gun recoil eases back; muzzle flash is a couple frames long. Settings' Camera Zoom Effects
+  // toggle (RIVALS' "screen-shake and heavy weapon-recoil animations" switch) suppresses the
+  // visual kick specifically — shots still fire and hit exactly the same either way, gunKick
+  // still decays normally underneath so nothing else that reads it (reload dip below) breaks.
   gunKick *= Math.exp(-12 * dt);
-  gun.position.z = GUN_Z + gunKick * 0.07;
-  gun.rotation.x = gunKick * 0.18;
+  gun.position.z = GUN_Z + (settings.cameraEffects ? gunKick * 0.07 : 0);
+  gun.rotation.x = settings.cameraEffects ? gunKick * 0.18 : 0;
   if (muzzleT > 0) {
     muzzleT -= dt;
     gun.userData.flash.intensity = Math.max(0, muzzleT / 0.05) * 2.2;
@@ -4185,6 +4331,21 @@ function tick(now) {
   reloadFill.style.background = barColor;
 
   // Stance drives eye height; both ease so crouching/standing feels smooth.
+  // Slide legs: kick out fast at the start of the slide (one leg extended forward, the other
+  // tucked under) and hold that pose for the slide's duration, matching slideT's own 0..SLIDE_TIME
+  // range so the legs stay in sync with the slide's actual speed decay above. Hidden in the online
+  // lobby's third-person view (onlineActive && !dueling) — that camera already shows the real
+  // local avatar body (see updateLocalAvatar/ensureLocalAvatar), so the first-person legs would be
+  // both redundant and, being camera-attached, visibly wrong from a third-person angle.
+  const showSlideLegs = sliding && !(onlineActive && !dueling);
+  slideLegs.visible = showSlideLegs;
+  if (showSlideLegs) {
+    const kick = Math.min(slideT / 0.15, 1); // quick kick-out, not an instant snap
+    slideLegLeft.rotation.x = -1.2 * kick;
+    slideLegRight.rotation.x = 0.5 * kick;
+    slideLegs.position.y = -0.03 * Math.sin(Math.min(slideT / SLIDE_TIME, 1) * Math.PI); // a small settle-and-lift bob
+  }
+
   const eyeTarget = sliding ? EYE_SLIDE : keys.has('crouch') ? EYE_CROUCH : EYE_STAND;
   eye += (eyeTarget - eye) * (1 - Math.exp(-14 * dt));
   if (onlineActive) {
@@ -4213,11 +4374,12 @@ function tick(now) {
   }
 
   // A touch of extra FOV while sprinting/sliding/slide-jumping sells the speed.
-  // A scoped sniper zooms the whole view 40% in (FOV 70 → 42) and takes over
-  // from the sprint/slide FOV boost while it's held.
+  // A scoped sniper zooms the whole view 40% in and takes over from the sprint/slide FOV boost
+  // while it's held. Both figures scale off the Settings FOV base (default 70) instead of a
+  // hardcoded value, so the slider genuinely changes the whole game's field of view.
   const zoomed = scopedNow();
-  const fovTarget = zoomed ? 70 * SCOPE_ZOOM
-    : (sliding || hasAirMomentum || (keys.has('sprint') && (fwd !== 0 || strafe !== 0))) ? 78 : 70;
+  const fovTarget = zoomed ? settings.fov * SCOPE_ZOOM
+    : (sliding || hasAirMomentum || (sprintActive && (fwd !== 0 || strafe !== 0))) ? settings.fov + 8 : settings.fov;
   if (Math.abs(camera.fov - fovTarget) > 0.05) {
     camera.fov += (fovTarget - camera.fov) * (1 - Math.exp(-8 * dt));
     camera.updateProjectionMatrix();

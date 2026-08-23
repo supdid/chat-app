@@ -49,9 +49,54 @@
       <button class="mode-btn" type="button" data-mode="fs">⚔️ FS<span>4 enemies, back 5 seconds after they fall</span></button>
       <button class="mode-btn" type="button" id="online-play-btn">🌐 Online Play<span>Free-roam lobby — no fighting until you challenge someone</span></button>
     </div>
+    <div id="mode-select-shards">💎 Jump Shards: <span id="shard-count">0</span>/9</div>
     <div id="mode-select-footer">
       <div id="mode-select-coins">🪙 <span class="bb-coin-count">0</span></div>
       <button id="view-weapons-btn" type="button">🔫 View Weapons</button>
+      <button id="settings-btn" type="button">⚙️ Settings</button>
+    </div>
+  </div>
+
+  <div id="settings-panel" class="hidden">
+    <div id="settings-header">
+      <div id="settings-title">Settings</div>
+      <button id="settings-close-btn" type="button">✕</button>
+    </div>
+    <div id="settings-body">
+      <label class="settings-row">
+        <span>Auto Sprint</span>
+        <input type="checkbox" id="setting-auto-sprint">
+      </label>
+      <label class="settings-row">
+        <span>Easy Slide</span>
+        <input type="checkbox" id="setting-easy-slide">
+      </label>
+      <div class="settings-row">
+        <span>Field of View</span>
+        <input type="range" id="setting-fov" min="60" max="110" step="1">
+        <span id="setting-fov-value">70</span>
+      </div>
+      <label class="settings-row">
+        <span>Camera Zoom Effects</span>
+        <input type="checkbox" id="setting-camera-effects">
+      </label>
+      <div class="settings-row">
+        <span>Crosshair Style</span>
+        <div id="setting-crosshair-style" class="settings-choice-group">
+          <button type="button" class="settings-choice-btn" data-style="static">Static</button>
+          <button type="button" class="settings-choice-btn" data-style="outline">Outline</button>
+        </div>
+      </div>
+      <div class="settings-row">
+        <span>Crosshair Color</span>
+        <div id="setting-crosshair-color" class="settings-swatch-group">
+          <button type="button" class="settings-swatch" data-color="#ffffff" style="--swatch:#ffffff"></button>
+          <button type="button" class="settings-swatch" data-color="#39ff6a" style="--swatch:#39ff6a"></button>
+          <button type="button" class="settings-swatch" data-color="#ff33e6" style="--swatch:#ff33e6"></button>
+          <button type="button" class="settings-swatch" data-color="#ff4b4b" style="--swatch:#ff4b4b"></button>
+          <button type="button" class="settings-swatch" data-color="#2fd8ff" style="--swatch:#2fd8ff"></button>
+        </div>
+      </div>
     </div>
   </div>
 
