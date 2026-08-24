@@ -693,6 +693,97 @@ function buildOffice() {
 }
 buildOffice();
 
+// ---- Hidden collectibles: Jump Shards ----
+// 9 findable shards — 5 around the always-on outdoor arena (reachable in Wave/FS), 4 around the
+// online lobby's office (reachable free-roaming before/after a duel). Purely client-side and
+// cosmetic, same "no account needed" localStorage pattern as coins/purchases above — collection
+// doesn't need the server involved at all.
+const SHARD_KEY = 'valk-bb-shards';
+const SHARD_REWARD_KEY = 'valk-bb-shards-reward-claimed';
+const SHARD_REWARD_COINS = 1500;
+function loadShards() {
+  try { return new Set(JSON.parse(localStorage.getItem(SHARD_KEY)) || []); } catch { return new Set(); }
+}
+function saveShards(set) {
+  try { localStorage.setItem(SHARD_KEY, JSON.stringify([...set])); } catch {}
+}
+let collectedShards = loadShards();
+const shardCountEl = document.getElementById('shard-count');
+function updateShardHud() {
+  if (shardCountEl) shardCountEl.textContent = collectedShards.size;
+}
+updateShardHud();
+
+// Arena spots sit just inside the perimeter walls (HALF_MAP - 0.6), outside STRUCTURE_RANGE (10)
+// so the randomized cover towers almost never spawn on top of one. Office spots reuse buildOffice's
+// own landmarks (the 4 corner planters, the break table) as easy-to-describe reference points.
+const SHARD_DEFS = [
+  { id: 'arena-1', area: 'arena', x: HALF_MAP - 0.6, y: 1.2, z: HALF_MAP - 0.6 },
+  { id: 'arena-2', area: 'arena', x: -(HALF_MAP - 0.6), y: 1.2, z: HALF_MAP - 0.6 },
+  { id: 'arena-3', area: 'arena', x: HALF_MAP - 0.6, y: 1.2, z: -(HALF_MAP - 0.6) },
+  { id: 'arena-4', area: 'arena', x: -(HALF_MAP - 0.6), y: 1.2, z: -(HALF_MAP - 0.6) },
+  { id: 'arena-5', area: 'arena', x: 0, y: 2.2, z: HALF_MAP - 0.6 },
+  { id: 'office-1', area: 'office', x: -10, y: 1.7, z: -10 },
+  { id: 'office-2', area: 'office', x: 10, y: 1.7, z: -10 },
+  { id: 'office-3', area: 'office', x: -10, y: 1.7, z: 10 },
+  { id: 'office-4', area: 'office', x: 0, y: 0.9, z: 9.5 },
+];
+const shardGeo = new THREE.IcosahedronGeometry(0.22, 0);
+const shardMat = new THREE.MeshLambertMaterial({ color: 0x6fe0ff, emissive: 0x1a6a80 });
+const activeShards = []; // { def, mesh } — only the not-yet-collected ones actually get built
+for (const def of SHARD_DEFS) {
+  if (collectedShards.has(def.id)) continue;
+  const mesh = new THREE.Mesh(shardGeo, shardMat.clone());
+  mesh.position.set(def.x, def.y, def.z);
+  (def.area === 'arena' ? arenaGroup : officeGroup).add(mesh);
+  activeShards.push({ def, mesh });
+}
+
+// Awards the collect-all-9 bonus exactly once, whichever shard happens to complete the set.
+function checkShardReward() {
+  if (collectedShards.size < SHARD_DEFS.length) return;
+  try { if (localStorage.getItem(SHARD_REWARD_KEY)) return; } catch { return; }
+  try { localStorage.setItem(SHARD_REWARD_KEY, '1'); } catch { return; }
+  awardCoins(SHARD_REWARD_COINS);
+  showWaveBanner(`💎 All 9 Jump Shards found! +${SHARD_REWARD_COINS} 🪙`);
+}
+
+function collectShard(entry) {
+  const idx = activeShards.indexOf(entry);
+  if (idx === -1) return;
+  activeShards.splice(idx, 1);
+  entry.mesh.parent.remove(entry.mesh);
+  entry.mesh.material.dispose();
+  collectedShards.add(entry.def.id);
+  saveShards(collectedShards);
+  updateShardHud();
+  sfxPickup();
+  showWaveBanner(`💎 Jump Shard ${collectedShards.size}/${SHARD_DEFS.length}`);
+  checkShardReward();
+}
+
+// Proximity check, called every unpaused frame from tick() below — mirrors the health-pickup
+// radius check, just gated by area: arena shards only matter in Wave/FS (the only modes that use
+// the outdoor arena), office ones only while free-roaming the online lobby (not mid-duel, same as
+// the plate-detection gating already used for bb-plate-enter/leave).
+function updateShardPickups() {
+  if (!activeShards.length || dead) return;
+  const inArena = mode === 'wave' || mode === 'fs';
+  const inOffice = onlineActive && !dueling;
+  if (!inArena && !inOffice) return;
+  // `player.y` is feet height (jump apex only reaches ~JUMP_HEIGHT, 1.15) — the shards float at
+  // head height or above, so the vertical check uses the player's current eye/camera height
+  // instead, same reference tick() already tracks for camera placement. Standing under one is
+  // enough; jumping helps reach the higher ones, but isn't required to be frame-perfect about it.
+  const py = player.y + eye;
+  for (let i = activeShards.length - 1; i >= 0; i--) {
+    const entry = activeShards[i];
+    const activeHere = entry.def.area === 'arena' ? inArena : inOffice;
+    if (!activeHere) continue;
+    if (Math.hypot(player.x - entry.def.x, py - entry.def.y, player.z - entry.def.z) < 0.7) collectShard(entry);
+  }
+}
+
 // ---- Block Battle NvN match stations ----
 // Mirrors server.js's BB_STATIONS exactly — four match pads along the office's open center aisle,
 // each aligned with one of buildOffice()'s own cubicle columns so it visually reads as "belonging"
@@ -2354,8 +2445,8 @@ function lineOfSightClear(x0, y0, z0, x1, y1, z1) {
 // ---- Modes ----
 // The mode screen shows at load, and again via M from the death screen.
 // Wave Challenge is the escalating-waves game; FS keeps 4 enemies on the field
-// forever, each back 5 seconds after it drops; Online Play is a placeholder
-// until the 1v1-through-Valk-invites feature exists.
+// forever, each back 5 seconds after it drops; Online Play is its own separate
+// flow (startOnlinePlay below) — free-roam lobby, duels, and NvN matches.
 let mode = null; // 'wave' | 'fs' — null while the mode screen is up
 const modeSelect = document.getElementById('mode-select');
 
@@ -4117,6 +4208,15 @@ function tick(now) {
     nextWaveT -= dt;
     if (nextWaveT <= 0) startWave();
   }
+
+  // Jump Shards spin and pulse like the health packs below, just cyan instead of green and
+  // stationary (no bob) so they read as landmarks, not consumables you might mistake for health.
+  for (const entry of activeShards) {
+    entry.mesh.rotation.y += 1.6 * dt;
+    entry.mesh.rotation.x += 0.9 * dt;
+    entry.mesh.material.emissiveIntensity = 0.9 + Math.sin(now / 220) * 0.5;
+  }
+  updateShardPickups();
 
   // Health packs spin, bob, blink near the end, and heal on touch. The shared
   // material's emissive pulses so every pack breathes with a soft green glow.
