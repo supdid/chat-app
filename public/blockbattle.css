@@ -1204,3 +1204,117 @@ body::after {
   z-index: 5;
   background: radial-gradient(ellipse at center, transparent 58%, rgba(15, 25, 35, 0.35) 100%);
 }
+
+/* ---- Touch controls ---- */
+/* Same layering trick as firefight.css's own touch controls: the outer container ignores pointer
+   events entirely so an empty-area touch passes straight through to the canvas underneath (for
+   look-drag), while each individual control opts back in with pointer-events:auto. Sits above the
+   HUD (10) but below every overlay (hint 20 and up) so an overlay showing naturally blocks touches
+   from reaching these controls underneath it, exactly like it already blocks mouse/keyboard input. */
+#touch-controls {
+  position: fixed;
+  inset: 0;
+  z-index: 12;
+  pointer-events: none;
+}
+
+#touch-controls.hidden {
+  display: none;
+}
+
+#touch-joystick {
+  position: absolute;
+  left: 18px;
+  bottom: 18px;
+  width: 110px;
+  height: 110px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  pointer-events: auto;
+  touch-action: none;
+}
+
+#touch-joystick-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 46px;
+  height: 46px;
+  margin: -23px 0 0 -23px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.35);
+  border: 2px solid rgba(255, 255, 255, 0.55);
+}
+
+.touch-btn {
+  position: absolute;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.12);
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  color: #eaf6ff;
+  font-size: 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  padding: 0;
+  pointer-events: auto;
+}
+
+.touch-btn:active {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+#touch-crouch { left: 18px; bottom: 140px; }
+#touch-jump { left: 96px; bottom: 140px; }
+#touch-knife { right: 18px; bottom: 190px; }
+
+#touch-fire-buttons {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  pointer-events: none; /* only its own children opt back in — same trick as the outer container */
+}
+
+#touch-fire {
+  position: static;
+  width: 76px;
+  height: 76px;
+  background: rgba(255, 90, 60, 0.3);
+  border-color: rgba(255, 90, 60, 0.6);
+}
+
+#touch-scope {
+  position: static;
+}
+
+/* Dimmed rather than hidden while the current weapon can't scope (see updateTouchScopeAvailability
+   in blockbattle.js) — same "don't jump the layout around on every weapon swap" reasoning as
+   firefight.css's #touch-aim.unavailable. */
+#touch-scope.unavailable {
+  opacity: 0.35;
+}
+
+#death-mode-btn {
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 999px;
+  padding: 0.5rem 1.1rem;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #eaf6ff;
+  background: rgba(255, 255, 255, 0.1);
+  cursor: pointer;
+}
+
+#death-mode-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}

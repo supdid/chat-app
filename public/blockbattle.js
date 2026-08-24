@@ -1,5 +1,12 @@
 'use strict';
 
+// Same detection firefight.js already uses for its own touch controls — the game otherwise relies
+// entirely on pointer lock for mouse-look, which real touchscreens don't reliably grant at all, so
+// without this the "Click to play" screen simply never unpauses on a phone.
+const isTouchDevice = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+let touchMoveF = 0; // analog -1..1, driven by the on-screen joystick — see the touch-controls block below
+let touchMoveR = 0;
+
 // Opened straight from a chat room's game menu (index.html's updateGameLinks, same as every
 // other minigame), this carries ?room=&name= along — if present, Online Play joins THAT room's
 // own Block Battle lobby instead of the public one, so friends who click in from the same chat
@@ -196,6 +203,21 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 // several call sites: the initial "Click to play", the death/respawn loadout picker, and the
 // mid-round level-up loadout picker all grab the lock again in quick succession).
 function requestPointerLockSafe() {
+  // Touch has no pointer to lock at all (and real touchscreens don't reliably grant the API
+  // regardless) — every call site here just wants "make sure the game is actually running", which
+  // for touch means directly unpausing instead. Mirrors the hint's own touch branch above: hide
+  // the hint if it's still showing, and credit paused time back to the shot/reload timers exactly
+  // like a real pointerlockchange resume would.
+  if (isTouchDevice) {
+    if (!hint.classList.contains('hidden')) hint.classList.add('hidden');
+    if (paused) {
+      const pausedFor = performance.now() - pausedAt;
+      nextShotAt += pausedFor;
+      reloadEndAt += pausedFor;
+      paused = false;
+    }
+    return;
+  }
   const result = canvas.requestPointerLock();
   if (result && result.catch) result.catch(() => {});
 }
@@ -1539,6 +1561,14 @@ let pausedAt = performance.now(); // when the current pause began, to credit the
 const healthFill = document.getElementById('health-fill');
 const damageFlash = document.getElementById('damage-flash');
 const deathOverlay = document.getElementById('death');
+// A tappable equivalent of the "M to change mode" text next to it — that hint was keyboard-only,
+// which left touch players with no way back to mode-select after dying short of reloading the
+// page. stopPropagation matters here: #death has its own document-level click listener (further
+// down) that respawns on ANY click inside it, so without this a tap on the button would fire both.
+document.getElementById('death-mode-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  backToModeSelect();
+});
 const killCounter = document.getElementById('kill-counter');
 const weaponName = document.getElementById('weapon-name');
 const reloadFill = document.getElementById('reload-fill');
@@ -2497,6 +2527,16 @@ function backToModeSelect() {
   modeSelect.classList.remove('hidden');
   updateWaveHud();
   if (document.pointerLockElement) document.exitPointerLock(); // free the cursor for the buttons
+  // On desktop, exitPointerLock() above re-pauses via the pointerlockchange listener. Touch never
+  // engages pointer lock at all (see requestPointerLockSafe's touch branch), so that path never
+  // fires here — without an explicit pause, tick() would keep running full bot AI/physics behind
+  // the now-covering mode-select screen instead of freezing like the paused branch is meant to.
+  paused = true;
+  keys.clear();
+  mouseHeld = false;
+  scoped = false;
+  touchMoveF = 0;
+  touchMoveR = 0;
 }
 
 // ---- Waves ----
@@ -3706,7 +3746,7 @@ window.addEventListener('blur', () => keys.clear());
 const hint = document.getElementById('hint');
 hint.addEventListener('click', () => {
   ensureAudio(); // audio can only start on a user gesture — this is the gesture
-  requestPointerLockSafe();
+  requestPointerLockSafe(); // no-ops into a direct unpause on touch — see its own touch branch above
 });
 // The browser eats Esc while the pointer is locked (Esc *is* how you exit the
 // lock), so pause/resume hangs off pointerlockchange instead of a keydown.
@@ -3756,6 +3796,127 @@ document.addEventListener('mouseup', (e) => {
 });
 document.addEventListener('contextmenu', (e) => e.preventDefault()); // right-click is the scope, not a menu
 window.addEventListener('blur', () => { mouseHeld = false; scoped = false; });
+
+// ---- Touch controls ----
+// Adapted from firefight.js's own touch scheme (same virtual-joystick + drag-to-look + button
+// pattern, already proven live for another minigame in this app): a joystick for movement, a
+// drag-anywhere-on-canvas look, and dedicated buttons standing in for the mouse buttons/keys the
+// desktop listeners above use. Entirely additive — none of the mouse/keyboard code above changes,
+// this just feeds the same shared state (touchMoveF/R, yaw/pitch, mouseHeld, scoped, keys,
+// wantJump/wantSlide) from touch events instead when isTouchDevice.
+const touchControlsEl = document.getElementById('touch-controls');
+const touchScopeBtn = document.getElementById('touch-scope'); // referenced from tick() below too, so declared outside the isTouchDevice block
+if (isTouchDevice) {
+  touchControlsEl.classList.remove('hidden');
+  document.getElementById('hint-controls').innerHTML =
+    'Move: left joystick &nbsp;&middot;&nbsp; Look: drag anywhere on screen<br>' +
+    'Fire: 🔫 &nbsp;&middot;&nbsp; Scope: hold 🎯 (snipers only) &nbsp;&middot;&nbsp; Jump: ⤒<br>' +
+    'Crouch: hold ⬇️ &nbsp;&middot;&nbsp; Slide: tap ⬇️ while moving &nbsp;&middot;&nbsp; Knife: 🥊 toggles<br>' +
+    'Upgrade/Save buttons: tap directly &nbsp;&middot;&nbsp; After dying: 🏠 Change Mode';
+
+  const joystickBase = document.getElementById('touch-joystick');
+  const joystickKnob = document.getElementById('touch-joystick-knob');
+  const JOYSTICK_RADIUS = 45;
+  let joystickTouchId = null;
+  function updateJoystick(t) {
+    const rect = joystickBase.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+    let dx = t.clientX - cx, dy = t.clientY - cy;
+    const dist = Math.hypot(dx, dy);
+    if (dist > JOYSTICK_RADIUS) { dx = (dx / dist) * JOYSTICK_RADIUS; dy = (dy / dist) * JOYSTICK_RADIUS; }
+    joystickKnob.style.transform = `translate(${dx}px, ${dy}px)`;
+    touchMoveR = dx / JOYSTICK_RADIUS;
+    touchMoveF = -dy / JOYSTICK_RADIUS;
+  }
+  function resetJoystick() {
+    joystickTouchId = null;
+    touchMoveF = 0; touchMoveR = 0;
+    joystickKnob.style.transform = 'translate(0px, 0px)';
+  }
+  joystickBase.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    if (joystickTouchId !== null) return;
+    const t = e.changedTouches[0];
+    joystickTouchId = t.identifier;
+    updateJoystick(t);
+  }, { passive: false });
+  joystickBase.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    for (const t of e.changedTouches) if (t.identifier === joystickTouchId) updateJoystick(t);
+  }, { passive: false });
+  window.addEventListener('touchend', (e) => { for (const t of e.changedTouches) if (t.identifier === joystickTouchId) resetJoystick(); });
+  window.addEventListener('touchcancel', (e) => { for (const t of e.changedTouches) if (t.identifier === joystickTouchId) resetJoystick(); });
+
+  // Look: drag anywhere on the canvas that isn't the joystick/a button — those are separate,
+  // higher-stacked elements with pointer-events:auto, so a touch starting on one of them never
+  // reaches this listener at all (its target is that element, not the canvas).
+  const TOUCH_LOOK_SENS = 0.0055;
+  let lookTouchId = null, lastLookX = 0, lastLookY = 0;
+  canvas.addEventListener('touchstart', (e) => {
+    if (paused || dead || lookTouchId !== null) return;
+    const t = e.changedTouches[0];
+    lookTouchId = t.identifier;
+    lastLookX = t.clientX; lastLookY = t.clientY;
+  }, { passive: false });
+  canvas.addEventListener('touchmove', (e) => {
+    for (const t of e.changedTouches) {
+      if (t.identifier !== lookTouchId) continue;
+      e.preventDefault();
+      const dx = t.clientX - lastLookX, dy = t.clientY - lastLookY;
+      lastLookX = t.clientX; lastLookY = t.clientY;
+      const sens = TOUCH_LOOK_SENS * (scopedNow() ? SCOPE_ZOOM : 1); // finer aim under the scope, same as mousemove
+      yaw -= dx * sens;
+      pitch = Math.max(-1.45, Math.min(1.45, pitch - dy * sens));
+    }
+  }, { passive: false });
+  function releaseLookTouch(e) { for (const t of e.changedTouches) if (t.identifier === lookTouchId) lookTouchId = null; }
+  canvas.addEventListener('touchend', releaseLookTouch);
+  canvas.addEventListener('touchcancel', releaseLookTouch);
+
+  const touchFireBtn = document.getElementById('touch-fire');
+  touchFireBtn.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    if (dead || paused) return;
+    if (onlineActive && !dueling) return; // lobby is free-roam only, same gate mousedown uses
+    mouseHeld = true; // automatics keep firing from the main loop while held, same as desktop
+    tryFire(performance.now());
+  }, { passive: false });
+  touchFireBtn.addEventListener('touchend', () => { mouseHeld = false; });
+  touchFireBtn.addEventListener('touchcancel', () => { mouseHeld = false; });
+
+  touchScopeBtn.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    if (dead || paused) return;
+    if (onlineActive && !dueling) return; // lobby is free-roam only, same gate mousedown uses for the right-click scope
+    scoped = true;
+  }, { passive: false });
+  touchScopeBtn.addEventListener('touchend', () => { scoped = false; });
+  touchScopeBtn.addEventListener('touchcancel', () => { scoped = false; });
+
+  document.getElementById('touch-knife').addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    if (!dead && !paused) toggleKnife();
+  }, { passive: false });
+
+  const touchJumpBtn = document.getElementById('touch-jump');
+  touchJumpBtn.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    if (!keys.has('jump')) wantJump = true;
+    keys.add('jump');
+  }, { passive: false });
+  touchJumpBtn.addEventListener('touchend', () => keys.delete('jump'));
+  touchJumpBtn.addEventListener('touchcancel', () => keys.delete('jump'));
+
+  const touchCrouchBtn = document.getElementById('touch-crouch');
+  touchCrouchBtn.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    if (!keys.has('crouch')) wantSlide = true; // fresh press — same "tap while moving slides" rule the C key uses
+    keys.add('crouch');
+  }, { passive: false });
+  touchCrouchBtn.addEventListener('touchend', () => keys.delete('crouch'));
+  touchCrouchBtn.addEventListener('touchcancel', () => keys.delete('crouch'));
+}
+
 document.addEventListener('click', () => {
   if (!dead) return;
   // The loadout tiles need a real, visible cursor — pointer lock only ever gives relative
@@ -3840,16 +4001,26 @@ function tick(now) {
   let fwd = 0;
   let strafe = 0;
   if (!dead) {
-    if (keys.has('forward')) fwd += 1;
-    if (keys.has('back')) fwd -= 1;
-    if (keys.has('right')) strafe += 1;
-    if (keys.has('left')) strafe -= 1;
+    if (isTouchDevice) {
+      // touchMoveF/touchMoveR are analog (-1..1), driven by the on-screen joystick below — the
+      // hypot-normalize a couple lines down turns any nonzero tilt into a full-speed direction,
+      // same "digital" feel the keyboard already has, just with an actual angle instead of 8-way.
+      fwd = touchMoveF;
+      strafe = touchMoveR;
+    } else {
+      if (keys.has('forward')) fwd += 1;
+      if (keys.has('back')) fwd -= 1;
+      if (keys.has('right')) strafe += 1;
+      if (keys.has('left')) strafe -= 1;
+    }
   }
 
   // Settings' Auto Sprint treats sprint as always-held (the physical Shift key still works too,
   // it's just redundant); computed once here so both the speed calc below and the slide-trigger
-  // gating further down agree on whether "sprinting" is currently true.
-  const sprintActive = settings.autoSprint || keys.has('sprint');
+  // gating further down agree on whether "sprinting" is currently true. Touch has no dedicated
+  // sprint button (screen space is already tight) — movement is always sprint-speed unless
+  // crouching, the same default plenty of mobile shooters use for a joystick-driven control scheme.
+  const sprintActive = settings.autoSprint || keys.has('sprint') || isTouchDevice;
 
   // Horizontal velocity: a slide owns it completely; otherwise it's input
   // rotated by where you're looking, scaled by the current stance.
@@ -4478,6 +4649,9 @@ function tick(now) {
   // while it's held. Both figures scale off the Settings FOV base (default 70) instead of a
   // hardcoded value, so the slider genuinely changes the whole game's field of view.
   const zoomed = scopedNow();
+  // Dims the touch scope button when the current weapon can't actually zoom, same "don't jump the
+  // layout around on every weapon swap" reasoning as firefight's own touch-aim dimming.
+  if (isTouchDevice) touchScopeBtn.classList.toggle('unavailable', !WEAPONS[weapon].scope);
   const fovTarget = zoomed ? settings.fov * SCOPE_ZOOM
     : (sliding || hasAirMomentum || (sprintActive && (fwd !== 0 || strafe !== 0))) ? settings.fov + 8 : settings.fov;
   if (Math.abs(camera.fov - fovTarget) > 0.05) {
