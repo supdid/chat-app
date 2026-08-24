@@ -2532,6 +2532,7 @@ function backToModeSelect() {
   // fires here — without an explicit pause, tick() would keep running full bot AI/physics behind
   // the now-covering mode-select screen instead of freezing like the paused branch is meant to.
   paused = true;
+  pausedAt = performance.now(); // both resume paths (desktop's pointerlockchange, touch's requestPointerLockSafe) credit time back against this
   keys.clear();
   mouseHeld = false;
   scoped = false;
