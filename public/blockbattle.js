@@ -73,7 +73,12 @@ const ALLY_MAX_HEALTH = 100;
 const ALLY_FIRE_INTERVAL = 1.5; // seconds between a sidekick's shots
 const ALLY_DAMAGE = 10;      // sidekick bullets, out of BOT_MAX_HEALTH
 const FS_BOTS = 4;           // FS mode: this many enemies, always
-const FS_RESPAWN_TIME = 5;   // FS mode: seconds after death before a bot comes back
+const FS_RESPAWN_TIME = 5;   // FS mode: seconds after death before a bot comes back — Juggernaut mode reuses this same timer
+const JUGGERNAUT_HEALTH = BOT_MAX_HEALTH * 6; // one boss-sized enemy instead of a crowd of normal ones
+const JUGGERNAUT_FIRE_INTERVAL = 2.2; // aggressive — it has to be, being the only threat on the field
+const VAMPIRE_HEAL = 20; // health restored per kill in Vampire mode
+const SWARM_BOTS = 8;        // Swarm mode: double FS's headcount, always
+const SWARM_HEALTH = Math.round(BOT_MAX_HEALTH * 0.6); // each one goes down faster — the danger is the crowd, not any single bot's toughness
 const PICKUP_HEAL = 25;      // health from a dropped pack
 const PICKUP_LIFE = 10;      // seconds a pack lies around before despawning
 const BULLET_DAMAGE = 25;    // bot bullets, out of MAX_HEALTH
@@ -141,6 +146,174 @@ const SHOP_ARCHETYPES = [
   { key: 'energy', label: 'Energy Weapons', icon: '⚡', basePrice: 180,
     base: { damage: 11, interval: 0.09, mag: 40, reload: 2.0, headshot: 22, auto: true },
     names: ['Photon Lance', 'Plasma Whisper', 'Ion Storm', 'Volt Reaper', 'Quantum Spike', 'Neutron Flare', 'Static Fang', 'Solar Flare', 'Voidbreaker', 'Singularity'] },
+  { key: 'crossbow', label: 'Crossbows', icon: '🏹', basePrice: 110,
+    base: { damage: 40, interval: 0.85, mag: 1, reload: 1.2, headshot: 95 },
+    names: ['Ashwood', 'Silent Sting', 'Nightbolt', 'Grim Fletch', 'Widowbolt', 'Piercer', 'Ghost Draw', 'Ravenfall', 'Soul Splitter', 'Absolution'] },
+  { key: 'minigun', label: 'Miniguns', icon: '⚙️', basePrice: 260,
+    base: { damage: 7, interval: 0.055, mag: 120, reload: 4.6, headshot: 14, auto: true },
+    names: ['Spindown', 'Windup', 'Cyclone-6', 'Meatshredder', 'Buzzsaw Prime', 'Hailstorm', 'Rampart', 'Annihilator', 'Doom Spinner', 'Total War'] },
+  { key: 'machinepistol', label: 'Machine Pistols', icon: '🔫', basePrice: 55,
+    base: { damage: 5, interval: 0.06, mag: 20, reload: 1.3, headshot: 10, auto: true },
+    names: ['Skitter', 'Twitchfire', 'Needlepoint', 'Jackrabbit', 'Whipcrack', 'Fangdart', 'Quickdraw X', 'Flurry', 'Splinter Auto', 'Chaos Theory'] },
+  { key: 'battlerifle', label: 'Battle Rifles', icon: '🔫', basePrice: 105,
+    base: { damage: 14, interval: 0.22, mag: 20, reload: 2.2, headshot: 30 },
+    names: ['Highlander', 'Bannerman', 'Trench King', 'Ironvow', 'Stalwart', 'Grenadier', 'Oathkeeper', 'Legion', 'Crownbreaker', 'Sovereign'] },
+  { key: 'railgun', label: 'Railguns', icon: '🎯', basePrice: 300,
+    base: { damage: 70, interval: 1.8, mag: 2, reload: 3.2, headshot: 130, scope: true },
+    names: ['Coilspike', 'Magnetar', 'Arcwave', 'Tempest Rail', 'Faultline', 'Ionbreaker', 'Gravewell', 'Starfall', 'Event Horizon', 'Big Bang'] },
+  { key: 'flamethrower', label: 'Flamethrowers', icon: '🔥', basePrice: 95,
+    base: { damage: 4, interval: 0.045, mag: 80, reload: 2.6, headshot: 6, auto: true },
+    names: ['Scorch', 'Cinderjet', 'Wildfire', 'Inferno-9', 'Ashmaker', 'Pyrehound', 'Blazeworks', 'Hellwick', 'Cataclysm Torch', 'Solar Wrath'] },
+  { key: 'harpoon', label: 'Harpoon Guns', icon: '🔱', basePrice: 150,
+    base: { damage: 34, interval: 0.6, mag: 3, reload: 1.6, headshot: 70 },
+    names: ['Tidebreaker', 'Deepstrike', 'Longspear', 'Impaler', 'Riptide', 'Kraken Fang', 'Whalebone', 'Abyssal Pike', 'Leviathan', 'Trident Prime'] },
+  { key: 'amr', label: 'Anti-Materiel Rifles', icon: '🎯', basePrice: 340,
+    base: { damage: 85, interval: 2.0, mag: 1, reload: 3.6, headshot: 150, scope: true },
+    names: ['Colossus', 'Continental', 'Groundbreaker', 'Longstop', 'Executioner', 'Peacebringer', 'Ultima', 'Deathwatch', 'Finality', 'Omega Point'] },
+  { key: 'grenadelauncher', label: 'Grenade Launchers', icon: '💣', basePrice: 200,
+    base: { damage: 45, interval: 1.1, mag: 4, reload: 2.6, headshot: 60, explosive: true },
+    names: ['Thumper', 'Frag Master', 'Bouncer', 'Shrapnel King', 'Concussion', 'Airburst', 'Detonator', 'Powder Keg', 'Mayhem', 'Warhead'] },
+  { key: 'bow', label: 'Compound Bows', icon: '🏹', basePrice: 130,
+    base: { damage: 30, interval: 0.7, mag: 1, reload: 0.9, headshot: 70 },
+    names: ['Swiftlimb', 'Huntmaster', 'Stormstring', 'Quickdraw Bow', 'Silent Arc', 'Windrunner', 'Falcon String', 'True Aim', 'Bullseye', 'Apex Predator'] },
+  { key: 'cannon', label: 'Cannons', icon: '💥', basePrice: 380,
+    base: { damage: 60, interval: 2.4, mag: 1, reload: 4.2, headshot: 80, explosive: true, headshotDoubleKill: true },
+    names: ['Siege Breaker', 'Bombard', 'Thunderclap Cannon', 'Wallbuster', 'Earthshaker', 'Devastation', 'Ruin', 'Cataclysmic', 'Reckoning', 'Final Word'] },
+  { key: 'throwingknife', label: 'Throwing Knives', icon: '🔪', basePrice: 65,
+    base: { damage: 18, interval: 0.35, mag: 6, reload: 1.0, headshot: 45 },
+    names: ['Silent Edge', 'Quickthrow', 'Bladestorm', 'Whisper Blade', 'Fangthrow', 'Razorwind', 'Shadowdart', 'Twin Fang', 'Vanishing Point', 'Last Whisper'] },
+  { key: 'boltaction', label: 'Bolt-Action Rifles', icon: '🎯', basePrice: 120,
+    base: { damage: 35, interval: 1.3, mag: 5, reload: 2.0, headshot: 80, scope: true },
+    names: ['Ranger', 'Marksman Classic', 'Steady Bolt', 'Timberwolf', 'Long Reach', 'Vantage', 'Clean Shot', 'Huntsman', 'Deer Slayer', 'Prairie King'] },
+  { key: 'autoshotgun', label: 'Auto Shotguns', icon: '🔫', basePrice: 145,
+    base: { damage: 20, interval: 0.28, mag: 10, reload: 2.4, headshot: 30, auto: true },
+    names: ['Streetsweeper', 'Widowmaker Auto', 'Riot Breaker', 'Full Choke', 'Buckstorm', 'Trench Auto', 'Close Quarters', 'Doorkicker', 'Room Clearer', 'Last Resort'] },
+  { key: 'sawedoff', label: 'Sawed-Off Shotguns', icon: '🔫', basePrice: 85,
+    base: { damage: 45, interval: 0.9, mag: 2, reload: 1.0, headshot: 55 },
+    names: ['Stubby', 'Alley Cat', 'Close Call', 'Point Blank', 'Backalley', 'Knockout', 'Short Fuse', 'Bulldog', 'Snub Twelve', 'Last Chance'] },
+  { key: 'akimbo', label: 'Dual Pistols', icon: '🔫', basePrice: 75,
+    base: { damage: 6, interval: 0.1, mag: 14, reload: 1.6, headshot: 14, auto: true },
+    names: ['Twin Vipers', 'Crossfire Duo', 'Double Tap', 'Twin Fangs', 'Mirror Image', 'Dead Ringer', 'Twin Strike', 'Paired Aces', 'Double Trouble', 'Twinshot'] },
+  { key: 'rocketpistol', label: 'Rocket Pistols', icon: '🚀', basePrice: 175,
+    base: { damage: 38, interval: 0.8, mag: 1, reload: 1.4, headshot: 50, explosive: true },
+    names: ['Pocket Rocket', 'Compact Nova', 'Handheld Havoc', 'Micro Missile', 'Sidearm Storm', 'Palm Cannon', 'Fist Full', 'Knuckle Buster', 'Close Encounter', 'Backup Boom'] },
+  { key: 'suppressedpistol', label: 'Suppressed Pistols', icon: '🔫', basePrice: 60,
+    base: { damage: 9, interval: 0.22, mag: 10, reload: 1.2, headshot: 22 },
+    names: ['Whisper', 'Hushpoint', 'Silent Vow', 'Quietus', 'Muffled Fang', 'Soft Step', 'Nightcaller', 'Discreet', 'Hollow Whisper', 'Silent Partner'] },
+  { key: 'plasmarifle', label: 'Plasma Rifles', icon: '⚡', basePrice: 210,
+    base: { damage: 16, interval: 0.16, mag: 24, reload: 2.1, headshot: 32, auto: true },
+    names: ['Ionclave', 'Plasma Surge', 'Arc Reactor', 'Fusion Fang', 'Meltdown', 'Photon Storm', 'Corevault', 'Radiant Arc', 'Thermal Lance', 'Plasma Dominion'] },
+  { key: 'magnum', label: 'Heavy Pistols', icon: '🔫', basePrice: 100,
+    base: { damage: 26, interval: 0.42, mag: 7, reload: 1.5, headshot: 55 },
+    names: ['Ironhand', 'Widowbreaker', 'Cannonhand', 'Anvilgrip', 'Sledgeshot', 'Bonebreaker', 'Heavyhand', 'Knockdown', 'Grand Slam', 'Sunday Punch'] },
+  { key: 'burstrifle', label: 'Burst Rifles', icon: '🔫', basePrice: 115,
+    base: { damage: 12, interval: 0.17, mag: 18, reload: 1.8, headshot: 26, auto: true },
+    names: ['Triplicate', 'Staccato', 'Three Strikes', 'Rapid Verdict', 'Volley', 'Cadence', 'Trifecta', 'Burstline', 'Echo Chamber', 'Rolling Thunder'] },
+  { key: 'reconrifle', label: 'Recon Rifles', icon: '🎯', basePrice: 155,
+    base: { damage: 18, interval: 0.5, mag: 8, reload: 1.5, headshot: 50, scope: true },
+    names: ['Scoutline', 'Pathfinder', 'Vanguard Scope', 'Tracker', 'Keen Sight', 'Forward Observer', 'Overwatch', 'Pale Rider', 'Long Shadow', 'Sentinel Eye'] },
+  { key: 'incendiary', label: 'Incendiary Launchers', icon: '🔥', basePrice: 260,
+    base: { damage: 30, interval: 1.3, mag: 3, reload: 2.6, headshot: 45, explosive: true },
+    names: ['Fire Starter', 'Scorched Earth', 'Wildburn', 'Emberlaunch', 'Napalm Kiss', 'Hellrain', 'Burnout', 'Cinderfall', 'Ashfall', 'Phoenix Round'] },
+  { key: 'carbine', label: 'Tactical Carbines', icon: '🔫', basePrice: 80,
+    base: { damage: 8, interval: 0.12, mag: 25, reload: 1.6, headshot: 16, auto: true },
+    names: ['Shortline', 'Lightbearer', 'Swiftcarbine', 'Rapid Response', 'Field Marshal', 'Quickstep', 'Agile Fang', 'Brushfire', 'Fastlock', 'Nimbus'] },
+  { key: 'coachgun', label: 'Coach Guns', icon: '🔫', basePrice: 70,
+    base: { damage: 38, interval: 0.75, mag: 2, reload: 0.9, headshot: 48 },
+    names: ['Old Reliable', 'Frontier Justice', 'Double Barrel', 'Prairie Fire', 'Homestead', 'Six Feet Under', 'Both Barrels', 'Last Stand', 'Showdown', 'High Noon'] },
+  { key: 'voidrifle', label: 'Void Rifles', icon: '⚡', basePrice: 320,
+    base: { damage: 20, interval: 0.14, mag: 28, reload: 2.3, headshot: 40, auto: true },
+    names: ['Nullpoint', 'Darkstream', 'Voidcaller', 'Entropy', 'Blackline', 'Oblivion Rifle', 'Nightfall Arc', 'Umbra', 'Eventide', 'Deadspace'] },
+  { key: 'bullpup', label: 'Bullpup Rifles', icon: '🔫', basePrice: 95,
+    base: { damage: 10, interval: 0.14, mag: 28, reload: 1.7, headshot: 20, auto: true },
+    names: ['Compactor', 'Shortbarrel', 'Urban Fang', 'Close Line', 'Tight Corner', 'Snub Rifle', 'Backpack Special', 'Alley Runner', 'Pocket Storm', 'Micro Marshal'] },
+  { key: 'teslacoil', label: 'Tesla Coils', icon: '⚡', basePrice: 240,
+    base: { damage: 24, interval: 0.6, mag: 6, reload: 1.8, headshot: 40 },
+    names: ['Sparkbite', 'Voltcage', 'Thunderclap Coil', 'Live Wire', 'Shockfront', 'Amp Surge', 'Grid Breaker', 'Static Fury', 'Coilstrike', 'High Voltage'] },
+  { key: 'marksmanpistol', label: 'Marksman Pistols', icon: '🎯', basePrice: 135,
+    base: { damage: 22, interval: 0.55, mag: 6, reload: 1.3, headshot: 65, scope: true },
+    names: ['Steady Aim', 'Precision X1', 'Deadeye Sidearm', 'Clean Break', 'True Shot', 'Quiet Precision', 'Longhand', 'Fine Point', 'Exact Change', 'Dead Certain'] },
+  { key: 'autosniper', label: 'Auto Snipers', icon: '🎯', basePrice: 280,
+    base: { damage: 30, interval: 0.22, mag: 15, reload: 2.8, headshot: 65, auto: true, scope: true },
+    names: ['Longview Auto', 'Relentless Scope', 'Perpetual Aim', 'Endless Horizon', 'Full Auto Reach', 'Continuous Fire', 'Unbroken Sight', 'Sustained Precision', 'Marathon Marksman', 'Nonstop Nightfall'] },
+  { key: 'javelin', label: 'Javelin Launchers', icon: '🚀', basePrice: 300,
+    base: { damage: 75, interval: 2.2, mag: 1, reload: 3.4, headshot: 90, explosive: true, headshotDoubleKill: true },
+    names: ['Skyward', 'Lancepoint', 'Falling Star', 'Thunderjav', 'Impact Zero', 'Vertical Strike', 'Meteor Lance', 'Groundfall', 'Direct Hit', 'Zenith Strike'] },
+  { key: 'derringer', label: 'Derringers', icon: '🔫', basePrice: 45,
+    base: { damage: 16, interval: 0.3, mag: 2, reload: 0.7, headshot: 60 },
+    names: ['Pocket Ace', 'Sleeve Gun', 'Vest Pocket', 'Concealed Truth', 'Two Shot Tony', 'Card Sharp', 'Hideaway', 'Coat Pocket', 'Final Card', 'Ace in the Hole'] },
+  { key: 'trenchgun', label: 'Trench Guns', icon: '🔫', basePrice: 110,
+    base: { damage: 30, interval: 0.55, mag: 6, reload: 1.9, headshot: 42 },
+    names: ['No Mans Land', 'Zero Hour', 'Bayonet Charge', 'Muddy Trench', 'Iron Curtain', 'Whistle Blow', 'Over the Top', 'Barbed Wire', 'Shell Shock', 'Last Company'] },
+  { key: 'railpistol', label: 'Rail Pistols', icon: '🎯', basePrice: 200,
+    base: { damage: 36, interval: 0.6, mag: 4, reload: 1.6, headshot: 80 },
+    names: ['Coilgrip', 'Magrail', 'Sparkhand', 'Currentshot', 'Static Palm', 'Ionpoint', 'Chargeback', 'Amp Fist', 'Voltgrip', 'Railstrike'] },
+  { key: 'cryorifle', label: 'Cryo Rifles', icon: '⚡', basePrice: 225,
+    base: { damage: 6, interval: 0.06, mag: 45, reload: 2.4, headshot: 12, auto: true },
+    names: ['Frostbite Auto', 'Absolute Zero', 'Cryoflux', 'Deepfreeze', 'Permafrost', 'Icebound', 'Winterlong', 'Glacial Storm', 'Coldsnap', 'Subzero Surge'] },
+  { key: 'ioncannon', label: 'Ion Cannons', icon: '⚡', basePrice: 400,
+    base: { damage: 90, interval: 2.6, mag: 2, reload: 3.8, headshot: 140, explosive: true },
+    names: ['Singularity Prime', 'Collapsar', 'Event Zero', 'Graviton', 'Dark Matter', 'Annihilation Core', 'Ion Reaper', 'Total Eclipse', 'Vacuum Strike', 'Last Light'] },
+  { key: 'grenadepistol', label: 'Grenade Pistols', icon: '💣', basePrice: 130,
+    base: { damage: 32, interval: 1.0, mag: 1, reload: 1.6, headshot: 45, explosive: true },
+    names: ['Pocket Boom', 'Sidearm Charge', 'Compact Frag', 'Quickfuse', 'Snap Detonator', 'Palm Charge', 'Micro Blast', 'Thumb Trigger', 'Short Fuse Pistol', 'One Two Boom'] },
+  { key: 'dartrifle', label: 'Dart Rifles', icon: '🎯', basePrice: 150,
+    base: { damage: 14, interval: 0.32, mag: 12, reload: 1.7, headshot: 55, auto: true },
+    names: ['Venom Line', 'Toxin Fang', 'Quickjab', 'Numbing Point', 'Paralytic', 'Slow Fade', 'Neural Dart', 'Creeping Dose', 'Pinprick', 'Last Nerve'] },
+  { key: 'slingshot', label: 'Combat Slingshots', icon: '🪨', basePrice: 25,
+    base: { damage: 10, interval: 0.5, mag: 1, reload: 0.5, headshot: 30 },
+    names: ['Stonecaster', 'Pebble Punisher', 'Ol Faithful', 'Davids Aim', 'Backyard Bruiser', 'Rubber Reckoning', 'Fling King', 'Junkyard Special', 'Bandolier Basic', 'Last Resort Sling'] },
+  { key: 'nailgun', label: 'Nail Guns', icon: '🔫', basePrice: 65,
+    base: { damage: 7, interval: 0.08, mag: 30, reload: 1.4, headshot: 14, auto: true },
+    names: ['Framer', 'Sheetrock Special', 'Construction Zone', 'Punch List', 'Toolbelt Terror', 'Hammer Time', 'Stud Finder', 'Blueprint', 'Site Foreman', 'Overtime'] },
+  { key: 'spikelauncher', label: 'Spike Launchers', icon: '🔩', basePrice: 170,
+    base: { damage: 48, interval: 1.1, mag: 1, reload: 1.5, headshot: 70 },
+    names: ['Impaler Prime', 'Barbwire', 'Thornback', 'Spikeline', 'Piercing Verdict', 'Nailbed', 'Sharpened Truth', 'Rebar Reaper', 'Skewer', 'Cold Steel'] },
+  { key: 'torpedo', label: 'Torpedo Launchers', icon: '🌊', basePrice: 350,
+    base: { damage: 80, interval: 2.4, mag: 1, reload: 3.6, headshot: 120, explosive: true },
+    names: ['Deep Strike', 'Silent Running', 'Leviathan Tube', 'Abyssal Fire', 'Undertow', 'Sea Serpent', 'Depth Charge Prime', 'Kraken Call', 'Fathom Breaker', 'Last Dive'] },
+  { key: 'boomerang', label: 'Combat Boomerangs', icon: '🪃', basePrice: 55,
+    base: { damage: 20, interval: 0.6, mag: 3, reload: 1.2, headshot: 45 },
+    names: ['Returning Verdict', 'Whirl Wind', 'Curveline', 'Boom Circuit', 'Full Circle', 'Ricochet Wing', 'Spinback', 'Homecoming', 'Arc Reader', 'Loop Strike'] },
+  { key: 'flaregun', label: 'Flare Guns', icon: '🔥', basePrice: 90,
+    base: { damage: 28, interval: 0.9, mag: 1, reload: 1.1, headshot: 50, explosive: true },
+    names: ['Signal Red', 'Distress Call', 'Beacon', 'Nightlighter', 'Emergency Flare', 'Skylight', 'Warning Shot', 'Mayday', 'Guiding Star', 'Brightburn'] },
+  { key: 'flakcannon', label: 'Flak Cannons', icon: '💥', basePrice: 210,
+    base: { damage: 22, interval: 0.5, mag: 5, reload: 2.0, headshot: 35, explosive: true },
+    names: ['Skybreaker', 'Burstfire Flak', 'Cluster Bloom', 'Airburst Prime', 'Shrapnel Storm', 'Flakstorm', 'High Angle', 'Proximity Fuse', 'Detonation Field', 'Last Salvo'] },
+  { key: 'microrocket', label: 'Micro Rocket Pods', icon: '🚀', basePrice: 260,
+    base: { damage: 18, interval: 0.35, mag: 8, reload: 2.6, headshot: 28, explosive: true, auto: true },
+    names: ['Swarm Pod', 'Hivefire', 'Volley Wrist', 'Micro Barrage', 'Cluster Wrist', 'Rapid Salvo', 'Pocket Artillery', 'Sting Pod', 'Fast Rain', 'Bee Sting Prime'] },
+  { key: 'airrifle', label: 'Air Rifles', icon: '🎯', basePrice: 50,
+    base: { damage: 15, interval: 0.4, mag: 5, reload: 1.0, headshot: 40 },
+    names: ['Quiet Breath', 'Backyard Precision', 'Tin Can Special', 'Steady Puff', 'Pellet King', 'Whisper Shot', 'Practice Round', 'Bullseye Basic', 'First Lesson', 'Plinker'] },
+  { key: 'ballista', label: 'Ballistas', icon: '🏹', basePrice: 380,
+    base: { damage: 95, interval: 2.8, mag: 1, reload: 4.0, headshot: 160 },
+    names: ['Ironbow', 'Stonepiercer', 'Gatebreaker', 'Fortress Fall', 'Titan String', 'Heavy Draw', 'Siege Bow', 'Ramrod', 'Wallsunder', 'Final Volley'] },
+  { key: 'scrapcannon', label: 'Scrap Cannons', icon: '🔧', basePrice: 100,
+    base: { damage: 25, interval: 0.7, mag: 4, reload: 1.8, headshot: 40 },
+    names: ['Scraphurl', 'Debris Storm', 'Rustcaster', 'Salvage Shot', 'Bent Metal', 'Trash Compactor', 'Landfill Launch', 'Wreckage Wave', 'Scrapstorm', 'Bolt Bucket'] },
+  { key: 'silencedrifle', label: 'Silenced Rifles', icon: '🔫', basePrice: 145,
+    base: { damage: 13, interval: 0.16, mag: 22, reload: 1.8, headshot: 26, auto: true },
+    names: ['Ghost Step', 'Hushline', 'Quiet Reach', 'Muted Fang', 'Soft Report', 'Stealth Rifle Prime', 'Whisper Rifle', 'Silent Vector', 'No Echo', 'Padded Steel'] },
+  { key: 'chainsaw', label: 'Chainsaws', icon: '🪚', basePrice: 90,
+    base: { damage: 16, interval: 0.1, mag: 60, reload: 2.2, headshot: 20, auto: true },
+    names: ['Timber Reaper', 'Rip Cord', 'Grindhouse', 'Sawtooth Fury', 'Chain Lightning', 'Bark Stripper', 'Full Throttle', 'Lumberjack Prime', 'Revline', 'Splinter Storm'] },
+  { key: 'warhammer', label: 'Warhammers', icon: '🔨', basePrice: 70,
+    base: { damage: 140, interval: 1.6, mag: 1, reload: 0.15, headshot: 210 },
+    names: ['Skullcrusher', 'Ground Pound', 'Anvil Drop', 'Wrecking Verdict', 'Bonebreaker', 'Stonewrath', 'Full Swing', 'Titan Maul', 'Last Word', 'Judgment Hammer'] },
+  { key: 'netgun', label: 'Net Guns', icon: '🕸️', basePrice: 55,
+    base: { damage: 8, interval: 0.9, mag: 3, reload: 2.0, headshot: 12 },
+    names: ['Tanglefoot', 'Snare Shot', 'Web Caster', 'Catch and Hold', 'Meshwork', 'Bind Point', 'Ropeline', 'Grid Lock', 'Trapline', 'Woven Fate'] },
+  { key: 'stungun', label: 'Stun Guns', icon: '🔌', basePrice: 45,
+    base: { damage: 10, interval: 0.5, mag: 8, reload: 1.2, headshot: 18 },
+    names: ['Jolt Prime', 'Static Shock', 'Volt Tag', 'Currentbite', 'Sparkline', 'Shockstep', 'Amp Trigger', 'Livewire', 'Chargebolt', 'Overcharge'] },
+  { key: 'spudgun', label: 'Spud Guns', icon: '🥔', basePrice: 40,
+    base: { damage: 22, interval: 1.1, mag: 1, reload: 1.6, headshot: 35 },
+    names: ['Backyard Cannon', 'Starch Blast', 'Mash Impact', 'Root Cellar Special', 'Tater Torpedo', 'Harvest Launch', 'Pressure Spud', 'Field Test', 'Grand Slam Spud', 'Final Harvest'] },
+  { key: 'gravitygun', label: 'Gravity Guns', icon: '🌀', basePrice: 260,
+    base: { damage: 55, interval: 1.3, mag: 3, reload: 2.4, headshot: 90 },
+    names: ['Singularity Prime', 'Pull Vector', 'Massdriver', 'Warp Anchor', 'Event Horizon', 'Crush Field', 'Orbit Break', 'Gravwell', 'Collapse Point', 'Final Pull'] },
 ];
 // Tier scaling applied within each archetype (tier 1 = base stats as written above): damage/mag/
 // price climb, interval/reload shrink (faster fire, faster reload) — every tier is a genuine,
@@ -790,7 +963,7 @@ function collectShard(entry) {
 // the plate-detection gating already used for bb-plate-enter/leave).
 function updateShardPickups() {
   if (!activeShards.length || dead) return;
-  const inArena = mode === 'wave' || mode === 'fs';
+  const inArena = mode === 'wave' || mode === 'fs' || mode === 'oneshot' || mode === 'headhunter' || mode === 'juggernaut' || mode === 'berserker' || mode === 'vampire' || mode === 'swarm';
   const inOffice = onlineActive && !dueling;
   if (!inArena && !inOffice) return;
   // `player.y` is feet height (jump apex only reaches ~JUMP_HEIGHT, 1.15) — the shards float at
@@ -1163,7 +1336,7 @@ const BB_MAP_KITS = {
   gym: buildGymKit,
 };
 
-// The 20 named maps voted on before each 1v1/2v2/3v3/4v4 (see bb-vote-match-map/bb-duel-map-vote/
+// The 206 named maps voted on before each 1v1/2v2/3v3/4v4 (see bb-vote-match-map/bb-duel-map-vote/
 // bb-match-map-vote) — keep the id list in sync with server.js's own BB_MAP_IDS, which validates
 // votes against it but never renders anything itself. 'office' alone is special: it's the
 // original, always-in-the-scene officeGroup built by buildOffice() above, not one of these
@@ -1172,23 +1345,209 @@ const BB_MAPS = [
   { id: 'office', name: 'Open-Plan Office', icon: '🏢' },
   { id: 'office_night', name: 'Night Shift', icon: '🌃', kit: 'office', floorTint: '#3a3f4a', ceilingTint: '#2c2f38', wallRgb: [58, 64, 78], deskColor: 0x445066, partitionColor: 0x2c333d },
   { id: 'office_alert', name: 'Red Alert Office', icon: '🚨', kit: 'office', floorTint: '#4a2f30', ceilingTint: '#3a2426', wallRgb: [120, 70, 68], deskColor: 0x8a3a3a, partitionColor: 0x662a2a },
+  { id: 'office_gold', name: 'Executive Floor', icon: '🏆', kit: 'office', floorTint: '#4a4030', ceilingTint: '#3a331f', wallRgb: [150, 130, 80], deskColor: 0xc9a840, partitionColor: 0x8a7020 },
+  { id: 'office_neon', name: 'Cyber Office', icon: '🖥️', kit: 'office', floorTint: '#221a3a', ceilingTint: '#1a1430', wallRgb: [60, 40, 110], deskColor: 0x3a2a6a, partitionColor: 0xff2ee0 },
+  { id: 'office_dawn', name: 'Sunrise Office', icon: '🌄', kit: 'office', floorTint: '#4a3f2e', ceilingTint: '#3a3122', wallRgb: [180, 150, 110], deskColor: 0xe0a050, partitionColor: 0xb87a30 },
+  { id: 'office_jungle', name: 'Office Jungle', icon: '🌿', kit: 'office', floorTint: '#2f3a2a', ceilingTint: '#243020', wallRgb: [90, 120, 80], deskColor: 0x5a7a4a, partitionColor: 0x3a5a30 },
+  { id: 'office_server', name: 'Server Room', icon: '🖧', kit: 'office', floorTint: '#1a2230', ceilingTint: '#141b26', wallRgb: [40, 60, 90], deskColor: 0x2a3a55, partitionColor: 0x1c2838 },
+  { id: 'office_panic', name: 'Panic Room', icon: '🔒', kit: 'office', floorTint: '#2a2622', ceilingTint: '#201d1a', wallRgb: [80, 75, 65], deskColor: 0x4a4238, partitionColor: 0x332e28 },
+  { id: 'office_blackout', name: 'Blackout', icon: '🌑', kit: 'office', floorTint: '#1c1c20', ceilingTint: '#141416', wallRgb: [50, 50, 55], deskColor: 0x2a2a30, partitionColor: 0x1a1a1e },
+  { id: 'office_startup', name: 'Startup Loft', icon: '🚀', kit: 'office', floorTint: '#4a3f35', ceilingTint: '#382e26', wallRgb: [140, 110, 90], deskColor: 0x8a6a4a, partitionColor: 0x5a4530 },
+  { id: 'office_legal', name: 'Legal Department', icon: '⚖️', kit: 'office', floorTint: '#3a2e22', ceilingTint: '#2c221a', wallRgb: [110, 85, 60], deskColor: 0x5a4530, partitionColor: 0x3a2c1c },
+  { id: 'office_newsroom', name: 'Newsroom', icon: '📺', kit: 'office', floorTint: '#3a3a42', ceilingTint: '#2c2c32', wallRgb: [90, 100, 130], deskColor: 0x4a5a7a, partitionColor: 0x2c3550 },
+  { id: 'office_gallery', name: 'Art Gallery Office', icon: '🖼️', kit: 'office', floorTint: '#e8e4dc', ceilingTint: '#f2efe8', wallRgb: [235, 230, 220], deskColor: 0x2a2a2a, partitionColor: 0xf5f2ec },
+  { id: 'office_callcenter', name: 'Call Center', icon: '☎️', kit: 'office', floorTint: '#2a3a4a', ceilingTint: '#1e2c38', wallRgb: [70, 100, 130], deskColor: 0x3a5a7a, partitionColor: 0x2a4560 },
+  { id: 'office_studio', name: 'Recording Studio', icon: '🎙️', kit: 'office', floorTint: '#2a1e1e', ceilingTint: '#1e1616', wallRgb: [90, 50, 50], deskColor: 0x4a2e2e, partitionColor: 0x2a1a1a },
+  { id: 'office_mailroom', name: 'Mailroom', icon: '📮', kit: 'office', floorTint: '#4a4238', ceilingTint: '#382e26', wallRgb: [130, 110, 85], deskColor: 0x6a5a45, partitionColor: 0x4a3f30 },
+  { id: 'office_missioncontrol', name: 'Mission Control', icon: '🛰️', kit: 'office', floorTint: '#1a2438', ceilingTint: '#141c2c', wallRgb: [50, 70, 110], deskColor: 0x2a3a5a, partitionColor: 0x1c2840 },
+  { id: 'office_dentist', name: 'Dentist Office', icon: '🦷', kit: 'office', floorTint: '#dce8ec', ceilingTint: '#eef4f6', wallRgb: [200, 225, 230], deskColor: 0x4a7a8a, partitionColor: 0x2f5560 },
+  { id: 'office_aquarium', name: 'Aquarium Office', icon: '🐠', kit: 'office', floorTint: '#1a3a3a', ceilingTint: '#122a2a', wallRgb: [40, 90, 90], deskColor: 0x2a5a5a, partitionColor: 0x1c4040 },
+  { id: 'office_radio', name: 'Radio Station', icon: '📻', kit: 'office', floorTint: '#3a2e1a', ceilingTint: '#2c2212', wallRgb: [110, 85, 50], deskColor: 0x6a4a2a, partitionColor: 0x4a341c },
+  { id: 'office_photostudio', name: 'Photography Studio', icon: '📷', kit: 'office', floorTint: '#2a2a2a', ceilingTint: '#1e1e1e', wallRgb: [50, 50, 55], deskColor: 0x3a3a3a, partitionColor: 0x1a1a1a },
+  { id: 'office_weather', name: 'Weather Station', icon: '🌩️', kit: 'office', floorTint: '#2a3040', ceilingTint: '#1e242e', wallRgb: [60, 80, 100], deskColor: 0x3a4a5a, partitionColor: 0x24303c },
+  { id: 'office_boardroom', name: 'Board Room', icon: '🪑', kit: 'office', floorTint: '#2a1e14', ceilingTint: '#1e160e', wallRgb: [70, 50, 35], deskColor: 0x4a3018, partitionColor: 0x2e1e10 },
+  { id: 'office_insurance', name: 'Insurance Office', icon: '📋', kit: 'office', floorTint: '#5a5648', ceilingTint: '#4a4638', wallRgb: [150, 145, 125], deskColor: 0x8a8060, partitionColor: 0x6a6248 },
+  { id: 'office_nursery', name: 'Nursery Office', icon: '🧸', kit: 'office', floorTint: '#e0d8f0', ceilingTint: '#eee8fa', wallRgb: [230, 220, 245], deskColor: 0x9a8ac9, partitionColor: 0x7a6aa9 },
+  { id: 'office_escaperoom', name: 'Escape Room Office', icon: '🔓', kit: 'office', floorTint: '#2a2438', ceilingTint: '#1e1a2c', wallRgb: [80, 60, 110], deskColor: 0x4a3a6a, partitionColor: 0x2e2450 },
+  { id: 'office_tradingfloor', name: 'Trading Floor', icon: '📈', kit: 'office', floorTint: '#2a2a30', ceilingTint: '#1e1e24', wallRgb: [60, 60, 70], deskColor: 0x3a4a3a, partitionColor: 0x2a1a1a },
+  { id: 'office_podcast', name: 'Podcast Studio', icon: '🎧', kit: 'office', floorTint: '#2a2422', ceilingTint: '#1e1a18', wallRgb: [60, 50, 45], deskColor: 0x4a3a30, partitionColor: 0x2e241c },
+  { id: 'office_lab', name: 'Research Lab', icon: '🧪', kit: 'office', floorTint: '#1a2a28', ceilingTint: '#122020', wallRgb: [50, 90, 85], deskColor: 0x2a5a52, partitionColor: 0x1c4038 },
+  { id: 'office_pharmacy', name: 'Pharmacy Office', icon: '💊', kit: 'office', floorTint: '#e8eef2', ceilingTint: '#f0f4f7', wallRgb: [210, 225, 235], deskColor: 0x3a7a9a, partitionColor: 0x2a5a70 },
+  { id: 'office_travel', name: 'Travel Agency', icon: '✈️', kit: 'office', floorTint: '#2a3a4a', ceilingTint: '#1e2c38', wallRgb: [70, 100, 130], deskColor: 0x3a6a9a, partitionColor: 0x2a4a70 },
+  { id: 'office_bank', name: 'Bank Branch Office', icon: '🏦', kit: 'office', floorTint: '#3a3626', ceilingTint: '#2c291c', wallRgb: [110, 100, 65], deskColor: 0x8a7a40, partitionColor: 0x5a5028 },
+  { id: 'office_realestate', name: 'Real Estate Office', icon: '🏠', kit: 'office', floorTint: '#3a2e26', ceilingTint: '#2c221c', wallRgb: [130, 100, 75], deskColor: 0x8a5a3a, partitionColor: 0x5a3a24 },
   { id: 'warehouse_day', name: 'Cold Storage', icon: '📦', kit: 'warehouse', floorTint: '#54555a', wallRgb: [140, 142, 148], accent: 0x8a6a3c, crateColor: 0xb98a4a, seed: 11 },
   { id: 'warehouse_dusk', name: 'Dockside Warehouse', icon: '🚚', kit: 'warehouse', floorTint: '#4a4238', wallRgb: [120, 108, 92], accent: 0x6a4a2c, crateColor: 0x9a6a38, seed: 22 },
   { id: 'warehouse_flood', name: 'Floodlit Depot', icon: '💡', kit: 'warehouse', floorTint: '#3f4448', wallRgb: [100, 112, 118], accent: 0x3c6a8a, crateColor: 0x4a8ab9, seed: 33 },
   { id: 'warehouse_frost', name: 'Frost Warehouse', icon: '❄️', kit: 'warehouse', floorTint: '#6b7680', wallRgb: [180, 190, 198], accent: 0x5a7a8a, crateColor: 0x8ab0c0, seed: 44 },
+  { id: 'warehouse_night', name: 'Midnight Depot', icon: '🌌', kit: 'warehouse', floorTint: '#26282e', wallRgb: [46, 48, 58], accent: 0x4a3a6a, crateColor: 0x6a4a9a, seed: 166 },
+  { id: 'warehouse_toxic', name: 'Toxic Spill', icon: '☣️', kit: 'warehouse', floorTint: '#3a4028', wallRgb: [90, 100, 60], accent: 0x5a7a1c, crateColor: 0x8aca2c, seed: 210 },
+  { id: 'warehouse_industrial', name: 'Rust Belt', icon: '🏭', kit: 'warehouse', floorTint: '#4a3228', wallRgb: [110, 80, 60], accent: 0x8a4a2c, crateColor: 0xb2603a, seed: 250 },
+  { id: 'warehouse_steel', name: 'Steel Works', icon: '⚡', kit: 'warehouse', floorTint: '#38424a', wallRgb: [90, 105, 120], accent: 0xff8a3c, crateColor: 0x5a7285, seed: 300 },
+  { id: 'warehouse_harvest', name: 'Harvest Depot', icon: '🌾', kit: 'warehouse', floorTint: '#5a4a2a', wallRgb: [170, 150, 90], accent: 0x8a6a2c, crateColor: 0xc9a850, seed: 350 },
+  { id: 'warehouse_scrapyard', name: 'Scrapyard', icon: '♻️', kit: 'warehouse', floorTint: '#4a4038', wallRgb: [130, 115, 95], accent: 0x6a5a3c, crateColor: 0x8a7050, seed: 400 },
+  { id: 'warehouse_auction', name: 'Auction House', icon: '🔨', kit: 'warehouse', floorTint: '#5a4a30', wallRgb: [180, 150, 100], accent: 0x8a6a2c, crateColor: 0xd9a838, seed: 450 },
+  { id: 'warehouse_container', name: 'Container Yard', icon: '🚢', kit: 'warehouse', floorTint: '#3a4048', wallRgb: [90, 110, 140], accent: 0xff6a1f, crateColor: 0x2a5a8a, seed: 500 },
+  { id: 'warehouse_wine', name: 'Wine Cellar', icon: '🍷', kit: 'warehouse', floorTint: '#3a2820', wallRgb: [90, 60, 40], accent: 0x6a2030, crateColor: 0x8a5a3a, seed: 550 },
+  { id: 'warehouse_print', name: 'Print Shop', icon: '🖨️', kit: 'warehouse', floorTint: '#38342a', wallRgb: [110, 100, 80], accent: 0x3a3a3a, crateColor: 0x6a5a45, seed: 600 },
+  { id: 'warehouse_brewery', name: 'Brewery', icon: '🍺', kit: 'warehouse', floorTint: '#3a3020', wallRgb: [110, 90, 60], accent: 0x8a6a2c, crateColor: 0xb98a3a, seed: 650 },
+  { id: 'warehouse_furniture', name: 'Furniture Store', icon: '🛋️', kit: 'warehouse', floorTint: '#5a4a3a', wallRgb: [160, 130, 100], accent: 0x8a6a4a, crateColor: 0xc9a878, seed: 700 },
+  { id: 'warehouse_distillery', name: 'Distillery', icon: '🥃', kit: 'warehouse', floorTint: '#4a3822', wallRgb: [140, 105, 60], accent: 0x6a4a1c, crateColor: 0x9a6a2c, seed: 750 },
+  { id: 'warehouse_coldchain', name: 'Cold Chain Facility', icon: '🧊', kit: 'warehouse', floorTint: '#2a3540', wallRgb: [90, 120, 150], accent: 0x3c6a9a, crateColor: 0x5a8ac9, seed: 800 },
+  { id: 'warehouse_fireworks', name: 'Fireworks Factory', icon: '🎆', kit: 'warehouse', floorTint: '#3a2838', wallRgb: [130, 90, 120], accent: 0xff4a8a, crateColor: 0xd9548a, seed: 850 },
+  { id: 'warehouse_textile', name: 'Textile Mill', icon: '🧵', kit: 'warehouse', floorTint: '#4a3a4a', wallRgb: [150, 110, 150], accent: 0x8a4a8a, crateColor: 0xc978c9, seed: 900 },
+  { id: 'warehouse_piano', name: 'Piano Factory', icon: '🎹', kit: 'warehouse', floorTint: '#3a2818', wallRgb: [110, 80, 50], accent: 0x1a1a1a, crateColor: 0x8a5a2c, seed: 950 },
+  { id: 'warehouse_candle', name: 'Candle Factory', icon: '🕯️', kit: 'warehouse', floorTint: '#4a3020', wallRgb: [140, 100, 60], accent: 0xff9a3c, crateColor: 0xd9a860, seed: 1000 },
+  { id: 'warehouse_bakery', name: 'Bakery Warehouse', icon: '🥖', kit: 'warehouse', floorTint: '#e8dcc0', wallRgb: [230, 215, 180], accent: 0x8a6a3c, crateColor: 0xd9c088, seed: 1050 },
+  { id: 'warehouse_ammodepot', name: 'Ammo Depot', icon: '🪖', kit: 'warehouse', floorTint: '#3a3a2a', wallRgb: [90, 95, 70], accent: 0x4a5a2a, crateColor: 0x5a6a3a, seed: 1100 },
+  { id: 'warehouse_papermill', name: 'Paper Mill', icon: '📜', kit: 'warehouse', floorTint: '#5a5a52', wallRgb: [180, 178, 168], accent: 0x8a8a80, crateColor: 0xd8d6c8, seed: 1150 },
+  { id: 'warehouse_chemplant', name: 'Chemical Plant', icon: '⚗️', kit: 'warehouse', floorTint: '#3a3a2a', wallRgb: [200, 180, 40], accent: 0x1a1a1a, crateColor: 0xd9c020, seed: 1200 },
+  { id: 'warehouse_tires', name: 'Tire Warehouse', icon: '🛞', kit: 'warehouse', floorTint: '#2a2a2a', wallRgb: [50, 50, 50], accent: 0x1a1a1a, crateColor: 0x3a3a3a, seed: 1250 },
+  { id: 'warehouse_cannery', name: 'Cannery', icon: '🥫', kit: 'warehouse', floorTint: '#4a4a50', wallRgb: [140, 140, 150], accent: 0x8a8a95, crateColor: 0xc0c0c8, seed: 1300 },
+  { id: 'warehouse_icecream', name: 'Ice Cream Factory', icon: '🍦', kit: 'warehouse', floorTint: '#f0d8e0', wallRgb: [250, 220, 235], accent: 0xff9ac9, crateColor: 0xffd0e5, seed: 1350 },
+  { id: 'warehouse_mattress', name: 'Mattress Warehouse', icon: '🛏️', kit: 'warehouse', floorTint: '#e8e0d0', wallRgb: [235, 228, 215], accent: 0xb0a890, crateColor: 0xd8ceb8, seed: 1400 },
+  { id: 'warehouse_spice', name: 'Spice Warehouse', icon: '🌶️', kit: 'warehouse', floorTint: '#5a2a1a', wallRgb: [150, 80, 40], accent: 0xd94a1a, crateColor: 0xe87a2a, seed: 1440 },
+  { id: 'warehouse_soap', name: 'Soap Factory', icon: '🧼', kit: 'warehouse', floorTint: '#dce8ea', wallRgb: [225, 238, 240], accent: 0x4ac9d9, crateColor: 0x8adce8, seed: 1480 },
+  { id: 'warehouse_leather', name: 'Leather Tannery', icon: '🥾', kit: 'warehouse', floorTint: '#4a3020', wallRgb: [130, 95, 60], accent: 0x8a5a30, crateColor: 0xb98a50, seed: 1520 },
+  { id: 'warehouse_cotton', name: 'Cotton Mill', icon: '🧶', kit: 'warehouse', floorTint: '#e0d8c8', wallRgb: [230, 224, 210], accent: 0xd9a838, crateColor: 0xf0e8d0, seed: 1560 },
+  { id: 'warehouse_glassworks', name: 'Glassworks', icon: '🪟', kit: 'warehouse', floorTint: '#3a4048', wallRgb: [100, 130, 150], accent: 0x8ad9f2, crateColor: 0xb8e8f5, seed: 1600 },
   { id: 'rooftop_day', name: 'Sunny Rooftop', icon: '☀️', kit: 'rooftop', floorTint: '#7a7d82', wallRgb: [170, 172, 176], wallHeight: 1.4, noCeiling: true, accent: 0x6a5648, seed: 55 },
   { id: 'rooftop_sunset', name: 'Sunset Heights', icon: '🌇', kit: 'rooftop', floorTint: '#8a6f68', wallRgb: [190, 140, 110], wallHeight: 1.4, noCeiling: true, accent: 0x8a5a48, seed: 66 },
   { id: 'rooftop_night', name: 'Neon Skyline', icon: '🌃', kit: 'rooftop', floorTint: '#33363f', wallRgb: [60, 64, 90], wallHeight: 1.4, noCeiling: true, accent: 0x4a3a6a, seed: 77 },
+  { id: 'rooftop_storm', name: 'Storm Front', icon: '⛈️', kit: 'rooftop', floorTint: '#464c52', wallRgb: [90, 96, 104], wallHeight: 1.4, noCeiling: true, accent: 0x3c4650, seed: 177 },
+  { id: 'rooftop_dawn', name: 'First Light', icon: '🌅', kit: 'rooftop', floorTint: '#8a7a8a', wallRgb: [200, 160, 170], wallHeight: 1.4, noCeiling: true, accent: 0x8a6a7a, seed: 220 },
+  { id: 'rooftop_snow', name: 'Winter Heights', icon: '🏔️', kit: 'rooftop', floorTint: '#c9d4dc', wallRgb: [220, 226, 232], wallHeight: 1.4, noCeiling: true, accent: 0x8a9aa8, seed: 260 },
+  { id: 'rooftop_helipad', name: 'Helipad Alpha', icon: '🚁', kit: 'rooftop', floorTint: '#606468', wallRgb: [200, 60, 60], wallHeight: 1.4, noCeiling: true, accent: 0x606468, seed: 310 },
+  { id: 'rooftop_penthouse', name: 'Penthouse', icon: '🏙️', kit: 'rooftop', floorTint: '#726858', wallRgb: [210, 190, 160], wallHeight: 1.4, noCeiling: true, accent: 0x8a7a5a, seed: 360 },
+  { id: 'rooftop_observatory', name: 'Observatory', icon: '🔭', kit: 'rooftop', floorTint: '#1a1e2a', wallRgb: [40, 46, 66], wallHeight: 1.4, noCeiling: true, accent: 0x2a3450, seed: 410 },
+  { id: 'rooftop_greenhouse', name: 'Greenhouse Roof', icon: '🌱', kit: 'rooftop', floorTint: '#4a5a3a', wallRgb: [140, 170, 120], wallHeight: 1.4, noCeiling: true, accent: 0x5a8a3a, seed: 460 },
+  { id: 'rooftop_solar', name: 'Solar Farm', icon: '🔆', kit: 'rooftop', floorTint: '#8a8570', wallRgb: [200, 190, 160], wallHeight: 1.4, noCeiling: true, accent: 0x1a3a6a, seed: 510 },
+  { id: 'rooftop_antenna', name: 'Antenna Farm', icon: '📡', kit: 'rooftop', floorTint: '#6a6a70', wallRgb: [150, 150, 160], wallHeight: 1.4, noCeiling: true, accent: 0x4a4a55, seed: 560 },
+  { id: 'rooftop_pool', name: 'Rooftop Pool', icon: '🏊', kit: 'rooftop', floorTint: '#7a9ab0', wallRgb: [180, 210, 220], wallHeight: 1.4, noCeiling: true, accent: 0x2a7aa0, seed: 610 },
+  { id: 'rooftop_bar', name: 'Rooftop Garden Bar', icon: '🍹', kit: 'rooftop', floorTint: '#2a2a3a', wallRgb: [70, 70, 100], wallHeight: 1.4, noCeiling: true, accent: 0xffb84a, seed: 660 },
+  { id: 'rooftop_farm', name: 'Rooftop Farm', icon: '🌽', kit: 'rooftop', floorTint: '#4a5a3a', wallRgb: [130, 150, 100], wallHeight: 1.4, noCeiling: true, accent: 0x6a8a3a, seed: 710 },
+  { id: 'rooftop_zen', name: 'Zen Rooftop', icon: '🪨', kit: 'rooftop', floorTint: '#9a9a92', wallRgb: [210, 208, 200], wallHeight: 1.4, noCeiling: true, accent: 0x7a7a70, seed: 760 },
+  { id: 'rooftop_cinema', name: 'Rooftop Cinema', icon: '🎬', kit: 'rooftop', floorTint: '#3a3540', wallRgb: [90, 80, 100], wallHeight: 1.4, noCeiling: true, accent: 0x1a1a2a, seed: 810 },
+  { id: 'rooftop_chapel', name: 'Rooftop Chapel', icon: '⛪', kit: 'rooftop', floorTint: '#6a6258', wallRgb: [180, 172, 158], wallHeight: 1.4, noCeiling: true, accent: 0x8a7a5a, seed: 860 },
+  { id: 'rooftop_vineyard', name: 'Rooftop Vineyard', icon: '🍇', kit: 'rooftop', floorTint: '#4a3a2a', wallRgb: [130, 100, 70], wallHeight: 1.4, noCeiling: true, accent: 0x6a2a4a, seed: 910 },
+  { id: 'rooftop_beehive', name: 'Beehive Rooftop', icon: '🐝', kit: 'rooftop', floorTint: '#8a6a1a', wallRgb: [200, 170, 60], wallHeight: 1.4, noCeiling: true, accent: 0x2a2a1a, seed: 960 },
+  { id: 'rooftop_icebar', name: 'Rooftop Ice Bar', icon: '❄️', kit: 'rooftop', floorTint: '#1a2a3a', wallRgb: [60, 90, 120], wallHeight: 1.4, noCeiling: true, accent: 0x3ac9ff, seed: 1010 },
+  { id: 'rooftop_playground', name: 'Rooftop Playground', icon: '🛝', kit: 'rooftop', floorTint: '#3aa8d9', wallRgb: [255, 200, 80], wallHeight: 1.4, noCeiling: true, accent: 0xff5a8a, seed: 1060 },
+  { id: 'rooftop_maze', name: 'Rooftop Maze Garden', icon: '🌿', kit: 'rooftop', floorTint: '#3a5a3a', wallRgb: [80, 140, 80], wallHeight: 1.4, noCeiling: true, accent: 0x2a4a2a, seed: 1110 },
+  { id: 'rooftop_dronepad', name: 'Rooftop Drone Pad', icon: '🛸', kit: 'rooftop', floorTint: '#3a3a40', wallRgb: [90, 90, 100], wallHeight: 1.4, noCeiling: true, accent: 0xff7a2a, seed: 1160 },
+  { id: 'rooftop_tennis', name: 'Rooftop Tennis Court', icon: '🎾', kit: 'rooftop', floorTint: '#2a6a3a', wallRgb: [220, 220, 210], wallHeight: 1.4, noCeiling: true, accent: 0xffffff, seed: 1210 },
+  { id: 'rooftop_herbgarden', name: 'Rooftop Herb Garden', icon: '🌾', kit: 'rooftop', floorTint: '#5a7a4a', wallRgb: [140, 180, 110], wallHeight: 1.4, noCeiling: true, accent: 0x3a5a2a, seed: 1260 },
+  { id: 'rooftop_firepit', name: 'Rooftop Fire Pit Lounge', icon: '🔥', kit: 'rooftop', floorTint: '#3a2a24', wallRgb: [90, 70, 60], wallHeight: 1.4, noCeiling: true, accent: 0xff6a2a, seed: 1310 },
+  { id: 'rooftop_stargazing', name: 'Rooftop Stargazing Deck', icon: '✨', kit: 'rooftop', floorTint: '#0a0a1a', wallRgb: [30, 30, 50], wallHeight: 1.4, noCeiling: true, accent: 0x4a4a8a, seed: 1360 },
+  { id: 'rooftop_solarium', name: 'Rooftop Solarium', icon: '🪴', kit: 'rooftop', floorTint: '#d9c9a0', wallRgb: [235, 220, 180], wallHeight: 1.4, noCeiling: true, accent: 0xffdc8a, seed: 1410 },
+  { id: 'rooftop_billboard', name: 'Billboard Rooftop', icon: '📰', kit: 'rooftop', floorTint: '#2a2a30', wallRgb: [70, 70, 80], wallHeight: 1.4, noCeiling: true, accent: 0xff2e5a, seed: 1450 },
+  { id: 'rooftop_windmill', name: 'Rooftop Wind Farm', icon: '🌬️', kit: 'rooftop', floorTint: '#7a8a90', wallRgb: [180, 195, 200], wallHeight: 1.4, noCeiling: true, accent: 0xeaeef0, seed: 1490 },
+  { id: 'rooftop_helipad2', name: 'Rooftop Landing Zone', icon: '🚨', kit: 'rooftop', floorTint: '#4a4a52', wallRgb: [110, 110, 120], wallHeight: 1.4, noCeiling: true, accent: 0xffcc2a, seed: 1530 },
+  { id: 'rooftop_skybridge', name: 'Sky Bridge Rooftop', icon: '🌉', kit: 'rooftop', floorTint: '#5a6a78', wallRgb: [140, 155, 168], wallHeight: 1.4, noCeiling: true, accent: 0xff8a2a, seed: 1570 },
+  { id: 'rooftop_speakeasy', name: 'Rooftop Speakeasy', icon: '🍸', kit: 'rooftop', floorTint: '#241a1a', wallRgb: [70, 50, 50], wallHeight: 1.4, noCeiling: true, accent: 0xd9a02a, seed: 1610 },
   { id: 'garage_a', name: 'Level B1 Garage', icon: '🅿️', kit: 'garage', floorTint: '#5c5f63', wallRgb: [130, 132, 138], carColor: 0xb23a3a, seed: 88 },
   { id: 'garage_b', name: 'Level B2 Garage', icon: '🚗', kit: 'garage', floorTint: '#4f5054', wallRgb: [110, 112, 118], carColor: 0x3a6ab2, seed: 99 },
   { id: 'garage_c', name: 'Valet Garage', icon: '🎫', kit: 'garage', floorTint: '#67564a', wallRgb: [150, 130, 108], carColor: 0xb2913a, seed: 111 },
   { id: 'garage_d', name: 'Impound Garage', icon: '🚔', kit: 'garage', floorTint: '#464a4f', wallRgb: [95, 100, 108], carColor: 0x4a4d52, seed: 122 },
+  { id: 'garage_neon', name: 'Neon Garage', icon: '🌆', kit: 'garage', floorTint: '#2a2b33', wallRgb: [50, 52, 66], carColor: 0x3ae0c9, seed: 188 },
+  { id: 'garage_gold', name: 'Concours Garage', icon: '🏎️', kit: 'garage', floorTint: '#403a2c', wallRgb: [110, 100, 80], carColor: 0xd9b23a, seed: 230 },
+  { id: 'garage_underground', name: 'Sub-Level 3', icon: '🔦', kit: 'garage', floorTint: '#2a3128', wallRgb: [60, 70, 60], carColor: 0x3a5a3a, seed: 270 },
+  { id: 'garage_racetrack', name: 'Pit Lane', icon: '🏁', kit: 'garage', floorTint: '#5a4a4a', wallRgb: [200, 50, 50], carColor: 0xf0f0f0, seed: 320 },
+  { id: 'garage_chopshop', name: 'Chop Shop', icon: '🔧', kit: 'garage', floorTint: '#3a2a20', wallRgb: [90, 60, 40], carColor: 0x8a2a2a, seed: 370 },
+  { id: 'garage_drift', name: 'Drift Track', icon: '🌪️', kit: 'garage', floorTint: '#4a3a2a', wallRgb: [180, 120, 40], carColor: 0xff6a1f, seed: 420 },
+  { id: 'garage_ev', name: 'EV Charging Bay', icon: '🔌', kit: 'garage', floorTint: '#2a3a4a', wallRgb: [100, 150, 200], carColor: 0x4ac9ff, seed: 470 },
+  { id: 'garage_derby', name: 'Demolition Derby', icon: '💥', kit: 'garage', floorTint: '#4a4038', wallRgb: [140, 120, 90], carColor: 0x7a2a2a, seed: 520 },
+  { id: 'garage_moto', name: 'Motorcycle Bay', icon: '🏍️', kit: 'garage', floorTint: '#2a2a2a', wallRgb: [80, 80, 85], carColor: 0x1a1a1a, seed: 570 },
+  { id: 'garage_bikemsg', name: 'Bike Messenger Depot', icon: '🚲', kit: 'garage', floorTint: '#3a4a3a', wallRgb: [100, 130, 100], carColor: 0xd9c020, seed: 620 },
+  { id: 'garage_tuner', name: 'Tuner Shop', icon: '🛠️', kit: 'garage', floorTint: '#1a1a2a', wallRgb: [60, 60, 90], carColor: 0x8a2af0, seed: 670 },
+  { id: 'garage_limo', name: 'Limo Service', icon: '🚙', kit: 'garage', floorTint: '#1a1a1a', wallRgb: [50, 50, 55], carColor: 0x0a0a0a, seed: 720 },
+  { id: 'garage_taxi', name: 'Taxi Depot', icon: '🚕', kit: 'garage', floorTint: '#3a3428', wallRgb: [90, 85, 70], carColor: 0xf2c828, seed: 770 },
+  { id: 'garage_foodtruck', name: 'Food Truck Lot', icon: '🚚', kit: 'garage', floorTint: '#5a4a2a', wallRgb: [170, 140, 90], carColor: 0xd94a2a, seed: 820 },
+  { id: 'garage_armored', name: 'Armored Truck Depot', icon: '🚛', kit: 'garage', floorTint: '#3a3a3a', wallRgb: [90, 90, 95], carColor: 0x4a5a4a, seed: 870 },
+  { id: 'garage_rv', name: 'RV Storage', icon: '🚐', kit: 'garage', floorTint: '#4a4a3a', wallRgb: [130, 130, 100], carColor: 0xe8e0c0, seed: 920 },
+  { id: 'garage_gokart', name: 'Go-Kart Track', icon: '🏎️', kit: 'garage', floorTint: '#2a2a2a', wallRgb: [255, 200, 40], carColor: 0xff3a3a, seed: 970 },
+  { id: 'garage_monstertruck', name: 'Monster Truck Rally', icon: '🚜', kit: 'garage', floorTint: '#4a3a28', wallRgb: [140, 110, 80], carColor: 0x2a8a3a, seed: 1020 },
+  { id: 'garage_hearse', name: 'Hearse Depot', icon: '⚰️', kit: 'garage', floorTint: '#1a1a1a', wallRgb: [40, 40, 40], carColor: 0x0a0a0a, seed: 1070 },
+  { id: 'garage_crusher', name: 'Scrapyard Crusher', icon: '🗜️', kit: 'garage', floorTint: '#3a3a3a', wallRgb: [100, 100, 100], carColor: 0x8a4a2a, seed: 1120 },
+  { id: 'garage_snowplow', name: 'Snowplow Depot', icon: '🛷', kit: 'garage', floorTint: '#d8dce0', wallRgb: [230, 235, 240], carColor: 0xff6a1a, seed: 1170 },
+  { id: 'garage_carmuseum', name: 'Vintage Car Museum', icon: '🏅', kit: 'garage', floorTint: '#4a3a2a', wallRgb: [160, 130, 90], carColor: 0xb2202a, seed: 1220 },
+  { id: 'garage_ambulance', name: 'Ambulance Bay', icon: '🚑', kit: 'garage', floorTint: '#e0e0e0', wallRgb: [240, 240, 240], carColor: 0xffffff, seed: 1270 },
+  { id: 'garage_drivingschool', name: 'Driving School', icon: '🚸', kit: 'garage', floorTint: '#3a3a30', wallRgb: [100, 100, 85], carColor: 0xf2e020, seed: 1320 },
+  { id: 'garage_towyard', name: 'Tow Yard', icon: '🪝', kit: 'garage', floorTint: '#4a4038', wallRgb: [130, 115, 95], carColor: 0xffaa2a, seed: 1370 },
+  { id: 'garage_schoolbus', name: 'School Bus Depot', icon: '🚌', kit: 'garage', floorTint: '#3a3428', wallRgb: [110, 100, 80], carColor: 0xf2c020, seed: 1420 },
+  { id: 'garage_carwash', name: 'Car Wash Bay', icon: '🧽', kit: 'garage', floorTint: '#2a4a5a', wallRgb: [90, 150, 170], carColor: 0x3ac9e0, seed: 1460 },
+  { id: 'garage_junkyard', name: 'Junkyard Salvage', icon: '🧲', kit: 'garage', floorTint: '#4a4238', wallRgb: [120, 108, 90], carColor: 0x8a2a2a, seed: 1500 },
+  { id: 'garage_valet2', name: 'Underground Valet', icon: '🔑', kit: 'garage', floorTint: '#2a2a30', wallRgb: [70, 70, 80], carColor: 0xd9c020, seed: 1540 },
+  { id: 'garage_dragstrip', name: 'Drag Strip Garage', icon: '🏁', kit: 'garage', floorTint: '#3a3a3a', wallRgb: [220, 40, 40], carColor: 0xf2f2f2, seed: 1580 },
+  { id: 'garage_bikeshop', name: 'Motorcycle Custom Shop', icon: '🛵', kit: 'garage', floorTint: '#2a2420', wallRgb: [80, 68, 55], carColor: 0xd94a2a, seed: 1620 },
   { id: 'plaza_day', name: 'Sunny Plaza', icon: '🌳', kit: 'plaza', floorTint: '#8a9a6a', wallRgb: [180, 176, 150], leafColor: 0x3f7d4a, seed: 133 },
   { id: 'plaza_rain', name: 'Rainy Plaza', icon: '🌧️', kit: 'plaza', floorTint: '#5c6a5e', wallRgb: [110, 116, 112], leafColor: 0x2f5a3a, seed: 144 },
   { id: 'plaza_dusk', name: 'Dusk Plaza', icon: '🌆', kit: 'plaza', floorTint: '#7a6a5a', wallRgb: [160, 128, 110], leafColor: 0x4a5a3a, seed: 155 },
+  { id: 'plaza_market', name: 'Market Square', icon: '🎪', kit: 'plaza', floorTint: '#a08a5a', wallRgb: [200, 170, 120], leafColor: 0x6a7d3f, seed: 199 },
+  { id: 'plaza_snow', name: 'Snowy Plaza', icon: '⛄', kit: 'plaza', floorTint: '#c9d4dc', wallRgb: [220, 226, 232], leafColor: 0x5c8a6a, seed: 240 },
+  { id: 'plaza_autumn', name: 'Autumn Plaza', icon: '🍂', kit: 'plaza', floorTint: '#8a6a4a', wallRgb: [190, 150, 110], leafColor: 0xb2661f, seed: 280 },
+  { id: 'plaza_festival', name: 'Festival Plaza', icon: '🎆', kit: 'plaza', floorTint: '#5a4a6a', wallRgb: [180, 140, 200], leafColor: 0x8a3f9a, seed: 330 },
+  { id: 'plaza_zen', name: 'Zen Garden', icon: '🎍', kit: 'plaza', floorTint: '#6a7a5a', wallRgb: [150, 160, 130], leafColor: 0x4a6a3a, seed: 380 },
+  { id: 'plaza_carnival', name: 'Carnival Plaza', icon: '🎠', kit: 'plaza', floorTint: '#6a4a6a', wallRgb: [220, 150, 200], leafColor: 0xc93f7a, seed: 430 },
+  { id: 'plaza_night_market', name: 'Night Market', icon: '🏮', kit: 'plaza', floorTint: '#3a3020', wallRgb: [140, 110, 70], leafColor: 0x8a6a2c, seed: 480 },
+  { id: 'plaza_icerink', name: 'Ice Rink Plaza', icon: '⛸️', kit: 'plaza', floorTint: '#c9e8f2', wallRgb: [200, 230, 240], leafColor: 0x8ab8c9, seed: 530 },
+  { id: 'plaza_botanical', name: 'Botanical Garden', icon: '🌺', kit: 'plaza', floorTint: '#4a6a3a', wallRgb: [120, 170, 110], leafColor: 0x2f8a3f, seed: 580 },
+  { id: 'plaza_skatepark', name: 'Skate Park Plaza', icon: '🛹', kit: 'plaza', floorTint: '#5a5a5a', wallRgb: [150, 80, 150], leafColor: 0x3a3a3a, seed: 630 },
+  { id: 'plaza_farmersmarket', name: 'Farmers Market', icon: '🥕', kit: 'plaza', floorTint: '#8a7a4a', wallRgb: [200, 180, 120], leafColor: 0x6a9a3f, seed: 680 },
+  { id: 'plaza_chess', name: 'Chess Park Plaza', icon: '♟️', kit: 'plaza', floorTint: '#6a6a5a', wallRgb: [160, 160, 140], leafColor: 0x4a6a3a, seed: 730 },
+  { id: 'plaza_fountain', name: 'Fountain Court', icon: '⛲', kit: 'plaza', floorTint: '#c9c4b8', wallRgb: [225, 220, 205], leafColor: 0x8a9a7a, seed: 780 },
+  { id: 'plaza_amphitheater', name: 'Amphitheater Plaza', icon: '🎭', kit: 'plaza', floorTint: '#7a7060', wallRgb: [180, 170, 150], leafColor: 0x5a7a4a, seed: 830 },
+  { id: 'plaza_cherryblossom', name: 'Cherry Blossom Plaza', icon: '🌸', kit: 'plaza', floorTint: '#e8c9d8', wallRgb: [240, 210, 225], leafColor: 0xf29ac9, seed: 880 },
+  { id: 'plaza_streetart', name: 'Street Art Plaza', icon: '🎨', kit: 'plaza', floorTint: '#3a3a3a', wallRgb: [255, 120, 50], leafColor: 0x2a9a9a, seed: 930 },
+  { id: 'plaza_lantern', name: 'Lantern Festival Plaza', icon: '🎐', kit: 'plaza', floorTint: '#4a1a1a', wallRgb: [180, 60, 60], leafColor: 0xd93a3a, seed: 980 },
+  { id: 'plaza_wedding', name: 'Wedding Plaza', icon: '💐', kit: 'plaza', floorTint: '#e8e0d8', wallRgb: [245, 240, 232], leafColor: 0xffffff, seed: 1030 },
+  { id: 'plaza_fairground', name: 'Fairground Plaza', icon: '🎡', kit: 'plaza', floorTint: '#5a3a6a', wallRgb: [220, 150, 220], leafColor: 0xf2d94a, seed: 1080 },
+  { id: 'plaza_clocktower', name: 'Clock Tower Plaza', icon: '🕰️', kit: 'plaza', floorTint: '#8a8070', wallRgb: [190, 180, 160], leafColor: 0x6a7a5a, seed: 1130 },
+  { id: 'plaza_reflectingpool', name: 'Reflecting Pool Plaza', icon: '🏛️', kit: 'plaza', floorTint: '#4a5a6a', wallRgb: [200, 210, 220], leafColor: 0x5a7a5a, seed: 1180 },
+  { id: 'plaza_warmemorial', name: 'War Memorial Plaza', icon: '🎖️', kit: 'plaza', floorTint: '#6a6a68', wallRgb: [170, 168, 160], leafColor: 0x4a5a48, seed: 1230 },
+  { id: 'plaza_splashpad', name: 'Splash Pad Plaza', icon: '💦', kit: 'plaza', floorTint: '#3a9ad9', wallRgb: [180, 220, 240], leafColor: 0x2a7ab9, seed: 1280 },
+  { id: 'plaza_duckpond', name: 'Duck Pond Plaza', icon: '🦆', kit: 'plaza', floorTint: '#5a7a6a', wallRgb: [140, 170, 150], leafColor: 0x3a6a4a, seed: 1330 },
+  { id: 'plaza_sundial', name: 'Sundial Plaza', icon: '⏳', kit: 'plaza', floorTint: '#c9a870', wallRgb: [220, 195, 150], leafColor: 0x8a9a5a, seed: 1380 },
+  { id: 'plaza_rosegarden', name: 'Rose Garden Plaza', icon: '🌹', kit: 'plaza', floorTint: '#6a3a4a', wallRgb: [180, 120, 140], leafColor: 0xd9455a, seed: 1430 },
+  { id: 'plaza_kite', name: 'Kite Festival Plaza', icon: '🪁', kit: 'plaza', floorTint: '#6a9ac9', wallRgb: [190, 220, 240], leafColor: 0xf2704a, seed: 1470 },
+  { id: 'plaza_topiary', name: 'Topiary Garden Plaza', icon: '🌳', kit: 'plaza', floorTint: '#5a7a4a', wallRgb: [150, 175, 130], leafColor: 0x2f6a2f, seed: 1510 },
+  { id: 'plaza_bandstand', name: 'Bandstand Plaza', icon: '🎺', kit: 'plaza', floorTint: '#7a6a4a', wallRgb: [190, 170, 130], leafColor: 0x5a7a3a, seed: 1550 },
+  { id: 'plaza_hedgemaze', name: 'Hedge Maze Plaza', icon: '🌲', kit: 'plaza', floorTint: '#4a5a3a', wallRgb: [110, 140, 90], leafColor: 0x2f4a2f, seed: 1590 },
+  { id: 'plaza_lighthouse', name: 'Lighthouse Plaza', icon: '🗼', kit: 'plaza', floorTint: '#7a8a9a', wallRgb: [190, 200, 210], leafColor: 0x4a6a7a, seed: 1630 },
   { id: 'gym_basketball', name: 'Hardwood Court', icon: '🏀', kit: 'gym', floorTint: '#b9793f', wallRgb: [180, 150, 110], centerpiece: 'basketball' },
   { id: 'gym_volleyball', name: 'Sand Court', icon: '🏐', kit: 'gym', floorTint: '#d8c48a', wallRgb: [190, 200, 210], centerpiece: 'volleyball' },
   { id: 'gym_boxing', name: 'Fight Night', icon: '🥊', kit: 'gym', floorTint: '#8a2a2a', wallRgb: [60, 30, 32], centerpiece: 'boxing' },
+  { id: 'gym_championship', name: 'Championship Arena', icon: '👑', kit: 'gym', floorTint: '#2f2a4a', wallRgb: [70, 60, 110], centerpiece: 'boxing' },
+  { id: 'gym_wrestling', name: 'Steel Cage', icon: '🤼', kit: 'gym', floorTint: '#3a3a3a', wallRgb: [90, 90, 90], centerpiece: 'boxing' },
+  { id: 'gym_beach', name: 'Beach Court', icon: '🏖️', kit: 'gym', floorTint: '#e8d9a0', wallRgb: [140, 200, 220], centerpiece: 'volleyball' },
+  { id: 'gym_neon', name: 'Neon Court', icon: '🌃', kit: 'gym', floorTint: '#241a3a', wallRgb: [80, 60, 140], centerpiece: 'basketball' },
+  { id: 'gym_dojo', name: 'Dojo', icon: '🥋', kit: 'gym', floorTint: '#8a6a4a', wallRgb: [180, 150, 120], centerpiece: 'boxing' },
+  { id: 'gym_fencing', name: 'Fencing Hall', icon: '🤺', kit: 'gym', floorTint: '#3a3a4a', wallRgb: [200, 200, 210], centerpiece: 'boxing' },
+  { id: 'gym_midnight', name: 'Midnight Court', icon: '🌙', kit: 'gym', floorTint: '#1a1a2e', wallRgb: [40, 40, 70], centerpiece: 'basketball' },
+  { id: 'gym_trampoline', name: 'Trampoline Park', icon: '🤸', kit: 'gym', floorTint: '#e83f7a', wallRgb: [255, 200, 80], centerpiece: 'volleyball' },
+  { id: 'gym_yoga', name: 'Yoga Studio', icon: '🧘', kit: 'gym', floorTint: '#e0d4c0', wallRgb: [230, 220, 200], centerpiece: 'volleyball' },
+  { id: 'gym_climbing', name: 'Rock Climbing Gym', icon: '🧗', kit: 'gym', floorTint: '#5a4a3a', wallRgb: [140, 120, 100], centerpiece: 'basketball' },
+  { id: 'gym_mma', name: 'MMA Cage', icon: '🥋', kit: 'gym', floorTint: '#2a1414', wallRgb: [80, 40, 40], centerpiece: 'boxing' },
+  { id: 'gym_rollerdisco', name: 'Roller Disco', icon: '🛼', kit: 'gym', floorTint: '#2a1a3a', wallRgb: [255, 80, 180], centerpiece: 'volleyball' },
+  { id: 'gym_cheersquad', name: 'Cheer Squad', icon: '📣', kit: 'gym', floorTint: '#f2c9d8', wallRgb: [255, 220, 235], centerpiece: 'volleyball' },
+  { id: 'gym_curling', name: 'Curling Rink', icon: '🥌', kit: 'gym', floorTint: '#d4e8f0', wallRgb: [200, 220, 230], centerpiece: 'volleyball' },
+  { id: 'gym_bowling', name: 'Bowling Alley', icon: '🎳', kit: 'gym', floorTint: '#8a6a3a', wallRgb: [200, 170, 110], centerpiece: 'boxing' },
+  { id: 'gym_pingpong', name: 'Ping Pong Hall', icon: '🏓', kit: 'gym', floorTint: '#e85a2a', wallRgb: [255, 255, 255], centerpiece: 'volleyball' },
+  { id: 'gym_basement', name: 'Boxing Gym Basement', icon: '🩹', kit: 'gym', floorTint: '#2a2420', wallRgb: [70, 60, 50], centerpiece: 'boxing' },
+  { id: 'gym_sumo', name: 'Sumo Ring', icon: '🎌', kit: 'gym', floorTint: '#c9a86a', wallRgb: [220, 190, 140], centerpiece: 'boxing' },
+  { id: 'gym_archery', name: 'Archery Range', icon: '🏹', kit: 'gym', floorTint: '#4a6a3a', wallRgb: [150, 180, 120], centerpiece: 'basketball' },
+  { id: 'gym_track', name: 'Track and Field', icon: '🏃', kit: 'gym', floorTint: '#a83a2a', wallRgb: [230, 230, 220], centerpiece: 'basketball' },
+  { id: 'gym_badminton', name: 'Badminton Court', icon: '🏸', kit: 'gym', floorTint: '#c9e0a8', wallRgb: [240, 245, 235], centerpiece: 'volleyball' },
+  { id: 'gym_squash', name: 'Squash Court', icon: '🥎', kit: 'gym', floorTint: '#f0ece0', wallRgb: [250, 248, 240], centerpiece: 'volleyball' },
+  { id: 'gym_weightlifting', name: 'Weightlifting Gym', icon: '🏋️', kit: 'gym', floorTint: '#2a2a2a', wallRgb: [90, 90, 95], centerpiece: 'basketball' },
+  { id: 'gym_reformer', name: 'Reformer Studio', icon: '🩰', kit: 'gym', floorTint: '#d8c9e8', wallRgb: [235, 225, 245], centerpiece: 'volleyball' },
+  { id: 'gym_handball', name: 'Handball Court', icon: '🤾', kit: 'gym', floorTint: '#2a5a8a', wallRgb: [235, 240, 245], centerpiece: 'volleyball' },
+  { id: 'gym_divingpool', name: 'Diving Pool', icon: '🤿', kit: 'gym', floorTint: '#1a7a9a', wallRgb: [200, 235, 245], centerpiece: 'volleyball' },
+  { id: 'gym_gymnastics', name: 'Gymnastics Arena', icon: '🤸‍♀️', kit: 'gym', floorTint: '#e0e8f0', wallRgb: [235, 240, 245], centerpiece: 'basketball' },
+  { id: 'gym_darts', name: 'Darts Hall', icon: '🎯', kit: 'gym', floorTint: '#3a2a20', wallRgb: [90, 65, 50], centerpiece: 'boxing' },
+  { id: 'gym_dance', name: 'Dance Studio', icon: '💃', kit: 'gym', floorTint: '#e8d0e0', wallRgb: [240, 225, 235], centerpiece: 'volleyball' },
+  { id: 'gym_karate', name: 'Karate Dojo', icon: '🥋', kit: 'gym', floorTint: '#e8e0d0', wallRgb: [235, 228, 215], centerpiece: 'boxing' },
+  { id: 'gym_lacrosse', name: 'Lacrosse Court', icon: '🥍', kit: 'gym', floorTint: '#3a7a4a', wallRgb: [220, 225, 215], centerpiece: 'basketball' },
 ];
 const BB_MAP_FLOOR_TEXTURE = {
   office: officeFloorTexture, warehouse: warehouseFloorTexture, rooftop: rooftopFloorTexture,
@@ -1685,6 +2044,94 @@ function awardCoins(amount) {
   updateCoinDisplays();
 }
 
+// ---- Skins ----
+// Purely an Online Play cosmetic: wave/FS are first-person-only (no avatar of yourself or bots
+// ever renders your body), so a skin only ever shows up in two places — the third-person lobby
+// camera's view of your own localAvatar, and every other online player's spawnRemotePlayer view of
+// you. Same "no account needed" localStorage economy as the weapon shop above, bought with the
+// same coins. `default` is free and always owned, matching the teal every player has always shown
+// as before skins existed — buying nothing and equipping nothing looks identical to launch day.
+const BB_SKINS = [
+  { id: 'default', name: 'Recruit', price: 0, body: 0x2fb6ac, limb: 0x1f7d76, head: 0x6fe0d3 },
+  { id: 'khaki', name: 'Khaki Ops', price: 80, body: 0x8a8060, limb: 0x5a5540, head: 0xc9c090 },
+  { id: 'sand', name: 'Desert Storm', price: 150, body: 0xc9b380, limb: 0x8a7550, head: 0xe8d9a8 },
+  { id: 'forest', name: 'Forest Camo', price: 150, body: 0x3f5a30, limb: 0x24331c, head: 0x6a8a4a },
+  { id: 'rust', name: 'Rust', price: 200, body: 0xa8542a, limb: 0x6a3016, head: 0xd98a5c },
+  { id: 'coral', name: 'Coral', price: 230, body: 0xff6f5e, limb: 0xb0392c, head: 0xffb3a3 },
+  { id: 'ember', name: 'Ember', price: 250, body: 0xd9542f, limb: 0x96331b, head: 0xff9a5c },
+  { id: 'arctic', name: 'Arctic', price: 250, body: 0xd7e6ef, limb: 0x8fa9b8, head: 0xf2fbff },
+  { id: 'crimson', name: 'Crimson Guard', price: 300, body: 0x8a1c2a, limb: 0x5a0f18, head: 0xd94a5a },
+  { id: 'garnet', name: 'Garnet', price: 320, body: 0x7a1a2a, limb: 0x420e16, head: 0xd9455a },
+  { id: 'copper', name: 'Copper', price: 350, body: 0xb87333, limb: 0x7a4a1f, head: 0xe0a868 },
+  { id: 'toxic', name: 'Toxic', price: 400, body: 0x6fbf3a, limb: 0x3f7d1f, head: 0xb6ff6e },
+  { id: 'shadow', name: 'Shadow', price: 400, body: 0x2a2c31, limb: 0x161719, head: 0x54585f },
+  { id: 'teal', name: 'Teal Wave', price: 420, body: 0x1f9a8a, limb: 0x0f5a4e, head: 0x5cf0d9 },
+  { id: 'jade', name: 'Jade', price: 480, body: 0x2a8a6a, limb: 0x155a42, head: 0x6affc9 },
+  { id: 'indigo', name: 'Indigo', price: 500, body: 0x3a2a8a, limb: 0x1e1550, head: 0x8a7aff },
+  { id: 'violet', name: 'Violet', price: 520, body: 0x7a3fd9, limb: 0x4a2596, head: 0xb68aff },
+  { id: 'neon', name: 'Neon Pulse', price: 550, body: 0xff2ee0, limb: 0x9c1c8a, head: 0x37f2ff },
+  { id: 'plague', name: 'Plague Doctor', price: 600, body: 0x2a3a28, limb: 0x141f12, head: 0x6a8a5a },
+  { id: 'sunset', name: 'Sunset', price: 640, body: 0xd95a3a, limb: 0x8a2f1a, head: 0xffb54a },
+  { id: 'amber', name: 'Amber', price: 660, body: 0xd98a1f, limb: 0x8a5510, head: 0xffc94a },
+  { id: 'royal', name: 'Royal', price: 700, body: 0x6a3fb0, limb: 0x422772, head: 0xd9b64a },
+  { id: 'blaze', name: 'Blaze', price: 700, body: 0xff5a1f, limb: 0xb0350c, head: 0xffd23f },
+  { id: 'storm', name: 'Storm', price: 780, body: 0x4a5a6a, limb: 0x2a3540, head: 0x9ac9e8 },
+  { id: 'solar', name: 'Solaris', price: 850, body: 0xf2c93e, limb: 0xb8940c, head: 0xfff2b0 },
+  { id: 'magma', name: 'Magma', price: 900, body: 0x6a1a0a, limb: 0x2a0a04, head: 0xff5a1f },
+  { id: 'gold', name: 'Gilded', price: 950, body: 0xc9a227, limb: 0x7a5f0f, head: 0xf2d666 },
+  { id: 'lagoon', name: 'Lagoon', price: 970, body: 0x1f8a9a, limb: 0x0f4a54, head: 0x6ae0f2 },
+  { id: 'platinum', name: 'Platinum', price: 1000, body: 0xd8dde2, limb: 0xa8b0b8, head: 0xf5f8fa },
+  { id: 'steel', name: 'Steel Wolf', price: 1050, body: 0x5a6470, limb: 0x333a42, head: 0x9aa8b5 },
+  { id: 'chrome', name: 'Chrome', price: 1100, body: 0xb7c2c9, limb: 0x7c878e, head: 0xe9f2f6 },
+  { id: 'blood', name: 'Blood Moon', price: 1100, body: 0x6a0f14, limb: 0x2a0507, head: 0xe23a3a },
+  { id: 'ocean', name: 'Deep Ocean', price: 1100, body: 0x0f4a6a, limb: 0x082a3d, head: 0x3ac9e2 },
+  { id: 'onyx', name: 'Onyx', price: 1150, body: 0x141414, limb: 0x0a0a0a, head: 0x3a3a3a },
+  { id: 'inferno', name: 'Inferno', price: 1250, body: 0xb8290c, limb: 0x6a1305, head: 0xff7a1f },
+  { id: 'slate', name: 'Slate', price: 1350, body: 0x3a4a56, limb: 0x1e262c, head: 0x8aa2ae },
+  { id: 'abyss', name: 'Abyss', price: 1400, body: 0x0a0f1f, limb: 0x05070f, head: 0x1c3a6a },
+  { id: 'obsidian', name: 'Obsidian', price: 1500, body: 0x1a1024, limb: 0x0d0812, head: 0x5a3a8a },
+  { id: 'aurora', name: 'Aurora', price: 1600, body: 0x2a6a5a, limb: 0x123a30, head: 0x6af0c9 },
+  { id: 'opal', name: 'Opal', price: 1650, body: 0xd8e8e0, limb: 0xa0c0b8, head: 0xf5fff8 },
+  { id: 'glacier', name: 'Glacier', price: 1750, body: 0xa8d4e0, limb: 0x6a9ab0, head: 0xe0f7ff },
+  { id: 'prestige', name: 'Prestige', price: 1800, body: 0x1a1a22, limb: 0x0c0c11, head: 0xf4d24a },
+  { id: 'frostbite', name: 'Frostbite', price: 1900, body: 0x1a3a4a, limb: 0x0d1f28, head: 0x7ae0ff },
+  { id: 'void', name: 'Void Walker', price: 2000, body: 0x14101f, limb: 0x0a0812, head: 0x8a3fe0 },
+  { id: 'nebula', name: 'Nebula', price: 2200, body: 0x3a1a5a, limb: 0x1e0d30, head: 0xd94aff },
+  { id: 'ivory', name: 'Ivory', price: 2350, body: 0xefe8d8, limb: 0xc9bfa0, head: 0xfffaf0 },
+  { id: 'cosmic', name: 'Cosmic', price: 2500, body: 0x241a4a, limb: 0x120d28, head: 0xff2ee0 },
+  { id: 'radiant', name: 'Radiant', price: 3200, body: 0xf2eee0, limb: 0xd9cfa8, head: 0xffe27a },
+  { id: 'eclipse', name: 'Eclipse', price: 3600, body: 0x0a0a0f, limb: 0x050508, head: 0xffcc33 },
+  { id: 'phantom', name: 'Phantom', price: 4200, body: 0x0f0f14, limb: 0x08080b, head: 0xe8f2ff },
+  { id: 'starlight', name: 'Starlight', price: 5000, body: 0x0a0a1a, limb: 0x050510, head: 0xffffff },
+  { id: 'quantum', name: 'Quantum', price: 6000, body: 0x0a1a2a, limb: 0x050d15, head: 0x4affea },
+];
+const BB_SKIN_BY_ID = Object.fromEntries(BB_SKINS.map((s) => [s.id, s]));
+
+const SKINS_OWNED_KEY = 'valk-bb-skins-owned';
+function loadOwnedSkins() {
+  try {
+    const saved = new Set(JSON.parse(localStorage.getItem(SKINS_OWNED_KEY)) || []);
+    saved.add('default'); // always owned, whatever's in storage
+    return saved;
+  } catch { return new Set(['default']); }
+}
+function saveOwnedSkins(set) {
+  try { localStorage.setItem(SKINS_OWNED_KEY, JSON.stringify([...set])); } catch {}
+}
+let ownedSkins = loadOwnedSkins();
+
+const EQUIPPED_SKIN_KEY = 'valk-bb-skin';
+function loadEquippedSkin() {
+  try {
+    const id = localStorage.getItem(EQUIPPED_SKIN_KEY);
+    return BB_SKIN_BY_ID[id] ? id : 'default';
+  } catch { return 'default'; }
+}
+function saveEquippedSkin(id) {
+  try { localStorage.setItem(EQUIPPED_SKIN_KEY, id); } catch {}
+}
+let equippedSkin = loadEquippedSkin();
+
 // ---- Settings ----
 // Persisted like coins/purchasedWeapons above — survives refreshes, no account needed. Applied
 // live in tick() (movement/FOV/recoil) and wherever the crosshair/HUD reads it, so a change takes
@@ -1778,9 +2225,15 @@ applyCrosshairSettings();
 const weaponShopOverlay = document.getElementById('weapon-shop');
 const weaponShopTabs = document.getElementById('weapon-shop-tabs');
 const weaponShopGrid = document.getElementById('weapon-shop-grid');
+const weaponShopSearchEl = document.getElementById('weapon-shop-search');
 let weaponShopActiveArch = SHOP_ARCHETYPES[0].key;
+let weaponShopSearchQuery = '';
 
 function renderWeaponShopTabs() {
+  // While a search is active, the tab row is replaced by the flat filtered results below — the
+  // 30 archetype tabs would just be noise on top of an already-filtered list.
+  weaponShopTabs.classList.toggle('hidden', !!weaponShopSearchQuery);
+  if (weaponShopSearchQuery) return;
   weaponShopTabs.innerHTML = '';
   for (const arch of SHOP_ARCHETYPES) {
     const tab = document.createElement('button');
@@ -1798,7 +2251,14 @@ function renderWeaponShopTabs() {
 
 function renderWeaponShopGrid() {
   weaponShopGrid.innerHTML = '';
-  const weapons = SHOP_WEAPONS.filter((w) => w.archKey === weaponShopActiveArch);
+  // A live query searches every weapon in the shop by name or archetype (e.g. "sniper" surfaces
+  // every sniper-flavored gun across all 5 scoped archetypes at once) rather than just the one
+  // tab currently open — with 300 weapons across 30 archetypes, that's the whole point of adding
+  // search in the first place.
+  const q = weaponShopSearchQuery.trim().toLowerCase();
+  const weapons = q
+    ? SHOP_WEAPONS.filter((w) => w.title.toLowerCase().includes(q) || w.archetype.toLowerCase().includes(q))
+    : SHOP_WEAPONS.filter((w) => w.archKey === weaponShopActiveArch);
   for (const w of weapons) {
     const card = document.createElement('div');
     card.className = 'weapon-card';
@@ -1822,7 +2282,10 @@ function renderWeaponShopGrid() {
     const dps = w.mag === 1
       ? `${w.damage} dmg / shot`
       : `${w.damage} dmg · ${Math.round(1 / Math.max(w.interval, 0.01))}/s`;
-    stats.innerHTML = `${dps}<br>Mag ${w.mag} · Reload ${w.reload}s<br>Headshot ${w.headshot}`;
+    // Search results span every archetype at once, so each card names which one it's from —
+    // browsing a single tab already makes that obvious from context and doesn't need the line.
+    const archLine = q ? `${w.archetype}<br>` : '';
+    stats.innerHTML = `${archLine}${dps}<br>Mag ${w.mag} · Reload ${w.reload}s<br>Headshot ${w.headshot}`;
 
     const action = document.createElement('button');
     action.type = 'button';
@@ -1869,6 +2332,8 @@ function renderWeaponShopGrid() {
 
 document.getElementById('view-weapons-btn').addEventListener('click', (e) => {
   e.stopPropagation();
+  weaponShopSearchQuery = ''; // fresh open, fresh search — never reopens mid-filter from last visit
+  weaponShopSearchEl.value = '';
   renderWeaponShopTabs();
   renderWeaponShopGrid();
   weaponShopOverlay.classList.remove('hidden');
@@ -1877,8 +2342,137 @@ document.getElementById('weapon-shop-close-btn').addEventListener('click', (e) =
   e.stopPropagation();
   weaponShopOverlay.classList.add('hidden');
 });
+weaponShopSearchEl.addEventListener('input', () => {
+  weaponShopSearchQuery = weaponShopSearchEl.value;
+  renderWeaponShopTabs();
+  renderWeaponShopGrid();
+});
+weaponShopSearchEl.addEventListener('click', (e) => e.stopPropagation());
+document.addEventListener('keydown', (e) => {
+  // Escape clears an active search before it closes the whole shop — matches the "first Escape
+  // backs out one level" convention players expect from search boxes everywhere else.
+  // stopImmediatePropagation (not just stopPropagation) is the part that actually matters: both
+  // this listener and the shop's own close-on-Escape listener below are registered on the same
+  // `document` target, so plain stopPropagation (which only stops bubbling to ancestors) would
+  // never keep the second one from also firing on this exact same keypress.
+  if (e.key === 'Escape' && !weaponShopOverlay.classList.contains('hidden') && weaponShopSearchQuery) {
+    weaponShopSearchQuery = '';
+    weaponShopSearchEl.value = '';
+    renderWeaponShopTabs();
+    renderWeaponShopGrid();
+    e.stopImmediatePropagation();
+  }
+});
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !weaponShopOverlay.classList.contains('hidden')) weaponShopOverlay.classList.add('hidden');
+});
+
+// ---- Skin Shop UI ----
+// Same overlay/grid/buy-confirm shape as the weapon shop above. Originally skipped the tabs
+// entirely ("nine skins all fit one screen at once") — that stopped being true a while back, so
+// it's since picked up its own search box, same pattern as the weapon shop's.
+const skinShopOverlay = document.getElementById('skin-shop');
+const skinShopGrid = document.getElementById('skin-shop-grid');
+const skinShopSearchEl = document.getElementById('skin-shop-search');
+let skinShopSearchQuery = '';
+
+function hex6(n) { return `#${n.toString(16).padStart(6, '0')}`; }
+
+function renderSkinShopGrid() {
+  skinShopGrid.innerHTML = '';
+  const q = skinShopSearchQuery.trim().toLowerCase();
+  const skins = q ? BB_SKINS.filter((s) => s.name.toLowerCase().includes(q)) : BB_SKINS;
+  for (const s of skins) {
+    const card = document.createElement('div');
+    card.className = 'skin-card';
+
+    const swatch = document.createElement('div');
+    swatch.className = 'skin-card-swatch';
+    swatch.style.background = `linear-gradient(135deg, ${hex6(s.head)} 0%, ${hex6(s.body)} 55%, ${hex6(s.limb)} 100%)`;
+
+    const name = document.createElement('div');
+    name.className = 'skin-card-name';
+    name.textContent = s.name;
+
+    const action = document.createElement('button');
+    action.type = 'button';
+    const owned = ownedSkins.has(s.id);
+    const equipped = equippedSkin === s.id;
+    if (equipped) {
+      action.className = 'skin-card-action equipped';
+      action.textContent = '✓ Equipped';
+      action.disabled = true;
+    } else if (owned) {
+      action.className = 'skin-card-action equip';
+      action.textContent = 'Equip';
+      action.addEventListener('click', () => {
+        equippedSkin = s.id;
+        saveEquippedSkin(equippedSkin);
+        if (localAvatar) applyLocalAvatarSkin();
+        renderSkinShopGrid();
+      });
+    } else {
+      action.className = 'skin-card-action buy';
+      action.textContent = `🪙 ${s.price.toLocaleString()}`;
+      action.disabled = coins < s.price;
+      // Same two-click confirm as the weapon shop's buy button — see its comment for why.
+      action.addEventListener('click', () => {
+        if (coins < s.price) return;
+        if (action.dataset.confirm === '1') {
+          coins -= s.price;
+          saveCoins(coins);
+          ownedSkins.add(s.id);
+          saveOwnedSkins(ownedSkins);
+          updateCoinDisplays();
+          renderSkinShopGrid();
+          return;
+        }
+        action.dataset.confirm = '1';
+        action.textContent = 'Tap to confirm';
+        action.classList.add('confirming');
+        clearTimeout(action._confirmTimer);
+        action._confirmTimer = setTimeout(() => {
+          action.dataset.confirm = '0';
+          action.textContent = `🪙 ${s.price.toLocaleString()}`;
+          action.classList.remove('confirming');
+        }, 2500);
+      });
+    }
+
+    card.append(swatch, name, action);
+    skinShopGrid.appendChild(card);
+  }
+}
+
+document.getElementById('view-skins-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  skinShopSearchQuery = ''; // fresh open, fresh search — never reopens mid-filter from last visit
+  skinShopSearchEl.value = '';
+  renderSkinShopGrid();
+  skinShopOverlay.classList.remove('hidden');
+});
+document.getElementById('skin-shop-close-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  skinShopOverlay.classList.add('hidden');
+});
+skinShopSearchEl.addEventListener('input', () => {
+  skinShopSearchQuery = skinShopSearchEl.value;
+  renderSkinShopGrid();
+});
+skinShopSearchEl.addEventListener('click', (e) => e.stopPropagation());
+document.addEventListener('keydown', (e) => {
+  // Same "first Escape clears the search, second Escape closes the shop" convention as the
+  // weapon shop's search — stopImmediatePropagation matters here for the identical reason (this
+  // listener and the shop's own close-on-Escape listener below share the same `document` target).
+  if (e.key === 'Escape' && !skinShopOverlay.classList.contains('hidden') && skinShopSearchQuery) {
+    skinShopSearchQuery = '';
+    skinShopSearchEl.value = '';
+    renderSkinShopGrid();
+    e.stopImmediatePropagation();
+  }
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !skinShopOverlay.classList.contains('hidden')) skinShopOverlay.classList.add('hidden');
 });
 
 // ---- Best run ----
@@ -1900,6 +2494,61 @@ function loadBestFs() {
 }
 function saveBestFs(k) {
   try { localStorage.setItem(BEST_FS_KEY, JSON.stringify(k)); } catch {}
+}
+
+// One Shot mode: its own scoreboard too, same shape as FS's — a life here can end on the very
+// first bullet either direction, so kills alone (no waves) is the only fair yardstick.
+const BEST_ONESHOT_KEY = 'valk-fps-best-oneshot';
+function loadBestOneShot() {
+  try { return JSON.parse(localStorage.getItem(BEST_ONESHOT_KEY)) || 0; } catch { return 0; }
+}
+function saveBestOneShot(k) {
+  try { localStorage.setItem(BEST_ONESHOT_KEY, JSON.stringify(k)); } catch {}
+}
+
+// Headhunter mode: same shape again — kills alone, no waves.
+const BEST_HEADHUNTER_KEY = 'valk-fps-best-headhunter';
+function loadBestHeadhunter() {
+  try { return JSON.parse(localStorage.getItem(BEST_HEADHUNTER_KEY)) || 0; } catch { return 0; }
+}
+function saveBestHeadhunter(k) {
+  try { localStorage.setItem(BEST_HEADHUNTER_KEY, JSON.stringify(k)); } catch {}
+}
+
+// Juggernaut mode: same shape again — how many bosses you downed this run, no waves.
+const BEST_JUGGERNAUT_KEY = 'valk-fps-best-juggernaut';
+function loadBestJuggernaut() {
+  try { return JSON.parse(localStorage.getItem(BEST_JUGGERNAUT_KEY)) || 0; } catch { return 0; }
+}
+function saveBestJuggernaut(k) {
+  try { localStorage.setItem(BEST_JUGGERNAUT_KEY, JSON.stringify(k)); } catch {}
+}
+
+// Berserker mode: same shape again — kills alone, no waves.
+const BEST_BERSERKER_KEY = 'valk-fps-best-berserker';
+function loadBestBerserker() {
+  try { return JSON.parse(localStorage.getItem(BEST_BERSERKER_KEY)) || 0; } catch { return 0; }
+}
+function saveBestBerserker(k) {
+  try { localStorage.setItem(BEST_BERSERKER_KEY, JSON.stringify(k)); } catch {}
+}
+
+// Vampire mode: same shape again — kills alone, no waves.
+const BEST_VAMPIRE_KEY = 'valk-fps-best-vampire';
+function loadBestVampire() {
+  try { return JSON.parse(localStorage.getItem(BEST_VAMPIRE_KEY)) || 0; } catch { return 0; }
+}
+function saveBestVampire(k) {
+  try { localStorage.setItem(BEST_VAMPIRE_KEY, JSON.stringify(k)); } catch {}
+}
+
+// Swarm mode: same shape again — kills alone, no waves.
+const BEST_SWARM_KEY = 'valk-fps-best-swarm';
+function loadBestSwarm() {
+  try { return JSON.parse(localStorage.getItem(BEST_SWARM_KEY)) || 0; } catch { return 0; }
+}
+function saveBestSwarm(k) {
+  try { localStorage.setItem(BEST_SWARM_KEY, JSON.stringify(k)); } catch {}
 }
 
 // ---- Save & continue ----
@@ -2368,6 +3017,27 @@ function spawnBot(fireInterval) {
     avoidT: 0,     // seconds left sidestepping an obstacle mid-chase
   };
   group.position.set(bot.x, 0, bot.z);
+  if (mode === 'juggernaut') {
+    // A visibly bigger, darker-red boss instead of a normal recruit — the materials are already
+    // this bot's own (spawnBot makes fresh ones per bot), so recoloring here doesn't touch anyone
+    // else. Scaling the group is purely cosmetic: movement/AI/collision all key off bot.x/z, not
+    // mesh size, and the raycaster hit-tests the (now bigger) mesh geometry directly, so aim/hit
+    // detection scales correctly for free.
+    bot.health = JUGGERNAUT_HEALTH;
+    bot.juggernaut = true;
+    bodyMat.color.setHex(0x6a0e0e);
+    limbMat.color.setHex(0x400808);
+    headMat.color.setHex(0x8a1c1c);
+    group.scale.setScalar(1.6);
+  } else if (mode === 'swarm') {
+    // A visibly smaller, paler recruit — cosmetic cue that this one goes down fast, same as
+    // Juggernaut's bigger/darker treatment signals the opposite.
+    bot.health = SWARM_HEALTH;
+    bodyMat.color.setHex(0xc98a6a);
+    limbMat.color.setHex(0xa06a4a);
+    headMat.color.setHex(0xd9a888);
+    group.scale.setScalar(0.8);
+  }
   bots.push(bot);
   meshToBot.set(body, { bot, head: false });
   meshToBot.set(head, { bot, head: true });
@@ -2489,9 +3159,21 @@ function startMode(m) {
   while (bots.length) removeBot(0);
   while (allies.length) removeAlly(0);
   killsAtRunStart = kills;
-  if (mode === 'fs') {
+  if (mode === 'fs' || mode === 'oneshot' || mode === 'headhunter' || mode === 'berserker' || mode === 'vampire') {
+    // One Shot, Headhunter, and Berserker all field the same standing headcount as FS — the
+    // danger in each comes from the hit-rule (one-hit-kills / headshots-only / melee-only), not
+    // bot count.
     nextWaveT = -1;
     for (let n = 0; n < FS_BOTS; n++) spawnBot(BOT_FIRE_INTERVAL);
+  } else if (mode === 'juggernaut') {
+    // One boss-sized enemy at a time instead of a crowd — see spawnBot's own juggernaut branch
+    // for the health/visual treatment.
+    nextWaveT = -1;
+    spawnBot(JUGGERNAUT_FIRE_INTERVAL);
+  } else if (mode === 'swarm') {
+    // Double FS's headcount, each one frailer — see spawnBot's own swarm branch.
+    nextWaveT = -1;
+    for (let n = 0; n < SWARM_BOTS; n++) spawnBot(BOT_FIRE_INTERVAL);
   } else {
     nextWaveT = 1.5; // waves start counting once you click in and unpause
   }
@@ -2546,6 +3228,12 @@ let nextWaveT = -1; // countdown to the next wave; -1 while one is being fought 
 
 function updateWaveHud() {
   waveCounter.textContent = mode === 'fs' ? 'FS'
+    : mode === 'oneshot' ? 'One Shot'
+    : mode === 'headhunter' ? 'Headhunter'
+    : mode === 'juggernaut' ? 'Juggernaut'
+    : mode === 'berserker' ? 'Berserker'
+    : mode === 'vampire' ? 'Vampire'
+    : mode === 'swarm' ? 'Swarm'
     : mode === null ? 'Choose a mode'
     : wave > 0 ? `Wave ${wave}` : 'Get ready…';
 }
@@ -2572,7 +3260,7 @@ function respawnBot(bot) {
   const [i, j] = randomBotCell(player.x, player.z);
   bot.x = i + 0.5;
   bot.z = j + 0.5;
-  bot.health = BOT_MAX_HEALTH;
+  bot.health = bot.juggernaut ? JUGGERNAUT_HEALTH : BOT_MAX_HEALTH;
   bot.deadBot = false;
   bot.deathStyle = null; // a finisher launch is over once you're back
   bot.deathT = 0;
@@ -2585,8 +3273,11 @@ function respawnBot(bot) {
   bot.group.visible = true;
 }
 
-function damageBot(bot, amount, killCredit) {
+function damageBot(bot, amount, killCredit, isHeadshot, isMelee) {
   if (bot.deadBot) return;
+  if (mode === 'headhunter' && !isHeadshot) { bot.flashT = 0.12; return; } // body shots flinch the bot but do nothing — only headshots count
+  if (mode === 'berserker' && !isMelee) { bot.flashT = 0.12; return; } // gunfire flinches the bot but does nothing — only the knife kills
+  if (mode === 'oneshot') amount = bot.health; // any hit is lethal, whatever weapon dealt it
   bot.health -= amount;
   bot.flashT = 0.12;
   if (bot.health <= 0) {
@@ -2596,6 +3287,14 @@ function damageBot(bot, amount, killCredit) {
     const killsBefore = kills;
     kills += killCredit; // player shots pass 1 (2 for an RPG headshot); sidekick kills pass 0
     sfxKill();
+    // Vampire mode: every kill heals you (capped at max) — `!dead` guards the edge case where an
+    // enemy bullet already resolved earlier in this same tick() and killed the player first;
+    // healing a corpse would just be undone by the next respawn anyway, but skipping it here
+    // keeps updateHealthBar() from ever running post-death.
+    if (mode === 'vampire' && !dead) {
+      health = Math.min(MAX_HEALTH, health + VAMPIRE_HEAL);
+      updateHealthBar();
+    }
     dropHealthPack(bot.x, bot.z);
     updateWeaponHud();
     saveGame(true); // autosave — a kill is exactly the progress a player wouldn't want to lose
@@ -2683,6 +3382,7 @@ function removeBullet(index) {
 
 function takeDamage(amount) {
   if (dead) return;
+  if (mode === 'oneshot') amount = health; // any hit is lethal, both ways
   health -= amount;
   updateHealthBar();
   flashDamage();
@@ -2692,7 +3392,7 @@ function takeDamage(amount) {
     keys.clear();
     sfxDeath();
     // Scoreboard time: this run against the best this browser has ever seen.
-    // Each mode keeps its own best — FS has no waves, so it's kills only.
+    // Each mode keeps its own best — FS, One Shot, and Headhunter have no waves, so it's kills only.
     const runKills = kills - killsAtRunStart;
     if (mode === 'fs') {
       const best = loadBestFs();
@@ -2704,6 +3404,73 @@ function takeDamage(amount) {
       const fsCoins = 15 + runKills * 4;
       awardCoins(fsCoins);
       deathStats.textContent = `${runKills} kills this run · 🪙 +${fsCoins}`;
+      deathBest.textContent = record ? '' : `Best: ${best} kills`;
+      deathRecord.classList.toggle('hidden', !record);
+    } else if (mode === 'oneshot') {
+      const best = loadBestOneShot();
+      const record = runKills > best;
+      if (record) saveBestOneShot(runKills);
+      // Same per-death payout shape as FS — a life here just tends to be much shorter.
+      const oneShotCoins = 15 + runKills * 4;
+      awardCoins(oneShotCoins);
+      deathStats.textContent = `${runKills} kills this run · 🪙 +${oneShotCoins}`;
+      deathBest.textContent = record ? '' : `Best: ${best} kills`;
+      deathRecord.classList.toggle('hidden', !record);
+    } else if (mode === 'headhunter') {
+      const best = loadBestHeadhunter();
+      const record = runKills > best;
+      if (record) saveBestHeadhunter(runKills);
+      // Same per-death payout shape as FS/One Shot — headshot-only kills are harder to rack up,
+      // so this pays the same rate rather than a discounted one; the difficulty is its own tax.
+      const headhunterCoins = 15 + runKills * 4;
+      awardCoins(headhunterCoins);
+      deathStats.textContent = `${runKills} kills this run · 🪙 +${headhunterCoins}`;
+      deathBest.textContent = record ? '' : `Best: ${best} kills`;
+      deathRecord.classList.toggle('hidden', !record);
+    } else if (mode === 'juggernaut') {
+      const best = loadBestJuggernaut();
+      const record = runKills > best;
+      if (record) saveBestJuggernaut(runKills);
+      // A juggernaut kill is worth far more than a regular one (300 HP vs. 50, and only one
+      // target on the field at a time to earn from) — the payout reflects that instead of using
+      // the same flat per-kill rate as FS/One Shot/Headhunter.
+      const juggernautCoins = 30 + runKills * 25;
+      awardCoins(juggernautCoins);
+      deathStats.textContent = `${runKills} kills this run · 🪙 +${juggernautCoins}`;
+      deathBest.textContent = record ? '' : `Best: ${best} kills`;
+      deathRecord.classList.toggle('hidden', !record);
+    } else if (mode === 'berserker') {
+      const best = loadBestBerserker();
+      const record = runKills > best;
+      if (record) saveBestBerserker(runKills);
+      // Same per-death payout shape as FS/One Shot/Headhunter — melee-only kills take real risk
+      // (you have to be right next to a bot that's still shooting at you), so this pays the same
+      // rate rather than a discounted one; the difficulty is its own tax.
+      const berserkerCoins = 15 + runKills * 4;
+      awardCoins(berserkerCoins);
+      deathStats.textContent = `${runKills} kills this run · 🪙 +${berserkerCoins}`;
+      deathBest.textContent = record ? '' : `Best: ${best} kills`;
+      deathRecord.classList.toggle('hidden', !record);
+    } else if (mode === 'vampire') {
+      const best = loadBestVampire();
+      const record = runKills > best;
+      if (record) saveBestVampire(runKills);
+      // Same per-death payout shape as the other endless modes — the lifesteal itself is the
+      // reward for playing well here, not an inflated coin rate.
+      const vampireCoins = 15 + runKills * 4;
+      awardCoins(vampireCoins);
+      deathStats.textContent = `${runKills} kills this run · 🪙 +${vampireCoins}`;
+      deathBest.textContent = record ? '' : `Best: ${best} kills`;
+      deathRecord.classList.toggle('hidden', !record);
+    } else if (mode === 'swarm') {
+      const best = loadBestSwarm();
+      const record = runKills > best;
+      if (record) saveBestSwarm(runKills);
+      // Same per-death payout shape as the other endless modes — the crowd itself is the
+      // difficulty here, not a discounted rate.
+      const swarmCoins = 15 + runKills * 4;
+      awardCoins(swarmCoins);
+      deathStats.textContent = `${runKills} kills this run · 🪙 +${swarmCoins}`;
       deathBest.textContent = record ? '' : `Best: ${best} kills`;
       deathRecord.classList.toggle('hidden', !record);
     } else {
@@ -2738,9 +3505,15 @@ function respawn() {
   while (bots.length) removeBot(0);
   while (allies.length) removeAlly(0);
   wave = 0;
-  if (mode === 'fs') {
+  if (mode === 'fs' || mode === 'oneshot' || mode === 'headhunter' || mode === 'berserker' || mode === 'vampire') {
     nextWaveT = -1;
     for (let n = 0; n < FS_BOTS; n++) spawnBot(BOT_FIRE_INTERVAL);
+  } else if (mode === 'juggernaut') {
+    nextWaveT = -1;
+    spawnBot(JUGGERNAUT_FIRE_INTERVAL);
+  } else if (mode === 'swarm') {
+    nextWaveT = -1;
+    for (let n = 0; n < SWARM_BOTS; n++) spawnBot(BOT_FIRE_INTERVAL);
   } else {
     nextWaveT = 1.5;
   }
@@ -2864,9 +3637,13 @@ function redrawBbNameSprite(sprite) {
 
 function spawnRemotePlayer(id, name, level, pos) {
   if (id === myBbId || bbRemotePlayers.has(id)) return;
-  const bodyMat = new THREE.MeshLambertMaterial({ color: 0x2fb6ac });
-  const limbMat = new THREE.MeshLambertMaterial({ color: 0x1f7d76 });
-  const headMat = new THREE.MeshLambertMaterial({ color: 0x6fe0d3 });
+  // pos.skin comes straight from the server (bb-init's roster snapshot / bb-player-joined), which
+  // only ever forwards whatever the other client sent at bb-join — an unrecognized or missing id
+  // (an older client, say) falls back to the default look rather than rendering nothing.
+  const skin = BB_SKIN_BY_ID[pos && pos.skin] || BB_SKIN_BY_ID.default;
+  const bodyMat = new THREE.MeshLambertMaterial({ color: skin.body });
+  const limbMat = new THREE.MeshLambertMaterial({ color: skin.limb });
+  const headMat = new THREE.MeshLambertMaterial({ color: skin.head });
   const group = new THREE.Group();
   const { legs, arms } = addLimbs(group, bodyMat, limbMat);
   const head = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.28, 0.28), headMat);
@@ -2932,9 +3709,10 @@ function updateRemotePlayers(dt) {
 let localAvatar = null;
 function ensureLocalAvatar() {
   if (localAvatar) return;
-  const bodyMat = new THREE.MeshLambertMaterial({ color: 0xffb74d });
-  const limbMat = new THREE.MeshLambertMaterial({ color: 0xc98a2e });
-  const headMat = new THREE.MeshLambertMaterial({ color: 0xffd699 });
+  const skin = BB_SKIN_BY_ID[equippedSkin] || BB_SKIN_BY_ID.default;
+  const bodyMat = new THREE.MeshLambertMaterial({ color: skin.body });
+  const limbMat = new THREE.MeshLambertMaterial({ color: skin.limb });
+  const headMat = new THREE.MeshLambertMaterial({ color: skin.head });
   const group = new THREE.Group();
   const { legs, arms } = addLimbs(group, bodyMat, limbMat);
   const head = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.28, 0.28), headMat);
@@ -2942,7 +3720,18 @@ function ensureLocalAvatar() {
   head.castShadow = true;
   group.add(head);
   scene.add(group);
-  localAvatar = { group, legs, arms };
+  localAvatar = { group, legs, arms, bodyMat, limbMat, headMat };
+}
+// Re-colors the already-built local avatar in place when a skin is equipped mid-session — cheaper
+// than tearing down and rebuilding the whole group, and keeps whatever walk-cycle pose it's mid-way
+// through. Guarded by the `if (localAvatar)` check at its one call site (the skin shop's Equip
+// button) since the avatar normally doesn't exist yet at that point — the skin shop only opens from
+// the mode-select screen, before Online Play has ever built one — but is harmless to call either way.
+function applyLocalAvatarSkin() {
+  const skin = BB_SKIN_BY_ID[equippedSkin] || BB_SKIN_BY_ID.default;
+  localAvatar.bodyMat.color.setHex(skin.body);
+  localAvatar.limbMat.color.setHex(skin.limb);
+  localAvatar.headMat.color.setHex(skin.head);
 }
 function removeLocalAvatar() {
   if (!localAvatar) return;
@@ -3367,7 +4156,7 @@ function connectBb() {
     // ?room=) — Online Play is one shared world across every room/server, not siloed per room, so
     // server.js's bb-join always falls back to the single public 'GLOBAL-LOBBY'. bbRoomCode is
     // still used elsewhere on this page (the "back to room" link above) — just not here anymore.
-    bbWs.send(JSON.stringify({ type: 'bb-join', accountToken, level: getLevel() }));
+    bbWs.send(JSON.stringify({ type: 'bb-join', accountToken, level: getLevel(), skin: equippedSkin }));
   });
   bbWs.addEventListener('message', (event) => {
     let data;
@@ -3589,7 +4378,7 @@ function shootOnce(spec) {
     for (const bot of bots) {
       if (bot.deadBot) continue;
       if (Math.hypot(bot.x - end.x, 0.5 - end.y, bot.z - end.z) < 1.6) {
-        damageBot(bot, spec.damage, spec.headshotDoubleKill && bot === headBot ? 2 : 1);
+        damageBot(bot, spec.damage, spec.headshotDoubleKill && bot === headBot ? 2 : 1, bot === headBot);
         anyHit = true;
       }
     }
@@ -3598,7 +4387,7 @@ function shootOnce(spec) {
     const rec = meshToBot.get(hit.object);
     if (rec) {
       spawnImpact(hit.point.x, hit.point.y, hit.point.z, 0xc23b36, 5);
-      damageBot(rec.bot, rec.head ? spec.headshot : spec.damage, 1);
+      damageBot(rec.bot, rec.head ? spec.headshot : spec.damage, 1, rec.head);
       showHitMarker(rec.head);
     } else {
       spawnImpact(hit.point.x, hit.point.y, hit.point.z, 0xa8a8a8, 5); // chips off the block
@@ -3667,7 +4456,11 @@ function knifeSlash() {
     if (!lineOfSightClear(player.x, player.y + eye, player.z, bot.x, 0.55, bot.z)) continue;
     struck = true;
     spawnImpact(bot.x, 0.6, bot.z, 0xc23b36, 5);
-    damageBot(bot, KNIFE.damage, 1);
+    // The knife has no head-targeting concept at all (it's an area slash, not a raycast) — always
+    // passes isHeadshot: true so Headhunter mode's "only headshots count" rule doesn't leave melee
+    // with literally no way to ever deal damage. isMelee: true is what Berserker mode actually
+    // keys off of — guns do nothing there, only this call site can land a real hit.
+    damageBot(bot, KNIFE.damage, 1, true, true);
     if (bot.deadBot) {
       bot.deathStyle = 'launch'; // this death gets the finisher treatment
       killed = true;
@@ -3699,6 +4492,12 @@ const KEYMAP = {
 const keys = new Set();
 
 window.addEventListener('keydown', (e) => {
+  // The weapon shop's search box (added once the shop grew past a few hundred weapons) is the
+  // first real text input this game has ever had — without this guard, typing a search like
+  // "pistol" or "plasma" would hit the KeyP branch below and fire saveGame() mid-keystroke.
+  // Checked ahead of the `paused` branch since paused is also true whenever the search box could
+  // possibly have focus (it only ever opens from the pre-game mode-select screen).
+  if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
   if (paused) {
     if (e.code === 'KeyP') saveGame(); // save still works from the pause screen
     if (e.code === 'KeyM' && dead) backToModeSelect(); // even if Esc was pressed after dying
@@ -4128,7 +4927,7 @@ function tick(now) {
         bot.group.rotation.y += 14 * dt;
         bot.group.rotation.x = -t * 5;
         if (t >= 0.95) {
-          if (mode === 'fs') {
+          if (mode === 'fs' || mode === 'oneshot' || mode === 'headhunter' || mode === 'juggernaut' || mode === 'berserker' || mode === 'vampire' || mode === 'swarm') {
             bot.group.visible = false; // waits out the respawn timer, then comes back
             if (bot.deathT >= FS_RESPAWN_TIME) respawnBot(bot);
           } else {
@@ -4139,7 +4938,7 @@ function tick(now) {
         bot.group.rotation.x = -(bot.deathT / 0.4) * (Math.PI / 2); // keel over
       } else if (bot.deathT < 1.2) {
         bot.group.position.y -= dt * 1.2; // sink into the ground
-      } else if (mode === 'fs') {
+      } else if (mode === 'fs' || mode === 'oneshot' || mode === 'headhunter' || mode === 'juggernaut' || mode === 'berserker' || mode === 'vampire' || mode === 'swarm') {
         bot.group.visible = false; // waits out the respawn timer, then comes back
         if (bot.deathT >= FS_RESPAWN_TIME) respawnBot(bot);
       } else {

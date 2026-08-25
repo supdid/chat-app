@@ -2057,13 +2057,18 @@ function bbInitStations() {
 // visual kits are entirely client-side (blockbattle.js's BB_MAPS/BB_MAP_KITS); the server never
 // needs to know what a map looks like, only that it's real.
 const BB_MAP_IDS = [
-  'office', 'office_night', 'office_alert',
-  'warehouse_day', 'warehouse_dusk', 'warehouse_flood', 'warehouse_frost',
-  'rooftop_day', 'rooftop_sunset', 'rooftop_night',
-  'garage_a', 'garage_b', 'garage_c', 'garage_d',
-  'plaza_day', 'plaza_rain', 'plaza_dusk',
-  'gym_basketball', 'gym_volleyball', 'gym_boxing',
+  'office', 'office_night', 'office_alert', 'office_gold', 'office_neon', 'office_dawn', 'office_jungle', 'office_server', 'office_panic', 'office_blackout', 'office_startup', 'office_legal', 'office_newsroom', 'office_gallery', 'office_callcenter', 'office_studio', 'office_mailroom', 'office_missioncontrol', 'office_dentist', 'office_aquarium', 'office_radio', 'office_photostudio', 'office_weather', 'office_boardroom', 'office_insurance', 'office_nursery', 'office_escaperoom', 'office_tradingfloor', 'office_podcast', 'office_lab', 'office_pharmacy', 'office_travel', 'office_bank', 'office_realestate',
+  'warehouse_day', 'warehouse_dusk', 'warehouse_flood', 'warehouse_frost', 'warehouse_night', 'warehouse_toxic', 'warehouse_industrial', 'warehouse_steel', 'warehouse_harvest', 'warehouse_scrapyard', 'warehouse_auction', 'warehouse_container', 'warehouse_wine', 'warehouse_print', 'warehouse_brewery', 'warehouse_furniture', 'warehouse_distillery', 'warehouse_coldchain', 'warehouse_fireworks', 'warehouse_textile', 'warehouse_piano', 'warehouse_candle', 'warehouse_bakery', 'warehouse_ammodepot', 'warehouse_papermill', 'warehouse_chemplant', 'warehouse_tires', 'warehouse_cannery', 'warehouse_icecream', 'warehouse_mattress', 'warehouse_spice', 'warehouse_soap', 'warehouse_leather', 'warehouse_cotton', 'warehouse_glassworks',
+  'rooftop_day', 'rooftop_sunset', 'rooftop_night', 'rooftop_storm', 'rooftop_dawn', 'rooftop_snow', 'rooftop_helipad', 'rooftop_penthouse', 'rooftop_observatory', 'rooftop_greenhouse', 'rooftop_solar', 'rooftop_antenna', 'rooftop_pool', 'rooftop_bar', 'rooftop_farm', 'rooftop_zen', 'rooftop_cinema', 'rooftop_chapel', 'rooftop_vineyard', 'rooftop_beehive', 'rooftop_icebar', 'rooftop_playground', 'rooftop_maze', 'rooftop_dronepad', 'rooftop_tennis', 'rooftop_herbgarden', 'rooftop_firepit', 'rooftop_stargazing', 'rooftop_solarium', 'rooftop_billboard', 'rooftop_windmill', 'rooftop_helipad2', 'rooftop_skybridge', 'rooftop_speakeasy',
+  'garage_a', 'garage_b', 'garage_c', 'garage_d', 'garage_neon', 'garage_gold', 'garage_underground', 'garage_racetrack', 'garage_chopshop', 'garage_drift', 'garage_ev', 'garage_derby', 'garage_moto', 'garage_bikemsg', 'garage_tuner', 'garage_limo', 'garage_taxi', 'garage_foodtruck', 'garage_armored', 'garage_rv', 'garage_gokart', 'garage_monstertruck', 'garage_hearse', 'garage_crusher', 'garage_snowplow', 'garage_carmuseum', 'garage_ambulance', 'garage_drivingschool', 'garage_towyard', 'garage_schoolbus', 'garage_carwash', 'garage_junkyard', 'garage_valet2', 'garage_dragstrip', 'garage_bikeshop',
+  'plaza_day', 'plaza_rain', 'plaza_dusk', 'plaza_market', 'plaza_snow', 'plaza_autumn', 'plaza_festival', 'plaza_zen', 'plaza_carnival', 'plaza_night_market', 'plaza_icerink', 'plaza_botanical', 'plaza_skatepark', 'plaza_farmersmarket', 'plaza_chess', 'plaza_fountain', 'plaza_amphitheater', 'plaza_cherryblossom', 'plaza_streetart', 'plaza_lantern', 'plaza_wedding', 'plaza_fairground', 'plaza_clocktower', 'plaza_reflectingpool', 'plaza_warmemorial', 'plaza_splashpad', 'plaza_duckpond', 'plaza_sundial', 'plaza_rosegarden', 'plaza_kite', 'plaza_topiary', 'plaza_bandstand', 'plaza_hedgemaze', 'plaza_lighthouse',
+  'gym_basketball', 'gym_volleyball', 'gym_boxing', 'gym_championship', 'gym_wrestling', 'gym_beach', 'gym_neon', 'gym_dojo', 'gym_fencing', 'gym_midnight', 'gym_trampoline', 'gym_yoga', 'gym_climbing', 'gym_mma', 'gym_rollerdisco', 'gym_cheersquad', 'gym_curling', 'gym_bowling', 'gym_pingpong', 'gym_basement', 'gym_sumo', 'gym_archery', 'gym_track', 'gym_badminton', 'gym_squash', 'gym_weightlifting', 'gym_reformer', 'gym_handball', 'gym_divingpool', 'gym_gymnastics', 'gym_darts', 'gym_dance', 'gym_karate', 'gym_lacrosse',
 ];
+// Cosmetic-only, same validate-a-fixed-set purpose as BB_MAP_IDS above — keep in sync with
+// blockbattle.js's own BB_SKINS list. The server never needs to know what a skin looks like
+// (that's client-side THREE.js material colors), only that a claimed id is a real one before it
+// gets forwarded on to every other player in the lobby.
+const BB_SKIN_IDS = ['default', 'khaki', 'sand', 'forest', 'rust', 'coral', 'ember', 'arctic', 'crimson', 'garnet', 'copper', 'toxic', 'shadow', 'teal', 'jade', 'indigo', 'violet', 'neon', 'plague', 'sunset', 'amber', 'royal', 'blaze', 'storm', 'solar', 'magma', 'gold', 'lagoon', 'platinum', 'steel', 'chrome', 'blood', 'ocean', 'onyx', 'inferno', 'slate', 'abyss', 'obsidian', 'aurora', 'opal', 'glacier', 'prestige', 'frostbite', 'void', 'nebula', 'ivory', 'cosmic', 'radiant', 'eclipse', 'phantom', 'starlight', 'quantum'];
 const BB_MATCH_VOTE_MS = Number(process.env.BB_MATCH_VOTE_MS) || 10000;
 // First side to win this many rounds takes the match — same "kill ends the round, respawn,
 // continue" shape as Firefight's FG_ROUNDS_TO_WIN, just without a round time limit (BB combat has
@@ -4342,17 +4347,18 @@ wss.on('connection', (ws, req) => {
       const account = msg.accountToken ? db.getSessionAccount(String(msg.accountToken)) : null;
       const name = account ? account.username : 'Guest';
       const level = Math.max(1, Math.min(100000, Math.floor(+msg.level) || 1));
+      const skin = BB_SKIN_IDS.includes(String(msg.skin)) ? String(msg.skin) : 'default';
       const id = crypto.randomUUID();
       ws.bbRoom = code;
       ws.bbId = id;
       const entry = {
-        id, name, level, x: 0, y: 0, z: 0, yaw: 0, health: BB_MAX_HEALTH, dueling: false, opponentId: null, duelId: null, lastShotAt: 0, respawnedAt: 0,
+        id, name, level, skin, x: 0, y: 0, z: 0, yaw: 0, health: BB_MAX_HEALTH, dueling: false, opponentId: null, duelId: null, lastShotAt: 0, respawnedAt: 0,
         plateStation: null, plateSide: null, plateSlot: null, matchId: null, matchSide: null, eliminated: false,
       };
       bb.players.set(ws, entry);
       const stations = Object.keys(bb.stations).map((sid) => bbStationSnapshot(bb, sid));
       send(ws, { type: 'bb-init', id, players: [...bb.players.values()].filter((p) => p.id !== id), stations, mapId: bb.currentMapId });
-      broadcastBb(code, { type: 'bb-player-joined', id, name, level, x: 0, y: 0, z: 0, yaw: 0 }, ws);
+      broadcastBb(code, { type: 'bb-player-joined', id, name, level, skin, x: 0, y: 0, z: 0, yaw: 0 }, ws);
       setRoomActivity(code, name, 'bb');
       return;
     }

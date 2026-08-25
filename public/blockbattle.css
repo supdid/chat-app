@@ -361,8 +361,15 @@ html, body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  /* `safe center`, not plain `center`: with 6 solo modes + Online Play now stacked here, this
+     panel can be taller than short/laptop viewports. Plain `center` on an overflowing flex
+     container clips whatever's centered "off the top" with no way to scroll up to it — `safe`
+     falls back to start-alignment once it overflows, so combined with overflow-y below, every
+     mode button and the coin/shop footer stay reachable by scrolling instead of getting cut off. */
+  justify-content: safe center;
+  overflow-y: auto;
   gap: 1rem;
+  padding: 1.5rem 0; /* breathing room top/bottom once this is scrolling */
   background: rgba(6, 14, 22, 0.72);
   backdrop-filter: blur(4px);
   text-align: center;
@@ -422,6 +429,8 @@ html, body {
 #mode-select-footer {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 0.8rem;
   margin-top: 0.3rem;
 }
@@ -450,6 +459,7 @@ html, body {
   border-color: rgba(255, 255, 255, 0.4);
 }
 
+#view-skins-btn,
 #settings-btn {
   border: 1px solid rgba(255, 255, 255, 0.25);
   border-radius: 12px;
@@ -461,6 +471,7 @@ html, body {
   cursor: pointer;
 }
 
+#view-skins-btn:hover,
 #settings-btn:hover {
   background: #2fb6ac;
   color: #04211e;
@@ -642,6 +653,23 @@ html, body {
 }
 #weapon-shop-close-btn:hover { background: rgba(255, 255, 255, 0.18); }
 
+/* Added once the shop grew past a few hundred weapons — the archetype tabs alone were no longer
+   a fast way to find one specific gun. Typing here switches renderWeaponShopGrid into a flat
+   cross-archetype filter and hides the (now-irrelevant) tab row; clearing it goes back to normal
+   tabbed browsing. See the weapon-shop-search input listener in blockbattle.js. */
+#weapon-shop-search {
+  flex-shrink: 0;
+  margin: 0.8rem 1.2rem 0;
+  padding: 0.6rem 0.9rem;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.06);
+  color: #eaf6ff;
+  font-size: 0.9rem;
+}
+#weapon-shop-search::placeholder { color: rgba(234, 246, 255, 0.5); }
+#weapon-shop-search:focus { outline: none; border-color: #2fb6ac; background: rgba(255, 255, 255, 0.1); }
+
 #weapon-shop-tabs {
   display: flex;
   gap: 0.5rem;
@@ -743,6 +771,126 @@ html, body {
 .weapon-card-action.buy.confirming:hover { background: #ff8a5c; }
 .weapon-card-action.owned { background: rgba(47, 182, 172, 0.25); color: #6fe0d3; cursor: default; }
 
+/* Skin Shop — identical structure/treatment to #weapon-shop above (same overlay, header, coin
+   readout, close button, card grid), just without the archetype tabs since all nine skins fit one
+   screen without needing to be split into browsable categories. */
+#skin-shop {
+  position: fixed;
+  inset: 0;
+  z-index: 28;
+  display: flex;
+  flex-direction: column;
+  background: rgba(4, 4, 6, 0.97);
+  color: #eaf6ff;
+}
+
+#skin-shop-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 1.2rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+  flex-shrink: 0;
+}
+
+#skin-shop-title {
+  font-size: 1.3rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+
+#skin-shop-coins {
+  margin-left: auto;
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: #ffd54f;
+}
+
+#skin-shop-close-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.08);
+  color: #eaf6ff;
+  font-size: 1rem;
+  cursor: pointer;
+}
+#skin-shop-close-btn:hover { background: rgba(255, 255, 255, 0.18); }
+
+#skin-shop-sub {
+  padding: 0.7rem 1.2rem 0;
+  font-size: 0.78rem;
+  color: rgba(234, 246, 255, 0.6);
+  flex-shrink: 0;
+}
+
+/* Same treatment as #weapon-shop-search — added for the same reason once the skin list grew past
+   a few dozen entries with no tabs to narrow it down at all. */
+#skin-shop-search {
+  flex-shrink: 0;
+  margin: 0.6rem 1.2rem 0;
+  padding: 0.6rem 0.9rem;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.06);
+  color: #eaf6ff;
+  font-size: 0.9rem;
+}
+#skin-shop-search::placeholder { color: rgba(234, 246, 255, 0.5); }
+#skin-shop-search:focus { outline: none; border-color: #2fb6ac; background: rgba(255, 255, 255, 0.1); }
+
+#skin-shop-grid {
+  flex: 1;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 0.9rem;
+  padding: 1rem 1.2rem 1.6rem;
+  align-content: start;
+}
+
+.skin-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  border-radius: 14px;
+  padding: 0.9rem 0.8rem;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.skin-card-swatch {
+  width: 100%;
+  aspect-ratio: 5 / 3;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.skin-card-name {
+  font-size: 0.88rem;
+  font-weight: 800;
+}
+
+.skin-card-action {
+  margin-top: auto;
+  border: none;
+  border-radius: 10px;
+  padding: 0.5rem;
+  font-size: 0.82rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.skin-card-action.buy { background: #ffd54f; color: #3a2a00; }
+.skin-card-action.buy:hover { background: #ffdf7a; }
+.skin-card-action.buy:disabled { background: rgba(255, 255, 255, 0.12); color: rgba(234, 246, 255, 0.4); cursor: default; }
+.skin-card-action.buy.confirming { background: #ff7043; color: #2a0f00; }
+.skin-card-action.buy.confirming:hover { background: #ff8a5c; }
+.skin-card-action.equip { background: rgba(255, 255, 255, 0.14); color: #eaf6ff; }
+.skin-card-action.equip:hover { background: rgba(255, 255, 255, 0.24); }
+.skin-card-action.equipped { background: rgba(47, 182, 172, 0.25); color: #6fe0d3; cursor: default; }
+
 /* Same "solid near-black, sits above everything" treatment as #weapon-shop — shown the instant
    online mode starts (before any duel/match popup could possibly be relevant yet), so it doesn't
    need a higher z-index than the shop/players panel it shares one with. */
@@ -831,8 +979,15 @@ html, body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  /* Same overflow fix as #mode-select, and more urgent here: this picker shows every weapon
+     you've ever bought from the shop (up to ~250 tiles at the shop's current size) and opens on
+     every single respawn/death, not just once from the mode-select screen — without this, a
+     player who owns more than a screenful of guns would find the loadout picker unusable well
+     before they'd bought anywhere near the full shop. */
+  justify-content: safe center;
+  overflow-y: auto;
   gap: 1.2rem;
+  padding: 1.5rem 0;
   background: rgba(4, 4, 6, 0.94);
   text-align: center;
 }
@@ -842,6 +997,7 @@ html, body {
   font-weight: 800;
   letter-spacing: 0.04em;
   text-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);
+  flex-shrink: 0;
 }
 
 #loadout-grid {
@@ -850,6 +1006,7 @@ html, body {
   justify-content: center;
   gap: 0.9rem;
   width: min(560px, 90vw);
+  flex-shrink: 0;
 }
 
 .loadout-tile {

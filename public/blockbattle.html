@@ -48,12 +48,19 @@
     <div id="mode-buttons">
       <button class="mode-btn" type="button" data-mode="wave">🌊 Wave Challenge<span>Endless waves — blue sidekicks fight at your side</span></button>
       <button class="mode-btn" type="button" data-mode="fs">⚔️ FS<span>4 enemies, back 5 seconds after they fall</span></button>
+      <button class="mode-btn" type="button" data-mode="oneshot">💥 One Shot<span>Endless enemies — one hit kills you AND them</span></button>
+      <button class="mode-btn" type="button" data-mode="headhunter">🎯 Headhunter<span>Endless enemies — only headshots deal damage</span></button>
+      <button class="mode-btn" type="button" data-mode="juggernaut">👹 Juggernaut<span>One boss-sized enemy, 6x health — comes back after it falls</span></button>
+      <button class="mode-btn" type="button" data-mode="berserker">🔪 Berserker<span>Endless enemies — guns do nothing, only the knife kills</span></button>
+      <button class="mode-btn" type="button" data-mode="vampire">🧛 Vampire<span>Endless enemies — every kill heals you</span></button>
+      <button class="mode-btn" type="button" data-mode="swarm">🐝 Swarm<span>8 frail enemies at once — overwhelmed by numbers, not toughness</span></button>
       <button class="mode-btn" type="button" id="online-play-btn">🌐 Online Play<span>Free-roam lobby — no fighting until you challenge someone</span></button>
     </div>
     <div id="mode-select-shards">💎 Jump Shards: <span id="shard-count">0</span>/9</div>
     <div id="mode-select-footer">
       <div id="mode-select-coins">🪙 <span class="bb-coin-count">0</span></div>
       <button id="view-weapons-btn" type="button">🔫 View Weapons</button>
+      <button id="view-skins-btn" type="button">👕 Skins</button>
       <button id="settings-btn" type="button">⚙️ Settings</button>
     </div>
   </div>
@@ -107,8 +114,20 @@
       <div id="weapon-shop-coins">🪙 <span class="bb-coin-count">0</span></div>
       <button id="weapon-shop-close-btn" type="button">✕</button>
     </div>
+    <input type="text" id="weapon-shop-search" placeholder="🔍 Search weapons…" autocomplete="off">
     <div id="weapon-shop-tabs"></div>
     <div id="weapon-shop-grid"></div>
+  </div>
+
+  <div id="skin-shop" class="hidden">
+    <div id="skin-shop-header">
+      <div id="skin-shop-title">Skins</div>
+      <div id="skin-shop-coins">🪙 <span class="bb-coin-count">0</span></div>
+      <button id="skin-shop-close-btn" type="button">✕</button>
+    </div>
+    <div id="skin-shop-sub">Cosmetic only — seen by other players in Online Play's free-roam lobby and duels.</div>
+    <input type="text" id="skin-shop-search" placeholder="🔍 Search skins…" autocomplete="off">
+    <div id="skin-shop-grid"></div>
   </div>
 
   <div id="lobby-hud" class="hidden">
