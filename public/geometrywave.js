@@ -407,6 +407,7 @@ if (typeof document !== 'undefined') {
     }
     let gwSocket = null;
     let gwConnectedLevel = null;
+    let gwRoomFull = false;
     let lastGwPosSent = 0;
     const gwRemotePlayers = new Map(); // id -> { x, y }
 
@@ -439,11 +440,22 @@ if (typeof document !== 'undefined') {
         } else if (data.type === 'gw-player-left') {
           gwRemotePlayers.delete(data.id);
         } else if (data.type === 'gw-full') {
+          gwRoomFull = true;
           gwSocket.close();
           gwSocket = null;
         } else if (data.type === 'gw-leaderboard-result') {
           renderLeaderboard(data.scores || []);
         }
+      });
+      // Without this, a dropped connection (server restart, brief network blip) left every remote
+      // ghost frozen in its last position forever with no indication anything broke and no way to
+      // recover short of reloading the page — same bug webswing.js's connectSw() had and fixed
+      // (see its own close listener for the fuller explanation). Existing ghosts are cleared since
+      // their positions are now stale; a fresh gw-init snapshot repopulates them once reconnected.
+      gwSocket.addEventListener('close', () => {
+        gwRemotePlayers.clear();
+        gwSocket = null;
+        if (!gwRoomFull) setTimeout(() => gwConnect(gwConnectedLevel), 1500);
       });
     }
 
