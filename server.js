@@ -1744,6 +1744,23 @@ function unregisterAccountConnection(ws) {
   if (set.size === 0) accountConnections.delete(ws.accountId);
 }
 
+// Every minigame opens its own independent WebSocket from its own page (see the bc-join comment
+// above), so kick-user/ban-user closing the *chat* connection never touched a target's
+// already-open minigame tab for the same room — they'd stay a fully live participant (and, for
+// ban, remain rejoinable-proof only against a *future* join, per the isBannedFromRoom checks
+// added above, not evicted from a session already in progress). Reuses the exact same ws.on('close')
+// cleanup every other disconnect already goes through — this just triggers it — rather than
+// duplicating each game's own leave*() call here.
+const MINIGAME_ROOM_FIELDS = ['bcRoom', 'gwRoom', 'swRoom', 'fgRoom', 'bbRoom', 'tvRoom', 'ttRoom', 'chRoom', 'hmRoom', 'dgRoom', 'wbRoom', 'arcadeRoom'];
+function evictAccountFromRoomSessions(targetAccountId, roomCode) {
+  if (!targetAccountId) return;
+  const conns = accountConnections.get(targetAccountId);
+  if (!conns) return;
+  for (const c of [...conns]) {
+    if (MINIGAME_ROOM_FIELDS.some((field) => c[field] === roomCode)) c.close(4000, 'Removed from room');
+  }
+}
+
 // Online = has any live connection at all; roomCode/roomName come from whichever of those
 // connections happens to be in a room (picking the first is fine — in practice one account is
 // only ever actually chatting in one room at a time, extra tabs are usually just idle).
@@ -3635,6 +3652,10 @@ wss.on('connection', (ws, req) => {
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       const color = /^#[0-9a-fA-F]{6}$/.test(msg.color || '') ? msg.color : '#2fb6ac';
       if (!code) return;
+      if (db.isBannedFromRoom(code, ws.accountId || null, name)) {
+        send(ws, { type: 'bc-join-error', message: "You've been banned from this room" });
+        return;
+      }
       // Without this, a second bc-join on the same connection for a different room overwrites
       // ws.bcRoom without ever removing this ws from the OLD room's bc.players Map — same class of
       // bug fg-join's own comment documents. The stale entry is unreachable (its ws no longer
@@ -3930,6 +3951,10 @@ wss.on('connection', (ws, req) => {
       const room = rooms.get(ws.bcRoom);
       const me = room && room.bc && room.bc.players.get(ws);
       if (!me) return;
+      // Same mute check every other free-text broadcast in this app respects (room chat, DMs) —
+      // Build Craft's in-game chat is functionally identical (arbitrary text, broadcast to
+      // everyone present) and was letting a muted user route around their mute by opening it.
+      if (room.muted && room.muted.has(me.name)) return;
       const text = String(msg.text || '').slice(0, 300).trim();
       if (!text) return;
       // Same flood gate every other chat-creation path in this app shares (room chat, DMs,
@@ -3986,6 +4011,10 @@ wss.on('connection', (ws, req) => {
       const level = String(msg.level || 'easy').slice(0, 20);
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
+      if (db.isBannedFromRoom(code, ws.accountId || null, name)) {
+        send(ws, { type: 'gw-join-error', message: "You've been banned from this room" });
+        return;
+      }
       // See bc-join's comment on this same guard — a second gw-join for a different room/level
       // combo would otherwise overwrite ws.gwRoom/ws.gwLevel without ever clearing this ws from
       // the OLD level session's players Map, orphaning it (and everything that keeps that room
@@ -4067,6 +4096,10 @@ wss.on('connection', (ws, req) => {
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
+      if (db.isBannedFromRoom(code, ws.accountId || null, name)) {
+        send(ws, { type: 'sw-join-error', message: "You've been banned from this room" });
+        return;
+      }
       if (ws.swRoom === code) return; // see bc-join's comment on this same guard
       if (ws.swRoom) leaveSw(ws);
       const room = getOrCreateRoom(code);
@@ -4173,6 +4206,10 @@ wss.on('connection', (ws, req) => {
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
+      if (db.isBannedFromRoom(code, ws.accountId || null, name)) {
+        send(ws, { type: 'fg-join-error', message: "You've been banned from this room" });
+        return;
+      }
       // A connection already active in this exact session must never re-run slot assignment below
       // — fg.slotA/fg.slotB are only ever checked for truthiness ("is a slot open"), not "is this
       // someone else's connection", so a second fg-join on the same ws could otherwise claim BOTH
@@ -4346,6 +4383,10 @@ wss.on('connection', (ws, req) => {
       // whatever they'd type into a box. An anonymous connection just shows as "Guest".
       const account = msg.accountToken ? db.getSessionAccount(String(msg.accountToken)) : null;
       const name = account ? account.username : 'Guest';
+      if (db.isBannedFromRoom(code, account ? account.id : null, name)) {
+        send(ws, { type: 'bb-join-error', message: "You've been banned from this room" });
+        return;
+      }
       const level = Math.max(1, Math.min(100000, Math.floor(+msg.level) || 1));
       const skin = BB_SKIN_IDS.includes(String(msg.skin)) ? String(msg.skin) : 'default';
       const id = crypto.randomUUID();
@@ -4594,6 +4635,10 @@ wss.on('connection', (ws, req) => {
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
+      if (db.isBannedFromRoom(code, ws.accountId || null, name)) {
+        send(ws, { type: 'tv-join-error', message: "You've been banned from this room" });
+        return;
+      }
       if (ws.tvRoom === code) return; // see bc-join's comment on this same guard
       if (ws.tvRoom) leaveTv(ws);
       const room = getOrCreateRoom(code);
@@ -4684,6 +4729,10 @@ wss.on('connection', (ws, req) => {
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       const game = String(msg.game || '');
       if (!code || !ARCADE_LEADERBOARD_KEY[game]) return;
+      if (db.isBannedFromRoom(code, ws.accountId || null, name)) {
+        send(ws, { type: 'arcade-join-error', message: "You've been banned from this room" });
+        return;
+      }
       ws.arcadeRoom = code;
       ws.arcadeGame = game;
       ws.arcadeName = name;
@@ -4721,6 +4770,10 @@ wss.on('connection', (ws, req) => {
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
+      if (db.isBannedFromRoom(code, ws.accountId || null, name)) {
+        send(ws, { type: 'hm-join-error', message: "You've been banned from this room" });
+        return;
+      }
       if (ws.hmRoom === code) return; // see bc-join's comment on this same guard
       if (ws.hmRoom) leaveHm(ws);
       const room = getOrCreateRoom(code);
@@ -4818,6 +4871,10 @@ wss.on('connection', (ws, req) => {
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
+      if (db.isBannedFromRoom(code, ws.accountId || null, name)) {
+        send(ws, { type: 'ch-join-error', message: "You've been banned from this room" });
+        return;
+      }
       // Same fix as fg-join's — see its comment for the full exploit this closes. Here a repeat
       // join corrupted the game rather than granting a guaranteed win: whiteId/blackId are IDs,
       // not connections, and a second ch-join generates a fresh id and overwrites this ws's single
@@ -4921,6 +4978,10 @@ wss.on('connection', (ws, req) => {
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
+      if (db.isBannedFromRoom(code, ws.accountId || null, name)) {
+        send(ws, { type: 'tt-join-error', message: "You've been banned from this room" });
+        return;
+      }
       // Same fix as ch-join's just above (and fg-join's, which this whole class was originally
       // found in) — a repeat join here permanently soft-locks whichever symbol it "claims" a
       // second time, since xId/oId are stable ids but this ws's single Map entry only ever holds
@@ -5047,6 +5108,10 @@ wss.on('connection', (ws, req) => {
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
+      if (db.isBannedFromRoom(code, ws.accountId || null, name)) {
+        send(ws, { type: 'dg-join-error', message: "You've been banned from this room" });
+        return;
+      }
       if (ws.dgRoom === code) return; // see bc-join's comment on this same guard
       if (ws.dgRoom) leaveDg(ws);
       const room = getOrCreateRoom(code);
@@ -5199,12 +5264,15 @@ wss.on('connection', (ws, req) => {
       if (isWsMsgRateLimited(ws)) return;
       const text = String(msg.text || '').slice(0, 100).trim();
       if (!text) return;
+      // Mute only silences the free-text chat broadcast below (same as real room chat), not the
+      // guessing mechanic itself — a muted player can still submit a correct guess and score.
+      const dgMuted = !!(room.muted && room.muted.has(me.name));
       if (dg.guessedThisRound.has(me.name)) {
         // A player who's already guessed correctly can still chat, but not by typing the literal
         // answer again — this used to broadcast their text unfiltered, letting the secret word
         // leak straight into the guess-chat feed for everyone still trying to guess it.
         if (text.toLowerCase() === String(dg.word || '').toLowerCase()) return;
-        broadcastDg(ws.dgRoom, { type: 'dg-guess-chat', name: me.name, text });
+        if (!dgMuted) broadcastDg(ws.dgRoom, { type: 'dg-guess-chat', name: me.name, text });
         return;
       }
       if (text.toLowerCase() === String(dg.word || '').toLowerCase()) {
@@ -5215,7 +5283,7 @@ wss.on('connection', (ws, req) => {
         broadcastDg(ws.dgRoom, { type: 'dg-correct', id: me.id, name: me.name, points, score: me.score });
         const guessableCount = [...dg.players.values()].filter((p) => !p.isSpectator).length - 1;
         if (guessableCount > 0 && dg.guessedThisRound.size >= guessableCount) endDgRound(ws.dgRoom);
-      } else {
+      } else if (!dgMuted) {
         broadcastDg(ws.dgRoom, { type: 'dg-guess-chat', name: me.name, text });
       }
       return;
@@ -5236,6 +5304,10 @@ wss.on('connection', (ws, req) => {
       const code = String(msg.code || '').toUpperCase().trim();
       const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
       if (!code) return;
+      if (db.isBannedFromRoom(code, ws.accountId || null, name)) {
+        send(ws, { type: 'wb-join-error', message: "You've been banned from this room" });
+        return;
+      }
       if (ws.wbRoom === code) return; // see bc-join's comment on this same guard
       if (ws.wbRoom) leaveWb(ws);
       const room = getOrCreateRoom(code);
@@ -5710,12 +5782,15 @@ wss.on('connection', (ws, req) => {
       const modTarget = resolveModerationTarget(ws, msg);
       if (!modTarget) return;
       const { room, targetName } = modTarget;
+      let targetAccountId = (room.recentAccountsByName && room.recentAccountsByName.get(targetName)) || null;
       for (const client of [...room.clients]) {
         if (client.profile && client.profile.name === targetName) {
+          if (client.accountId) targetAccountId = client.accountId;
           send(client, { type: 'kicked', by: ws.profile.name });
           leaveRoom(client);
         }
       }
+      evictAccountFromRoomSessions(targetAccountId, ws.room);
       return;
     }
 
@@ -5813,6 +5888,7 @@ wss.on('connection', (ws, req) => {
         send(targetClient, { type: 'kicked', by: ws.profile.name });
         leaveRoom(targetClient);
       }
+      evictAccountFromRoomSessions(targetAccountId, ws.room);
       broadcastRoom(ws.room, { type: 'user-banned', name: targetName });
       return;
     }

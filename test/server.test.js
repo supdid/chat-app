@@ -15,17 +15,16 @@ let server;
 before(async () => { server = await startTestServer(); });
 after(async () => { await server.stop(); });
 
-// Mirrors server.js's own BB_MAP_IDS (Block Battle online-lobby map ids) — used only to assert a
-// pre-match/pre-duel map vote actually resolved to one of the real ids, not to exercise the list
-// itself (that's server.js's own concern). Keep in sync if that list ever changes.
-const BB_MAP_IDS_FOR_TEST = [
-  'office', 'office_night', 'office_alert',
-  'warehouse_day', 'warehouse_dusk', 'warehouse_flood', 'warehouse_frost',
-  'rooftop_day', 'rooftop_sunset', 'rooftop_night',
-  'garage_a', 'garage_b', 'garage_c', 'garage_d',
-  'plaza_day', 'plaza_rain', 'plaza_dusk',
-  'gym_basketball', 'gym_volleyball', 'gym_boxing',
-];
+// Used only to assert a pre-match/pre-duel map vote actually resolved to one of the real ids,
+// not to exercise the list itself (that's server.js's own concern). Extracted straight from
+// server.js's source rather than hand-copied — a hand-copied mirror here previously went stale
+// (server.js's BB_MAP_IDS grew from 20 to 200+ entries in a later content-expansion commit,
+// silently breaking every map-vote assertion below since the vote almost always resolved outside
+// the small hand-copied list) and a second manual copy would only be one future edit away from
+// the same failure mode.
+const BB_MAP_IDS_FOR_TEST = new Function(
+  `return ${fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8').match(/const BB_MAP_IDS = (\[[\s\S]*?\]);/)[1]};`
+)();
 
 async function joinRoom(username) {
   const ws = await connectWs();
@@ -480,6 +479,118 @@ describe('room moderation', () => {
     assert.ok(bansAfter.bans.some((b) => b.id === ban.id), "a different room's host must not be able to lift this room's ban");
 
     targetInA.close();
+  });
+});
+
+// Found by a moderation-enforcement-consistency audit: room ban/mute were only ever enforced on
+// the real chat page's own connection (join-room, message, send-dm, etc.) — every minigame opens
+// its own independent WebSocket from its own page (see bc-join's comment in server.js) and none
+// of the 12 *-join handlers checked isBannedFromRoom, and the two minigame free-text channels
+// (bc-chat, dg-guess) never checked room.muted either. Tested representatively (bc-join/bc-chat,
+// one *-join-error shape, and dg-guess's scoring-vs-chat split) rather than exhaustively re-testing
+// all 12 join handlers individually — they share one identical fix shape, same proportional-effort
+// call this app's own test suite has made elsewhere for byte-for-byte identical fixes.
+describe('minigame moderation enforcement', () => {
+  test('a room-banned user cannot join a minigame session (bc-join), even having never joined chat', async () => {
+    const { ws: host, code } = await joinRoom('MgBanHost');
+    send(host, { type: 'ban-user', name: 'MgBanTarget' });
+    await sleep(200);
+
+    const target = await connectWs();
+    send(target, { type: 'bc-join', code, name: 'MgBanTarget' });
+    const result = await waitFor(target, (m) => m.type === 'bc-join-error' || m.type === 'bc-init');
+    assert.equal(result.type, 'bc-join-error', 'a banned name must be rejected from Build Craft the same way join-room rejects it');
+  });
+
+  test('a room-banned user cannot join a second minigame either (dg-join) — the fix is not bc-only', async () => {
+    const { ws: host, code } = await joinRoom('MgBanHost2');
+    send(host, { type: 'ban-user', name: 'MgBanTarget2' });
+    await sleep(200);
+
+    const target = await connectWs();
+    send(target, { type: 'dg-join', code, name: 'MgBanTarget2' });
+    const result = await waitFor(target, (m) => m.type === 'dg-join-error' || m.type === 'dg-init');
+    assert.equal(result.type, 'dg-join-error');
+  });
+
+  test('mute silences Build Craft in-game chat the same way it silences real chat', async () => {
+    const { ws: host, code } = await joinRoom('BcMuteHost');
+    const muted = await connectWs();
+    send(muted, { type: 'bc-join', code, name: 'BcMuteTarget' });
+    await waitFor(muted, (m) => m.type === 'bc-init');
+    const bystander = await connectWs();
+    send(bystander, { type: 'bc-join', code, name: 'BcMuteBystander' });
+    await waitFor(bystander, (m) => m.type === 'bc-init');
+
+    send(host, { type: 'mute-user', name: 'BcMuteTarget' });
+    await waitFor(host, (m) => m.type === 'user-muted');
+
+    let sawChat = false;
+    const h = (data) => { if (JSON.parse(data).type === 'bc-chat') sawChat = true; };
+    bystander.on('message', h);
+    send(muted, { type: 'bc-chat', text: 'should not be seen' });
+    await sleep(300);
+    bystander.off('message', h);
+    assert.equal(sawChat, false, "a muted player's Build Craft chat must not reach other players");
+  });
+
+  test('mute silences Pictionary guess-chat but does not block scoring a correct guess', async () => {
+    const { ws: host, code } = await joinRoom('DgMuteHost');
+    const drawer = await connectWs();
+    send(drawer, { type: 'dg-join', code, name: 'DgMuteDrawer' });
+    await waitFor(drawer, (m) => m.type === 'dg-init');
+    const guesser = await connectWs();
+    send(guesser, { type: 'dg-join', code, name: 'DgMuteGuesser' });
+    await waitFor(guesser, (m) => m.type === 'dg-init');
+    await sleep(150);
+
+    send(host, { type: 'mute-user', name: 'DgMuteGuesser' });
+    await waitFor(host, (m) => m.type === 'user-muted');
+
+    send(drawer, { type: 'dg-start' });
+    const wordPromise = waitFor(drawer, (m) => m.type === 'dg-word');
+    await waitFor(guesser, (m) => m.type === 'dg-round-start');
+    const { word } = await wordPromise;
+
+    let sawWrongChat = false;
+    const h = (data) => { if (JSON.parse(data).type === 'dg-guess-chat') sawWrongChat = true; };
+    drawer.on('message', h);
+    send(guesser, { type: 'dg-guess', text: 'definitelywrong' });
+    await sleep(300);
+    drawer.off('message', h);
+    assert.equal(sawWrongChat, false, "a muted guesser's wrong-guess text must not broadcast as chat");
+
+    send(guesser, { type: 'dg-guess', text: word });
+    const correct = await waitFor(guesser, (m) => m.type === 'dg-correct' && m.name === 'DgMuteGuesser', 2000);
+    assert.equal(correct.points, 3, 'mute silences chat only — the guessing mechanic itself must still work and still score');
+  });
+
+  test('ban evicts a target from an in-progress minigame session, not just the chat room', async () => {
+    const signup = async (username, email) => fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password: 'pass1234', email }),
+    }).then((r) => r.json());
+    const acct = await signup('BcEvictTarget', 'bcevicttarget@test.com');
+
+    const { ws: host, code } = await joinRoom('BcEvictHost');
+    // Same connection does both a real chat join (so ban-user can resolve its accountId the
+    // normal way, via room.clients) and a bc-join (so it's also tracked as a live Build Craft
+    // participant) — verifying the actual invariant under test (an account-linked connection
+    // present in a minigame session gets closed when banned), not the separate-connection
+    // architecture minigames normally use client-side, which is a client detail, not a server one.
+    const target = await joinAsAccount('BcEvictTarget', acct.token, code);
+    send(target, { type: 'bc-join', code, name: 'BcEvictTarget' });
+    await waitFor(target, (m) => m.type === 'bc-init');
+
+    const bystander = await connectWs();
+    send(bystander, { type: 'bc-join', code, name: 'BcEvictBystander' });
+    await waitFor(bystander, (m) => m.type === 'bc-init');
+
+    const leftPromise = waitFor(bystander, (m) => m.type === 'bc-player-left', 3000);
+    const closePromise = new Promise((resolve) => target.on('close', resolve));
+    send(host, { type: 'ban-user', name: 'BcEvictTarget' });
+    await leftPromise;
+    await closePromise;
   });
 });
 
