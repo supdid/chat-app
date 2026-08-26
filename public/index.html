@@ -63,6 +63,13 @@
             <button type="submit" class="icon-btn" aria-label="Save new username">✓</button>
           </form>
           <p id="account-username-error" class="error hidden"></p>
+          <button type="button" id="account-password-toggle-btn" class="link-btn">🔒 Change password</button>
+          <form id="account-password-form" class="rename-room-form hidden">
+            <input id="account-password-current-input" type="password" placeholder="Current password" autocomplete="current-password">
+            <input id="account-password-new-input" type="password" placeholder="New password" autocomplete="new-password">
+            <button type="submit" class="icon-btn" aria-label="Save new password">✓</button>
+          </form>
+          <p id="account-password-error" class="error hidden"></p>
           <button type="button" id="account-signout-btn" class="link-btn">Sign out</button>
         </div>
       </div>

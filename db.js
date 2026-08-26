@@ -963,6 +963,10 @@ function updateAccountUsername(accountId, newUsername) {
   db.prepare('UPDATE accounts SET username = ? WHERE id = ?').run(newUsername, accountId);
 }
 
+function updateAccountPassword(accountId, passwordHash, salt) {
+  db.prepare('UPDATE accounts SET password_hash = ?, salt = ? WHERE id = ?').run(passwordHash, salt, accountId);
+}
+
 // ---- Google sign-in (optional, alongside username/password) — an account created this way has
 // no password_hash/salt (both stay NULL; verifyPassword is never called for it) until/unless the
 // user later sets one, which no UI for yet exists.
@@ -1009,6 +1013,15 @@ function getSessionAccount(token) {
 
 function deleteSession(token) {
   db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+}
+
+// Found by a credential-change-security audit: sessions never expired and the only revocation
+// path (deleteSession) could only ever kill the single token the caller already holds — meaning a
+// leaked token was a permanent, unrecoverable compromise, since a user had no way to invalidate
+// any OTHER session for their own account. Used by the new /account/password route (kills every
+// other session on a real password change) and /auth/logout's new "everywhere" mode.
+function deleteSessionsForAccount(accountId) {
+  db.prepare('DELETE FROM sessions WHERE account_id = ?').run(accountId);
 }
 
 // ---- Account recent rooms (server-side mirror of the client's localStorage recent-rooms list,
@@ -1730,12 +1743,14 @@ module.exports = {
   countAccountsByEmail,
   getAccountById,
   updateAccountUsername,
+  updateAccountPassword,
   createAccountWithGoogle,
   getAccountByGoogleId,
   linkGoogleId,
   createSession,
   getSessionAccount,
   deleteSession,
+  deleteSessionsForAccount,
   upsertAccountRecentRoom,
   getAccountRecentRooms,
   getFriendshipBetween,

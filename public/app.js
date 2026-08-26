@@ -35,6 +35,11 @@ const accountUsernameToggleBtn = document.getElementById('account-username-toggl
 const accountUsernameForm = document.getElementById('account-username-form');
 const accountUsernameFormInput = document.getElementById('account-username-form-input');
 const accountUsernameError = document.getElementById('account-username-error');
+const accountPasswordToggleBtn = document.getElementById('account-password-toggle-btn');
+const accountPasswordForm = document.getElementById('account-password-form');
+const accountPasswordCurrentInput = document.getElementById('account-password-current-input');
+const accountPasswordNewInput = document.getElementById('account-password-new-input');
+const accountPasswordError = document.getElementById('account-password-error');
 const recentRoomsSection = document.getElementById('recent-rooms-section');
 const recentRoomsList = document.getElementById('recent-rooms-list');
 const leaveRoomBtn = document.getElementById('leave-room-btn');
@@ -2994,6 +2999,45 @@ accountUsernameForm.addEventListener('submit', async (e) => {
   } catch (err) {
     accountUsernameError.textContent = err.message;
     accountUsernameError.classList.remove('hidden');
+  }
+});
+
+accountPasswordToggleBtn.addEventListener('click', () => {
+  accountPasswordError.classList.add('hidden');
+  accountPasswordForm.classList.toggle('hidden');
+  if (!accountPasswordForm.classList.contains('hidden')) {
+    accountPasswordCurrentInput.value = '';
+    accountPasswordNewInput.value = '';
+    accountPasswordCurrentInput.focus();
+  }
+});
+
+accountPasswordForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  accountPasswordError.classList.add('hidden');
+  const currentPassword = accountPasswordCurrentInput.value;
+  const newPassword = accountPasswordNewInput.value;
+  if (!currentPassword || !newPassword || !accountToken) return;
+  try {
+    const res = await fetch('/account/password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accountToken}` },
+      body: JSON.stringify({ currentPassword, newPassword }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Something went wrong');
+    // The server invalidated every other session for this account and minted a fresh token for
+    // this one — swap to it so this tab stays signed in seamlessly instead of getting logged out
+    // by its own password change.
+    accountToken = data.token;
+    try { localStorage.setItem(ACCOUNT_TOKEN_KEY, accountToken); } catch {}
+    accountPasswordForm.classList.add('hidden');
+    accountPasswordCurrentInput.value = '';
+    accountPasswordNewInput.value = '';
+    showAppToast('🔒 Password changed — you\'ve been signed out everywhere else');
+  } catch (err) {
+    accountPasswordError.textContent = err.message;
+    accountPasswordError.classList.remove('hidden');
   }
 });
 

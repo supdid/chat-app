@@ -1200,6 +1200,19 @@ app.post('/auth/google', async (req, res) => {
 app.post('/auth/logout', (req, res) => {
   const header = req.get('authorization') || '';
   const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  // "everywhere" mode: found by a credential-change-security audit — this used to only ever be
+  // able to kill the single token the caller already holds, giving a user no way to respond to a
+  // leaked/stolen token for their own account (the only alternative, a password change, didn't
+  // exist as a route at all until the fix alongside this one). Resolves the account from the
+  // presented token first so an arbitrary/forged accountId in the body can't be used to log
+  // someone else out.
+  if (req.body && req.body.everywhere && token) {
+    const account = db.getSessionAccount(token);
+    if (account) {
+      db.deleteSessionsForAccount(account.id);
+      return res.json({ ok: true });
+    }
+  }
   if (token) db.deleteSession(token);
   res.json({ ok: true });
 });
@@ -1232,6 +1245,11 @@ app.post('/account/recent-rooms', (req, res) => {
 // denormalized the old username at write time (chat messages, Scorpture uploads/comments) keeps
 // showing it, same as a room display-name rename leaves old messages alone.
 app.post('/account/username', (req, res) => {
+  // Found by a credential-change-security audit: this was the one /account/* mutation with no
+  // rate limit at all — reusing isAuthRateLimited since it's the same "authenticated but still
+  // shouldn't be hammerable" profile (a username-taken 409 is a token-gated but still unbounded
+  // enumeration oracle without this).
+  if (isAuthRateLimited(req)) return res.status(429).json({ error: 'Too many attempts — try again in a minute' });
   const account = getAccountFromReq(req);
   if (!account) return res.status(401).json({ error: 'Not signed in' });
   const username = String(req.body.username || '').trim();
@@ -1242,6 +1260,33 @@ app.post('/account/username', (req, res) => {
   if (existing && existing.id !== account.id) return res.status(409).json({ error: 'That username is taken' });
   db.updateAccountUsername(account.id, username);
   res.json({ username });
+});
+
+// Found by the same audit as the fixes above: there was no way to change a password at all,
+// meaning a leaked/stolen session token was a permanent, unrecoverable full account takeover —
+// the real owner had no in-app way to invalidate it. Requires the current password (same
+// verifyPassword call login itself uses), then invalidates every OTHER session for this account
+// so a stolen token stops working the moment the real owner notices and changes their password —
+// a fresh token is minted so the tab/device that just made this request stays signed in.
+app.post('/account/password', (req, res) => {
+  if (isAuthRateLimited(req)) return res.status(429).json({ error: 'Too many attempts — try again in a minute' });
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  if (!account.password_hash) {
+    return res.status(400).json({ error: 'This account signed in with Google and has no password to change' });
+  }
+  const currentPassword = String(req.body.currentPassword || '');
+  const newPassword = String(req.body.newPassword || '');
+  if (!verifyPassword(currentPassword, account.salt, account.password_hash)) {
+    return res.status(401).json({ error: 'Current password is incorrect' });
+  }
+  if (newPassword.length < 6) return res.status(400).json({ error: 'New password must be at least 6 characters' });
+  const salt = crypto.randomBytes(16).toString('hex');
+  db.updateAccountPassword(account.id, hashPassword(newPassword, salt), salt);
+  db.deleteSessionsForAccount(account.id);
+  const token = crypto.randomUUID();
+  db.createSession(token, account.id);
+  res.json({ token });
 });
 
 // ---- Friends (account-only — an anonymous per-room display name isn't a stable enough

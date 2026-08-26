@@ -794,6 +794,91 @@ describe('POST /auth/logout actually invalidates the session', () => {
     const after = await fetch(`${BASE_URL}/auth/me`, { headers: { Authorization: `Bearer ${token}` } });
     assert.equal(after.status, 401, 'the same token must be rejected immediately after logout');
   });
+
+  // Found by a credential-change-security audit: logout could previously only ever kill the
+  // single token the caller already holds, giving a user no way to respond to a leaked/stolen
+  // token for their own account from a device where they don't have that exact token.
+  test('"everywhere" mode invalidates every session for the account, not just the one presented', async () => {
+    const signupRes = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'LogoutEverywhereChk', password: 'password123', email: 'logouteverywherecheck@test.com' }),
+    });
+    const { token: tokenA } = await signupRes.json();
+    const loginRes = await fetch(`${BASE_URL}/auth/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'LogoutEverywhereChk', password: 'password123' }),
+    });
+    const { token: tokenB } = await loginRes.json();
+    assert.notEqual(tokenA, tokenB, 'sanity: login must mint a genuinely different token than signup did');
+
+    const meA = await fetch(`${BASE_URL}/auth/me`, { headers: { Authorization: `Bearer ${tokenA}` } });
+    assert.equal(meA.status, 200, 'sanity: both tokens must work before logout');
+
+    const logoutRes = await fetch(`${BASE_URL}/auth/logout`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenB}` },
+      body: JSON.stringify({ everywhere: true }),
+    });
+    assert.equal(logoutRes.status, 200);
+
+    const afterA = await fetch(`${BASE_URL}/auth/me`, { headers: { Authorization: `Bearer ${tokenA}` } });
+    assert.equal(afterA.status, 401, 'a DIFFERENT session for the same account must also be invalidated by "everywhere" logout');
+    const afterB = await fetch(`${BASE_URL}/auth/me`, { headers: { Authorization: `Bearer ${tokenB}` } });
+    assert.equal(afterB.status, 401, 'the session that requested "everywhere" logout must itself be invalidated too');
+  });
+});
+
+describe('POST /account/password', () => {
+  test('requires the correct current password, then invalidates every other session', async () => {
+    const signupRes = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'PasswordChangeCheck', password: 'password123', email: 'passwordchangecheck@test.com' }),
+    });
+    const { token: tokenA } = await signupRes.json();
+    const loginRes = await fetch(`${BASE_URL}/auth/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'PasswordChangeCheck', password: 'password123' }),
+    });
+    const { token: tokenB } = await loginRes.json();
+
+    const wrongRes = await fetch(`${BASE_URL}/account/password`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenA}` },
+      body: JSON.stringify({ currentPassword: 'not-the-real-password', newPassword: 'newpassword456' }),
+    });
+    assert.equal(wrongRes.status, 401, 'the wrong current password must be rejected');
+
+    const changeRes = await fetch(`${BASE_URL}/account/password`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenA}` },
+      body: JSON.stringify({ currentPassword: 'password123', newPassword: 'newpassword456' }),
+    });
+    assert.equal(changeRes.status, 200);
+    const { token: freshToken } = await changeRes.json();
+    assert.ok(freshToken, 'a successful password change must mint a fresh token for the requesting session');
+
+    // The OTHER, previously-valid session (tokenB) must now be dead — this is the actual fix:
+    // a stolen token stops working the moment the real owner changes their password.
+    const bAfter = await fetch(`${BASE_URL}/auth/me`, { headers: { Authorization: `Bearer ${tokenB}` } });
+    assert.equal(bAfter.status, 401, 'every other session must be invalidated by a real password change');
+
+    // The requesting session's OLD token is also dead (superseded by the fresh one returned above)...
+    const aOldAfter = await fetch(`${BASE_URL}/auth/me`, { headers: { Authorization: `Bearer ${tokenA}` } });
+    assert.equal(aOldAfter.status, 401, "the requesting session's own pre-change token must not remain valid");
+    // ...but the fresh token the response handed back works immediately, so that tab/device
+    // doesn't get logged out by its own password change.
+    const freshAfter = await fetch(`${BASE_URL}/auth/me`, { headers: { Authorization: `Bearer ${freshToken}` } });
+    assert.equal(freshAfter.status, 200, 'the newly-issued token from the response must work immediately');
+
+    // The new password must actually be the one that works now.
+    const reloginOld = await fetch(`${BASE_URL}/auth/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'PasswordChangeCheck', password: 'password123' }),
+    });
+    assert.equal(reloginOld.status, 401, 'the old password must no longer work');
+    const reloginNew = await fetch(`${BASE_URL}/auth/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'PasswordChangeCheck', password: 'newpassword456' }),
+    });
+    assert.equal(reloginNew.status, 200, 'the new password must work for a fresh login');
+  });
 });
 
 describe('join-room host auto-claim on a legacy host-less room', () => {
