@@ -2296,6 +2296,50 @@ describe('Scorpture live-stream signaling authorization', () => {
 
     broadcaster.close(); viewer.close();
   });
+
+  // Found by a cross-session id-forgery audit: the broadcaster branch of scorpture-signal
+  // authorized purely by "is this connection's ws.accountId the stream's owner", not by "is this
+  // literally the stream's own on-file connection" — unlike scorpture-end-live, which already
+  // correctly checks stream.ws === ws. A second tab/device signed into the SAME account as an
+  // active broadcaster (not another account — that's not reachable, liveStreams is keyed by the
+  // caller's own authenticated accountId) could inject signaling into that stream's real viewers
+  // despite not holding their actual RTCPeerConnections. Self-harm only (can't reach another
+  // account's stream), but worth closing for consistency with the established pattern.
+  test('scorpture-signal from a second tab of the SAME broadcaster account is not relayed to real viewers', async () => {
+    const realBroadcaster = await connectWs();
+    send(realBroadcaster, { type: 'scorpture-hello', accountToken: ownerToken });
+    await waitFor(realBroadcaster, (m) => m.type === 'scorpture-hello-ack');
+    send(realBroadcaster, { type: 'scorpture-go-live', title: 'Second Tab Test Stream' });
+    await waitFor(realBroadcaster, (m) => m.type === 'scorpture-go-live-ack');
+
+    const viewer = await connectWs();
+    const viewerJoinedPromise = waitFor(realBroadcaster, (m) => m.type === 'scorpture-viewer-joined');
+    send(viewer, { type: 'scorpture-watch-live', streamerUsername: 'ScorpAuthOwner' });
+    await waitFor(viewer, (m) => m.type === 'scorpture-watch-ack' && m.live);
+    const { viewerId } = await viewerJoinedPromise;
+
+    // A second tab of the SAME account — never sent scorpture-go-live itself, so it isn't the
+    // stream's real ws, but ws.accountId still resolves to the same stream via liveStreams.
+    const secondTab = await connectWs();
+    send(secondTab, { type: 'scorpture-hello', accountToken: ownerToken });
+    await waitFor(secondTab, (m) => m.type === 'scorpture-hello-ack');
+
+    let viewerGotForged = false;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'scorpture-signal' && m.signal && m.signal.forged) viewerGotForged = true; };
+    viewer.on('message', h);
+    send(secondTab, { type: 'scorpture-signal', viewerId, signal: { forged: true } });
+    await sleep(300);
+    viewer.off('message', h);
+    assert.equal(viewerGotForged, false, "a second tab of the broadcaster's own account must not be able to inject signaling into the stream's real viewers");
+
+    // Sanity: the real broadcasting tab's own signaling still reaches the viewer.
+    const legitPromise = waitFor(viewer, (m) => m.type === 'scorpture-signal' && m.signal && m.signal.legit);
+    send(realBroadcaster, { type: 'scorpture-signal', viewerId, signal: { legit: true } });
+    const legit = await legitPromise;
+    assert.equal(legit.signal.legit, true);
+
+    realBroadcaster.close(); viewer.close(); secondTab.close();
+  });
 });
 
 describe('Scorpture channel description', () => {

@@ -3670,7 +3670,13 @@ wss.on('connection', (ws, req) => {
       // "connecting" spinner, with no error anywhere.
       if (ws.accountId && msg.viewerId) {
         const stream = liveStreams.get(ws.accountId);
-        const viewerWs = stream && stream.viewers.get(msg.viewerId);
+        // Gate on this actually being the stream's on-file connection, not just "same account as
+        // the broadcaster" — mirrors the check scorpture-end-live already uses. Without it, a
+        // second tab/device signed into the same account as an active broadcaster could inject
+        // signaling into that stream's real viewers despite not holding their RTCPeerConnections
+        // (self-harm only — glitches your own stream's negotiation, can't reach another account's
+        // stream — but the same-tab-only invariant is worth enforcing consistently, not just here).
+        const viewerWs = stream && stream.ws === ws && stream.viewers.get(msg.viewerId);
         if (viewerWs) send(viewerWs, { type: 'scorpture-signal', signal: msg.signal });
         return;
       }
