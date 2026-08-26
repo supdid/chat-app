@@ -6343,7 +6343,10 @@ wss.on('connection', (ws, req) => {
       // a real gap in an otherwise-consistent room-isolation pattern) would surface in that other
       // room's reaction list via db.getReactionsForRoom's join on room_code.
       const reactTarget = db.getMessage(messageId);
-      if (!reactTarget || reactTarget.room_code !== ws.room) return;
+      // Matches edit-message/delete-message, which both already refuse to act on an already-
+      // deleted message — this one didn't, letting a reaction badge appear on a "message
+      // deleted" placeholder. Cosmetic only (still correctly self- and room-scoped either way).
+      if (!reactTarget || reactTarget.room_code !== ws.room || reactTarget.deleted) return;
       // Reactions are still a form of expression a mute is meant to stop — a muted user could
       // otherwise keep reacting (including provocatively) with no restriction at all.
       const reactRoom = rooms.get(ws.room);

@@ -159,6 +159,26 @@ describe('room chat', () => {
     assert.equal(reacted.emoji, '👍');
   });
 
+  // Found by a reaction-integrity audit: unlike edit-message/delete-message (both already refuse
+  // to act on an already-deleted message), react didn't check target.deleted — letting a
+  // reaction badge appear on a "message deleted" placeholder. Cosmetic only, not a security gap
+  // (still correctly self- and room-scoped either way), fixed for consistency with its siblings.
+  test('reacting to an already-deleted message is a no-op', async () => {
+    const { ws } = await joinRoom('ReactDeletedHost');
+    send(ws, { type: 'message', text: 'delete me then react' });
+    const echoed = await waitFor(ws, (m) => m.type === 'message' && m.text === 'delete me then react');
+    send(ws, { type: 'delete-message', messageId: echoed.id });
+    await waitFor(ws, (m) => m.type === 'message-deleted' && m.messageId === echoed.id);
+
+    let sawReaction = false;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'reaction' && m.messageId === echoed.id) sawReaction = true; };
+    ws.on('message', h);
+    send(ws, { type: 'react', messageId: echoed.id, emoji: '👍' });
+    await sleep(300);
+    ws.off('message', h);
+    assert.equal(sawReaction, false, 'reacting to a deleted message must not broadcast a reaction');
+  });
+
   // Posting 55 real-time messages through the flood gate would take the better part of a minute
   // for something that's really a db.js query-shape question — inserted directly into the
   // scratch server's own isolated DB (via its db.js, in-process) instead, same as how this fix
