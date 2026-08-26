@@ -2052,6 +2052,16 @@ function bcClaimOwnedBy(claim, player) {
   if (claim.ownerId) return !!player.stableId && claim.ownerId === player.stableId;
   return claim.owner === player.name;
 }
+// Found by a blueprint/claim-ownership audit: claim.ownerId (the raw client-supplied stableId
+// used for the check above) used to be broadcast verbatim to every room member — trivially
+// readable off the wire, then replayable in a forged bc-join's own playerId to impersonate the
+// victim's ownership and grief inside their claim. Nothing server-side actually needs another
+// player's real stableId; each recipient only ever needs to know "is this claim mine," computed
+// here per-recipient instead of leaking the identity value itself. owner (display name) is still
+// sent — already public within the room the same way any other player name is.
+function bcClaimForClient(claim, player) {
+  return { x: claim.x, z: claim.z, radius: claim.radius, owner: claim.owner, isMine: bcClaimOwnedBy(claim, player) };
+}
 // Sanity bound on a block-change's type index — BLOCK_TYPES (public/buildcraft.js) is currently
 // ~180 entries; comfortably above that with room to grow, bump if that catalog ever exceeds it.
 // Without this, a client sending an out-of-range type (e.g. via raw WebSocket, no UI needed)
@@ -3824,7 +3834,7 @@ wss.on('connection', (ws, req) => {
         overrides: [...room.bc.overrides.entries()],
         players,
         dayNightOffsetMs: room.bc.dayNightOffsetMs || 0,
-        claims: room.bc.claims || [],
+        claims: (room.bc.claims || []).map((c) => bcClaimForClient(c, { stableId, name })),
       });
       broadcastBc(code, { type: 'bc-player-joined', id, name, color }, ws);
       setRoomActivity(code, name, 'bc');
@@ -3989,7 +3999,11 @@ wss.on('connection', (ws, req) => {
       const claim = { x: claimX, z: claimZ, radius: BC_CLAIM_RADIUS, owner: me.name, ownerId: me.stableId || null };
       bc.claims.push(claim);
       db.addBcClaim(ws.bcRoom, claim.x, claim.z, claim.radius, claim.owner, claim.ownerId);
-      broadcastBc(ws.bcRoom, { type: 'bc-claim-added', ...claim });
+      // Per-recipient, not broadcastBc's single shared payload — isMine differs per viewer (see
+      // bcClaimForClient's own comment).
+      for (const [client, p] of bc.players) {
+        if (client.readyState === client.OPEN) send(client, { type: 'bc-claim-added', ...bcClaimForClient(claim, p) });
+      }
       return;
     }
 

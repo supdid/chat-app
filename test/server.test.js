@@ -985,6 +985,50 @@ describe('Build Craft land claims', () => {
     p2.off('message', h);
     assert.equal(p2Broke, false, 'a different stable id sharing the same display name should not inherit claim ownership');
   });
+
+  // Found by a claim-ownership audit: claim.ownerId (the raw stableId the ownership check
+  // above relies on) used to be broadcast verbatim to every room member in both bc-init and
+  // bc-claim-added — trivially readable off the wire, then replayable as a forged bc-join's own
+  // playerId to impersonate the victim's ownership and grief inside their claim. The server now
+  // computes and sends a plain isMine boolean per recipient instead of the raw id.
+  test('claim payloads never leak the raw ownerId; isMine is computed correctly per recipient', async () => {
+    const owner = await connectWs();
+    send(owner, { type: 'bc-join', code: 'BCCLAIM3', name: 'ClaimOwner', playerId: 'real-secret-stable-id' });
+    await waitFor(owner, (m) => m.type === 'bc-init');
+
+    const bystander = await connectWs();
+    send(bystander, { type: 'bc-join', code: 'BCCLAIM3', name: 'ClaimBystander', playerId: 'bystander-stable-id' });
+    await waitFor(bystander, (m) => m.type === 'bc-init');
+    await sleep(150);
+
+    const ownerSeesAddedPromise = waitFor(owner, (m) => m.type === 'bc-claim-added');
+    const bystanderSeesAddedPromise = waitFor(bystander, (m) => m.type === 'bc-claim-added');
+    send(owner, { type: 'bc-claim', x: 200, z: 200 });
+    const [ownerSaw, bystanderSaw] = await Promise.all([ownerSeesAddedPromise, bystanderSeesAddedPromise]);
+
+    assert.equal(ownerSaw.ownerId, undefined, 'bc-claim-added must never include the raw ownerId, even to the owner themself');
+    assert.equal(bystanderSaw.ownerId, undefined, 'bc-claim-added must never include the raw ownerId to a bystander');
+    assert.equal(ownerSaw.isMine, true, 'the actual owner must see isMine: true for their own claim');
+    assert.equal(bystanderSaw.isMine, false, 'a bystander must see isMine: false for someone else\'s claim');
+
+    // A fresh joiner's bc-init must show the same per-recipient isMine split for a
+    // pre-existing claim, and must likewise never include the raw ownerId.
+    const lateJoiner = await connectWs();
+    send(lateJoiner, { type: 'bc-join', code: 'BCCLAIM3', name: 'ClaimLateJoiner', playerId: 'late-stable-id' });
+    const lateInit = await waitFor(lateJoiner, (m) => m.type === 'bc-init');
+    const lateClaim = lateInit.claims.find((c) => c.x === 200 && c.z === 200);
+    assert.ok(lateClaim, 'the pre-existing claim must be present in a fresh joiner\'s bc-init');
+    assert.equal(lateClaim.ownerId, undefined, 'bc-init must never include the raw ownerId');
+    assert.equal(lateClaim.isMine, false, 'a fresh joiner is not the owner of a pre-existing claim');
+
+    const ownerRejoin = await connectWs();
+    send(ownerRejoin, { type: 'bc-join', code: 'BCCLAIM3', name: 'ClaimOwner', playerId: 'real-secret-stable-id' });
+    const ownerReInit = await waitFor(ownerRejoin, (m) => m.type === 'bc-init');
+    const ownerReClaim = ownerReInit.claims.find((c) => c.x === 200 && c.z === 200);
+    assert.equal(ownerReClaim.isMine, true, 'rejoining with the same real stableId must still show isMine: true');
+
+    owner.close(); bystander.close(); lateJoiner.close(); ownerRejoin.close();
+  });
 });
 
 describe('Web Swing PvP', () => {

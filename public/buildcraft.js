@@ -142,7 +142,9 @@ let bcClaims = [];
 // A stable per-browser id, independent of display name, so two players sharing a name (plausible
 // with the default "Player") no longer treat each other's claims as their own. Sent alongside
 // name on bc-join; claims made before this existed have no ownerId and fall back to the old
-// name-based check server-side (see bcClaimOwnedBy in server.js) and here on the client.
+// name-based check server-side (see bcClaimOwnedBy in server.js) — that fallback, and the actual
+// ownerId comparison, both now live server-side only (see bcClaimForClient), which computes and
+// sends a plain isMine boolean per recipient instead of the raw id itself.
 const BC_PLAYER_ID_KEY = 'valk-bc-player-id';
 // Some browsers/modes (Safari private browsing historically, storage-blocking extensions) throw
 // on localStorage access rather than just returning null — this runs at top-level module scope,
@@ -162,10 +164,11 @@ try {
 } catch { /* no-op — fall back to the fresh in-memory id generated above */ }
 
 function isCellClaimedByOther(x, z) {
-  return bcClaims.some((c) => {
-    const mine = c.ownerId ? c.ownerId === bcPlayerId : c.owner === mpPlayerName;
-    return !mine && Math.hypot(x - c.x, z - c.z) <= c.radius;
-  });
+  // isMine is computed server-side now (see bcClaimForClient in server.js) — the server no
+  // longer sends the raw ownerId this used to compare locally, since broadcasting it let anyone
+  // read another player's stableId off the wire and replay it in a forged bc-join to impersonate
+  // their claim ownership.
+  return bcClaims.some((c) => !c.isMine && Math.hypot(x - c.x, z - c.z) <= c.radius);
 }
 
 function blockColor(typeIndex) {
@@ -1352,9 +1355,10 @@ function connectBc(code, name) {
     } else if (data.type === 'bc-block') {
       data.changes.forEach((c) => bcApplyChange(c.x, c.y, c.z, c.t));
     } else if (data.type === 'bc-claim-added') {
-      bcClaims.push({ x: data.x, z: data.z, radius: data.radius, owner: data.owner, ownerId: data.ownerId || null });
-      const claimIsMine = data.ownerId ? data.ownerId === bcPlayerId : data.owner === mpPlayerName;
-      if (!claimIsMine) showToast(`🚩 ${data.owner} claimed some land nearby`);
+      // isMine now comes from the server (see bcClaimForClient in server.js), not a locally
+      // comparable ownerId — the server no longer sends that raw value to other players at all.
+      bcClaims.push({ x: data.x, z: data.z, radius: data.radius, owner: data.owner, isMine: !!data.isMine });
+      if (!data.isMine) showToast(`🚩 ${data.owner} claimed some land nearby`);
     } else if (data.type === 'bc-claim-denied') {
       showToast('🚩 You already have the maximum number of claims');
     } else if (data.type === 'bc-player-joined') {
