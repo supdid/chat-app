@@ -827,7 +827,7 @@ describe('join-room host auto-claim on a legacy host-less room', () => {
   });
 });
 
-describe('/export', () => {
+describe('/export and /search', () => {
   test('GET no longer works; POST requires the correct PIN', async () => {
     const { ws, code } = await joinRoom('ExportHost');
     send(ws, { type: 'set-room-pin', pin: '1234' });
@@ -874,6 +874,28 @@ describe('/export', () => {
     const legitRes = await fetch(`${BASE_URL}/export`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code, name: 'ExportLegit' }),
+    });
+    assert.equal(legitRes.status, 200);
+  });
+
+  // /search has the identical "no live WS session to check a ban against" gap /export had —
+  // same audit, same fix shape, applied here too.
+  test('a room-banned user cannot search the room\'s history by name', async () => {
+    const { ws: host, code } = await joinRoom('SearchBanHost');
+    send(host, { type: 'message', text: 'searchable but should not be to a banned user' });
+    await waitFor(host, (m) => m.type === 'message' && m.text === 'searchable but should not be to a banned user');
+    send(host, { type: 'ban-user', name: 'SearchBanTarget' });
+    await sleep(200);
+
+    const bannedRes = await fetch(`${BASE_URL}/search`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, q: 'searchable', name: 'SearchBanTarget' }),
+    });
+    assert.equal(bannedRes.status, 403);
+
+    const legitRes = await fetch(`${BASE_URL}/search`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, q: 'searchable', name: 'SearchLegit' }),
     });
     assert.equal(legitRes.status, 200);
   });

@@ -614,6 +614,13 @@ app.post('/search', (req, res) => {
   if (!code || !q) return res.json({ results: [] });
   const dbRoom = db.getRoom(code);
   if (!rooms.has(code) && !dbRoom) return res.status(404).json({ error: 'Room not found' });
+  // Same "no live WS session to check ban status on" fix as /export just below — found by the
+  // same room-export-authorization audit, which flagged this route as having the identical gap.
+  const searchAccount = getAccountFromReq(req);
+  const searchName = String(body.name || '').slice(0, 30).trim();
+  if (db.isBannedFromRoom(code, searchAccount ? searchAccount.id : null, searchName)) {
+    return res.status(403).json({ error: "You've been banned from this room" });
+  }
   if (!roomPinOk(dbRoom, body.pin)) return res.status(403).json({ error: 'Incorrect or missing room PIN' });
   res.json({ results: db.searchMessages(code, q, 50) });
 });

@@ -4626,10 +4626,14 @@ searchForm.addEventListener('submit', async (e) => {
     // POST, not a query string — a room PIN in the URL would end up in browser history and any
     // Referer header sent by the page (the /post-image /post-media routes already made this same
     // call via POST body for the same reason; this brings /search in line with that pattern).
+    // name (and the account token, if signed in) are needed server-side to check ban status —
+    // same "no live WS session to gate on" shape /export already needed this for.
+    const searchHeaders = { 'Content-Type': 'application/json' };
+    if (accountToken) searchHeaders.Authorization = `Bearer ${accountToken}`;
     const res = await fetch('/search', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code: currentRoomCode, q, pin: currentRoomPin }),
+      headers: searchHeaders,
+      body: JSON.stringify({ code: currentRoomCode, q, pin: currentRoomPin, name: myProfile ? myProfile.name : '' }),
     });
     const data = await res.json();
     if (myRequestId !== searchRequestId) return;
