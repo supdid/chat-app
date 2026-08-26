@@ -3283,6 +3283,33 @@ describe('more previously-unprotected HTTP routes are now rate-limited', () => {
     await sleep(6500);
   });
 
+  // Found by a TURN-credential-abuse audit: the shared relay (~/valk-turn) has only 10 UDP
+  // relay ports, shared across every local Valk instance. The generic per-IP media-upload gate
+  // this route reused (8/6s) was generous enough that one signed-in account could mint all 10
+  // credentials in ~7 seconds and hold hour-long relay allocations open. The dedicated
+  // per-account limit (5/10s) fires before any network call to the real valk-turn service, so
+  // this is testable without depending on that service being reachable in this environment —
+  // same as every other rate-limit test in this file, only the eventual 429 is asserted on.
+  test('/api/scorpture/turn-credentials is rate-limited per account, tighter than the generic media gate', async () => {
+    const signup = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'TurnCredLimiter', password: 'pass1234', email: 'turncredlimiter@test.com' }),
+    }).then((r) => r.json());
+    const authHeaders = { Authorization: `Bearer ${signup.token}` };
+
+    let sawLimited = false;
+    for (let i = 0; i < 8; i++) {
+      const res = await fetch(`${BASE_URL}/api/scorpture/turn-credentials`, { method: 'POST', headers: authHeaders });
+      if (res.status === 429) sawLimited = true;
+    }
+    assert.ok(sawLimited, 'a burst of 8 requests from one account should eventually hit the dedicated per-account limit');
+  });
+
+  test('/api/scorpture/turn-credentials requires sign-in', async () => {
+    const res = await fetch(`${BASE_URL}/api/scorpture/turn-credentials`, { method: 'POST' });
+    assert.equal(res.status, 401);
+  });
+
   test('/api/scorpture/videos/:id/report is rate-limited (unlike its sibling /like, a bounded toggle)', async () => {
     const signup = await fetch(`${BASE_URL}/auth/signup`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },

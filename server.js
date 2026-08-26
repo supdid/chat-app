@@ -1879,6 +1879,30 @@ app.get('/api/scorpture/live', (req, res) => {
   res.json({ streams });
 });
 
+// Found by a TURN-credential-abuse audit: the shared relay's own port pool (~/valk-turn) is only
+// 10 UDP ports, shared across every local Valk instance (prod/dev/test) — the generic per-IP
+// isPostMediaRateLimited gate below (8/6s, sized for image/media uploads) was generous enough
+// that one signed-in account could mint all 10 credentials in ~7 seconds and hold hour-long
+// relay allocations open, starving every real cross-NAT viewer on every environment. A dedicated,
+// tighter, per-ACCOUNT limit (not just per-IP, since the whole point is one account doing this)
+// closes the fast-mint path while still comfortably covering a real broadcaster's page opening
+// several viewer connections in a normal burst.
+const turnCredentialRateLimits = new Map();
+const TURN_CREDENTIAL_WINDOW_MS = 10000;
+const TURN_CREDENTIAL_MAX = 5;
+function isTurnCredentialRateLimited(accountId) {
+  const now = Date.now();
+  const timestamps = (turnCredentialRateLimits.get(accountId) || []).filter((t) => now - t < TURN_CREDENTIAL_WINDOW_MS);
+  if (timestamps.length >= TURN_CREDENTIAL_MAX) {
+    turnCredentialRateLimits.set(accountId, timestamps);
+    return true;
+  }
+  timestamps.push(now);
+  turnCredentialRateLimits.set(accountId, timestamps);
+  if (turnCredentialRateLimits.size > 10000) turnCredentialRateLimits.clear();
+  return false;
+}
+
 // Mints a short-lived TURN credential from the local valk-turn service (see ~/valk-turn — a
 // separate always-on process shared by every local Valk instance) so live-stream viewers/
 // broadcasters can relay through it when a direct WebRTC P2P path can't be found (e.g. across
@@ -1887,6 +1911,7 @@ app.get('/api/scorpture/live', (req, res) => {
 app.post('/api/scorpture/turn-credentials', async (req, res) => {
   const account = getAccountFromReq(req);
   if (!account) return res.status(401).json({ error: 'Not signed in' });
+  if (isTurnCredentialRateLimited(account.id)) return res.status(429).json({ error: 'Too many requests too quickly' });
   if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many requests too quickly' });
   try {
     const turnRes = await fetch('http://127.0.0.1:3479/credential', { method: 'POST' });
