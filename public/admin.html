@@ -18,6 +18,7 @@
   .approve { background: #2e7d32; color: white; }
   .reject { background: #555; color: white; }
   .empty { color: #666; font-style: italic; }
+  .auth-warning { background: #4a2a1a; border: 1px solid #d98a3d; color: #ffcb8a; border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; font-size: 12px; font-weight: bold; }
   #key-gate { max-width: 400px; margin: 80px auto; text-align: center; }
   input { background: #12141a; border: 1px solid #2c313c; color: #e8e8e8; border-radius: 6px; padding: 8px; width: 100%; box-sizing: border-box; }
 </style>
@@ -190,6 +191,7 @@ async function refresh() {
     const div = document.createElement('div');
     div.className = 'card';
     div.innerHTML = `
+      ${p.touchesAuthSensitiveCode ? '<div class="auth-warning">⚠ This proposal touches auth/authorization-sensitive code — review extra carefully before approving.</div>' : ''}
       <div class="meta">${esc(p.target_file)} — ${new Date(p.created_at).toLocaleString()}</div>
       <div class="explanation">${esc(p.explanation)}</div>
       <pre class="old">${esc(p.old_string)}</pre>

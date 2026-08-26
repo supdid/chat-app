@@ -353,7 +353,11 @@ app.post('/admin/push/unsubscribe', requireAdmin, (req, res) => {
 });
 
 app.get('/admin/patches', requireAdmin, (req, res) => {
-  res.json({ patches: db.getPendingPatchProposals() });
+  const patches = db.getPendingPatchProposals().map((p) => ({
+    ...p,
+    touchesAuthSensitiveCode: patcher.touchesAuthSensitiveCode(p),
+  }));
+  res.json({ patches });
 });
 
 // This app runs as more than one deployed copy on the same machine, each its own systemd user

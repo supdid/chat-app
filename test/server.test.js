@@ -4686,6 +4686,141 @@ describe('Self-healing patcher: target-file allowlist', () => {
   });
 });
 
+describe('Self-healing patcher: global proposal-generation rate cap', () => {
+  // Own instance so its global counter (a module-level variable in patcher.js, one per process)
+  // starts fresh at 0 — sharing the allowlist describe block's instance above would make this test's
+  // outcome depend on how many legitimate-target requests happened to run before it.
+  let patcherServer;
+  before(async () => { patcherServer = await startTestServer({ SYSTEMD_SERVICE_NAME: 'chat-app-test-harness-does-not-exist' }, 3204); });
+  after(async () => { await patcherServer.stop(); });
+
+  test('a 7th distinct-target proposal within the window is capped, even though each target has its own fresh per-target cooldown', async () => {
+    const dirName = path.basename(patcherServer.dir);
+    // 6 distinct legitimate targets (this app's 3 server-side files plus 3 flat public/*.js files)
+    // so none of them trip the separate PER-TARGET cooldown — only the shared global cap can explain
+    // a rejection here. Each still reaches the (credential-less) Anthropic call and gets counted by
+    // isGlobalProposalRateLimited before that call, exactly like the allowlist block's legitimate-
+    // target test above.
+    const targets = ['server.js', 'db.js', 'patcher.js', 'public/app.js', 'public/chess.js', 'public/firefight.js'];
+    for (const target of targets) {
+      const res = await fetch(`http://localhost:${patcherServer.port}/errors/report`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'rate cap warmup', stack: `at foo (/${dirName}/${target}:1:1)` }),
+      });
+      assert.equal(res.status, 200);
+      await sleep(250);
+    }
+    const beforeSeventh = patcherServer.getOutput().length;
+    const seventhRes = await fetch(`http://localhost:${patcherServer.port}/errors/report`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'rate cap trip', stack: `at foo (/${dirName}/public/geometrywave.js:1:1)` }),
+    });
+    assert.equal(seventhRes.status, 200);
+    await sleep(300);
+    const seventhOutput = patcherServer.getOutput().slice(beforeSeventh);
+    assert.match(seventhOutput, /Global proposal-generation cap reached/, 'a 7th distinct-target proposal within the window must be blocked by the global cap');
+    assert.doesNotMatch(seventhOutput, /Claude API call failed/, 'a capped proposal must never reach the actual Anthropic call');
+  });
+});
+
+describe('Self-healing patcher: auth-sensitive-code detection and syntax validation before write', () => {
+  // Deliberately does NOT `require('../patcher')` directly to unit-test touchesAuthSensitiveCode in
+  // isolation — patcher.js requires './db' at module load, and db.js opens (and runs its
+  // CREATE-TABLE-IF-NOT-EXISTS schema setup against) whatever valk.db sits next to wherever it was
+  // required from; required directly from this test file, that's the REAL production database, not
+  // a scratch copy. The HTTP-level test below exercises the exact same function through the
+  // isolated scratch instance's own process instead, with zero risk to production.
+
+  // Own instance (not shared with the two describes above) since these tests seed pending proposal
+  // rows directly into the scratch instance's own sqlite file — real end-to-end generateProposal
+  // never runs in this environment (no ANTHROPIC_API_KEY), so this is the only way to exercise
+  // GET /admin/patches's touchesAuthSensitiveCode field and applyProposal's syntax check at all.
+  let patcherServer, adminKey, Database;
+  before(async () => {
+    Database = require('better-sqlite3');
+    patcherServer = await startTestServer({ SYSTEMD_SERVICE_NAME: 'chat-app-test-harness-does-not-exist' }, 3206);
+    adminKey = JSON.parse(fs.readFileSync(path.join(patcherServer.dir, 'admin-key.json'), 'utf8')).key;
+  });
+  after(async () => { await patcherServer.stop(); });
+
+  function seedProposal({ id, targetFile, oldString, newString }) {
+    const conn = new Database(path.join(patcherServer.dir, 'valk.db'));
+    conn.prepare(
+      `INSERT INTO patch_proposals (id, error_report_id, target_file, old_string, new_string, explanation, status, created_at)
+       VALUES (?, NULL, ?, ?, ?, 'test proposal', 'pending', ?)`
+    ).run(id, targetFile, oldString, newString, Date.now());
+    conn.close();
+  }
+
+  test('GET /admin/patches marks an auth-sensitive proposal but not a benign one', async () => {
+    seedProposal({
+      id: 'test-auth-flag-1',
+      targetFile: 'public/app.js',
+      oldString: 'window.addEventListener',
+      newString: 'if (requireAdmin) {} window.addEventListener',
+    });
+    seedProposal({
+      id: 'test-auth-flag-2',
+      targetFile: 'public/app.js',
+      oldString: 'window.addEventListener',
+      newString: 'window.addEventListener',
+    });
+    const { patches } = await (await fetch(`http://localhost:${patcherServer.port}/admin/patches`, { headers: adminAuth(adminKey) })).json();
+    const flagged = patches.find((p) => p.id === 'test-auth-flag-1');
+    const unflagged = patches.find((p) => p.id === 'test-auth-flag-2');
+    assert.equal(flagged.touchesAuthSensitiveCode, true);
+    assert.equal(unflagged.touchesAuthSensitiveCode, false);
+    // clean these two up so they don't linger and confuse the syntax-validation tests below, which
+    // list/approve by id and don't expect these rows present.
+    const conn = new Database(path.join(patcherServer.dir, 'valk.db'));
+    conn.prepare(`DELETE FROM patch_proposals WHERE id IN ('test-auth-flag-1', 'test-auth-flag-2')`).run();
+    conn.close();
+  });
+
+  test('approving a proposal that would produce invalid JavaScript is refused and leaves the file untouched', async () => {
+    const targetPath = path.join(patcherServer.dir, 'patcher.js');
+    const originalContent = fs.readFileSync(targetPath, 'utf8');
+    seedProposal({
+      id: 'test-bad-syntax-1',
+      targetFile: 'patcher.js',
+      oldString: 'const ROOT = __dirname;',
+      newString: 'const ROOT = __dirname; function broken( {',
+    });
+    const res = await fetch(`http://localhost:${patcherServer.port}/admin/patches/test-bad-syntax-1/approve`, {
+      method: 'POST',
+      headers: adminAuth(adminKey),
+    });
+    const body = await res.json();
+    assert.equal(res.status, 400);
+    assert.match(body.error, /would not be valid JavaScript/);
+    assert.equal(fs.readFileSync(targetPath, 'utf8'), originalContent, 'a rejected patch must never modify the file on disk');
+    const conn = new Database(path.join(patcherServer.dir, 'valk.db'));
+    const row = conn.prepare(`SELECT status FROM patch_proposals WHERE id = ?`).get('test-bad-syntax-1');
+    conn.close();
+    assert.equal(row.status, 'failed');
+  });
+
+  test('approving a proposal that produces valid JavaScript still applies normally (syntax check does not false-positive)', async () => {
+    const targetPath = path.join(patcherServer.dir, 'patcher.js');
+    seedProposal({
+      id: 'test-good-syntax-1',
+      targetFile: 'patcher.js',
+      oldString: 'const ROOT = __dirname;',
+      newString: 'const ROOT = __dirname; // patched by test',
+    });
+    const res = await fetch(`http://localhost:${patcherServer.port}/admin/patches/test-good-syntax-1/approve`, {
+      method: 'POST',
+      headers: adminAuth(adminKey),
+    });
+    const body = await res.json();
+    assert.equal(res.status, 200);
+    assert.equal(body.ok, true);
+    assert.match(fs.readFileSync(targetPath, 'utf8'), /\/\/ patched by test/);
+  });
+});
+
 // Found by a push-notification authorization/target-scoping audit: /push/subscribe and
 // /admin/push/subscribe accepted any subscription.endpoint at face value — the web-push library
 // itself does no origin-checking either, so an attacker supplying their own valid EC subscription

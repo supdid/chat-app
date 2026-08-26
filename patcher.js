@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const vm = require('vm');
 const Anthropic = require('@anthropic-ai/sdk');
 const db = require('./db');
 
@@ -82,6 +83,26 @@ const PATCH_SCHEMA = {
 const PROPOSAL_COOLDOWN_MS = 10 * 60 * 1000;
 const recentProposalAttempts = new Map();
 
+// Found by a self-healing patcher security audit: the per-target-file cooldown above doesn't
+// stop an attacker who simply targets a DIFFERENT one of this app's ~27 legitimate target files
+// each time (server.js/db.js/patcher.js, or any flat public/*.js) — or spreads requests across
+// many IPs, since POST /errors/report's own isErrorReportRateLimited (server.js) is per-IP only.
+// Each real API call here embeds a full target file's content in a billed Anthropic request —
+// a full sweep of every target once per cooldown window would be real, ongoing money. This is a
+// GLOBAL cap (across every target file combined), checked only once credentials are confirmed
+// configured (no point rate-limiting the otherwise-dormant no-API-key case), right before the
+// actual billed call — cheap validation work above this point is unaffected.
+const GLOBAL_PROPOSAL_WINDOW_MS = 60 * 60 * 1000;
+const GLOBAL_PROPOSAL_MAX = 6; // generous for real, organic bugs; a hard ceiling on cost exposure
+let globalProposalTimestamps = [];
+function isGlobalProposalRateLimited() {
+  const now = Date.now();
+  globalProposalTimestamps = globalProposalTimestamps.filter((t) => now - t < GLOBAL_PROPOSAL_WINDOW_MS);
+  if (globalProposalTimestamps.length >= GLOBAL_PROPOSAL_MAX) return true;
+  globalProposalTimestamps.push(now);
+  return false;
+}
+
 async function generateProposal(errorReport) {
   const targetFile = resolveSourceFile(errorReport);
   if (!targetFile) {
@@ -116,6 +137,11 @@ async function generateProposal(errorReport) {
     client = new Anthropic();
   } catch {
     console.log('[patcher] No Anthropic API credentials configured, skipping patch generation');
+    return;
+  }
+
+  if (isGlobalProposalRateLimited()) {
+    console.log(`[patcher] Global proposal-generation cap reached (${GLOBAL_PROPOSAL_MAX}/${GLOBAL_PROPOSAL_WINDOW_MS / 60000}min across all target files combined), skipping`);
     return;
   }
 
@@ -222,6 +248,21 @@ function applyProposal(id) {
   // concatenation) would silently write something different from what was actually proposed and
   // approved. A replacer *function* always uses its return value verbatim, bypassing that.
   const patched = fileContent.replace(proposal.old_string, () => proposal.new_string);
+
+  // Found by a self-healing patcher security audit: nothing previously confirmed the patched
+  // result is even syntactically valid JavaScript before overwriting a real, currently-running
+  // source file with it — an LLM mistake, or a stale/coincidentally-non-unique oldString match on
+  // a since-edited file, could otherwise silently brick the app on its next restart with only a
+  // manually-restored backup as the recovery path. vm.Script parses (compiles) the code without
+  // ever executing it — a pure syntax check, not a code-execution risk of its own — so an invalid
+  // patch is caught and refused before it ever touches disk, rather than written-then-detected.
+  try {
+    new vm.Script(patched, { filename: absPath });
+  } catch (err) {
+    db.setPatchProposalStatus(id, 'failed');
+    throw new Error(`Patched ${proposal.target_file} would not be valid JavaScript, refusing to apply: ${err.message}`);
+  }
+
   // Write-then-rename instead of a direct in-place write: a rename on the same filesystem/directory
   // is atomic, so a crash/OOM/full-disk mid-write can never leave absPath (possibly server.js/
   // db.js/patcher.js itself) truncated or half-written — worst case the .tmp file is left behind
@@ -235,4 +276,21 @@ function applyProposal(id) {
   return { restarted: isServerFile, backupPath };
 }
 
-module.exports = { generateProposal, applyProposal, resolveSourceFile };
+// Found by the same self-healing patcher security audit as the two fixes above: the only
+// protection against a proposal that weakens an auth/moderation check is the soft LLM-level
+// prompt instruction above ("Never propose a change to authentication/authorization checks...")
+// -- not a hard, code-level gate. This doesn't block anything (a legitimate bug fix might
+// genuinely need to touch one of these), but flags it so the admin review UI can surface a loud
+// warning demanding extra scrutiny, rather than a proposal touching auth-sensitive code looking
+// exactly like any other pending proposal in the list.
+const AUTH_SENSITIVE_PATTERNS = [
+  'requireAdmin', 'timingSafeEqual', 'verifyPassword', 'hashPassword', 'password_hash',
+  'isBannedFromRoom', 'getAccountFromReq', 'adminKey', 'admin-key.json', 'roomPinOk',
+  'ownsMessage', 'isAuthRateLimited', 'deleteSessionsForAccount', 'google_id', 'scryptSync',
+];
+function touchesAuthSensitiveCode(proposal) {
+  const haystack = `${proposal.old_string || ''}\n${proposal.new_string || ''}`;
+  return AUTH_SENSITIVE_PATTERNS.some((pattern) => haystack.includes(pattern));
+}
+
+module.exports = { generateProposal, applyProposal, resolveSourceFile, touchesAuthSensitiveCode };
