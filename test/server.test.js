@@ -4068,3 +4068,49 @@ describe('Self-healing patcher: target-file allowlist', () => {
     assert.doesNotMatch(newOutput, /not readable, skipping/, 'server.js must be read successfully, not fail as a missing/unreadable file');
   });
 });
+
+// Found by a push-notification authorization/target-scoping audit: /push/subscribe and
+// /admin/push/subscribe accepted any subscription.endpoint at face value — the web-push library
+// itself does no origin-checking either, so an attacker supplying their own valid EC subscription
+// keys (no browser needed) could register an arbitrary internal host:port and have this server
+// later open an outbound HTTPS connection to it the next time any real push fires. Only the
+// endpoint-allowlist fix is testable without a real external network call (subscribing is
+// rejected before any send is attempted); the ban/mute-push and email-mention-block fixes from
+// the same audit pass were verified by code review only, since this app has no infrastructure —
+// here or anywhere else in this suite — to observe an actual webpush.sendNotification call made
+// from the separate server child process, and asserting on one for real would mean a real,
+// slow, flaky network call to an actual push service.
+describe('push subscription endpoint validation', () => {
+  test('/push/subscribe rejects a non-push-service endpoint', async () => {
+    const res = await fetch(`${BASE_URL}/push/subscribe`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'EndpointCheck', subscription: { endpoint: 'https://evil.internal:8080/probe' } }),
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test('/push/subscribe accepts a real push-service endpoint shape', async () => {
+    const res = await fetch(`${BASE_URL}/push/subscribe`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'EndpointCheck2', subscription: { endpoint: 'https://fcm.googleapis.com/fcm/send/abc123' } }),
+    });
+    assert.equal(res.status, 200);
+  });
+
+  test('/push/subscribe rejects a plain-http endpoint even on an otherwise-allowed host', async () => {
+    const res = await fetch(`${BASE_URL}/push/subscribe`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'EndpointCheck3', subscription: { endpoint: 'http://fcm.googleapis.com/fcm/send/abc123' } }),
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test('/admin/push/subscribe rejects a non-push-service endpoint the same way', async () => {
+    const adminKey = JSON.parse(fs.readFileSync(path.join(server.dir, 'admin-key.json'), 'utf8')).key;
+    const res = await fetch(`${BASE_URL}/admin/push/subscribe`, {
+      method: 'POST', headers: { ...adminAuth(adminKey), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subscription: { endpoint: 'https://evil.internal:8080/probe' } }),
+    });
+    assert.equal(res.status, 400);
+  });
+});

@@ -905,9 +905,9 @@ function removePushSubscription(endpoint) {
 
 function getPushSubscriptionsForRoom(roomCode) {
   return db
-    .prepare('SELECT endpoint, name, subscription_json FROM push_subscriptions WHERE room_code = ?')
+    .prepare('SELECT endpoint, name, account_id, subscription_json FROM push_subscriptions WHERE room_code = ?')
     .all(roomCode)
-    .map((r) => ({ endpoint: r.endpoint, name: r.name, subscription: JSON.parse(r.subscription_json) }));
+    .map((r) => ({ endpoint: r.endpoint, name: r.name, accountId: r.account_id || null, subscription: JSON.parse(r.subscription_json) }));
 }
 
 // Every device an account has ever subscribed push from, across all rooms — used for direct

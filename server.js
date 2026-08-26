@@ -57,6 +57,27 @@ app.use(express.json());
 const vapidKeys = require('./vapid-keys.json');
 webpush.setVapidDetails('mailto:admin@example.com', vapidKeys.publicKey, vapidKeys.privateKey);
 
+// /push/subscribe and /admin/push/subscribe are both otherwise-unauthenticated (by design — a
+// pre-account or non-admin-signed-in browser still needs to be able to subscribe), and previously
+// accepted any subscription.endpoint at face value. The web-push library itself does no
+// origin-checking either (it just url.parse()s whatever's given and issues an https.request() to
+// it) — so an attacker who generates their own valid EC subscription keys (trivial, no browser
+// needed) could register an arbitrary internal host:port as their "endpoint" and this server would
+// later open an outbound HTTPS connection to it the next time any real push fires. This allowlist
+// closes that off at intake; a legitimate browser's PushManager only ever produces an endpoint on
+// one of these hosts.
+const PUSH_ENDPOINT_ALLOWED_HOSTS = [
+  'fcm.googleapis.com', // Chrome/Edge/Android
+  'updates.push.services.mozilla.com', // Firefox
+  'web.push.apple.com', // Safari
+];
+function isValidPushEndpoint(endpoint) {
+  let url;
+  try { url = new URL(endpoint); } catch { return false; }
+  if (url.protocol !== 'https:') return false;
+  return PUSH_ENDPOINT_ALLOWED_HOSTS.some((host) => url.hostname === host || url.hostname.endsWith(`.${host}`));
+}
+
 // The webpush.sendNotification(...).catch(404/410 cleanup) pattern was copy-pasted verbatim at
 // every call site that needed it over many sessions — extracted once. onGone defaults to the
 // regular per-device subscription table; the admin-notifications path is the one caller that
@@ -80,7 +101,11 @@ function pushNewMessage(code, entry) {
   const subs = db.getPushSubscriptionsForRoom(code);
   const body = entry.text || (entry.mediaType ? `sent a${entry.mediaType === 'image' ? 'n' : ''} ${entry.mediaType}` : '');
   const payload = JSON.stringify({ title: entry.name, body, roomCode: code, messageId: entry.id });
-  sendPushToSubs(subs.filter((sub) => sub.name !== entry.name && !connectedNames.has(sub.name)), payload);
+  // A ban is meant to cut someone off from a room entirely — without this, a banned person's
+  // stale subscription row keeps matching every future message forever, since they can never
+  // reconnect to appear in connectedNames. Checked at send time (not deleted on ban) so it also
+  // self-heals correctly if they're later unbanned, with no separate restore-on-unban path needed.
+  sendPushToSubs(subs.filter((sub) => sub.name !== entry.name && !connectedNames.has(sub.name) && !db.isBannedFromRoom(code, sub.accountId, sub.name)), payload);
 }
 
 // Matches an email address typed inline in a chat message, e.g. "jondoe@gmail.com" — used to
@@ -90,7 +115,7 @@ function pushNewMessage(code, entry) {
 // that's the whole point, per the user's ask ("even when they are offline").
 const MENTION_EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
 
-function pushMentionNotifications(code, entry) {
+function pushMentionNotifications(code, entry, senderAccountId) {
   const emails = entry.text ? entry.text.match(MENTION_EMAIL_RE) : null;
   if (!emails) return;
   const seen = new Set();
@@ -102,6 +127,11 @@ function pushMentionNotifications(code, entry) {
     // not just a single account, since there's no longer a 1:1 email-to-account mapping.
     const accounts = db.getAccountsByEmail(email);
     for (const account of accounts) {
+      // Unlike room chat itself (no ACL beyond the room code), this reaches an account
+      // independent of room membership, online status, or having ever been in this room — the
+      // same block enforcement every other cross-account push channel (friend-DM, group-DM)
+      // already respects, which this one had been missing.
+      if (senderAccountId && db.isBlockedBetween(senderAccountId, account.id)) continue;
       const subs = db.getPushSubscriptionsForAccount(account.id);
       if (!subs.length) continue;
       sendPushToSubs(subs, {
@@ -309,6 +339,9 @@ app.get('/admin/push/vapid-public-key', requireAdmin, (req, res) => {
 app.post('/admin/push/subscribe', requireAdmin, (req, res) => {
   const subscription = req.body.subscription;
   if (!subscription || !subscription.endpoint) return res.status(400).json({ error: 'Missing subscription' });
+  if (!isValidPushEndpoint(subscription.endpoint)) {
+    return res.status(400).json({ error: 'Invalid subscription endpoint' });
+  }
   db.addAdminPushSubscription(subscription.endpoint, subscription);
   res.json({ ok: true });
 });
@@ -864,6 +897,9 @@ app.post('/push/subscribe', (req, res) => {
   const subscription = req.body.subscription;
   if (!name || !subscription || !subscription.endpoint) {
     return res.status(400).json({ error: 'Missing name or subscription' });
+  }
+  if (!isValidPushEndpoint(subscription.endpoint)) {
+    return res.status(400).json({ error: 'Invalid subscription endpoint' });
   }
   const account = getAccountFromReq(req);
   db.savePushSubscription(roomCode || null, name, subscription, account ? account.id : null);
@@ -6159,7 +6195,7 @@ wss.on('connection', (ws, req) => {
       db.upsertRoom(ws.room);
       broadcastRoom(ws.room, entry);
       pushNewMessage(ws.room, entry);
-      pushMentionNotifications(ws.room, entry);
+      pushMentionNotifications(ws.room, entry, ws.accountId || null);
       return;
     }
 
