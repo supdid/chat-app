@@ -29,7 +29,7 @@
     <input id="key-input" placeholder="Paste admin key" aria-label="Admin key">
   </div>
   <div id="panel" style="display:none;">
-    <h1>Self-healing panel</h1>
+    <h1>Self-healing panel <button class="reject" id="forget-key-btn" type="button" style="font-size:12px;padding:4px 10px;">Forget admin key</button></h1>
     <h2>Storage cleanup</h2>
     <div class="card">
       <div class="meta">Rooms inactive 90+ days (and their messages/media) are purged automatically once a day.</div>
@@ -75,6 +75,19 @@ async function tryLoad() {
 document.getElementById('key-input').addEventListener('input', async (e) => {
   adminKey = e.target.value.trim();
   if (adminKey.length >= 20) tryLoad();
+});
+
+// Found by a shared-device localStorage audit: this key is a real, permanent (non-rotating)
+// credential granting full admin panel access, stored indefinitely with no logout affordance at
+// all — the only way it was ever cleared was automatically, if the server happened to reject it.
+// A public/shared computer that once loaded this panel kept a working admin credential sitting in
+// localStorage forever, readable by DevTools or by simply loading this page again later.
+document.getElementById('forget-key-btn').addEventListener('click', () => {
+  adminKey = '';
+  try { localStorage.removeItem(KEY_STORAGE); } catch {}
+  document.getElementById('panel').style.display = 'none';
+  document.getElementById('key-gate').style.display = 'block';
+  document.getElementById('key-input').value = '';
 });
 
 function esc(s) {

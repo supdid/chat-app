@@ -2359,6 +2359,17 @@ function signOutAccount() {
   if ('caches' in window) {
     caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k)))).catch(() => {});
   }
+  // Found by the same shared-device audit that flagged the Cache Storage gap above:
+  // syncRecentRoomsFromAccount() (see below) merges an account's full cross-device recent-rooms
+  // history into this same key on sign-in — after sign-out that history stayed on screen (the
+  // landing page's own clickable room chips, no DevTools needed) and one click was enough for the
+  // next person to use this device to join a room the previous account had been in. This app's
+  // room codes have no other access control by design, so that's a direct room-access exposure,
+  // not just a cosmetic leftover. Cleared unconditionally on sign-out (rather than trying to
+  // separate "was this entry here before the account merge" from "did the merge add it") since
+  // that's the simplest correct behavior once an account merge has touched this list at all.
+  try { localStorage.removeItem(RECENT_ROOMS_KEY); } catch {}
+  renderRecentRooms();
   // Account-scoped overlays (friends/DMs/group DMs) were otherwise left open showing the
   // signed-out-out account's data — if a different account then signed in in the same tab,
   // stale friend/DM state could persist on screen until the next explicit fetch.
