@@ -978,12 +978,30 @@ describe('Web Swing PvP', () => {
     assert.equal(duringGrace, false);
   });
 
+  // A raw client sending sw-join then instantly sw-score with an arbitrary value, zero elapsed
+  // session time, used to land — found by a leaderboard-integrity audit. sw-score is an
+  // accumulated pickup/near-miss total with no realistic way to reach a real value instantly,
+  // unlike gw-complete (which deliberately skips this exact gate — a short hand-built level can
+  // legitimately clear in under 3s, see its own comment).
+  test('sw-score requires some minimum elapsed session time, unlike a hand-built level clear', async () => {
+    const ws = await connectWs();
+    send(ws, { type: 'sw-join', code: 'SWMINSESSION1', name: 'InstantSwinger' });
+    await waitFor(ws, (m) => m.type === 'sw-init');
+
+    send(ws, { type: 'sw-score', score: 99999 });
+    await sleep(150);
+    send(ws, { type: 'sw-leaderboard', code: 'SWMINSESSION1' });
+    const tooSoon = await waitFor(ws, (m) => m.type === 'sw-leaderboard-result');
+    assert.ok(!tooSoon.scores.some((s) => s.name === 'InstantSwinger'), 'an instant post-join submission must not land');
+  });
+
   // sw-score was the one leaderboard-writing message with no submission cooldown at all, unlike
   // gw-complete/arcade-submit-score which both reuse ARCADE_SUBMIT_COOLDOWN_MS for exactly this.
   test('sw-score submissions are cooldown-throttled like every other leaderboard write', async () => {
     const ws = await connectWs();
     send(ws, { type: 'sw-join', code: 'SWSCORE1', name: 'Swinger' });
     await waitFor(ws, (m) => m.type === 'sw-init');
+    await sleep(3050); // past the new min-session-time gate, isolating this test to the cooldown
 
     send(ws, { type: 'sw-score', score: 10 });
     await sleep(100);

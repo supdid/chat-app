@@ -4147,6 +4147,7 @@ wss.on('connection', (ws, req) => {
       const id = crypto.randomUUID();
       ws.swRoom = code;
       ws.swId = id;
+      ws.swJoinedAt = Date.now();
       const players = [...room.sw.players.values()].map((p) => ({ id: p.id, name: p.name, x: p.x, y: p.y, z: p.z, yaw: p.yaw }));
       room.sw.players.set(ws, { id, name, x: 0, y: 0, z: 0, yaw: 0, health: SW_MAX_HEALTH, lastStrikeAt: 0, respawnedAt: 0 });
       send(ws, { type: 'sw-init', id, players, health: SW_MAX_HEALTH });
@@ -4224,6 +4225,12 @@ wss.on('connection', (ws, req) => {
       // mitigation reused here; this was the one leaderboard-writing message left with no cooldown
       // at all, letting a client hammer db.bumpLeaderboard with unbounded writes.
       const nowSw = Date.now();
+      // Unlike gw-complete (deliberately skips this — see its own comment on why a short
+      // hand-built level can legitimately clear in under 3s), Web Swing's score is an accumulated
+      // pickup/near-miss total with no realistic way to reach a large value instantly — the
+      // cooldown alone let a fresh connection submit one arbitrary top-of-leaderboard score with
+      // zero elapsed session time. Reuses arcade-submit-score's own min-session-time threshold.
+      if (nowSw - (ws.swJoinedAt || 0) < ARCADE_SUBMIT_MIN_SESSION_MS) return;
       if (nowSw - (ws.lastSwSubmitAt || 0) < ARCADE_SUBMIT_COOLDOWN_MS) return;
       ws.lastSwSubmitAt = nowSw;
       db.bumpLeaderboard(ws.swRoom, 'sw', p.name, score);
