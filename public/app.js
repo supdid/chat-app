@@ -4367,10 +4367,15 @@ exportLink.addEventListener('click', async () => {
   const original = exportLink.textContent;
   exportLink.disabled = true;
   try {
+    // name (and the account token, if signed in) are needed server-side to check ban status —
+    // /export has no live WS session to check ws.room/ws.accountId against, the same "no live
+    // session to gate on" shape /post-image and /post-media already solve, found by an audit.
+    const exportHeaders = { 'Content-Type': 'application/json' };
+    if (accountToken) exportHeaders.Authorization = `Bearer ${accountToken}`;
     const res = await fetch('/export', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code: currentRoomCode, pin: currentRoomPin }),
+      headers: exportHeaders,
+      body: JSON.stringify({ code: currentRoomCode, pin: currentRoomPin, name: myProfile ? myProfile.name : '' }),
     });
     if (!res.ok) throw new Error();
     const blob = await res.blob();

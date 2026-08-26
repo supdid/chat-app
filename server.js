@@ -631,6 +631,15 @@ app.post('/export', (req, res) => {
   const code = String(req.body.code || '').toUpperCase().trim();
   const dbRoom = db.getRoom(code);
   if (!code || (!rooms.has(code) && !dbRoom)) return res.status(404).json({ error: 'Room not found' });
+  // Same "no live WS session to check ban status on" shape /post-image and /post-media already
+  // solve — this route had neither the check nor even the identity fields needed to run one,
+  // found by a room-export-authorization audit. A banned user could otherwise still pull a
+  // room's entire message history through this side door.
+  const exportAccount = getAccountFromReq(req);
+  const exportName = String(req.body.name || '').slice(0, 30).trim();
+  if (db.isBannedFromRoom(code, exportAccount ? exportAccount.id : null, exportName)) {
+    return res.status(403).json({ error: "You've been banned from this room" });
+  }
   if (!roomPinOk(dbRoom, req.body.pin)) return res.status(403).json({ error: 'Incorrect or missing room PIN' });
   const messages = db.getAllMessagesForExport(code);
   const roomLabel = dbRoom && dbRoom.name ? `${dbRoom.name} (${code})` : code;

@@ -853,6 +853,30 @@ describe('/export', () => {
     const text = await okRes.text();
     assert.ok(text.includes('exportable message'));
   });
+
+  // Found by a room-export-authorization audit: /export has no live WS session to check a ban
+  // against (unlike join-room), the same shape /post-image and /post-media already solve — this
+  // route had neither the check nor even the identity fields needed to run one.
+  test('a room-banned user cannot export the room\'s history by name', async () => {
+    const { ws: host, code } = await joinRoom('ExportBanHost');
+    send(host, { type: 'message', text: 'should not be exportable to a banned user' });
+    await waitFor(host, (m) => m.type === 'message' && m.text === 'should not be exportable to a banned user');
+    send(host, { type: 'ban-user', name: 'ExportBanTarget' });
+    await sleep(200);
+
+    const bannedRes = await fetch(`${BASE_URL}/export`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, name: 'ExportBanTarget' }),
+    });
+    assert.equal(bannedRes.status, 403);
+
+    // Sanity: an unrelated, non-banned name can still export normally.
+    const legitRes = await fetch(`${BASE_URL}/export`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, name: 'ExportLegit' }),
+    });
+    assert.equal(legitRes.status, 200);
+  });
 });
 
 describe('minigame activity keeps a room from looking abandoned', () => {
