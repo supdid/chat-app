@@ -2118,6 +2118,116 @@ describe('Scorpture watch-live and signal-relay rate limits', () => {
   });
 });
 
+// Found by a Scorpture-signaling-authorization audit — same underlying failure mode as the
+// voice-room fix above (an identity/association reassignment that doesn't tear down the OLD
+// association first), and the same block-enforcement gap the email-mention push channel had.
+describe('Scorpture live-stream signaling authorization', () => {
+  let ownerToken, otherToken;
+  before(async () => {
+    const signup = async (username) => fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password: 'pass1234', email: `${username.toLowerCase()}@test.com` }),
+    }).then((r) => r.json());
+    const [a, b] = await Promise.all([signup('ScorpAuthOwner'), signup('ScorpAuthOther')]);
+    ownerToken = a.token;
+    otherToken = b.token;
+  });
+
+  test('re-authenticating as a different account mid-connection ends the OLD account\'s live stream, not orphans it', async () => {
+    const broadcaster = await connectWs();
+    send(broadcaster, { type: 'scorpture-hello', accountToken: ownerToken });
+    await waitFor(broadcaster, (m) => m.type === 'scorpture-hello-ack');
+    send(broadcaster, { type: 'scorpture-go-live', title: 'Orphan Test Stream' });
+    await waitFor(broadcaster, (m) => m.type === 'scorpture-go-live-ack');
+
+    const viewer = await connectWs();
+    send(viewer, { type: 'scorpture-watch-live', streamerUsername: 'ScorpAuthOwner' });
+    await waitFor(viewer, (m) => m.type === 'scorpture-watch-ack' && m.live);
+
+    // The exploit shape: the SAME still-open connection re-authenticates as a totally different
+    // account, without ever sending scorpture-end-live for the first one.
+    const streamEndedPromise = waitFor(viewer, (m) => m.type === 'scorpture-stream-ended');
+    send(broadcaster, { type: 'scorpture-hello', accountToken: otherToken });
+    await waitFor(broadcaster, (m) => m.type === 'scorpture-hello-ack');
+    await streamEndedPromise;
+
+    const live = await fetch(`${BASE_URL}/api/scorpture/live`).then((r) => r.json());
+    assert.ok(!live.streams.some((s) => s.username === 'ScorpAuthOwner'), 'the old account\'s stream must not remain listed as live forever');
+
+    broadcaster.close(); viewer.close();
+  });
+
+  test('a blocked account cannot watch-live', async () => {
+    const blockRes = await fetch(`${BASE_URL}/friends/block`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}` },
+      body: JSON.stringify({ username: 'ScorpAuthOther' }),
+    });
+    assert.equal(blockRes.status, 200);
+
+    const broadcaster = await connectWs();
+    send(broadcaster, { type: 'scorpture-hello', accountToken: ownerToken });
+    await waitFor(broadcaster, (m) => m.type === 'scorpture-hello-ack');
+    send(broadcaster, { type: 'scorpture-go-live', title: 'Block Test Stream' });
+    await waitFor(broadcaster, (m) => m.type === 'scorpture-go-live-ack');
+
+    const blockedViewer = await connectWs();
+    send(blockedViewer, { type: 'scorpture-hello', accountToken: otherToken });
+    await waitFor(blockedViewer, (m) => m.type === 'scorpture-hello-ack');
+    send(blockedViewer, { type: 'scorpture-watch-live', streamerUsername: 'ScorpAuthOwner' });
+    const ack = await waitFor(blockedViewer, (m) => m.type === 'scorpture-watch-ack');
+    assert.equal(ack.live, false, 'a blocked account must not be allowed to watch this stream');
+
+    // Sanity: an unrelated, non-blocked viewer can still watch normally.
+    const legitViewer = await connectWs();
+    send(legitViewer, { type: 'scorpture-watch-live', streamerUsername: 'ScorpAuthOwner' });
+    const legitAck = await waitFor(legitViewer, (m) => m.type === 'scorpture-watch-ack');
+    assert.equal(legitAck.live, true, 'the block must not accidentally break watching for everyone else');
+
+    broadcaster.close(); blockedViewer.close(); legitViewer.close();
+  });
+
+  // Distinct scenario from the watch-live test above: here the viewer starts watching legitimately
+  // BEFORE any block exists (so watch-live's own block check never applies), then gets blocked
+  // WHILE still registered as a live viewer — live-chat's own independent check is what has to
+  // catch this, not watch-live's.
+  test('a live-chat message is dropped once the viewer and streamer become blocked mid-watch', async () => {
+    const signup = async (username) => fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password: 'pass1234', email: `${username.toLowerCase()}@test.com` }),
+    }).then((r) => r.json());
+    const chatOther = await signup('ScorpAuthChatOther');
+
+    const broadcaster = await connectWs();
+    send(broadcaster, { type: 'scorpture-hello', accountToken: ownerToken });
+    await waitFor(broadcaster, (m) => m.type === 'scorpture-hello-ack');
+    send(broadcaster, { type: 'scorpture-go-live', title: 'Mid-Watch Block Test Stream' });
+    await waitFor(broadcaster, (m) => m.type === 'scorpture-go-live-ack');
+
+    const viewer = await connectWs();
+    send(viewer, { type: 'scorpture-hello', accountToken: chatOther.token });
+    await waitFor(viewer, (m) => m.type === 'scorpture-hello-ack');
+    send(viewer, { type: 'scorpture-watch-live', streamerUsername: 'ScorpAuthOwner' });
+    const ack = await waitFor(viewer, (m) => m.type === 'scorpture-watch-ack');
+    assert.equal(ack.live, true, 'sanity: watching must succeed while unblocked');
+
+    const blockRes = await fetch(`${BASE_URL}/friends/block`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}` },
+      body: JSON.stringify({ username: 'ScorpAuthChatOther' }),
+    });
+    assert.equal(blockRes.status, 200);
+
+    let ownerSawChat = false;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'scorpture-live-chat') ownerSawChat = true; };
+    broadcaster.on('message', h);
+    send(viewer, { type: 'scorpture-live-chat', text: 'should not be delivered' });
+    await sleep(300);
+    broadcaster.off('message', h);
+    assert.equal(ownerSawChat, false, "a since-blocked viewer's live-chat must not reach the streamer, even though they're still a registered viewer");
+
+    broadcaster.close(); viewer.close();
+  });
+});
+
 describe('Scorpture channel description', () => {
   test('owner can set, update, and clear a channel description; a stranger cannot', async () => {
     const signup = async (username) => fetch(`${BASE_URL}/auth/signup`, {

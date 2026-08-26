@@ -34,15 +34,18 @@ async function startTestServer(envOverrides = {}, port = TEST_PORT) {
 
   const proc = spawn('node', ['server.js'], {
     cwd: dir,
-    // WS_CONNECT_LIMIT_MAX/AUTH_LIMIT_MAX default sky-high here: every test in this suite
-    // connects/signs up from the same loopback IP, simulating many distinct real users who'd
-    // never actually share one IP in practice — the per-IP limits that protect real deployments
-    // would otherwise starve later tests' setup steps once the shared instance's connection/
-    // signup count climbs past the production default over a full suite run (AUTH_LIMIT_MAX's
-    // 60s window in particular spans a large fraction of a full run by itself). A test that wants
-    // to verify one of these limiters itself overrides it back down on its own dedicated instance
-    // (see the "per-IP WS connection rate limit" and "/auth/google is rate-limited" tests).
-    env: { ...process.env, PORT: String(port), WS_CONNECT_LIMIT_MAX: '1000000', AUTH_LIMIT_MAX: '1000000', ...envOverrides },
+    // WS_CONNECT_LIMIT_MAX/AUTH_LIMIT_MAX/FRIENDS_ACTION_MAX default sky-high here: every test in
+    // this suite connects/signs up/blocks-or-friends from the same loopback IP, simulating many
+    // distinct real users who'd never actually share one IP in practice — the per-IP limits that
+    // protect real deployments would otherwise starve later tests' setup steps once the shared
+    // instance's connection/signup/friends-action count climbs past the production default over a
+    // full suite run (AUTH_LIMIT_MAX's 60s window in particular spans a large fraction of a full
+    // run by itself; FRIENDS_ACTION_MAX's default of 20/60s is even easier to exhaust, found by a
+    // Scorpture-signaling test that needed 2 real /friends/block calls near the end of a full run).
+    // A test that wants to verify one of these limiters itself overrides it back down on its own
+    // dedicated instance (see the "per-IP WS connection rate limit" and "/auth/google is
+    // rate-limited" tests).
+    env: { ...process.env, PORT: String(port), WS_CONNECT_LIMIT_MAX: '1000000', AUTH_LIMIT_MAX: '1000000', FRIENDS_ACTION_MAX: '1000000', ...envOverrides },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';

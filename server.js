@@ -1037,7 +1037,7 @@ function isErrorReportRateLimited(req) {
 // from being queried at unlimited speed. Same per-IP Map pattern as the limiters above.
 const friendsActionRateLimits = new Map();
 const FRIENDS_ACTION_WINDOW_MS = 60000;
-const FRIENDS_ACTION_MAX = 20;
+const FRIENDS_ACTION_MAX = Number(process.env.FRIENDS_ACTION_MAX) || 20;
 function isFriendsActionRateLimited(req) {
   const ip = req.ip || 'unknown';
   const now = Date.now();
@@ -1425,6 +1425,10 @@ app.get('/api/scorpture/videos/:id', (req, res) => {
 function notifyScorptureSubscribers(channelId, payload) {
   const subscriberIds = db.getScorptureSubscriberIds(channelId);
   for (const subscriberId of subscriberIds) {
+    // Same block enforcement every other cross-account push channel already respects (friend-DM,
+    // group-DM) — a subscription predates a block, so without this a channel owner's new-video/
+    // went-live push would keep reaching someone they'd since blocked (or been blocked by).
+    if (db.isBlockedBetween(channelId, subscriberId)) continue;
     sendPushToSubs(db.getPushSubscriptionsForAccount(subscriberId), payload);
   }
 }
@@ -1766,7 +1770,17 @@ function registerAccountConnection(ws, accountId) {
   // unregisterAccountConnection runs using whatever ws.accountId is *by then* (the new account),
   // still never cleaning up the stale old-account entry. Same stale-identity-mapping bug class as
   // voice's leaveVoice fix elsewhere in this file, just via ws.accountId instead of a sub key.
-  if (ws.accountId && ws.accountId !== accountId) unregisterAccountConnection(ws);
+  // Same reassignment also has to tear down a live Scorpture broadcast under the OLD account id
+  // first — liveStreams is keyed by accountId, so switching ws.accountId out from under an active
+  // broadcaster (found by a signaling-authorization audit) would otherwise leave that stream
+  // permanently orphaned: scorpture-end-live and the eventual close-handler cleanup both look up
+  // liveStreams by *current* ws.accountId, so neither could ever reach it again, and its real
+  // viewers would keep waiting on signaling that can never arrive.
+  if (ws.accountId && ws.accountId !== accountId) {
+    const oldStream = liveStreams.get(ws.accountId);
+    if (oldStream && oldStream.ws === ws) endScorptureLive(ws.accountId);
+    unregisterAccountConnection(ws);
+  }
   ws.accountId = accountId;
   if (!accountConnections.has(accountId)) accountConnections.set(accountId, new Set());
   accountConnections.get(accountId).add(ws);
@@ -3585,6 +3599,13 @@ wss.on('connection', (ws, req) => {
         send(ws, { type: 'scorpture-watch-ack', live: false });
         return;
       }
+      // Watching is anonymous-by-design (no sign-in required), but a signed-in viewer who's
+      // blocked (either direction) shouldn't be able to watch/signal with this streamer at all —
+      // same block enforcement every other cross-account channel already respects.
+      if (ws.accountId && db.isBlockedBetween(streamerAccount.id, ws.accountId)) {
+        send(ws, { type: 'scorpture-watch-ack', live: false });
+        return;
+      }
       // A connection can only ever watch one stream at a time (ws.scorptureViewerId is a single
       // scalar field) — clear out any prior viewer registration first, whether it's for this same
       // stream or a different one. Without this, repeated watch-live calls from the same socket
@@ -3662,10 +3683,13 @@ wss.on('connection', (ws, req) => {
       if (!text || !ws.accountId) return;
       const account = db.getAccountById(ws.accountId);
       if (!account) return;
-      const stream = ws.scorptureStreamerAccountId
-        ? liveStreams.get(ws.scorptureStreamerAccountId)
-        : liveStreams.get(ws.accountId);
+      const streamerAccountId = ws.scorptureStreamerAccountId || ws.accountId;
+      const stream = liveStreams.get(streamerAccountId);
       if (!stream) return;
+      // Same block enforcement every other cross-account channel already respects — a no-op when
+      // streamerAccountId is this same sender's own id (the broadcaster chatting in their own
+      // stream), since an account can't be blocked with itself.
+      if (db.isBlockedBetween(ws.accountId, streamerAccountId)) return;
       // Same flood gate as regular chat/DM messages — was missing here, letting an unthrottled
       // viewer spam every other viewer + the streamer at unlimited speed.
       if (isWsMsgRateLimited(ws)) return;
