@@ -1406,6 +1406,48 @@ describe('voice call signaling requires the sender to actually be on the call', 
 
     a.close(); c.close();
   });
+
+  // Found by a voice-signaling-authorization audit: join-room/create-room assigned ws.room
+  // directly with no cleanup of a PRIOR ws.room the same connection already held — unlike every
+  // *-join minigame handler, which all guard against this exact "second join, no leave" shape.
+  // A raw client could join room A's voice call, then switch to room B via create-room/join-room
+  // without ever sending leave-room/voice-leave first, leaving a permanently live, invisible
+  // entry in room A's voice Map — reachable for real SDP/ICE signaling from any future joiner of
+  // A's call, with no departure notice ever sent to A's real participants.
+  test('switching rooms without leaving first evicts the old room\'s voice entry, not just leaves it orphaned', async () => {
+    const { ws: host, code: codeA } = await joinRoom('RoomSwitchHostA');
+    send(host, { type: 'voice-join' });
+    await waitFor(host, (m) => m.type === 'voice-peers');
+
+    const attacker = await joinExistingRoom('RoomSwitchAttacker', codeA);
+    // Registered before the triggering send, not after awaiting attacker's own reply — the
+    // server broadcasts to host in the same handler invocation that replies to attacker, so
+    // awaiting attacker's reply first risks host's message arriving with no listener attached
+    // yet (same "two sockets, one trigger" pitfall this file's own history already documents).
+    const hostSeesAttackerJoinPromise = waitFor(host, (m) => m.type === 'voice-peer-joined' && m.name === 'RoomSwitchAttacker');
+    send(attacker, { type: 'voice-join' });
+    await waitFor(attacker, (m) => m.type === 'voice-peers');
+    const hostSeesAttackerJoin = await hostSeesAttackerJoinPromise;
+    assert.ok(hostSeesAttackerJoin, 'sanity: the attacker really is a live voice participant of room A before switching away');
+
+    // The exploit shape: switch to a brand-new room via create-room, WITHOUT ever sending
+    // leave-room or voice-leave for room A first — exactly what a real browser client never does
+    // (it always leave-rooms first), but nothing server-side enforced it either.
+    const hostSeesAttackerLeave = waitFor(host, (m) => m.type === 'voice-peer-left');
+    send(attacker, { type: 'create-room' });
+    await waitFor(attacker, (m) => m.type === 'joined-room');
+    const left = await hostSeesAttackerLeave;
+    assert.ok(left, 'room A must be told the attacker left the moment they switch rooms, not silently keep them as a live peer');
+
+    // The real-world symptom: a fresh joiner to room A's call must not see the departed attacker
+    // as a peer at all — before the fix, this stale entry would still be there forever.
+    const lateJoiner = await joinExistingRoom('RoomSwitchLateJoiner', codeA);
+    send(lateJoiner, { type: 'voice-join' });
+    const latePeers = await waitFor(lateJoiner, (m) => m.type === 'voice-peers');
+    assert.ok(!latePeers.peers.some((p) => p.name === 'RoomSwitchAttacker'), 'the attacker must not remain a reachable voice-signaling target in the room they switched away from');
+
+    host.close(); attacker.close(); lateJoiner.close();
+  });
 });
 
 describe('whiteboard stroke sanitization', () => {

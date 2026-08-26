@@ -5599,6 +5599,14 @@ wss.on('connection', (ws, req) => {
         return;
       }
       ws.roomCreateTimestamps.push(nowCreate);
+      // Without this, a connection already in another room that sends create-room instead of
+      // leave-room first overwrites ws.room with no cleanup of the OLD room at all — same "second
+      // join, no leave" bug class bc-join/gw-join/etc. all guard against, just never applied here.
+      // The old room's room.clients entry and (worse) its room.voice entry, if this connection had
+      // an open voice call, both stay resident and reachable forever: a real disconnect later only
+      // ever cleans up whatever room ws.room *currently* points to, permanently orphaning the old
+      // one as a live, silently-still-participating voice-signaling target nobody else can see.
+      if (ws.room) leaveRoom(ws);
       const code = generateRoomCode();
       db.upsertRoom(code);
       db.setRoomHostIfUnset(code, ws.profile.name);
@@ -5633,6 +5641,11 @@ wss.on('connection', (ws, req) => {
           return;
         }
       }
+      // Same fix as create-room's just above — a connection switching rooms via join-room without
+      // ever sending leave-room first left the OLD room's client/voice entries permanently
+      // orphaned. Skipped when it's the same room (a real client re-requesting full state, e.g.
+      // after navigating to a minigame and back — that's an intentional, harmless no-op re-join).
+      if (ws.room && ws.room !== code) leaveRoom(ws);
       const room = getOrCreateRoom(code);
       // Room-scoped features (kick/mute-by-name, DMs, read receipts, push-suppression-by-name)
       // all assume one connection per display name per room. A same-named connection already
