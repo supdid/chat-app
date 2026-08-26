@@ -2349,6 +2349,16 @@ function signOutAccount() {
   accountUsername = null;
   localStorage.removeItem(ACCOUNT_TOKEN_KEY);
   localStorage.removeItem(ACCOUNT_USERNAME_KEY);
+  // Found by a service-worker cache security audit: the SW's own fetch handler no longer caches
+  // personalized responses going forward (fixed alongside this), but this clears out anything a
+  // PRE-fix version of the worker already wrote to Cache Storage for this account, and is cheap
+  // defense-in-depth against any future regression — without this, a shared/public computer could
+  // have let the next person to use it read the signed-out account's cached data straight out of
+  // Cache Storage (DevTools, or the SW's offline fallback), since server-side session revocation
+  // alone never touches anything client-cached.
+  if ('caches' in window) {
+    caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k)))).catch(() => {});
+  }
   // Account-scoped overlays (friends/DMs/group DMs) were otherwise left open showing the
   // signed-out-out account's data — if a different account then signed in in the same tab,
   // stale friend/DM state could persist on screen until the next explicit fetch.

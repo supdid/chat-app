@@ -1,6 +1,6 @@
 // Bump this on every deploy. Changing it is what makes the browser see sw.js as a new file, which
 // is what puts a worker into the "waiting" state and raises the update screen (see update-prompt.js).
-const CACHE_NAME = 'valk-cache-v203';
+const CACHE_NAME = 'valk-cache-v204';
 const APP_SHELL = [
   '/',
   '/index.html',
@@ -42,11 +42,13 @@ self.addEventListener('fetch', (event) => {
   const { request } = event;
   if (request.method !== 'GET' || !request.url.startsWith(self.location.origin)) return;
 
-  const isStaticAsset = /\.(png|jpg|jpeg|webp|woff2?)$/.test(new URL(request.url).pathname);
+  const pathname = new URL(request.url).pathname;
+  const isStaticAsset = /\.(png|jpg|jpeg|webp|woff2?)$/.test(pathname);
 
   if (isStaticAsset) {
     event.respondWith(
       caches.match(request).then((cached) => cached || fetch(request).then((res) => {
+        if (!res.ok) return res; // don't let a transient error response get cached as if valid
         const copy = res.clone();
         // event.waitUntil keeps the worker alive until this settles — without it, the cache
         // write was fire-and-forget (respondWith's promise resolves with `res` immediately,
@@ -61,9 +63,29 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // Found by a service-worker cache security audit: this branch used to catch every OTHER
+  // same-origin GET request with no further scoping — including personalized/authenticated JSON
+  // API responses (/friends [social graph, including who's blocked], /admin/* [error stack
+  // traces, moderation reports], /account/*, /auth/me). Cache Storage's match key is just the
+  // request URL — the Authorization header isn't part of it — so those were written to
+  // disk-backed cache unconditionally on every successful fetch, readable via DevTools/profile
+  // filesystem access indefinitely, and (via the offline .catch fallback) servable back to a
+  // LATER, possibly different, user of the same device with no check that it's even the same
+  // account. Scoped to an ALLOWLIST of actual static app-shell file types (by extension, plus the
+  // root path) rather than a denylist of "known personalized" path prefixes — a denylist needs
+  // updating every time a new personalized route is added (exactly the "one route missed" bug
+  // shape this app has hit repeatedly elsewhere), while an extension allowlist makes a brand-new
+  // API route safe from caching by default, with nothing to remember.
+  const isAppShellFile = pathname === '/' || /\.(html|js|css|json)$/.test(pathname);
+  if (!isAppShellFile) {
+    event.respondWith(fetch(request));
+    return;
+  }
+
   event.respondWith(
     fetch(request)
       .then((res) => {
+        if (!res.ok) return res;
         const copy = res.clone();
         event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)));
         return res;
