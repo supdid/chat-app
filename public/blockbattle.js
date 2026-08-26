@@ -314,6 +314,15 @@ const SHOP_ARCHETYPES = [
   { key: 'gravitygun', label: 'Gravity Guns', icon: '🌀', basePrice: 260,
     base: { damage: 55, interval: 1.3, mag: 3, reload: 2.4, headshot: 90 },
     names: ['Singularity Prime', 'Pull Vector', 'Massdriver', 'Warp Anchor', 'Event Horizon', 'Crush Field', 'Orbit Break', 'Gravwell', 'Collapse Point', 'Final Pull'] },
+  { key: 'paintballgun', label: 'Paintball Guns', icon: '🎨', basePrice: 35,
+    base: { damage: 6, interval: 0.12, mag: 20, reload: 1.4, headshot: 10, auto: true },
+    names: ['Splatter Prime', 'Rec League', 'Backyard Brawler', 'Color Burst', 'Weekend Warrior', 'Marker Special', 'Field Day', 'Bunker Buster', 'Paint the Town', 'Last Splat'] },
+  { key: 'vortexcannon', label: 'Vortex Cannons', icon: '🌪️', basePrice: 210,
+    base: { damage: 48, interval: 1.5, mag: 2, reload: 2.6, headshot: 75 },
+    names: ['Cyclone Prime', 'Funnel Break', 'Downdraft', 'Twister Core', 'Pressure Drop', 'Squall Line', 'Maelstrom', 'Windshear', 'Vortex Prime', 'Final Gust'] },
+  { key: 'gasgun', label: 'Gas Guns', icon: '☠️', basePrice: 85,
+    base: { damage: 14, interval: 0.8, mag: 5, reload: 1.9, headshot: 20 },
+    names: ['Fumigator', 'Choke Point', 'Vapor Trail', 'Miasma', 'Bad Air Day', 'Toxic Waft', 'Pressure Vent', 'Chem Cloud', 'Green Haze', 'Last Breath'] },
 ];
 // Tier scaling applied within each archetype (tier 1 = base stats as written above): damage/mag/
 // price climb, interval/reload shrink (faster fire, faster reload) — every tier is a genuine,
