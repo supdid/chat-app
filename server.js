@@ -985,7 +985,14 @@ const USERNAME_FAIL_WINDOW_MS = 10 * 60 * 1000;
 // Overridable via env, same as the upload-sweep timers above, so the regression suite can verify
 // this fires without needing 20 real requests (which would trip the stricter per-IP auth limiter
 // first, since every test request comes from the same IP). Unset in production, no effect there.
-const USERNAME_FAIL_MAX = Number(process.env.USERNAME_FAIL_MAX) || 20;
+// `?? ` (not `||`) on every env-overridable constant below and elsewhere in this file — found by
+// a sweep for this exact footgun (already independently discovered and fixed once for
+// FG_RESPAWN_GRACE_MS/BB_RESPAWN_GRACE_MS above: `Number(process.env.X) || default` silently
+// ignores a real, intentional `X=0` override, since 0 is falsy). None of these currently have a
+// test that needs a literal 0, so this was latent, not live — fixed anyway since it's a one-token
+// change with zero behavior difference for every value except 0/unset, closing off the same class
+// of bug before it bites a future test the way it already did for the two constants above.
+const USERNAME_FAIL_MAX = Number(process.env.USERNAME_FAIL_MAX ?? 20);
 function isUsernameFailRateLimited(username) {
   const key = username.toLowerCase();
   const now = Date.now();
@@ -1053,7 +1060,7 @@ function isErrorReportRateLimited(req) {
 // from being queried at unlimited speed. Same per-IP Map pattern as the limiters above.
 const friendsActionRateLimits = new Map();
 const FRIENDS_ACTION_WINDOW_MS = 60000;
-const FRIENDS_ACTION_MAX = Number(process.env.FRIENDS_ACTION_MAX) || 20;
+const FRIENDS_ACTION_MAX = Number(process.env.FRIENDS_ACTION_MAX ?? 20);
 function isFriendsActionRateLimited(req) {
   const ip = req.ip || 'unknown';
   const now = Date.now();
@@ -2128,9 +2135,9 @@ function fgUnlockedWeapons(totalKills) {
 // Overridable via env, same pattern as several other constants in this file — lets the regression
 // suite exercise a full round/intermission/match cycle in milliseconds instead of real minutes.
 // Unset in production, no effect there.
-const FG_ROUND_MS = Number(process.env.FG_ROUND_MS) || 90 * 1000;
-const FG_INTERMISSION_MS = Number(process.env.FG_INTERMISSION_MS) || 6 * 1000;
-const FG_ROUNDS_TO_WIN = Number(process.env.FG_ROUNDS_TO_WIN) || 4;
+const FG_ROUND_MS = Number(process.env.FG_ROUND_MS ?? 90 * 1000);
+const FG_INTERMISSION_MS = Number(process.env.FG_INTERMISSION_MS ?? 6 * 1000);
+const FG_ROUNDS_TO_WIN = Number(process.env.FG_ROUNDS_TO_WIN ?? 4);
 // Same reasoning as SW_RESPAWN_GRACE_MS — a freshly-respawned/round-reset player's position isn't
 // updated server-side until their next ~100ms-throttled fg-pos, so without this a shot fired in
 // that window could land using stale position data against someone who should be safe.
@@ -2195,11 +2202,11 @@ const BB_MAP_IDS = [
 // (that's client-side THREE.js material colors), only that a claimed id is a real one before it
 // gets forwarded on to every other player in the lobby.
 const BB_SKIN_IDS = ['default', 'khaki', 'sand', 'forest', 'rust', 'coral', 'ember', 'arctic', 'crimson', 'garnet', 'copper', 'toxic', 'shadow', 'teal', 'jade', 'indigo', 'violet', 'neon', 'plague', 'sunset', 'amber', 'royal', 'blaze', 'storm', 'solar', 'magma', 'gold', 'lagoon', 'platinum', 'steel', 'chrome', 'blood', 'ocean', 'onyx', 'inferno', 'slate', 'abyss', 'obsidian', 'aurora', 'opal', 'glacier', 'prestige', 'frostbite', 'void', 'nebula', 'ivory', 'cosmic', 'radiant', 'eclipse', 'phantom', 'starlight', 'quantum'];
-const BB_MATCH_VOTE_MS = Number(process.env.BB_MATCH_VOTE_MS) || 10000;
+const BB_MATCH_VOTE_MS = Number(process.env.BB_MATCH_VOTE_MS ?? 10000);
 // First side to win this many rounds takes the match — same "kill ends the round, respawn,
 // continue" shape as Firefight's FG_ROUNDS_TO_WIN, just without a round time limit (BB combat has
 // never had one; a round here only ends on an elimination).
-const BB_ROUNDS_TO_WIN = Number(process.env.BB_ROUNDS_TO_WIN) || 5;
+const BB_ROUNDS_TO_WIN = Number(process.env.BB_ROUNDS_TO_WIN ?? 5);
 
 function bbMapTally(votesMap) {
   const tally = {};
@@ -2522,8 +2529,8 @@ const RATE_LIMIT_MAX_MESSAGES = 8; // generous for real typing/conversation, tig
 // a real improvement — without meaningfully risking false positives against legitimate bursts.
 // Overridable via env (see below) so the regression suite can verify the mechanism with a small
 // number of connections instead of needing hundreds; unset in production, no effect there.
-const WS_CONNECT_LIMIT_WINDOW_MS = Number(process.env.WS_CONNECT_LIMIT_WINDOW_MS) || 60 * 1000;
-const WS_CONNECT_LIMIT_MAX = Number(process.env.WS_CONNECT_LIMIT_MAX) || 60;
+const WS_CONNECT_LIMIT_WINDOW_MS = Number(process.env.WS_CONNECT_LIMIT_WINDOW_MS ?? 60 * 1000);
+const WS_CONNECT_LIMIT_MAX = Number(process.env.WS_CONNECT_LIMIT_MAX ?? 60);
 const wsConnectRateLimits = new Map();
 function isWsConnectRateLimited(ip) {
   const now = Date.now();
@@ -2570,7 +2577,7 @@ const AUTH_LIMIT_WINDOW_MS = 60000;
 // this window (they all come from one loopback IP, simulating many real, distinct users who'd
 // never actually share an IP), and would otherwise start 429ing unrelated tests' setup steps once
 // enough of the suite had run. Unset in production, no effect there.
-const AUTH_LIMIT_MAX = Number(process.env.AUTH_LIMIT_MAX) || 8; // signup/login call scryptSync (CPU-bound, synchronous) — cheap to flood without this
+const AUTH_LIMIT_MAX = Number(process.env.AUTH_LIMIT_MAX ?? 8); // signup/login call scryptSync (CPU-bound, synchronous) — cheap to flood without this
 const BC_DAY_CYCLE_MS = 20 * 60 * 1000; // must match DAY_CYCLE_MS on the client
 const BC_SLEEP_PHASE_TARGET = 0.27; // roughly sunrise — same constant the client uses to render it
 const BC_SPAWN = { x: 0, y: 2.4, z: 0, yaw: 0 }; // feet-level spawn (matches yawObject.position.set(0,4,0) minus EYE_HEIGHT)
@@ -6535,7 +6542,7 @@ const ROOM_RETENTION_DAYS = 90;
 // Overridable in milliseconds so the regression suite can verify a real purge (and everything it
 // should cascade-delete) in milliseconds instead of waiting 90 real days — same pattern as
 // UPLOAD_CLAIM_GRACE_MS below. Unset in production, so this has no effect there.
-const ROOM_RETENTION_MS = Number(process.env.ROOM_RETENTION_MS) || ROOM_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+const ROOM_RETENTION_MS = Number(process.env.ROOM_RETENTION_MS ?? ROOM_RETENTION_DAYS * 24 * 60 * 60 * 1000);
 const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 function deleteUploadFile(mediaUrl) {
@@ -6575,8 +6582,8 @@ setInterval(cleanupInactiveRooms, CLEANUP_INTERVAL_MS);
 // balanced against not leaving a sustained-abuse window open too long.
 // Overridable via env so the regression suite can verify real sweep behavior in milliseconds
 // instead of minutes — unset in production, so this has no effect there.
-const UPLOAD_CLAIM_GRACE_MS = Number(process.env.UPLOAD_CLAIM_GRACE_MS) || 15 * 60 * 1000;
-const UPLOAD_SWEEP_INTERVAL_MS = Number(process.env.UPLOAD_SWEEP_INTERVAL_MS) || 5 * 60 * 1000;
+const UPLOAD_CLAIM_GRACE_MS = Number(process.env.UPLOAD_CLAIM_GRACE_MS ?? 15 * 60 * 1000);
+const UPLOAD_SWEEP_INTERVAL_MS = Number(process.env.UPLOAD_SWEEP_INTERVAL_MS ?? 5 * 60 * 1000);
 function sweepOrphanedUploads() {
   const cutoff = Date.now() - UPLOAD_CLAIM_GRACE_MS;
   let swept = 0;

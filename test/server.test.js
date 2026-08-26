@@ -3284,6 +3284,26 @@ describe('per-IP WS connection rate limit', () => {
       await connLimitServer.stop();
     }
   });
+
+  // Found by a sweep for the same footgun already independently caught once for
+  // FG_RESPAWN_GRACE_MS/BB_RESPAWN_GRACE_MS: `Number(process.env.X) || default` silently ignores
+  // a real `X=0` override since 0 is falsy. WS_CONNECT_LIMIT_MAX=0 is a sharp, easy-to-observe
+  // case — with the bug, `Number('0') || 60` falls back to 60 and the very first connection would
+  // succeed; with the fix (`??`), it stays 0 and even the first connection is immediately closed.
+  test('WS_CONNECT_LIMIT_MAX=0 actually takes effect, not silently falling back to the default', async () => {
+    const zeroLimitServer = await startTestServer({ WS_CONNECT_LIMIT_MAX: '0' }, 3211);
+    try {
+      const ws = new WebSocket(`ws://localhost:${zeroLimitServer.port}`);
+      const closeCode = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('the connection was never closed — WS_CONNECT_LIMIT_MAX=0 did not take effect')), 3000);
+        ws.on('close', (code) => { clearTimeout(timer); resolve(code); });
+        ws.on('open', () => { /* handshake completing doesn't mean the server accepted it — see the comment above */ });
+      });
+      assert.equal(closeCode, 1013, 'with the limit truly at 0, even the first connection must be rejected');
+    } finally {
+      await zeroLimitServer.stop();
+    }
+  });
 });
 
 describe('WS max payload size', () => {
