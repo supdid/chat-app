@@ -2693,13 +2693,19 @@ function leaveVoice(ws) {
   // still shows up as a "participant" (and a dead signaling target) to everyone who joins the
   // call afterward. Searching by the actual ws reference finds it regardless of which sub it was
   // filed under.
-  let sub = null, entry = null;
+  // Collects every matching sub, not just the first — a voice-join sent again after a mid-call
+  // ws.profile reassignment (see the comment above) adds a SECOND entry for this same ws under
+  // the new sub, alongside the still-present old one; breaking after one match left that second
+  // entry permanently orphaned (found by a systematic sweep for this exact bug shape).
+  const staleSubs = [];
   for (const [s, e] of voice) {
-    if (e.ws === ws) { sub = s; entry = e; break; }
+    if (e.ws === ws) staleSubs.push(s);
   }
-  if (!entry) return;
-  voice.delete(sub);
-  for (const peer of voice.values()) send(peer.ws, { type: 'voice-peer-left', sub });
+  if (!staleSubs.length) return;
+  for (const sub of staleSubs) {
+    voice.delete(sub);
+    for (const peer of voice.values()) send(peer.ws, { type: 'voice-peer-left', sub });
+  }
   if (voice.size === 0) {
     const room = rooms.get(code);
     if (room) delete room.voice;
@@ -4800,6 +4806,16 @@ wss.on('connection', (ws, req) => {
         send(ws, { type: 'arcade-join-error', message: "You've been banned from this room" });
         return;
       }
+      // Every other minigame *-join handler guards against a repeat join overwriting its room
+      // field with no cleanup of the OLD room's activity entry first (see bc-join's own comment
+      // on this same shape) — arcade-join was the one handler missing it (found by a systematic
+      // sweep for this bug class). Without this, a second arcade-join for a different room/name
+      // left the OLD room's setRoomActivity entry permanently orphaned: neither arcade-leave nor
+      // WS-close cleanup can reach it once ws.arcadeRoom/ws.arcadeName point elsewhere. Clearing
+      // unconditionally (rather than adding an early-return skip for an identical repeat join,
+      // unlike bc-join etc.) keeps every existing response this handler already sends unchanged
+      // for the real client, which only ever calls this once per page load anyway.
+      if (ws.arcadeRoom && ws.arcadeName) clearRoomActivity(ws.arcadeRoom, ws.arcadeName);
       ws.arcadeRoom = code;
       ws.arcadeGame = game;
       ws.arcadeName = name;
@@ -6041,6 +6057,13 @@ wss.on('connection', (ws, req) => {
       // voice-leave re-fires voice-peer-joined at every existing peer each time, forcing every
       // participant's browser to spin up a fresh RTCPeerConnection.
       if (isWsMsgRateLimited(ws)) return;
+      // A prior voice-join under an old ws.profile.sub (e.g. join-server firing again mid-call,
+      // see leaveVoice's own comment) must be purged before adding a new entry — otherwise this
+      // same connection ends up with two live entries in room.voice, one of them forever orphaned
+      // (found by a systematic sweep for this session's "reassigned identity field" bug class).
+      // Called before voiceRoom() creates/fetches the Map so a resulting empty-room teardown
+      // (leaveVoice deletes room.voice when it empties) doesn't race with a stale local reference.
+      leaveVoice(ws);
       const code = ws.room;
       const voice = voiceRoom(code, true);
       const sub = ws.profile.sub;

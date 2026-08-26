@@ -1117,6 +1117,35 @@ describe('arcade leaderboard submission throttle', () => {
     const result = await waitFor(ws, (m) => m.type === 'arcade-leaderboard');
     assert.ok(result.scores.some((s) => s.score === 42));
   });
+
+  // Found by a systematic sweep for the "second join, no leave" bug class this session's other
+  // fixes already closed everywhere else — arcade-join was the one minigame *-join handler with
+  // no such guard at all, unlike bc-join/gw-join/etc. A repeat join for a different room left the
+  // OLD room's room.activity entry (the "X is playing Y" badge shown to real chat-page members)
+  // permanently orphaned, since neither arcade-leave nor WS-close cleanup can reach it once
+  // ws.arcadeRoom points elsewhere.
+  test('switching arcade rooms without leaving first clears the old room\'s activity badge', async () => {
+    const { ws: hostA, code: codeA } = await joinRoom('ArcadeSwitchHostA');
+    const { ws: hostB, code: codeB } = await joinRoom('ArcadeSwitchHostB');
+
+    const hostASeesJoin = waitFor(hostA, (m) => m.type === 'room-activity' && m.activity.some((a) => a.name === 'ArcadeSwitcher'));
+    const player = await connectWs();
+    send(player, { type: 'arcade-join', code: codeA, name: 'ArcadeSwitcher', game: 'snake' });
+    await waitFor(player, (m) => m.type === 'arcade-leaderboard');
+    const activityA = await hostASeesJoin;
+    // The stored `game` field is ARCADE_ACTIVITY_CODE's mapped short code ('sk' for snake), not
+    // the raw 'snake' key arcade-join was sent with.
+    assert.ok(activityA.activity.some((a) => a.name === 'ArcadeSwitcher' && a.game === 'sk'), 'sanity: joining really does register a room-activity entry');
+
+    // The exploit shape: switch to a different room's arcade WITHOUT arcade-leave first.
+    const hostASeesClear = waitFor(hostA, (m) => m.type === 'room-activity' && !m.activity.some((a) => a.name === 'ArcadeSwitcher'));
+    send(player, { type: 'arcade-join', code: codeB, name: 'ArcadeSwitcher', game: '2048' });
+    await waitFor(player, (m) => m.type === 'arcade-leaderboard');
+    const clearedA = await hostASeesClear;
+    assert.ok(!clearedA.activity.some((a) => a.name === 'ArcadeSwitcher'), "room A's activity badge must clear the moment the player switches to room B's arcade, not stay stuck forever");
+
+    hostA.close(); hostB.close(); player.close();
+  });
 });
 
 describe('room DMs', () => {
@@ -1447,6 +1476,47 @@ describe('voice call signaling requires the sender to actually be on the call', 
     assert.ok(!latePeers.peers.some((p) => p.name === 'RoomSwitchAttacker'), 'the attacker must not remain a reachable voice-signaling target in the room they switched away from');
 
     host.close(); attacker.close(); lateJoiner.close();
+  });
+
+  // Found by a systematic sweep for the same "identity field reassigned without tearing down the
+  // old association" bug class as the two fixes above: a second voice-join after ws.profile gets
+  // reassigned (join-server firing again mid-call — see leaveVoice's own comment on why that
+  // happens) used to add a SECOND room.voice entry for the same connection under the new sub,
+  // leaving the old one orphaned forever (leaveVoice only ever removed the first match it found).
+  test('a voice-join after a mid-call profile reassignment does not leave a duplicate orphaned entry', async () => {
+    const { ws: host, code } = await joinRoom('VoiceDupeHost');
+    send(host, { type: 'voice-join' });
+    await waitFor(host, (m) => m.type === 'voice-peers');
+
+    const mover = await joinExistingRoom('VoiceDupeMover', code);
+    const hostSeesFirstJoinPromise = waitFor(host, (m) => m.type === 'voice-peer-joined');
+    send(mover, { type: 'voice-join' });
+    await waitFor(mover, (m) => m.type === 'voice-peers');
+    const hostSeesFirstJoin = await hostSeesFirstJoinPromise;
+    const oldSub = hostSeesFirstJoin.sub;
+
+    // Simulate the mid-call reassignment: the same still-open connection sends join-server again
+    // (a real, documented scenario — signing into an account mid-session), which mints a fresh
+    // sub, then rejoins the call without ever sending voice-leave first.
+    send(mover, { type: 'join-server', username: 'VoiceDupeMover' });
+    const reInit = await waitFor(mover, (m) => m.type === 'joined-server');
+    assert.notEqual(reInit.profile.sub, oldSub, 'sanity: join-server must actually reassign a fresh sub');
+
+    const hostSeesOldLeave = waitFor(host, (m) => m.type === 'voice-peer-left' && m.sub === oldSub);
+    send(mover, { type: 'voice-join' });
+    const newPeers = await waitFor(mover, (m) => m.type === 'voice-peers');
+    assert.equal(newPeers.peers.length, 1, 'the rejoin must see exactly the host as a peer, not a leftover self-entry under the old sub');
+    const oldLeft = await hostSeesOldLeave;
+    assert.ok(oldLeft, 'the stale old-sub entry must be actively purged (announced as a departure), not just silently left as a duplicate');
+
+    // The real-world symptom: everyone hanging up must actually end the call — a leftover
+    // duplicate entry under a closed-out sub would keep room.voice non-empty forever.
+    const callEndedPromise = waitFor(host, (m) => m.type === 'voice-call-ended');
+    send(host, { type: 'voice-leave' });
+    send(mover, { type: 'voice-leave' });
+    await callEndedPromise;
+
+    host.close(); mover.close();
   });
 });
 
