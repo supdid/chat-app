@@ -748,6 +748,13 @@ function handleServerMessage(data) {
       // once reopened anyway, so there's no reason to leave the old room's grid showing.
       galleryOverlay.classList.add('hidden');
       seedReactions(data.reactions);
+      // read_receipts was being persisted server-side on every real read event but never sent
+      // back on join — found by a read-receipt-integrity audit. Without this, a client
+      // joining/reconnecting saw no "seen by" info until each other member's next natural read
+      // event happened to re-fire it. readReceiptsByName was already cleared above; this just
+      // seeds it from the server's persisted state before the message render loop below (which
+      // is what actually triggers renderSeenBy()) runs.
+      (data.readReceipts || []).forEach((r) => readReceiptsByName.set(r.name, r.messageId));
       seedActivity(data.activity);
       pinnedMessages = data.pins || [];
       renderPinnedBanner();

@@ -150,6 +150,34 @@ describe('room chat', () => {
     assert.equal(receipt.name, 'ReadReceiptHostB');
   });
 
+  // Found by a read-receipt-integrity audit: read_receipts was faithfully persisted on every
+  // real 'read' (correct identity, correct room-scoping, rate-limited) but never read back —
+  // joined-room hydrates reactions/pins from the DB but was missing the equivalent for read
+  // receipts, so a client joining/reconnecting saw no "seen by" info until each other member's
+  // next natural read event happened to re-fire it.
+  test('joined-room hydrates read receipts persisted before this connection joined', async () => {
+    const { ws: host, code } = await joinRoom('ReadHydrateHost');
+    const watcher = await joinExistingRoom('ReadHydrateWatcher', code);
+    send(host, { type: 'message', text: 'read before you join' });
+    const posted = await waitFor(host, (m) => m.type === 'message' && m.text === 'read before you join');
+    const receiptPromise = waitFor(host, (m) => m.type === 'read-receipt' && m.messageId === posted.id);
+    send(watcher, { type: 'read', messageId: posted.id });
+    await receiptPromise;
+
+    // A fresh connection joins the SAME room afterward — its own joined-room payload must
+    // already include the watcher's persisted receipt, not just future live broadcasts.
+    const lateJoiner = await connectWs();
+    send(lateJoiner, { type: 'join-server', username: 'ReadHydrateLate' });
+    await waitFor(lateJoiner, (m) => m.type === 'joined-server');
+    send(lateJoiner, { type: 'join-room', code });
+    const joined = await waitFor(lateJoiner, (m) => m.type === 'joined-room');
+    const receipt = (joined.readReceipts || []).find((r) => r.name === 'ReadHydrateWatcher');
+    assert.ok(receipt, 'joined-room must include a persisted read receipt from before this connection joined');
+    assert.equal(receipt.messageId, posted.id);
+
+    host.close(); watcher.close(); lateJoiner.close();
+  });
+
   test('reactions round-trip', async () => {
     const { ws } = await joinRoom('ReactHost');
     send(ws, { type: 'message', text: 'react to me' });

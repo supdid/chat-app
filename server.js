@@ -5734,6 +5734,12 @@ wss.on('connection', (ws, req) => {
         name: dbRoom ? dbRoom.name : null,
         reactions: db.getReactionsForRoom(code, HISTORY_LIMIT),
         pins: db.getPins(code),
+        // read_receipts was being faithfully written on every 'read' message (correct identity,
+        // correct room-scoping, rate-limited) but never read back — found by a read-receipt-
+        // integrity audit. A client joining/reconnecting saw no "seen by" info until each other
+        // member's next natural read event re-fired it. Mirrors how reactions/pins are already
+        // hydrated on join, just for this one field that was missed.
+        readReceipts: db.getReadReceipts(code),
         activity: roomActivityList(room),
         isHost: hostName === ws.profile.name,
         announcement: dbRoom ? dbRoom.announcement : null,
