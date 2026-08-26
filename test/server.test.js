@@ -3441,6 +3441,32 @@ describe('more previously-unprotected HTTP routes are now rate-limited', () => {
       await googleAuthServer.stop();
     }
   });
+
+  // Found by a presence-exposure audit: every other /friends/* route rate-limits via
+  // resolveFriendsAction, but /friends/presence bypasses that shared preamble (it takes no
+  // target username) and was left with no rate limit at all. Same dedicated-instance pattern as
+  // the /auth/google test just above, for the same reason — the shared instance defaults
+  // FRIENDS_ACTION_MAX to effectively unlimited.
+  test('/friends/presence is rate-limited, same as its /friends/* siblings', async () => {
+    const presenceServer = await startTestServer({ FRIENDS_ACTION_MAX: '8' }, 3210);
+    try {
+      const base = `http://localhost:${presenceServer.port}`;
+      const signup = await fetch(`${base}/auth/signup`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'PresenceRateLimiter', password: 'pass1234', email: 'presenceratelimiter@test.com' }),
+      }).then((r) => r.json());
+      const authHeaders = { Authorization: `Bearer ${signup.token}` };
+
+      let sawLimited = false;
+      for (let i = 0; i < 12; i++) {
+        const res = await fetch(`${base}/friends/presence`, { headers: authHeaders });
+        if (res.status === 429) sawLimited = true;
+      }
+      assert.ok(sawLimited, 'a burst of 12 requests should eventually hit the rate limit');
+    } finally {
+      await presenceServer.stop();
+    }
+  });
 });
 
 describe('Firefight (1v1 duel shooter)', () => {

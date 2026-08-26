@@ -1332,6 +1332,14 @@ app.post('/friends/unblock', (req, res) => {
 });
 
 app.get('/friends/presence', (req, res) => {
+  // Every other /friends/* route rate-limits via resolveFriendsAction — this one bypasses that
+  // shared preamble (it doesn't take a target username, so most of resolveFriendsAction doesn't
+  // apply) and was left with no rate limit at all as a result. Found by a presence-exposure
+  // audit — not reachable against arbitrary accounts (the target list only ever comes from the
+  // caller's own db.getFriends, never client input), but nothing stopped a friend from polling
+  // far faster than the real client's own 8s interval to build a higher-resolution room-hopping
+  // log of another friend than the UI intends.
+  if (isFriendsActionRateLimited(req)) return res.status(429).json({ error: 'Too many attempts — try again in a minute' });
   const account = getAccountFromReq(req);
   if (!account) return res.status(401).json({ error: 'Not signed in' });
   // getFriends already JOINs accounts for the username — it now also selects the id directly,
