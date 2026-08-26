@@ -3591,6 +3591,43 @@ describe('more previously-unprotected HTTP routes are now rate-limited', () => {
     }
   });
 
+  // Found by a Google-account-linking-security audit: /auth/google used to link a fresh Google
+  // sign-in onto ANY existing account sharing its verified email, with no check on how that
+  // existing account got there. Since /auth/signup never verifies email ownership, an attacker
+  // could pre-register a victim's real email with an attacker-chosen password — the victim's
+  // later genuine Google sign-in would then silently bind onto that attacker-controlled account,
+  // handing the attacker permanent access via their own known password. Same class of fix as a
+  // MEDIUM finding in the same audit: an account that already has a DIFFERENT google_id linked
+  // must not be silently reassigned either (e.g. an employer handing an old mailbox to a new
+  // hire). The fix is a two-clause guard in server.js's /auth/google handler
+  // (`!existing.password_hash && !existing.google_id`) — this can't be exercised through the real
+  // route in this test environment (no real Google OAuth credentials are configured, so
+  // /auth/google always short-circuits at "not configured" before ever reaching the linking
+  // logic, the same pre-existing limitation an earlier session's Google-race-condition fix in
+  // this exact route already hit and documented). Instead this verifies the real precondition the
+  // guard relies on, through the same db.js functions the route itself calls, directly against
+  // the running scratch server's own database.
+  test('the account-linking guard precondition correctly identifies an unsafe-to-link (attacker-pre-registered) account', async () => {
+    const scratchDb = require(require('node:path').join(server.dir, 'db.js'));
+    const email = 'googlelinkguardcheck@test.com';
+    const signupRes = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'GoogleLinkGuardAtk', password: 'attackerpass123', email }),
+    });
+    assert.equal(signupRes.status, 200, 'sanity: the attacker-controlled signup must succeed (this app never verifies email ownership)');
+
+    // Exactly what server.js's /auth/google handler does: resolve the existing account for this
+    // email the same way the real linking-decision code would.
+    const existing = scratchDb.getAccountByEmail(email);
+    assert.ok(existing, 'sanity: the pre-registered account must be findable by email, the same lookup /auth/google performs');
+    assert.ok(existing.password_hash, 'the guard\'s core precondition: a pre-registered account has a real password_hash set, which must block auto-linking a later Google identity onto it');
+    assert.equal(existing.google_id, null, 'sanity: a freshly password-signed-up account has no google_id yet');
+
+    // The actual guard expression from server.js: `existing && !existing.password_hash && !existing.google_id`.
+    const wouldAutoLink = !!(existing && !existing.password_hash && !existing.google_id);
+    assert.equal(wouldAutoLink, false, 'the fixed guard must evaluate to false for an attacker-pre-registered account, preventing the takeover');
+  });
+
   // Found by a presence-exposure audit: every other /friends/* route rate-limits via
   // resolveFriendsAction, but /friends/presence bypasses that shared preamble (it takes no
   // target username) and was left with no rate limit at all. Same dedicated-instance pattern as

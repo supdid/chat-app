@@ -1167,8 +1167,19 @@ app.post('/auth/google', async (req, res) => {
   let account = db.getAccountByGoogleId(googleId);
   if (!account && email) {
     // Someone who already has a password account under this email — link rather than duplicate.
+    // Found by a Google-linking-security audit: only safe to auto-link when that existing
+    // account has NO password set and NO Google identity already linked. This app's /auth/signup
+    // never verifies email ownership (anyone can sign up claiming any address), so an attacker
+    // could pre-register the victim's real email with an attacker-chosen password — a later
+    // genuine Google sign-in for that email must NOT silently bind onto that account, or the
+    // attacker keeps permanent access via their own known password (full account takeover, no
+    // credential of the victim's needed). Similarly, an account that already has a DIFFERENT
+    // google_id linked must not be silently reassigned (email reuse after a real identity
+    // change, e.g. an employer handing an old mailbox to a new hire, would hijack the PREVIOUS
+    // Google user's account). Either way, "not safely claimable" falls through to creating a
+    // brand-new account for this Google identity below, instead of merging into someone else's.
     const existing = db.getAccountByEmail(email);
-    if (existing) {
+    if (existing && !existing.password_hash && !existing.google_id) {
       db.linkGoogleId(existing.id, googleId);
       account = db.getAccountById(existing.id);
     }
