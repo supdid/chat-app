@@ -4396,6 +4396,73 @@ describe('fixed-role two-player games reject a same-connection repeat join', () 
   });
 });
 
+describe('minigame-authority audit: missing flood gates', () => {
+  // Found by a minigame-authority audit: an illegal ch-move returns early without flipping
+  // ch.turn, so — unlike almost every other state-mutating handler in this file — a seated player
+  // could resubmit ch-move unboundedly during their own turn. Each attempt runs chessIsLegalMove
+  // (a board clone plus a full check-safety scan of all 64 squares), real synchronous work on the
+  // single-threaded event loop shared by every room on the server.
+  test('ch-move is flood-gated during a player\'s own turn, not just checked for legality', async () => {
+    const code = 'CHFLOOD1';
+    const white = await connectWs();
+    send(white, { type: 'ch-join', code, name: 'FloodWhite' });
+    await waitFor(white, (m) => m.type === 'ch-init');
+    const black = await connectWs();
+    send(black, { type: 'ch-join', code, name: 'FloodBlack' });
+    await waitFor(black, (m) => m.type === 'ch-init');
+    await sleep(150);
+
+    // Illegal move: "from" is an empty square (rows 2-5 are empty on the starting board), so this
+    // never flips ch.turn — if unthrottled, the same connection could resubmit this indefinitely.
+    for (let i = 0; i < 9; i++) {
+      send(white, { type: 'ch-move', from: { row: 4, col: 4 }, to: { row: 4, col: 5 } });
+    }
+    await sleep(300);
+
+    // A genuinely legal opening move (white pawn one square forward), sent while still inside the
+    // same flood window — if the gate is working, this must ALSO be silently dropped, not just the
+    // illegal ones, proving the drop is the rate limiter and not a rejection of this specific move.
+    let sawState = false;
+    const h = (data) => { if (JSON.parse(data).type === 'ch-state') sawState = true; };
+    white.on('message', h);
+    send(white, { type: 'ch-move', from: { row: 1, col: 0 }, to: { row: 2, col: 0 } });
+    await sleep(300);
+    white.off('message', h);
+    assert.equal(sawState, false, 'a move sent while still inside the flood window must be dropped regardless of its own legality');
+
+    // Once the window clears, the exact same legal move must succeed — confirming the earlier drop
+    // really was the rate limiter, not a permanent rejection of this move.
+    await sleep(6200);
+    const statePromise = waitFor(white, (m) => m.type === 'ch-state');
+    send(white, { type: 'ch-move', from: { row: 1, col: 0 }, to: { row: 2, col: 0 } });
+    const state = await statePromise;
+    assert.equal(state.lastMove.from.row, 1);
+
+    white.close(); black.close();
+  });
+
+  // Every leaderboard-fetch handler (tv/arcade/hm/ch/tt/dg) was missing the isWsMsgRateLimited
+  // gate every other state-mutating handler in this file already has — a flood-cost-only gap (the
+  // query itself is already correctly scoped to the caller's own room), same shape as the
+  // get-group-dm-threads/get-group-dm-messages fix from an earlier dimension.
+  test('ch-leaderboard is flood-gated like every other content-mutating path', async () => {
+    const code = 'CHLBFLOOD1';
+    const ws = await connectWs();
+    send(ws, { type: 'ch-join', code, name: 'LbFlood' });
+    await waitFor(ws, (m) => m.type === 'ch-init');
+    await sleep(150);
+
+    let count = 0;
+    const h = (data) => { if (JSON.parse(data).type === 'ch-leaderboard-result') count++; };
+    ws.on('message', h);
+    for (let i = 0; i < 15; i++) send(ws, { type: 'ch-leaderboard' });
+    await sleep(500);
+    ws.off('message', h);
+    assert.ok(count > 0 && count <= 8, `expected 1-8 of 15 ch-leaderboard fetches through, got ${count}`);
+    ws.close();
+  });
+});
+
 describe('Block Battle 1v1 duel: challenge, accept/decline, pre-duel map vote, rounds', () => {
   // Zero coverage existed for the original challenge/accept/shoot 1v1 flow before this — every
   // prior bb test only covered the "can't challenge someone already busy" rejection, or the newer

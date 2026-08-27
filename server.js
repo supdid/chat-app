@@ -4982,6 +4982,13 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'tv-leaderboard' && ws.tvRoom) {
+      // Found by a minigame-authority audit: every leaderboard-fetch handler in this file (this
+      // one and its five siblings — arcade/hm/ch/tt/dg) was missing the isWsMsgRateLimited gate
+      // every other state-mutating handler already has — a signed-in-or-not client could hammer
+      // unlimited synchronous db.getLeaderboard reads with no cost. Same flood-cost-only shape
+      // (no IDOR — the query is already correctly scoped to the caller's own room) as the
+      // get-group-dm-threads/get-group-dm-messages fix from an earlier dimension.
+      if (isWsMsgRateLimited(ws)) return;
       send(ws, { type: 'tv-leaderboard-result', scores: db.getLeaderboard(ws.tvRoom, 'trivia', 10) });
       return;
     }
@@ -5027,6 +5034,8 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'arcade-leaderboard' && ws.arcadeRoom) {
+      // Same missing-flood-gate fix as tv-leaderboard above.
+      if (isWsMsgRateLimited(ws)) return;
       send(ws, { type: 'arcade-leaderboard', scores: db.getLeaderboard(ws.arcadeRoom, ARCADE_LEADERBOARD_KEY[ws.arcadeGame], 10) });
       return;
     }
@@ -5130,6 +5139,8 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'hm-leaderboard' && ws.hmRoom) {
+      // Same missing-flood-gate fix as tv-leaderboard above.
+      if (isWsMsgRateLimited(ws)) return;
       send(ws, { type: 'hm-leaderboard-result', scores: db.getLeaderboard(ws.hmRoom, 'hangman', 10) });
       return;
     }
@@ -5192,6 +5203,13 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'ch-move' && ws.chRoom) {
+      // Found by a minigame-authority audit: an illegal move returns early without flipping
+      // ch.turn, so a seated player could resubmit ch-move unboundedly during their own turn —
+      // unlike almost every other state-mutating handler in this file, this one had no flood gate.
+      // Each attempt runs chessIsLegalMove (a board clone + a full check-safety scan of all 64
+      // squares), non-trivial synchronous work on the single-threaded event loop shared by every
+      // room on the server, not just the attacker's own game.
+      if (isWsMsgRateLimited(ws)) return;
       const room = rooms.get(ws.chRoom);
       const ch = room && room.ch;
       if (!ch || ch.winner) return;
@@ -5237,6 +5255,8 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'ch-leaderboard' && ws.chRoom) {
+      // Same missing-flood-gate fix as tv-leaderboard above.
+      if (isWsMsgRateLimited(ws)) return;
       send(ws, { type: 'ch-leaderboard-result', scores: db.getLeaderboard(ws.chRoom, 'chess', 10) });
       return;
     }
@@ -5312,6 +5332,9 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'tt-move' && ws.ttRoom) {
+      // Same missing-flood-gate class as ch-move above — milder here (board math is trivial), but
+      // added for consistency with every other state-mutating handler in this file.
+      if (isWsMsgRateLimited(ws)) return;
       const room = rooms.get(ws.ttRoom);
       const tt = room && room.tt;
       if (!tt || tt.winner) return;
@@ -5364,6 +5387,8 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'tt-leaderboard' && ws.ttRoom) {
+      // Same missing-flood-gate fix as tv-leaderboard above.
+      if (isWsMsgRateLimited(ws)) return;
       const room = rooms.get(ws.ttRoom);
       const tt = room && room.tt;
       const mode = tt ? tt.mode : 'tictactoe';
@@ -5568,6 +5593,8 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'dg-leaderboard' && ws.dgRoom) {
+      // Same missing-flood-gate fix as tv-leaderboard above.
+      if (isWsMsgRateLimited(ws)) return;
       send(ws, { type: 'dg-leaderboard-result', scores: db.getLeaderboard(ws.dgRoom, 'pictionary', 10) });
       return;
     }
