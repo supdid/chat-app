@@ -4973,6 +4973,61 @@ describe('Block Battle 1v1 duel: challenge, accept/decline, pre-duel map vote, r
     a.ws.close(); b.ws.close();
   });
 
+  // Found by the Block Battle client-correctness audit: a challenge to an already-busy player used
+  // to be dropped with zero response, while the client shows an unconditional "Challenge sent"
+  // toast regardless of whether it actually reached anyone.
+  test('challenging an already-dueling player gets bb-challenge-failed, not silence', async () => {
+    const code = 'BBDUEL-BUSY';
+    const a = await duelJoin(code);
+    const b = await duelJoin(code);
+    const c = await duelJoin(code);
+
+    // A and B lock into a duel (dueling=true fires immediately on accept, before the map vote even
+    // resolves) -- busy enough for bbIsBusy without needing to actually finish the vote.
+    send(a.ws, { type: 'bb-challenge', targetId: b.id });
+    await waitFor(b.ws, (m) => m.type === 'bb-challenged');
+    send(b.ws, { type: 'bb-challenge-response', fromId: a.id, accept: true });
+    await waitFor(a.ws, (m) => m.type === 'bb-duel-map-vote');
+
+    const failed = waitFor(c.ws, (m) => m.type === 'bb-challenge-failed');
+    send(c.ws, { type: 'bb-challenge', targetId: b.id });
+    const fail = await failed;
+    assert.equal(fail.reason, 'busy');
+    assert.equal(fail.targetId, b.id);
+
+    a.ws.close(); b.ws.close(); c.ws.close();
+  });
+
+  // Found by the same audit: a second incoming challenge silently overwrote the client's popup for
+  // the first, with no signal ever sent back to that first challenger -- who'd be left waiting
+  // forever on a challenge no one could ever now answer.
+  test('a second incoming challenge auto-declines the first, notifying the original challenger', async () => {
+    const code = 'BBDUEL-REPLACE';
+    const a = await duelJoin(code);
+    const b = await duelJoin(code);
+    const c = await duelJoin(code);
+
+    send(a.ws, { type: 'bb-challenge', targetId: c.id });
+    await waitFor(c.ws, (m) => m.type === 'bb-challenged');
+
+    const aDeclined = waitFor(a.ws, (m) => m.type === 'bb-challenge-declined');
+    send(b.ws, { type: 'bb-challenge', targetId: c.id });
+    const bChallenged = await waitFor(c.ws, (m) => m.type === 'bb-challenged');
+    assert.equal(bChallenged.fromId, b.id, "c's popup must now show b's challenge");
+    const decline = await aDeclined;
+    assert.equal(decline.byId, c.id, "a's original challenge must be auto-declined, not left hanging");
+
+    // Responding to A's now-superseded challenge (a stale client popup) must be a no-op, not
+    // accidentally pair A and C into a duel neither of them actually agreed to right now.
+    send(c.ws, { type: 'bb-challenge-response', fromId: a.id, accept: true });
+    await sleep(200);
+    send(c.ws, { type: 'bb-challenge-response', fromId: b.id, accept: true });
+    const vote = await waitFor(c.ws, (m) => m.type === 'bb-duel-map-vote');
+    assert.equal(vote.opponentId, b.id, "accepting b's real challenge must pair c with b, not a");
+
+    a.ws.close(); b.ws.close(); c.ws.close();
+  });
+
   test('an accepted challenge opens a map vote (not combat) first, pairing opponentId correctly in both directions', async () => {
     const code = 'BBDUEL-VOTE';
     const a = await duelJoin(code);

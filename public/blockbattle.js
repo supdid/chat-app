@@ -1871,6 +1871,8 @@ function sfxShot(type) {
 }
 function sfxExplosion() { playNoise(0.5, 260, 0.9); playTone(90, 28, 0.45, 'sawtooth', 0.5); }
 function sfxHit() { playTone(1100, 1100, 0.04, 'square', 0.12); }
+// A dull, low click distinct from every real firing sound — see showDeniedMarker's own comment.
+function sfxDenied() { playTone(160, 100, 0.05, 'square', 0.06); }
 function sfxHeadshot() { playTone(1500, 1500, 0.05, 'square', 0.14); playTone(230, 120, 0.09, 'square', 0.22); }
 function sfxKill() { playTone(500, 500, 0.08, 'square', 0.15); playTone(750, 750, 0.1, 'square', 0.15, 0.08); }
 function sfxHurt() { playTone(170, 80, 0.2, 'sawtooth', 0.3); }
@@ -2674,6 +2676,20 @@ function showHitMarker(headshot) {
   clearTimeout(hitmarkerTimer);
   hitmarkerTimer = setTimeout(() => crosshair.classList.remove('hit', 'headshot'), 180);
   if (headshot) sfxHeadshot(); else sfxHit();
+}
+
+// Found by the Block Battle client-correctness audit: a fire attempt during the weapon's own
+// cooldown returned completely silently — no sound, no crosshair change — the same gap already
+// found and fixed in firefight.js/webswing.js this session. The single-player weapon HUD (which
+// does show a cooldown/reload bar) is hidden for the entire duration of Online Play, so there was
+// no cooldown indicator visible at all during a duel/match.
+function showDeniedMarker() {
+  crosshair.classList.remove('denied');
+  void crosshair.offsetWidth;
+  crosshair.classList.add('denied');
+  clearTimeout(hitmarkerTimer);
+  hitmarkerTimer = setTimeout(() => crosshair.classList.remove('denied'), 180);
+  sfxDenied();
 }
 
 // ---- Gun viewmodel ----
@@ -3766,7 +3782,7 @@ function updateLocalAvatar(vx, vz, dt) {
 // at all (mirrors fg-shoot exactly): the server resolves the opponent via its own opponentId and
 // does its own cooldown/range/alive-state check, so this function is purely cosmetic feedback.
 function tryFireOnline(nowMs) {
-  if (nowMs < bbNextShotAt) return;
+  if (nowMs < bbNextShotAt) { showDeniedMarker(); return; }
   if (inMatch && myMatchEliminated) return; // spectating — no shots to fire
   bbNextShotAt = nowMs + BB_WEAPON_CLIENT.cooldownMs;
   gunKick = 1;
@@ -3942,6 +3958,17 @@ function handleBbMessage(data) {
       // too. A bystander (not this match's own participant, who already got bb-duel-started/
       // bb-match-started with the same mapId) gets a quiet heads-up instead of the vote screen.
       activateMap(data.mapId || 'office');
+      // Found by the Block Battle client-correctness audit: activateMap swaps collision geometry
+      // without ever repositioning a bystander who's wandered away from spawn — someone standing
+      // where the NEW map happens to have solid geometry (a wall, a station) would be left stuck
+      // inside it, with only the map reset at startOnlinePlay's own initial entry ever resetting
+      // position at all. A duel's own participants are unaffected (bb-duel-started/bb-match-started
+      // already places them at fixed arena spawn points, not wherever they were standing).
+      if (!dueling && !inMatch && blockedAt(player.x, player.z, player.y)) {
+        player.x = 0; player.z = 0;
+        player.y = groundHeightAt(0, 0);
+        vy = 0; onGround = true; hasAirMomentum = false;
+      }
       if (!dueling && !inMatch) {
         const mapInfo = BB_MAPS.find((m) => m.id === data.mapId);
         showWaveBanner(`🗺️ Lobby map changed: ${mapInfo ? mapInfo.name : data.mapId}`);
@@ -4000,6 +4027,17 @@ function handleBbMessage(data) {
     case 'bb-challenge-declined': {
       const p = bbPlayers.find((x) => x.id === data.byId);
       showWaveBanner(`${p ? p.name : 'They'} declined your challenge`);
+      break;
+    }
+    case 'bb-challenge-failed': {
+      // Found by the Block Battle client-correctness audit: the Challenge button always showed
+      // "Challenge sent to X" the instant it was clicked, regardless of whether it actually
+      // reached anyone — a challenge to someone already busy or who'd already left was silently
+      // dropped server-side with nothing to correct that false-positive toast. This corrective
+      // toast lands shortly after the optimistic one specifically in the failure case.
+      showWaveBanner(data.reason === 'busy'
+        ? `${data.targetName || 'They'} are already in a duel — try again later`
+        : "That player isn't here anymore");
       break;
     }
     case 'bb-duel-started': {

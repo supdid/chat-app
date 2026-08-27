@@ -79,6 +79,14 @@ html, body {
   transform: scale(2.4);
 }
 
+/* Found by the Block Battle client-correctness audit: a fire attempt during the weapon's own
+   cooldown gave no feedback at all -- same gap already found and fixed in firefight.js/
+   webswing.js this session. */
+#crosshair.denied {
+  background: #ff4646;
+  transform: scale(1.4);
+}
+
 #kill-counter {
   position: fixed;
   top: 0.75rem;

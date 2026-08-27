@@ -4811,6 +4811,11 @@ wss.on('connection', (ws, req) => {
       const entry = {
         id, name, level, skin, x: 0, y: 0, z: 0, yaw: 0, health: BB_MAX_HEALTH, dueling: false, opponentId: null, duelId: null, lastShotAt: 0, respawnedAt: 0,
         plateStation: null, plateSide: null, plateSlot: null, matchId: null, matchSide: null, eliminated: false,
+        // Found by the Block Battle client-correctness audit: a second incoming challenge used to
+        // silently overwrite the client's popup for the first, with no signal ever sent back to
+        // the first challenger — who'd be left waiting forever on a challenge no one can now
+        // answer. Tracked so a new challenge can auto-decline whichever one it's replacing.
+        pendingChallengeFrom: null,
       };
       bb.players.set(ws, entry);
       const stations = Object.keys(bb.stations).map((sid) => bbStationSnapshot(bb, sid));
@@ -4882,7 +4887,24 @@ wss.on('connection', (ws, req) => {
       const targetId = String(msg.targetId || '');
       if (targetId === me.id) return; // can't challenge yourself
       const target = bbFindById(bb, targetId);
-      if (!target || bbIsBusy(target.p)) return;
+      // Found by the Block Battle client-correctness audit: a challenge to someone already busy
+      // (mid-duel, mid-NvN-match, plate-queued) — or who's already left — used to be dropped here
+      // with zero response, while the client shows an unconditional "Challenge sent to X" toast the
+      // instant it sends, regardless of whether it actually reached anyone. The challenger had no
+      // way to tell a real "waiting on their answer" apart from "this went nowhere." Explicit nack
+      // back to the sender lets the client correct its own optimistic toast.
+      if (!target) { send(ws, { type: 'bb-challenge-failed', targetId, reason: 'not-found' }); return; }
+      if (bbIsBusy(target.p)) { send(ws, { type: 'bb-challenge-failed', targetId, targetName: target.p.name, reason: 'busy' }); return; }
+      // Found by the same audit: the target's popup only ever shows the MOST RECENT incoming
+      // challenge — a second one used to silently overwrite the first with no signal sent to
+      // whoever sent that first one, leaving them waiting forever on a challenge no one could ever
+      // now answer. Auto-decline whichever challenge this one is about to replace, same real
+      // bb-challenge-declined the target clicking Decline would send.
+      if (target.p.pendingChallengeFrom && target.p.pendingChallengeFrom !== me.id) {
+        const stale = bbFindById(bb, target.p.pendingChallengeFrom);
+        if (stale) send(stale.ws, { type: 'bb-challenge-declined', byId: target.p.id });
+      }
+      target.p.pendingChallengeFrom = me.id;
       send(target.ws, { type: 'bb-challenged', fromId: me.id, fromName: me.name });
       return;
     }
@@ -4894,6 +4916,11 @@ wss.on('connection', (ws, req) => {
       const me = bb && bb.players.get(ws);
       if (!me || bbIsBusy(me)) return;
       const fromId = String(msg.fromId || '');
+      // Guards against responding to a challenge that's already been superseded (see
+      // pendingChallengeFrom above) — a stale client-side popup referencing an old fromId that a
+      // newer incoming challenge has since auto-declined and replaced.
+      if (fromId !== me.pendingChallengeFrom) return;
+      me.pendingChallengeFrom = null;
       const from = bbFindById(bb, fromId);
       // The challenger may have left, already started a different duel, or (same reasoning as
       // bb-challenge above) joined an NvN match or plate queue in the time since they sent the
