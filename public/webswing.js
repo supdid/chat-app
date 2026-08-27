@@ -44,6 +44,12 @@ const SW_MAX_HEALTH_CLIENT = 3;
 const SW_STRIKE_RANGE_CLIENT = 30;
 const SW_STRIKE_COOLDOWN_MS_CLIENT = 700;
 const SW_STRIKE_AIM_DOT_MIN = 0.55; // how tightly you have to be aiming at someone to hit them, 1 = dead-on
+// Found by the Web Swing client-correctness audit: referenced (twice, in the sw-death kill-credit
+// branch) but never defined anywhere in this file — every landed kill threw a ReferenceError
+// inside the WS message listener (only JSON.parse is try/caught, not the handler body), silently
+// skipping addScore() and the "+20" toast for the killer on every single elimination. Matches the
+// server's own SW_KILL_SCORE_BONUS (server.js).
+const SW_KILL_SCORE_BONUS = 20;
 const TOWER_HEIGHT = 480; // the landmark spire at city center — dwarfs every regular building (max ~84)
 const TOWER_SIZE = 20;
 const PUMP_BUILD_RATE = 0.6; // momentum meter (0-1) gained per second while actively pumping A/D
@@ -1634,7 +1640,16 @@ function attemptWebStrike() {
   if (!mpRoomCode || !swSocket || swSocket.readyState !== WebSocket.OPEN) return;
   if (player.wipeout > 0 || player.health <= 0) return;
   const now = performance.now();
-  if (now - lastStrikeAttemptAt < SW_STRIKE_COOLDOWN_MS_CLIENT) return;
+  if (now - lastStrikeAttemptAt < SW_STRIKE_COOLDOWN_MS_CLIENT) {
+    // Found by the Web Swing client-correctness audit: this returned completely silently before —
+    // no sound, no crosshair change — reading as unresponsive input rather than "still on
+    // cooldown," the exact same gap firefight.js's own audit found and fixed for its shoot action.
+    playSound('denied');
+    crosshairEl.classList.remove('denied');
+    void crosshairEl.offsetWidth;
+    crosshairEl.classList.add('denied');
+    return;
+  }
 
   const aim = aimDirection();
   const aimX = aim.x, aimY = aim.y, aimZ = aim.z;
@@ -1657,8 +1672,10 @@ function attemptWebStrike() {
 
   lastStrikeAttemptAt = now;
   swSocket.send(JSON.stringify({ type: 'sw-strike', targetId: bestId }));
-  spawnImpact(best.group.position.x, best.group.position.y + 1, best.group.position.z);
-  playSound('strike');
+  // Impact spark + strike sound now fire only once the server actually confirms the hit (see the
+  // sw-hit/sw-death handlers' own comments) — a locally-found candidate in range/aim-cone can still
+  // be rejected server-side (a stale ghost position, respawn grace, etc.), and firing optimistic
+  // "hit" feedback here made a rejected strike indistinguishable from a real one.
 }
 
 // Fast zip toward a rooftop grapple target — gravity-free straight-line pull, snaps to a stand
@@ -2447,6 +2464,18 @@ function connectSw() {
         damageFlashEl.classList.add('show');
         playSound('hurt');
       }
+      // Found by the Web Swing client-correctness audit: attemptWebStrike used to fire the impact
+      // spark + strike sound unconditionally on SEND, before the server had confirmed anything —
+      // so a strike the server silently rejected (a stale ghost position drifted out of range, the
+      // target already in respawn grace, etc.) played identical "hit" feedback to a real one, and
+      // there was no way to tell the two apart. sw-hit is broadcast to the whole room including
+      // the attacker (byId, unlike sw-pos which excludes the sender) — using that as the real
+      // trigger instead makes the feedback server-confirmed, the way a hit-marker normally works.
+      if (data.byId === swMyId) {
+        const rp = remotePlayers.get(data.targetId);
+        if (rp) spawnImpact(rp.group.position.x, rp.group.position.y + 1, rp.group.position.z);
+        playSound('strike');
+      }
     } else if (data.type === 'sw-death') {
       // Teleport the dead player's ghost to the spawn tower immediately rather than waiting for
       // their next ~100ms-throttled sw-pos broadcast — otherwise every other client briefly sees
@@ -2464,6 +2493,11 @@ function connectSw() {
         showToast(`💀 Eliminated by ${killerName}`, 1600);
         playSound('eliminated');
       } else if (data.killedBy === swMyId) {
+        // Same server-confirmed impact feedback as the non-lethal sw-hit branch above — a killing
+        // strike previously got no impact spark/sound at all from the attacker's side once the
+        // optimistic on-send firing was removed (see sw-hit's own comment for why).
+        if (rp) spawnImpact(rp.group.position.x, rp.group.position.y + 1, rp.group.position.z);
+        playSound('strike');
         addScore(SW_KILL_SCORE_BONUS);
         const victimName = rp?.name || 'a player';
         showToast(`🕸️ You eliminated ${victimName}! +${SW_KILL_SCORE_BONUS}`, 1600);
@@ -2558,6 +2592,11 @@ function renderLeaderboard(scores) {
 
 leaderboardBtn.addEventListener('click', () => {
   leaderboardOverlay.classList.remove('hidden');
+  // Found by the Web Swing client-correctness audit: the same pointer-lock-release gap already
+  // found and fixed in firefight.js this session — under lock the OS cursor is hidden/frozen, so
+  // an actively-playing (locked) player couldn't see or click this button, nor Close afterward,
+  // without first pressing the undocumented Escape key.
+  if (document.pointerLockElement) document.exitPointerLock();
   if (swSocket && swSocket.readyState === WebSocket.OPEN) {
     swSocket.send(JSON.stringify({ type: 'sw-leaderboard', code: mpRoomCode }));
   } else {
@@ -2604,6 +2643,10 @@ function blip(kind) {
     strike: { type: 'sawtooth', f0: 700, f1: 180, g: 0.16, dur: 0.12 },
     hurt: { type: 'square', f0: 200, f1: 90, g: 0.15, dur: 0.16 },
     eliminated: { type: 'sawtooth', f0: 480, f1: 60, g: 0.18, dur: 0.5 },
+    // Found by the Web Swing client-correctness audit: a dull, low click distinct from every real
+    // strike sound above, for a strike attempted before its own cooldown clears — mirrors
+    // firefight.js's identical 'denied' preset, found missing here for the same UX gap.
+    denied: { type: 'square', f0: 160, f1: 100, g: 0.06, dur: 0.05 },
   };
   const p = presets[kind];
   if (!p) return;

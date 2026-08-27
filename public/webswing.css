@@ -578,6 +578,18 @@ button.primary:active {
   box-shadow: 0 0 4px rgba(0, 0, 0, 0.6);
 }
 
+/* Found by the Web Swing client-correctness audit: a strike attempted before its own cooldown
+   clears gave zero feedback of any kind — mirrors firefight.js's identical .denied crosshair
+   flash, found missing here for the same UX gap. Self-resolves via animation, same technique. */
+#crosshair.denied {
+  animation: crosshair-denied 0.35s ease-out;
+}
+
+@keyframes crosshair-denied {
+  0% { border-color: rgba(255, 70, 70, 0.95); }
+  100% { border-color: rgba(255, 255, 255, 0.85); }
+}
+
 #pickup-toast {
   position: fixed;
   top: 40%;
