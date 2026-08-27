@@ -4402,9 +4402,20 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'gw-complete' && ws.gwRoom) {
       const level = String(msg.level || ws.gwLevel || '').slice(0, 20);
-      const name = String(msg.name || '').slice(0, 30).trim();
       const percent = Math.max(0, Math.min(100, Math.floor(+msg.percent || 0)));
-      if (!level || !name || !percent) return;
+      if (!level || !percent) return;
+      // Found by the leaderboard/score-submission-integrity audit: name used to come straight from
+      // the client message, unlike every sibling game's submit path (arcade-submit-score, sw-score,
+      // and every server-authoritative game's own bumpLeaderboard call all key off the session's
+      // own tracked name) — a raw WS client could plant a leaderboard entry under ANY name,
+      // including impersonating a real other player. Now reads the session-tracked name gw-join
+      // already recorded, the same pattern every other game uses. Score-magnitude fakery itself
+      // remains an accepted tradeoff (see below), same as arcade-submit-score/sw-score — this fix
+      // is specifically about attribution, not about validating gameplay.
+      const gwSession = rooms.get(ws.gwRoom)?.gw?.get(ws.gwLevel);
+      const gwPlayer = gwSession?.players?.get(ws);
+      if (!gwPlayer) return;
+      const name = gwPlayer.name;
       // Fully client-computed like arcade-submit-score (Snake/2048/Fighter Plane) — anyone can
       // fire a gw-complete frame directly to plant a fake leaderboard entry. Reuses that same
       // submission-cooldown mitigation, but deliberately NOT the min-session-time half of it:
@@ -4422,6 +4433,10 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'gw-leaderboard') {
       // Deliberately not gated on ws.gwRoom (an active session) — the level-select screen wants
       // to show a leaderboard before joining any level, same as it already shows local best %.
+      // Same missing-flood-gate fix as tv-leaderboard above (found by the leaderboard-integrity
+      // audit — this and sw-leaderboard/fg-leaderboard were the 3 of 9 sibling read handlers this
+      // exact gate was never added to in that earlier sweep).
+      if (isWsMsgRateLimited(ws)) return;
       const code = String(msg.code || '').toUpperCase().trim();
       const level = String(msg.level || '').slice(0, 20);
       if (!code || !level) return;
@@ -4540,6 +4555,8 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'sw-leaderboard') {
+      // Same missing-flood-gate fix as tv-leaderboard above (found by the leaderboard-integrity audit).
+      if (isWsMsgRateLimited(ws)) return;
       const code = String(msg.code || '').toUpperCase().trim();
       if (!code) return;
       send(ws, { type: 'sw-leaderboard-result', scores: db.getLeaderboard(code, 'sw', 10) });
@@ -4701,6 +4718,8 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'fg-leaderboard') {
+      // Same missing-flood-gate fix as tv-leaderboard above (found by the leaderboard-integrity audit).
+      if (isWsMsgRateLimited(ws)) return;
       const code = String(msg.code || '').toUpperCase().trim();
       if (!code) return;
       send(ws, { type: 'fg-leaderboard-result', scores: db.getLeaderboard(code, 'fg', 10) });

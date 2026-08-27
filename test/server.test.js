@@ -2421,6 +2421,24 @@ describe('Geometry Wave leaderboard submission cooldown', () => {
     const result3 = await waitFor(ws, (m) => m.type === 'gw-leaderboard-result');
     assert.equal(result3.scores.find((s) => s.name === 'GwCooldownSolo').score, 100, 'a submission after the cooldown elapses should succeed');
   });
+
+  // Found by the leaderboard/score-submission-integrity audit: gw-complete used to take `name`
+  // straight from the client message instead of the session-tracked name gw-join already recorded
+  // (every sibling game's submit path does the latter) — a raw WS client could plant a leaderboard
+  // entry under any name, including impersonating a real other player.
+  test('gw-complete ignores a spoofed name and always attributes the score to the joined session name', async () => {
+    const code = 'GWSPOOF1';
+    const ws = await connectWs();
+    send(ws, { type: 'gw-join', code, level: 'easy', name: 'GwRealPlayer' });
+    await waitFor(ws, (m) => m.type === 'gw-init');
+
+    send(ws, { type: 'gw-complete', level: 'easy', percent: 77, name: 'SomeoneElseEntirely' });
+    await sleep(200);
+    send(ws, { type: 'gw-leaderboard', code, level: 'easy' });
+    const result = await waitFor(ws, (m) => m.type === 'gw-leaderboard-result');
+    assert.ok(result.scores.some((s) => s.name === 'GwRealPlayer' && s.score === 77), 'score must land under the real joined name');
+    assert.ok(!result.scores.some((s) => s.name === 'SomeoneElseEntirely'), 'the spoofed name must never appear on the leaderboard');
+  });
 });
 
 describe('edit and delete message', () => {
