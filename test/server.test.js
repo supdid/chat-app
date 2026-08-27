@@ -1884,6 +1884,59 @@ describe('friend DMs and group DMs (account-gated)', () => {
     const carolHistory = await waitFor(carol, (m) => m.type === 'group-dm-messages' && m.groupId === groupId);
     assert.ok(carolHistory.messages.some((msg) => msg.text === 'hi from blocked bob'), 'an unblocked member still sees it in history');
   });
+
+  // Found by a functional-correctness audit: leave-group-dm only ever sent 'group-dm-left' to
+  // the one socket that issued the request. A second open tab/device signed into the same
+  // account (with the same thread open there too) never heard about it, so its overlay stayed
+  // open on a thread it was no longer actually a member of. Fixed by fanning 'group-dm-left' out
+  // to every live connection of the leaving account, same as 'group-dm-member-left' already does
+  // for the remaining members.
+  test('leave-group-dm notifies every connection of the leaving account, not just the one that left', async () => {
+    // The preceding test in this block leaves aliceToken/FdmBob permanently blocked (by design —
+    // it's the one establishing that block relationship and nothing after it needs them friends
+    // again). create-group-dm requires every member to currently be an accepted friend, so undo
+    // that block/re-friend here rather than depending on suite ordering — same dance the earlier
+    // "does not leak" test already does for the same reason.
+    await fetch(`${BASE_URL}/friends/unblock`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${aliceToken}` },
+      body: JSON.stringify({ username: 'FdmBob' }),
+    });
+    await fetch(`${BASE_URL}/friends/request`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${aliceToken}` },
+      body: JSON.stringify({ username: 'FdmBob' }),
+    });
+    await fetch(`${BASE_URL}/friends/accept`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${bobToken}` },
+      body: JSON.stringify({ username: 'FdmAlice' }),
+    });
+
+    const aliceTab1 = await joinAsAccount('FdmAliceLeave1', aliceToken);
+    const bob = await joinAsAccount('FdmBobLeave', bobToken);
+    send(aliceTab1, { type: 'create-group-dm', memberUsernames: ['FdmBob', 'FdmCarol'], name: 'Leave Sync Group' });
+    const created = await waitFor(aliceTab1, (m) => m.type === 'group-dm-created');
+    const groupId = created.thread.id;
+
+    // A second tab/device signed into the *same* account (Alice), also with the thread "open".
+    const aliceTab2 = await joinAsAccount('FdmAliceLeave2', aliceToken);
+
+    const tab2LeftPromise = waitFor(aliceTab2, (m) => m.type === 'group-dm-left' && m.groupId === groupId);
+    const bobMemberLeftPromise = waitFor(bob, (m) => m.type === 'group-dm-member-left' && m.groupId === groupId);
+    send(aliceTab1, { type: 'leave-group-dm', groupId });
+    await waitFor(aliceTab1, (m) => m.type === 'group-dm-left' && m.groupId === groupId);
+    const [tab2Left, bobMemberLeft] = await Promise.all([tab2LeftPromise, bobMemberLeftPromise]);
+    assert.equal(tab2Left.groupId, groupId, 'the same account\'s other connection must also get group-dm-left');
+    assert.equal(bobMemberLeft.username, 'FdmAliceLeave1', 'remaining members still get the member-left notice');
+
+    // And the departure is for real, not just a display glitch: neither of Alice's connections
+    // can send into the group any more.
+    let aliceError = null;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'error') aliceError = m; };
+    aliceTab2.on('message', h);
+    send(aliceTab2, { type: 'send-group-dm', groupId, text: 'should be rejected' });
+    await sleep(200);
+    aliceTab2.off('message', h);
+    assert.ok(aliceError && /not a member/i.test(aliceError.message));
+  });
 });
 
 describe('voice call signaling requires the sender to actually be on the call', () => {

@@ -5973,7 +5973,20 @@ wss.on('connection', (ws, req) => {
         return;
       }
       db.removeGroupDmMember(groupId, ws.accountId);
-      send(ws, { type: 'group-dm-left', groupId });
+      // Found by a functional-correctness audit: only the socket that issued the leave got
+      // 'group-dm-left'. A second open tab/device on the same account (thread left open there
+      // too) never heard about it — its overlay stayed open showing a thread it's no longer a
+      // member of, and the next send-group-dm from that tab would silently fail server-side with
+      // no explanation shown. Fan this out to every live connection of the leaving account, same
+      // as the remaining-members loop below does for them.
+      const ownConnections = accountConnections.get(ws.accountId);
+      if (ownConnections) {
+        for (const c of ownConnections) {
+          if (c.readyState === c.OPEN) send(c, { type: 'group-dm-left', groupId });
+        }
+      } else {
+        send(ws, { type: 'group-dm-left', groupId });
+      }
       // The remaining members previously got no live signal at all when someone left — their
       // rendered member list for this thread stayed stale (still showing the departed user)
       // until they next reopened the thread. Message delivery itself was unaffected (member set
