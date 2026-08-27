@@ -4197,6 +4197,64 @@ describe('more previously-unprotected HTTP routes are now rate-limited', () => {
   });
 });
 
+describe('WebSocket heartbeat: reaps unresponsive connections', () => {
+  // Found by the WS-connection-liveness audit: no heartbeat of any kind (app- or OS-level)
+  // previously existed — a connection whose peer vanished without a clean TCP close (a flaky
+  // mobile connection, not an attack) could linger for 15-30+ minutes or indefinitely. The
+  // concrete, user-visible cost: fixed-2-slot duel games (Firefight, chess, tic-tac-toe) free a
+  // seat only from the ws 'close' handler, so a zombied duelist's seat stayed "occupied" until
+  // reaped, and a genuine reconnect landed the real player as a spectator in their own game.
+  //
+  // Dedicated instance with HEARTBEAT_INTERVAL_MS shrunk via env override so the real heartbeat
+  // loop (not a reimplementation) can actually be exercised in test time.
+  let hbServer;
+  before(async () => {
+    hbServer = await startTestServer({ HEARTBEAT_INTERVAL_MS: '150' }, 3220);
+  });
+  after(async () => { await hbServer.stop(); });
+
+  function hbConnect(autoPong = true) {
+    return new Promise((resolve) => {
+      const ws = new WebSocket(`ws://localhost:${hbServer.port}`, { autoPong });
+      ws.on('open', () => resolve(ws));
+    });
+  }
+
+  test('a connection that never pongs gets terminated, freeing its Firefight duelist slot for the waiting spectator', async () => {
+    const code = 'HBFG1';
+    const a = await hbConnect();
+    send(a, { type: 'fg-join', code, name: 'HbA' });
+    assert.equal((await waitFor(a, (m) => m.type === 'fg-init')).role, 'a');
+
+    // autoPong: false — the real-world zombie shape: the TCP connection is technically still
+    // there (no FIN/RST), but the peer never answers a ping, exactly what a stalled/vanished
+    // mobile connection looks like from the server's side. A real ws client answers pings
+    // automatically at the protocol level with no application code involved, so this is the
+    // actual, supported way to simulate an unresponsive-but-not-yet-closed peer.
+    const zombie = await hbConnect(false);
+    send(zombie, { type: 'fg-join', code, name: 'HbZombie' });
+    assert.equal((await waitFor(zombie, (m) => m.type === 'fg-init')).role, 'b');
+
+    // The reconnecting real player (or, as here, a distinct bystander — the mechanism doesn't
+    // care which) lands as a spectator, since both slots still look occupied.
+    const c = await hbConnect();
+    send(c, { type: 'fg-join', code, name: 'HbC' });
+    const initC = await waitFor(c, (m) => m.type === 'fg-init');
+    assert.equal(initC.role, 'spectator');
+
+    // Wait past 2 heartbeat intervals: first tick pings everyone and marks isAlive=false; second
+    // tick finds the zombie still false (it never pongs) and terminates it. terminate() still
+    // fires the connection's 'close' event, running leaveFg exactly as a clean disconnect would.
+    const slotFilled = waitFor(c, (m) => m.type === 'fg-slot-filled');
+    await sleep(500);
+    const filled = await slotFilled;
+    assert.equal(filled.slot, 'b');
+    assert.equal(filled.id, initC.id, 'the waiting spectator (c) must be the one promoted into the freed slot');
+
+    a.close(); c.close();
+  });
+});
+
 describe('Firefight (1v1 duel shooter)', () => {
   // Dedicated instance with the round/intermission timers and win threshold shrunk via env
   // override, so a full multi-round match can be driven in well under a second instead of the

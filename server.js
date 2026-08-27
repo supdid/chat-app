@@ -57,6 +57,34 @@ wss.on('error', (err) => {
     // Deliberately swallowed.
   }
 });
+// Found by the WS-connection-liveness audit: there was no heartbeat of any kind, application- or
+// OS-level (no socket.setKeepAlive, no server.timeout — and even if there were, HTTP timeouts
+// don't apply to a socket already handed off to ws after upgrade). A connection whose peer
+// vanishes WITHOUT a clean TCP close (WiFi-to-cellular handoff, a backgrounded mobile browser, an
+// elevator) is invisible to this app until the kernel itself eventually errors the socket out —
+// 15-30+ minutes on stock Linux (bounded by tcp_retries2, and only IF the server happens to write
+// to that socket in the meantime; a truly idle zombie can sit indefinitely). The concrete,
+// user-visible cost: several minigames (Firefight, Tic-Tac-Toe/Connect Four, Chess) assign exactly
+// two fixed seats per room, freed only from the ws 'close' handler — a zombied duelist's seat stays
+// "occupied" until reaped, so a real player reconnecting after a dropped connection lands as a
+// spectator in their OWN game with no way to reclaim their seat. Standard ws heartbeat: ping every
+// connection on an interval, terminate() (not close() — the whole point is a peer that can't
+// complete a clean close) anyone that didn't pong since the last one. terminate() still fires the
+// existing 'close' event, so every leaveX() cleanup already wired to it (leaveFg/leaveTt/leaveCh/
+// etc., see the close handler further down) runs exactly the same way — no separate cleanup path
+// needed. 30s chosen against this app's fastest-moving real-time stream (Firefight's fg-pos, ~10/s)
+// — bounds worst-case seat-blocking to under a minute, versus today's 15-30+ minutes or unbounded.
+const HEARTBEAT_INTERVAL_MS = Number(process.env.HEARTBEAT_INTERVAL_MS ?? 30000);
+setInterval(() => {
+  for (const client of wss.clients) {
+    if (client.isAlive === false) {
+      client.terminate();
+      continue;
+    }
+    client.isAlive = false;
+    client.ping();
+  }
+}, HEARTBEAT_INTERVAL_MS);
 // Registered this early so every route below — including the self-healing routes, which are
 // defined before the rest of the app's routes — can read req.body on POST requests.
 app.use(express.json());
@@ -3716,6 +3744,11 @@ function resolveModerationTarget(ws, msg) {
 }
 
 wss.on('connection', (ws, req) => {
+  // Paired with the heartbeat setInterval above — a client starts "alive" so it survives until the
+  // first ping cycle, and any real pong response (browsers/ws clients answer pings automatically,
+  // no application code involved) refreshes it.
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
   // Registered before anything else, including the connect-rate-limit check right below that can
   // close the connection immediately — without a listener for the 'error' event, Node's
   // EventEmitter throws an unhandled 'error' as an uncaught exception, which escapes past any
