@@ -4921,6 +4921,21 @@ searchForm.addEventListener('submit', async (e) => {
     });
     const data = await res.json();
     if (myRequestId !== searchRequestId) return;
+    // Found by the search-feature correctness audit: fetch doesn't throw on a non-2xx, and this
+    // never checked res.ok — a banned user, a wrong room PIN, or a rate-limited request (403/404/
+    // 429, per server.js's own /search route) all came back with no `results` field, silently
+    // rendered as "No matches" via `data.results || []` — factually wrong feedback that hides the
+    // real reason (e.g. a banned user is told their search simply found nothing). Matches
+    // exportLink's own res.ok check a couple hundred lines above in this same file for the same
+    // shape of route.
+    if (!res.ok) {
+      searchResultsEl.innerHTML = '';
+      const status = document.createElement('li');
+      status.className = 'search-status';
+      status.textContent = data.error || 'Search failed';
+      searchResultsEl.appendChild(status);
+      return;
+    }
     renderSearchResults(data.results || []);
   } catch {
     if (myRequestId !== searchRequestId) return;
@@ -4955,7 +4970,18 @@ function renderSearchResults(results) {
       if (document.getElementById(`msg-${r.id}`)) {
         searchOverlay.classList.add('hidden');
         jumpToMessage(r.id);
+        return;
       }
+      // Found by the search-feature correctness audit: search exists specifically to reach
+      // messages beyond the ~50-message in-memory/DOM window (see server.js's own comment on
+      // HISTORY_LIMIT) — a hit on exactly that kind of older message used to be a silent dead
+      // click: overlay stays open, nothing happens, no error, no hint why. This app has no
+      // scroll-to-top pagination wired up client-side at all yet (server.js's load-older-messages
+      // handler exists but nothing on this page ever sends it — a real, separate feature gap, not
+      // something to build unprompted as a side effect of this fix); until that exists, a clear
+      // message is the honest, complete fix for the actual bug here (misleading silence), not a
+      // dead click.
+      showAppToast("That message is further back than what's currently loaded — can't jump to it yet.");
     });
     searchResultsEl.appendChild(li);
   });
