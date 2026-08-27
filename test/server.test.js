@@ -915,6 +915,35 @@ describe('POST /auth/logout actually invalidates the session', () => {
   });
 });
 
+describe('join-server reports whether a supplied accountToken actually resolved', () => {
+  // Found by the landing/room-join-flow correctness audit: an expired/invalid accountToken used
+  // to be silently ignored by join-server — the client never learned its token was rejected, so
+  // its account UI kept showing "signed in" indefinitely with cross-device sync/friends/push
+  // quietly doing nothing. accountTokenInvalid on the joined-server response fixes that.
+  test('accountTokenInvalid is true for a garbage token, false for a real one, and absent/false when no token is sent at all', async () => {
+    const signupRes = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'JoinTokenCheck', password: 'password123', email: 'jointokencheck@test.com' }),
+    });
+    const { token: realToken } = await signupRes.json();
+
+    const withReal = await connectWs();
+    send(withReal, { type: 'join-server', username: 'JoinTokenReal', accountToken: realToken });
+    const realAck = await waitFor(withReal, (m) => m.type === 'joined-server');
+    assert.equal(realAck.accountTokenInvalid, false, 'a real, currently-valid token must not be flagged invalid');
+
+    const withGarbage = await connectWs();
+    send(withGarbage, { type: 'join-server', username: 'JoinTokenGarbage', accountToken: 'not-a-real-token-at-all' });
+    const garbageAck = await waitFor(withGarbage, (m) => m.type === 'joined-server');
+    assert.equal(garbageAck.accountTokenInvalid, true, 'a token that resolves to no session must be flagged invalid');
+
+    const withNone = await connectWs();
+    send(withNone, { type: 'join-server', username: 'JoinTokenNone' });
+    const noneAck = await waitFor(withNone, (m) => m.type === 'joined-server');
+    assert.ok(!noneAck.accountTokenInvalid, 'no token supplied at all is not the same as an invalid one');
+  });
+});
+
 describe('POST /account/password', () => {
   test('requires the correct current password, then invalidates every other session', async () => {
     const signupRes = await fetch(`${BASE_URL}/auth/signup`, {

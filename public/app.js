@@ -650,6 +650,15 @@ function handleServerMessage(data) {
     case 'joined-server':
       clearTimeout(loginTimeoutId);
       setLoginPending(false);
+      // Found by the landing/room-join-flow correctness audit: a stale/expired accountToken was
+      // previously never surfaced to the client at all — the account panel/menu kept showing
+      // "signed in" indefinitely while cross-device sync, friends, and push silently did nothing.
+      // Only acts when we actually believed we had a token (accountToken truthy) — the server sets
+      // this flag any time a supplied token didn't resolve, but there's nothing to clean up if we
+      // never had one to begin with.
+      if (data.accountTokenInvalid && accountToken) {
+        signOutAccount('Your session expired — signed out. Sign in again to sync across devices.');
+      }
       myProfile = data.profile;
       roomProfiles.set(myProfile.name, { avatarUrl: myProfile.avatarUrl, status: myProfile.status });
       renderMyProfile();
@@ -833,9 +842,18 @@ function handleServerMessage(data) {
       currentRoomCode = null;
       roomErrorEl.textContent = data.message;
       roomErrorEl.classList.remove('hidden');
+      // Found by the landing/room-join-flow correctness audit: the PIN field was only ever
+      // explicitly hidden on a *successful* join — an unrelated later failure (room not found,
+      // banned) for a DIFFERENT room left it visibly open with whatever PIN was typed for the
+      // previous attempt still sitting in it. Reset unconditionally first, then re-show only if
+      // this specific error actually needs one.
+      roomPinInput.classList.add('hidden');
+      roomPinInput.value = '';
       if (data.pinRequired) {
         roomPinInput.classList.remove('hidden');
         roomPinInput.focus();
+      } else if (data.message === 'Room not found') {
+        removeRecentRoom(roomCodeInput.value.trim().toUpperCase());
       }
       showScreen(roomSelectScreen);
       break;
@@ -2285,6 +2303,16 @@ function getRecentRooms() {
   }
 }
 
+// Found by the landing/room-join-flow correctness audit: a 'Room not found' error means the room
+// genuinely no longer exists (distinct from a wrong-PIN or banned error, where the room is still
+// real) — without this, a deleted room's recent-rooms chip lingered forever with no indication
+// it's now dead.
+function removeRecentRoom(code) {
+  const list = getRecentRooms().filter((r) => r.code !== code);
+  try { localStorage.setItem(RECENT_ROOMS_KEY, JSON.stringify(list)); } catch {}
+  renderRecentRooms();
+}
+
 function saveRecentRoom(code, name) {
   const list = getRecentRooms().filter((r) => r.code !== code);
   list.unshift({ code, name: name || null, lastJoined: Date.now() });
@@ -2313,7 +2341,17 @@ function renderRecentRooms() {
     chip.addEventListener('click', () => {
       roomErrorEl.classList.add('hidden');
       pendingJoinPin = '';
-      ws.send(JSON.stringify({ type: 'join-room', code: r.code }));
+      // Found by the landing/room-join-flow correctness audit: this handler used to send the join
+      // directly without ever writing the code into #room-code-input — fine for an ordinary
+      // success, but if the room turned out to need a PIN, the resulting join-error handler reveals
+      // the PIN field while the code field stays blank/stale, so pressing Join afterward tried to
+      // join whatever (if anything) was already typed there, not this recent room. Pre-filling
+      // keeps the normal joinRoomForm submit path (which reads roomCodeInput, not r.code) correct
+      // for that follow-up attempt.
+      roomCodeInput.value = r.code;
+      roomPinInput.value = '';
+      roomPinInput.classList.add('hidden');
+      wsSendOrWarnDisconnected({ type: 'join-room', code: r.code });
     });
     recentRoomsList.appendChild(chip);
   });
@@ -2442,7 +2480,10 @@ accountForm.addEventListener('submit', (e) => {
 });
 accountSignupBtn.addEventListener('click', () => handleAccountAuth('/auth/signup'));
 
-function signOutAccount() {
+// toastMessage lets a caller override the default "you clicked sign out" toast — used by the
+// accountTokenInvalid handler below, where the real story is "your session already expired
+// server-side," not a fresh action the user just took.
+function signOutAccount(toastMessage) {
   if (accountToken) {
     fetch('/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${accountToken}` } }).catch(() => {});
   }
@@ -2485,9 +2526,17 @@ function signOutAccount() {
   // since loadFriends() itself no-ops with no accountToken, but a permanent stray timer).
   clearInterval(friendsPollInterval);
   renderAccountState();
+  // Found by the landing/room-join-flow correctness audit: triggering this from the in-room
+  // hamburger menu gave zero feedback — the button just disappeared from the still-open menu with
+  // nothing else visibly different, easy to misread as "did that even do anything" (signing out
+  // doesn't leave the room by design, see the comment above — a toast makes clear it worked
+  // without implying anything else changed).
+  showAppToast(toastMessage || 'Signed out of your account');
 }
-accountSignoutBtn.addEventListener('click', signOutAccount);
-accountSignoutMenuBtn.addEventListener('click', signOutAccount);
+// Wrapped rather than passed directly: signOutAccount now takes an optional toastMessage
+// parameter, and addEventListener would otherwise forward the click Event itself into it.
+accountSignoutBtn.addEventListener('click', () => signOutAccount());
+accountSignoutMenuBtn.addEventListener('click', () => signOutAccount());
 
 // Pushes rooms chatted in anonymously before this signup/login to the account's server-side
 // list — without this, only rooms joined *after* signing in ever sync to other devices, and
@@ -4195,10 +4244,24 @@ loginForm.addEventListener('submit', (e) => {
 });
 
 // --- Room select ---
+// Found by the landing/room-join-flow correctness audit: Create/Join/recent-room-chip all called
+// ws.send(...) unconditionally — during the ~1.5s auto-reconnect window after a drop (connect()'s
+// close handler), the socket sits in CONNECTING and .send() throws synchronously and uncaught,
+// silently swallowing the click with nothing beyond the connection-banner already up. Same class
+// of gap as the message-composer's own not-connected guard, applied here too.
+function wsSendOrWarnDisconnected(payload) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    showAppToast('Not connected — try again in a moment.');
+    return false;
+  }
+  ws.send(JSON.stringify(payload));
+  return true;
+}
+
 createRoomBtn.addEventListener('click', () => {
   roomErrorEl.classList.add('hidden');
   pendingJoinPin = '';
-  ws.send(JSON.stringify({ type: 'create-room' }));
+  wsSendOrWarnDisconnected({ type: 'create-room' });
 });
 
 joinRoomForm.addEventListener('submit', (e) => {
@@ -4210,7 +4273,7 @@ joinRoomForm.addEventListener('submit', (e) => {
   const pin = roomPinInput.value.trim();
   if (pin) payload.pin = pin;
   pendingJoinPin = pin;
-  ws.send(JSON.stringify(payload));
+  wsSendOrWarnDisconnected(payload);
 });
 
 // --- Chat ---

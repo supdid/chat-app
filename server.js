@@ -3816,11 +3816,20 @@ wss.on('connection', (ws, req) => {
         avatarUrl: saved ? saved.avatar_url : null,
         status: saved ? saved.status : null,
       };
+      // Found by the landing/room-join-flow correctness audit: an expired/invalid accountToken
+      // was silently ignored here — the client never learned its token was rejected, so its
+      // account panel/menu kept showing "signed in" indefinitely while cross-device sync,
+      // friends, and push silently did nothing. accountTokenInvalid (only true when a token was
+      // actually supplied but didn't resolve to a real session, never merely "no token sent") lets
+      // the client clear its stale local token and re-render as signed-out instead of leaving that
+      // misleading zombie state up.
+      let accountTokenInvalid = false;
       if (msg.accountToken) {
         const account = db.getSessionAccount(String(msg.accountToken));
         if (account) registerAccountConnection(ws, account.id);
+        else accountTokenInvalid = true;
       }
-      send(ws, { type: 'joined-server', profile: ws.profile });
+      send(ws, { type: 'joined-server', profile: ws.profile, accountTokenInvalid });
       broadcastWorldwideCount();
       return;
     }
