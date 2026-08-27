@@ -1094,9 +1094,22 @@ function bcApplyChange(x, y, z, t) {
 // Sends a batch of this player's own block changes (break/place/cave-in) to the shared world.
 // Keyed by cell so an action that touches the same cell more than once (a cave-in reshaping
 // terrain it just carved) only reports each cell's final state, not every intermediate step.
+// Found by the Build Craft client-correctness audit: server.js caps a single bc-block message at
+// 2000 changes (rawChanges.slice(0, 2000)) — anything past that in one message is silently
+// dropped, with no error sent back to the sender at all. A single stampBlueprint call can exceed
+// this (BP_RADIUS=6 -> up to 13x13x13=2197 cells), so the placer's own client would show the
+// full structure standing (it's already been applied to the local world optimistically) while the
+// server, and every other client, would only ever receive the first ~2000 of it — a silent,
+// non-self-correcting desync for the tail of any sufficiently large/dense blueprint. Chunking the
+// send here (shared by every bcSendChanges caller, not just blueprints) keeps every message under
+// the server's real cap instead of just hoping a caller never produces enough changes to hit it.
+const BC_BLOCK_MSG_CHUNK = 2000;
 function bcSendChanges(changesMap) {
   if (changesMap.size === 0 || !bcSocket || bcSocket.readyState !== WebSocket.OPEN) return;
-  bcSocket.send(JSON.stringify({ type: 'bc-block', changes: [...changesMap.values()] }));
+  const all = [...changesMap.values()];
+  for (let i = 0; i < all.length; i += BC_BLOCK_MSG_CHUNK) {
+    bcSocket.send(JSON.stringify({ type: 'bc-block', changes: all.slice(i, i + BC_BLOCK_MSG_CHUNK) }));
+  }
 }
 
 // Builds a simple pixel-art face (skin base, eyes, beard) on a 16x16 canvas, matching the same
@@ -1449,6 +1462,23 @@ function connectBc(code, name) {
     bcMultiplayerActive = false;
     voiceToggleBtn.style.display = 'none';
     resetBcVoice();
+    // Found by the Build Craft client-correctness audit: unlike every other minigame in this app
+    // (chess/Pictionary/Hangman/Trivia/Firefight/Snake/2048/Fighter Plane and the main chat client
+    // itself all auto-reconnect), a mid-session drop here just went permanently offline with the
+    // only recovery being a manual page reload — and worse, doBreak/doPlace gate their claim check
+    // on bcMultiplayerActive, so once it flipped false, claim enforcement silently stopped applying
+    // client-side too (the disconnected player's own view could show them freely building through
+    // someone else's claim, a view with no relationship to server truth, for the rest of the
+    // session). Only reconnect once the world was actually generated at least once (bcReady) — the
+    // initial-connection-failure case is already handled above by bcFallbackToSolo (falls back to
+    // solo play), and we don't want a reconnect loop racing that fallback's own close listener.
+    // bc-init already fully rebuilds the world from the server's seed + overrides on every join
+    // (see the message handler above), so reconnecting also naturally resyncs to server truth —
+    // any local change made but never confirmed sent before the drop is correctly discarded rather
+    // than staying silently diverged forever.
+    if (!bcReady) return;
+    showToast('🔌 Disconnected from the shared world — reconnecting…');
+    setTimeout(() => connectBc(mpRoomCode, mpPlayerName), 1500);
   });
 }
 
@@ -2560,16 +2590,32 @@ blueprintSaveForm.addEventListener('submit', (e) => {
 
 // addBlock() silently no-ops on an already-occupied cell (it's not a "replace"), so stamping
 // over terrain — the normal case, not the exception — needs an explicit remove first.
+//
+// Found by the Build Craft client-correctness audit: doPlace only ever checks the single origin
+// cell's claim status before calling this — but a blueprint can be up to 13x13x13 cells wide
+// (BP_RADIUS=6), so stamping one near a claim boundary could bleed blocks into someone else's
+// claimed territory. Those specific cells were silently rejected server-side (same mechanism as
+// the 2000-cap issue bcSendChanges now handles) while the placer's own client showed the whole
+// structure standing — the exact same class of bug carveCave's own claimGuard (see above) already
+// exists specifically to prevent, just never applied here too. Skips (and doesn't send) any cell
+// that falls inside someone else's claim, same per-cell check.
 function stampBlueprint(ox, oy, oz) {
   const changes = new Map();
+  const claimGuard = bcMultiplayerActive
+    ? (x, z) => isCellClaimedByOther(x, z)
+    : () => false;
+  let skipped = 0;
   for (const b of armedBlueprintBlocks) {
     const x = ox + b.dx, y = oy + b.dy, z = oz + b.dz;
+    if (claimGuard(x, z)) { skipped++; continue; }
     if (world.has(keyOf(x, y, z))) removeBlockAt(x, y, z);
     addBlock(x, y, z, b.t);
     changes.set(`${x},${y},${z}`, { x, y, z, t: b.t });
   }
   bcSendChanges(changes);
-  showToast(`🧱 Stamped ${armedBlueprintBlocks.length} blocks`);
+  showToast(skipped
+    ? `🧱 Stamped ${changes.size} blocks (${skipped} skipped — inside someone else's claim)`
+    : `🧱 Stamped ${changes.size} blocks`);
   armedBlueprintId = null;
   armedBlueprintBlocks = null;
 }
