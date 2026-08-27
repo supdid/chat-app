@@ -18,6 +18,17 @@ const app = express();
 // isAuthRateLimited) resolves to the proxy's own loopback address for every request, collapsing
 // every visitor into one shared rate-limit bucket.
 app.set('trust proxy', 'loopback');
+// Found by a CORS/headers/transport-trust audit: 'trust proxy' above only governs req.ip on
+// Express HTTP routes — it has no effect on the raw WebSocket upgrade request (see wss.on
+// ('connection', ...) below), which used to trust X-Forwarded-For unconditionally regardless of
+// who the immediate TCP peer actually is. This app also listens on all interfaces (server.listen
+// below passes no host), so anyone able to reach this machine's IP:PORT directly — bypassing the
+// Cloudflare tunnel (chat-app-tunnel.service) entirely — could spoof X-Forwarded-For per
+// connection and evade both isWsConnectRateLimited and MAX_SCORPTURE_VIEWERS_PER_IP, both of
+// which are keyed on ws._ip. Replicates the same "only trust it from loopback" boundary manually.
+function isFromTrustedProxy(remoteAddress) {
+  return remoteAddress === '127.0.0.1' || remoteAddress === '::1' || remoteAddress === '::ffff:127.0.0.1';
+}
 app.disable('x-powered-by'); // no reason to hand out the framework/version for free
 const server = http.createServer(app);
 // ws defaults to a 100MiB maxPayload when unset — any connected client (getting one just needs an
@@ -477,6 +488,15 @@ app.use((req, res, next) => {
   // header — and it's skipped otherwise, since plain-HTTP localhost/LAN access is a real, intended
   // way to reach this app, not something to coerce into HTTPS.
   if (req.secure) res.setHeader('Strict-Transport-Security', 'max-age=15552000; includeSubDomains');
+  // Found by a CORS/headers/transport-trust audit: cheap to add, no functionality depends on
+  // either being absent. same-origin keeps the Referer header on same-origin navigation (this app
+  // does have internal links between pages) but never leaks it to an external site. The
+  // Permissions-Policy list is deliberately unused-features-only — camera/microphone are real,
+  // in-use features here (voice calls, Scorpture streaming) and are left unrestricted (their
+  // browser-default is already 'self', i.e. only this origin, so there's nothing to tighten
+  // without risking breaking them).
+  res.setHeader('Referrer-Policy', 'same-origin');
+  res.setHeader('Permissions-Policy', 'geolocation=(), payment=(), usb=(), magnetometer=(), gyroscope=(), interest-cohort=()');
   next();
 });
 app.use(express.static(path.join(__dirname, 'public')));
@@ -3720,8 +3740,10 @@ wss.on('connection', (ws, req) => {
   // Only used to defend against a single IP claiming an outsized share of one stream's
   // viewer slots (see MAX_SCORPTURE_VIEWERS_PER_IP below) — 'trust proxy' above only affects
   // req.ip on HTTP routes, not this raw upgrade request, so the X-Forwarded-For header (set by
-  // the same local reverse proxy) is read directly here.
-  const xff = req.headers['x-forwarded-for'];
+  // the same local reverse proxy) is read directly here. isFromTrustedProxy (see its own comment
+  // near 'trust proxy' above) gates that read the same way Express's own trust-proxy setting
+  // would — without it, a direct connection to this port could forge X-Forwarded-For outright.
+  const xff = isFromTrustedProxy(req.socket.remoteAddress) ? req.headers['x-forwarded-for'] : null;
   ws._ip = (xff ? xff.split(',')[0].trim() : null) || req.socket.remoteAddress || 'unknown';
   if (isWsConnectRateLimited(ws._ip)) {
     ws.close(1013, 'Too many connections too quickly — slow down a bit.');

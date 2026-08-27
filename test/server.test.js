@@ -2197,6 +2197,9 @@ describe('security response headers', () => {
     assert.equal(res.headers.get('x-frame-options'), 'DENY');
     assert.match(res.headers.get('content-security-policy') || '', /frame-ancestors 'none'/);
     assert.equal(res.headers.get('x-powered-by'), null, 'Express should not identify itself');
+    // Found by a CORS/headers/transport-trust audit: cheap to add, previously absent.
+    assert.equal(res.headers.get('referrer-policy'), 'same-origin');
+    assert.match(res.headers.get('permissions-policy') || '', /geolocation=\(\)/);
   });
 });
 
@@ -3813,6 +3816,54 @@ describe('per-IP WS connection rate limit', () => {
         sixth.on('close', (code) => { clearTimeout(timer); resolve(code); });
       });
       assert.equal(closeCode, 1013, 'a connection beyond the cap should be closed with 1013 (Try Again Later)');
+    } finally {
+      opened.forEach((ws) => ws.close());
+      await connLimitServer.stop();
+    }
+  });
+
+  // Found by a CORS/headers/transport-trust audit: 'trust proxy' (server.js, scoped to
+  // 'loopback') only governs req.ip on Express HTTP routes — the raw WS upgrade path used to
+  // trust X-Forwarded-For unconditionally, with no check that the request actually arrived via a
+  // loopback peer. Since this app listens on all interfaces (not just loopback), a connection
+  // arriving over an actual network interface — not through the local cloudflared tunnel — could
+  // forge a different X-Forwarded-For per connection and never trip the shared per-IP cap tested
+  // above. Connects via this machine's own LAN-facing IP (not localhost/127.0.0.1) specifically so
+  // req.socket.remoteAddress is genuinely non-loopback, exercising the real code path rather than
+  // the always-loopback path every other WS test in this suite uses.
+  test('X-Forwarded-For is only trusted from a loopback peer, closing a spoofable bypass of the per-IP cap', async () => {
+    const os = require('node:os');
+    let lanIp = null;
+    for (const addrs of Object.values(os.networkInterfaces())) {
+      for (const a of addrs) if (a.family === 'IPv4' && !a.internal) lanIp = a.address;
+    }
+    if (!lanIp) return; // no non-loopback interface available in this environment — nothing to exercise
+
+    const connLimitServer = await startTestServer(
+      { WS_CONNECT_LIMIT_MAX: '5', WS_CONNECT_LIMIT_WINDOW_MS: '10000' },
+      3215
+    );
+    const opened = [];
+    try {
+      const url = `ws://${lanIp}:${connLimitServer.port}`;
+      // Each connection claims a DIFFERENT spoofed X-Forwarded-For — if the server incorrectly
+      // trusted it (the pre-fix behavior), these would count as 5 distinct IPs and never trip the
+      // shared per-IP cap; since none of these actually arrive from loopback, only the real,
+      // shared remoteAddress (this same LAN IP) may count.
+      for (let i = 0; i < 5; i++) {
+        const ws = new WebSocket(url, { headers: { 'x-forwarded-for': `10.0.0.${i}` } });
+        await new Promise((resolve, reject) => {
+          ws.on('open', resolve);
+          ws.on('close', (code) => reject(new Error(`connection ${i + 1} was unexpectedly closed (code ${code})`)));
+        });
+        opened.push(ws);
+      }
+      const sixth = new WebSocket(url, { headers: { 'x-forwarded-for': '10.0.0.99' } });
+      const closeCode = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('the 6th connection (a different spoofed X-Forwarded-For) was never closed')), 3000);
+        sixth.on('close', (code) => { clearTimeout(timer); resolve(code); });
+      });
+      assert.equal(closeCode, 1013, 'a spoofed X-Forwarded-For from a non-loopback peer must not create a fresh rate-limit bucket');
     } finally {
       opened.forEach((ws) => ws.close());
       await connLimitServer.stop();
