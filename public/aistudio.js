@@ -196,7 +196,24 @@ function buildImageUrl(prompt, seed) {
 // --- Meme text: classic bold white-with-black-outline captions, wrapped and
 // auto-shrunk to fit, drawn onto a canvas copy of the generated background. ---
 function wrapLines(ctx, text, maxWidth) {
-  const words = text.split(/\s+/).filter(Boolean);
+  const rawWords = text.split(/\s+/).filter(Boolean);
+  // Found by the AI Studio functional-correctness audit: a single word wider than maxWidth on its
+  // own can't be fixed by the whitespace-based wrapping below (there's nowhere to break it) —
+  // drawCaption's shrink loop keeps shrinking until it hits its font-size floor, but if the word is
+  // STILL too wide even there, it stayed on one line and rendered clipped off both canvas edges.
+  // Force-break any such word into character-boundary chunks first; the loop below then treats
+  // each chunk exactly like an ordinary word, so it wraps like everything else.
+  const words = [];
+  for (const word of rawWords) {
+    if (ctx.measureText(word).width <= maxWidth) { words.push(word); continue; }
+    let chunk = '';
+    for (const ch of word) {
+      const test = chunk + ch;
+      if (chunk && ctx.measureText(test).width > maxWidth) { words.push(chunk); chunk = ch; }
+      else chunk = test;
+    }
+    if (chunk) words.push(chunk);
+  }
   const lines = [];
   let line = '';
   for (const word of words) {
@@ -385,7 +402,14 @@ async function generate(prompt, seed, topText, bottomText) {
 form.addEventListener('submit', (e) => {
   e.preventDefault();
   const prompt = promptInput.value.trim();
-  if (!prompt) return;
+  // Found by the AI Studio functional-correctness audit: the input's `required` attribute only
+  // blocks a truly empty field — a whitespace-only value passes native validation, then silently
+  // no-op'd here with nothing shown, so the Generate button just appeared to do nothing.
+  if (!prompt) {
+    errorEl.textContent = 'Type something to generate a picture of.';
+    errorEl.classList.remove('hidden');
+    return;
+  }
   const topText = activeCategory.id === 'meme' ? memeTopInput.value.trim() : '';
   const bottomText = activeCategory.id === 'meme' ? memeBottomInput.value.trim() : '';
   generate(prompt, Math.floor(Math.random() * 2 ** 31), topText, bottomText);
@@ -478,17 +502,42 @@ function saveGallery(items) {
 // gallery without ever posting it would let the server's orphaned-upload sweep delete the file
 // out from under it. Fire-and-forget: a failure here just means this item stays vulnerable to
 // the sweep until the next claim attempt, not a user-visible error worth surfacing.
+//
+// Found by the AI Studio functional-correctness audit: on success, marks the matching gallery
+// item `claimed: true` in localStorage — the page-load sweep below reads this to skip items
+// already confirmed claimed, instead of re-firing one request per gallery item on every single
+// page load regardless of whether it was already claimed. A gallery past the shared per-IP rate
+// limit's own burst size (8 requests/6s, shared with /upload and /post-image) previously risked a
+// spurious 429 on the user's very next legitimate action (a fresh generate, a Send to chat) —
+// entirely self-inflicted by their own gallery size, not anything they just tried to do.
 function claimUploadUrl(url) {
   if (!url || !url.startsWith('/uploads/')) return;
   fetch('/claim-upload', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ url }),
+  }).then((res) => {
+    if (!res.ok) return;
+    const items = loadGallery();
+    const item = items.find((it) => it.url === url);
+    if (item && !item.claimed) { item.claimed = true; saveGallery(items); }
   }).catch(() => {});
 }
 
 function addToGallery(url, prompt) {
   const items = loadGallery().filter((item) => item.url !== url);
   items.unshift({ url, prompt, at: Date.now() });
+  // Found by the AI Studio functional-correctness audit: every generation — including a "🎲 New
+  // version" regenerate on the same prompt, not just a deliberate save — was auto-added here with
+  // no separate save action anywhere in the UI, and the oldest item past GALLERY_LIMIT was evicted
+  // with zero indication. From the user's side that reads as a picture they deliberately kept
+  // simply vanishing at some later, unrelated moment. Not changing the auto-save-everything
+  // behavior itself (a bigger product decision — the gallery's whole design intent per this app's
+  // own history is "keep indefinitely," and plenty of users likely rely on every draft landing
+  // there) — just making the eviction it can now cause visible instead of silent.
+  if (items.length > GALLERY_LIMIT) {
+    errorEl.textContent = `Your picture gallery is full (${GALLERY_LIMIT} max) — the oldest one was removed to make room for this one.`;
+    errorEl.classList.remove('hidden');
+  }
   saveGallery(items.slice(0, GALLERY_LIMIT));
   claimUploadUrl(url); // this one item is genuinely new — claim it right away, same as before
   renderGallery();
@@ -546,6 +595,13 @@ function renderGallery() {
 }
 
 clearGalleryBtn.addEventListener('click', () => {
+  // Found by the AI Studio functional-correctness audit: this wiped the entire gallery
+  // immediately on click — no confirmation, no undo — while styled as a plain underlined text
+  // link right next to the "Your pictures" heading, an easy misclick (especially on mobile) with
+  // no safety net at all.
+  const count = loadGallery().length;
+  if (!count) return;
+  if (!confirm(`Remove all ${count} picture${count === 1 ? '' : 's'} from your gallery? This can't be undone.`)) return;
   saveGallery([]);
   renderGallery();
 });
@@ -555,8 +611,12 @@ renderGallery();
 // call (regenerating an image, removing an item, etc. all call renderGallery() far more often
 // than that). Each item was already claimed the moment it was added (see addToGallery), so this
 // only matters for the rare case where that original claim silently failed (e.g. offline at the
-// time); re-firing it on every render burst-fired one request per gallery item every single time,
-// easily exceeding the shared per-IP rate limit /post-image and /upload also draw from — a user
-// with several captioned memes saved could get their very next "Send to chat" or regenerate
-// spuriously 429'd by a burst their own gallery just triggered.
-for (const item of loadGallery()) claimUploadUrl(item.url);
+// time). Two layers against exceeding the shared per-IP rate limit (/post-image and /upload draw
+// from the same 8-requests/6s bucket, so a burst here could spuriously 429 the user's very next
+// legitimate action): only items not yet marked `claimed` are retried at all (see claimUploadUrl
+// above — most items on a returning visit already are, so this is normally a no-op sweep), and
+// whatever's left is staggered rather than fired all at once.
+const GALLERY_CLAIM_SWEEP_STAGGER_MS = 700;
+loadGallery().filter((item) => !item.claimed).forEach((item, i) => {
+  setTimeout(() => claimUploadUrl(item.url), i * GALLERY_CLAIM_SWEEP_STAGGER_MS);
+});
