@@ -172,6 +172,15 @@ function handleMessage(data) {
       lobbyStatusEl.textContent = 'This game is full (20/20 players).';
       break;
 
+    // Found by an app-wide audit (surfaced independently by both the Web Swing and Block Battle
+    // dimensions, then confirmed present across every minigame in this app via a systematic sweep):
+    // a banned player joining any minigame got zero client-side handling for the server's own
+    // join-error message — silently stuck on the lobby screen with no explanation. The server never
+    // closes the connection for this, so no reconnect-loop guard is needed here.
+    case 'tt-join-error':
+      lobbyStatusEl.textContent = data.message || "Couldn't join this room.";
+      break;
+
     case 'tt-player-joined':
       if (state) {
         state.players.push({ id: data.id, name: data.name, symbol: data.symbol, wins: 0 });

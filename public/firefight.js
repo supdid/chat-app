@@ -1378,6 +1378,16 @@ function handleMessage(data) {
       if (ws) ws.close();
       break;
     }
+    // Found by an app-wide audit (surfaced independently by both the Web Swing and Block Battle
+    // dimensions, then confirmed present across every minigame in this app via a systematic sweep):
+    // a banned player joining any minigame got zero client-side handling for the server's own
+    // join-error message — silently stuck on the join screen with no explanation. The server never
+    // closes the connection for this (unlike fg-full above), so no roomFull-style reconnect-loop
+    // guard is needed here.
+    case 'fg-join-error': {
+      joinStatusEl.textContent = data.message || "Couldn't join this room.";
+      break;
+    }
     case 'fg-player-joined': {
       knownNames.set(data.id, data.name);
       if (data.role === 'a') slotAId = data.id;

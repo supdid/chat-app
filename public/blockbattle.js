@@ -3999,6 +3999,15 @@ function handleBbMessage(data) {
       showWaveBanner('⚠️ Lobby is full — try again shortly');
       break;
     }
+    // Found by this dimension's own audit, then confirmed present across every minigame in this
+    // app via a systematic sweep: a banned player got zero explanation anywhere. Mirrors bb-full's
+    // own handling immediately above.
+    case 'bb-join-error': {
+      leaveOnlineLobby();
+      backToModeSelect();
+      showWaveBanner(data.message || "Couldn't join online play");
+      break;
+    }
     case 'bb-player-joined': {
       spawnRemotePlayer(data.id, data.name, data.level, data);
       bbPlayers.push({ id: data.id, name: data.name, level: data.level, dueling: false });

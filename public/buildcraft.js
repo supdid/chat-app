@@ -1390,6 +1390,16 @@ function connectBc(code, name) {
       showToast('That world is full (20/20) — starting your own instead');
       generateWorld(Math.floor(Math.random() * 2 ** 31));
       bcSetReady();
+    } else if (data.type === 'bc-join-error') {
+      // Found by an app-wide audit (surfaced independently by both the Web Swing and Block Battle
+      // dimensions, then confirmed present across every minigame in this app via a systematic
+      // sweep): a banned player got zero explanation anywhere. Mirrors bc-full's own "can't join
+      // the shared world, so give you a solo one instead" fallback immediately above — the least
+      // disruptive option for a game entirely built around always having *a* world to stand in,
+      // rather than leaving the player stuck on a blank loading screen.
+      showToast(data.message || "Couldn't join that world — starting your own instead");
+      generateWorld(Math.floor(Math.random() * 2 ** 31));
+      bcSetReady();
     } else if (data.type === 'bc-hit') {
       if (data.targetId === bcMyId) {
         applyHealthChange(data.health, data.byId);

@@ -2520,6 +2520,19 @@ function connectSw() {
       swRoomFull = true;
       if (swSocket) swSocket.close();
       swSocket = null;
+    } else if (data.type === 'sw-join-error') {
+      // Found by an app-wide audit (this exact gap first surfaced by this game's own dimension,
+      // then confirmed present across every minigame in this app via a systematic sweep): a banned
+      // player got zero explanation anywhere — the swinging/movement layer keeps working locally by
+      // this game's own by-design "never fails" architecture, but multiplayer sync (seeing/being
+      // seen by anyone else, PvP, the leaderboard) silently never initializes with nothing on
+      // screen to explain why. Mirrors sw-full's own close-the-socket handling (no reconnect-loop
+      // guard needed — the server never closes the connection itself for this) plus a toast, since
+      // unlike sw-full this specific failure was flagged as needing a visible explanation.
+      swRoomFull = true;
+      if (swSocket) swSocket.close();
+      swSocket = null;
+      showToast(data.message || "Couldn't join this room's shared world", 4000);
     } else if (data.type === 'sw-leaderboard-result') {
       renderLeaderboard(data.scores || []);
     }

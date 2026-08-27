@@ -189,6 +189,16 @@ function handleMessage(data) {
       lobbyStatusEl.textContent = 'This game is full (20/20 players).';
       break;
 
+    // Found by an app-wide audit (surfaced independently by both the Web Swing and Block Battle
+    // dimensions, then confirmed present across every minigame in this app via a systematic sweep):
+    // a banned player joining any minigame got zero client-side handling for the server's own
+    // join-error message — silently stuck on the lobby screen with no explanation, no player list,
+    // no error. The server never closes the connection for this (same send-then-return shape as
+    // every other X-join-error in server.js), so no reconnect-loop guard is needed here.
+    case 'ch-join-error':
+      lobbyStatusEl.textContent = data.message || "Couldn't join this room.";
+      break;
+
     case 'ch-player-joined':
       if (state) {
         state.players.push({ id: data.id, name: data.name, color: data.color, wins: 0 });

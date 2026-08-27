@@ -256,6 +256,15 @@ function handleMessage(data) {
       statusLabel.textContent = 'This board is full (20/20 people).';
       break;
 
+    // Found by an app-wide audit (surfaced independently by both the Web Swing and Block Battle
+    // dimensions, then confirmed present across every minigame in this app via a systematic sweep):
+    // a banned player joining any minigame got zero client-side handling for the server's own
+    // join-error message — silently stuck on the lobby screen with no explanation. The server never
+    // closes the connection for this, so no reconnect-loop guard is needed here.
+    case 'wb-join-error':
+      statusLabel.textContent = data.message || "Couldn't join this room.";
+      break;
+
     case 'wb-stroke':
       drawStroke(data.stroke);
       break;

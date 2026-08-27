@@ -443,6 +443,17 @@ if (typeof document !== 'undefined') {
           gwRoomFull = true;
           gwSocket.close();
           gwSocket = null;
+        } else if (data.type === 'gw-join-error') {
+          // Found by an app-wide audit (surfaced independently by both the Web Swing and Block
+          // Battle dimensions, then confirmed present across every minigame in this app via a
+          // systematic sweep): a banned player got no client-side handling at all. This file has no
+          // toast/status UI of any kind (gw-full above is silent too, a pre-existing gap of its
+          // own, wider than just this one message type — not expanding scope to build one here);
+          // matching gw-full's own existing behavior at least stops the socket sitting open
+          // non-functionally instead of leaving it in limbo.
+          gwRoomFull = true;
+          gwSocket.close();
+          gwSocket = null;
         } else if (data.type === 'gw-leaderboard-result') {
           renderLeaderboard(data.scores || []);
         }
