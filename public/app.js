@@ -1155,6 +1155,10 @@ function handleServerMessage(data) {
       data.peers.forEach((p) => {
         addVoicePeer(p.sub, p.name);
         makeVoiceOffer(p.sub);
+        // Found by the voice-call client-side audit: without this, a hand raised before we
+        // joined (or before we rejoined after a network blip) looked lowered on our screen
+        // forever, since nothing ever re-sent the raise once we were already missing it.
+        if (p.raised) setTileHandRaised(p.sub, true);
       });
       break;
 
@@ -1193,6 +1197,15 @@ function handleServerMessage(data) {
 
     case 'hand-raised':
       setTileHandRaised(data.sub, true);
+      // Found by the voice-call client-side audit: raising a hand had no effect at all while
+      // docked (the default view) — the tile's little raised-hand marker is CSS-hidden unless
+      // the call is expanded, and nothing here ever expanded it or said anything, so a docked
+      // caller had no way to ever notice. Mirrors the mute-all-request notice just below.
+      voiceErrorEl.textContent = `${data.name} raised their hand.`;
+      voiceErrorEl.classList.remove('hidden');
+      setCallExpanded(true);
+      clearTimeout(muteAllNoticeTimer);
+      muteAllNoticeTimer = setTimeout(() => voiceErrorEl.classList.add('hidden'), 6000);
       break;
 
     case 'hand-lowered':
@@ -3479,7 +3492,14 @@ function setHandRaised(raised) {
 raiseHandBtn.addEventListener('click', () => setHandRaised(!handRaised));
 
 muteAllBtn.addEventListener('click', () => {
-  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'mute-all-request' }));
+  // Found by the voice-call client-side audit: the receiving side gets a clear forced-expand
+  // notice, but the sender previously had zero feedback either way — indistinguishable from a
+  // silently rate-limit-dropped request (server.js drops this WS-flood-gated like everything
+  // else). A toast here doesn't confirm delivery, but at least confirms the click registered.
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'mute-all-request' }));
+    showAppToast('Asked everyone on the call to mute.');
+  }
 });
 
 function setTileHandRaised(sub, raised) {
@@ -3585,6 +3605,11 @@ async function retryEnableMicrophone() {
   } catch (err) {
     voiceErrorEl.textContent = micErrorMessage(err);
     voiceErrorEl.classList.remove('hidden');
+    // Found by the voice-call client-side audit: startVoiceCall's own equivalent catch block
+    // expands the call view for this exact reason (see its comment) — this retry path is
+    // reachable from the docked pill too (the retry button stays visible there), but was
+    // missing the same call, so a still-blocked retry looked like nothing happened at all.
+    setCallExpanded(true);
     return;
   }
   if (myCallGeneration !== voiceCallGeneration) {
@@ -4026,7 +4051,13 @@ function makePeerConnection(sub) {
       const name = peer && peer.name;
       removeVoicePeer(sub);
       showAppToast(`📵 Lost connection to ${name || 'a participant'}`);
+      return;
     }
+    // Found by the voice-call client-side audit: the transient 'disconnected' state (unlike
+    // 'failed' above, often recovers on its own within seconds) previously got no UI treatment
+    // at all — a stalled tile looked identical to a healthy one the whole time it was stuck.
+    const tile = document.getElementById(`call-tile-${sub}`);
+    if (tile) tile.classList.toggle('reconnecting', pc.iceConnectionState === 'disconnected');
   });
 
   pc.addEventListener('track', (e) => {
@@ -4176,7 +4207,18 @@ async function startScreenShare() {
   try {
     screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
   } catch (err) {
-    return; // user cancelled the share picker
+    // Found by the voice-call client-side audit: every getDisplayMedia() rejection used to be
+    // treated identically to a plain cancel, with zero feedback — including a real failure
+    // (blocked by OS/browser policy, no capturable source, hardware error). Browsers report a
+    // user-cancelled picker as NotAllowedError too, so it can't be told apart from a real
+    // permission denial — but AbortError/NotFoundError/NotReadableError/etc. are never just a
+    // cancel, so those get the same visible-error treatment micErrorMessage() already gives
+    // getUserMedia failures instead of staying silent.
+    if (err && err.name !== 'NotAllowedError') {
+      voiceErrorEl.textContent = `Couldn't share your screen: ${err.message || err.name || 'unknown error'}.`;
+      voiceErrorEl.classList.remove('hidden');
+    }
+    return;
   } finally {
     screenShareStarting = false;
   }

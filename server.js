@@ -6529,10 +6529,15 @@ wss.on('connection', (ws, req) => {
       const sub = ws.profile.sub;
       const name = ws.profile.name;
       const wasEmpty = voice.size === 0;
+      // Found by the voice-call client-side audit: a hand raised before someone joins (or
+      // rejoins after a network blip) used to be invisible to them forever — voice-peers only
+      // ever carried sub/name, so a late joiner's tile started (and stayed) un-raised until the
+      // raiser happened to lower and re-raise it. raised now travels with the rest of a peer's
+      // live call state on this same snapshot.
       const existing = [...voice.entries()]
         .filter(([s]) => s !== sub)
-        .map(([s, p]) => ({ sub: s, name: p.name }));
-      voice.set(sub, { ws, name });
+        .map(([s, p]) => ({ sub: s, name: p.name, raised: !!p.raised }));
+      voice.set(sub, { ws, name, raised: false });
       send(ws, { type: 'voice-peers', peers: existing });
       for (const [s, p] of voice) {
         if (s !== sub) send(p.ws, { type: 'voice-peer-joined', sub, name });
@@ -6580,6 +6585,7 @@ wss.on('connection', (ws, req) => {
       if (!voice || !voice.has(sub)) return;
       if (isWsMsgRateLimited(ws)) return;
       const raised = msg.type === 'raise-hand';
+      voice.get(sub).raised = raised;
       for (const [s, p] of voice) {
         if (s !== sub) send(p.ws, { type: raised ? 'hand-raised' : 'hand-lowered', sub, name: ws.profile.name });
       }

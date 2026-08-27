@@ -1788,6 +1788,20 @@ button.danger:hover {
   display: none;
 }
 
+/* Found by the voice-call client-side audit: a peer connection stuck in ICE's transient
+   'disconnected' state (a brief network hiccup — common, and can take a while to either recover
+   on its own or escalate to the terminal 'failed' state that already gets a toast + teardown)
+   used to look completely indistinguishable from a healthy tile. This is intentionally quieter
+   than hand-raised/speaking — it's describing a maybe-temporary problem, not a deliberate signal. */
+.call-tile.reconnecting {
+  opacity: 0.5;
+}
+
+.call-tile.reconnecting .call-tile-video,
+.call-tile.reconnecting .call-tile-avatar {
+  filter: grayscale(0.6);
+}
+
 .call-action.recording {
   background: #c0392b;
   color: white;

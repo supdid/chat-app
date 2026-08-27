@@ -2148,6 +2148,32 @@ describe('voice call signaling requires the sender to actually be on the call', 
 
     host.close(); mover.close();
   });
+
+  // Found by the voice-call client-side audit: voice-peers used to carry only sub/name, so a
+  // hand raised before someone joined (or rejoined after a network blip) was invisible to them
+  // forever — nothing ever re-sent the raise once a client had missed it.
+  test('a hand raised before a peer joins is included as raised:true in their voice-peers snapshot', async () => {
+    const { ws: host, code } = await joinRoom('HandRaiseHost');
+    send(host, { type: 'voice-join' });
+    await waitFor(host, (m) => m.type === 'voice-peers');
+    send(host, { type: 'raise-hand' });
+
+    const late = await joinExistingRoom('HandRaiseLateJoiner', code);
+    send(late, { type: 'voice-join' });
+    const latePeers = await waitFor(late, (m) => m.type === 'voice-peers');
+    const hostPeer = latePeers.peers.find((p) => p.name === 'HandRaiseHost');
+    assert.ok(hostPeer, 'sanity: the host must appear in the late joiner\'s peers list');
+    assert.equal(hostPeer.raised, true, 'a hand raised before this peer joined must still show as raised in their initial snapshot');
+
+    send(host, { type: 'lower-hand' });
+    const secondLate = await joinExistingRoom('HandRaiseLateJoiner2', code);
+    send(secondLate, { type: 'voice-join' });
+    const secondLatePeers = await waitFor(secondLate, (m) => m.type === 'voice-peers');
+    const hostPeer2 = secondLatePeers.peers.find((p) => p.name === 'HandRaiseHost');
+    assert.equal(hostPeer2.raised, false, 'lowering the hand must be reflected in a subsequent joiner\'s snapshot too');
+
+    host.close(); late.close(); secondLate.close();
+  });
 });
 
 describe('whiteboard stroke sanitization', () => {
