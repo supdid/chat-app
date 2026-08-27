@@ -319,6 +319,21 @@ if (typeof document !== 'undefined') {
     const progressBestEl = document.getElementById('progress-best');
     const completeEl = document.getElementById('complete-overlay');
     const completeLevelName = document.getElementById('complete-level-name');
+    const gwToastEl = document.getElementById('gw-toast');
+
+    // Found by the Geometry Wave client-correctness audit: this file had no toast/status UI of any
+    // kind — mirrors webswing.js's own showToast (restart-the-CSS-animation trick, same technique)
+    // so gw-full/gw-join-error (a ban) can finally tell the player something instead of the game
+    // just quietly playing without multiplayer with zero explanation.
+    function showToast(text) {
+      gwToastEl.textContent = text;
+      gwToastEl.classList.remove('hidden');
+      gwToastEl.style.animation = 'none';
+      void gwToastEl.offsetWidth;
+      gwToastEl.style.animation = '';
+      clearTimeout(showToast._t);
+      showToast._t = setTimeout(() => gwToastEl.classList.add('hidden'), 3500);
+    }
 
     const PROGRESS_KEY = 'geometrywave_progress';
     function loadProgress() {
@@ -344,6 +359,7 @@ if (typeof document !== 'undefined') {
     renderMenuBests();
 
     let currentLevelKey = null;
+    let deathResetTimer = null;
     let level = null;
     let state = { x: 0, y: 0 };
     let holding = false;
@@ -409,7 +425,19 @@ if (typeof document !== 'undefined') {
     let gwConnectedLevel = null;
     let gwRoomFull = false;
     let lastGwPosSent = 0;
-    const gwRemotePlayers = new Map(); // id -> { x, y }
+    const gwRemotePlayers = new Map(); // id -> { x, y, tx, ty } — see gw-init's own comment above
+    // Same exponential-blend technique (and rate) webswing.js already established in this codebase
+    // for its own ghost interpolation — found missing here by the Geometry Wave client-correctness
+    // audit.
+    const GHOST_BLEND_RATE = 17.3; // ≡ lerp 0.25/frame @60fps
+    function expBlend(rate, dt) { return 1 - Math.exp(-rate * dt); }
+    function updateRemoteGhosts(dt) {
+      const b = expBlend(GHOST_BLEND_RATE, dt);
+      for (const rp of gwRemotePlayers.values()) {
+        rp.x += (rp.tx - rp.x) * b;
+        rp.y += (rp.ty - rp.y) * b;
+      }
+    }
 
     function gwConnect(levelKey) {
       if (!mpRoomCode) return;
@@ -431,31 +459,43 @@ if (typeof document !== 'undefined') {
           return;
         }
         if (data.type === 'gw-init') {
-          data.players.forEach((p) => gwRemotePlayers.set(p.id, { x: p.x, y: p.y }));
+          // x/y are the rendered (blended) position draw() actually reads; tx/ty are the latest
+          // network target updateRemoteGhosts blends toward each frame — see its own comment for
+          // why (found by the Geometry Wave client-correctness audit: ghosts used to render at the
+          // raw last-received position with no interpolation at all, snapping visibly on every
+          // ~100ms gw-pos update). Initialized equal so a ghost never animates in from (0,0).
+          data.players.forEach((p) => gwRemotePlayers.set(p.id, { x: p.x, y: p.y, tx: p.x, ty: p.y }));
         } else if (data.type === 'gw-player-joined') {
-          gwRemotePlayers.set(data.id, { x: 0, y: state.y });
+          gwRemotePlayers.set(data.id, { x: 0, y: state.y, tx: 0, ty: state.y });
         } else if (data.type === 'gw-pos') {
           const rp = gwRemotePlayers.get(data.id);
-          if (rp) { rp.x = data.x; rp.y = data.y; } else gwRemotePlayers.set(data.id, { x: data.x, y: data.y });
+          if (rp) { rp.tx = data.x; rp.ty = data.y; } else gwRemotePlayers.set(data.id, { x: data.x, y: data.y, tx: data.x, ty: data.y });
         } else if (data.type === 'gw-player-left') {
           gwRemotePlayers.delete(data.id);
         } else if (data.type === 'gw-full') {
           gwRoomFull = true;
           gwSocket.close();
           gwSocket = null;
+          showToast('This room is full — playing without multiplayer');
         } else if (data.type === 'gw-join-error') {
           // Found by an app-wide audit (surfaced independently by both the Web Swing and Block
           // Battle dimensions, then confirmed present across every minigame in this app via a
-          // systematic sweep): a banned player got no client-side handling at all. This file has no
-          // toast/status UI of any kind (gw-full above is silent too, a pre-existing gap of its
-          // own, wider than just this one message type — not expanding scope to build one here);
-          // matching gw-full's own existing behavior at least stops the socket sitting open
-          // non-functionally instead of leaving it in limbo.
+          // systematic sweep): a banned player got no client-side handling at all. This dimension's
+          // own follow-up audit added a real toast/status UI to this file (see showToast above) —
+          // now used here and for gw-full above too, closing the wider gap that dimension
+          // deliberately left open at the time.
           gwRoomFull = true;
           gwSocket.close();
           gwSocket = null;
+          showToast(data.message || "Couldn't join this room's shared world");
         } else if (data.type === 'gw-leaderboard-result') {
-          renderLeaderboard(data.scores || []);
+          // Found by the Geometry Wave client-correctness audit: the server already sends which
+          // level this result is for, but it was ignored — gwConnect tears down and recreates the
+          // socket on every level switch, but an old socket's already-in-flight response could
+          // still land after switching, so opening the leaderboard for level A then quickly
+          // switching to level B and reopening its leaderboard before A's response arrived could
+          // render level A's scores under level B's label.
+          if (data.level === currentLevelKey) renderLeaderboard(data.scores || []);
         }
       });
       // Without this, a dropped connection (server restart, brief network blip) left every remote
@@ -600,6 +640,12 @@ if (typeof document !== 'undefined') {
     }
 
     function startLevel(key) {
+      // Found by the Geometry Wave client-correctness audit: onDeath's own resetAttempt timeout
+      // (below) was never cleared here or in backToMenu — die, then within its 260ms window back
+      // out to the menu and immediately pick a level (same or different), and startLevel's own
+      // resetAttempt() (attempts=1) runs first, then the stale timeout fires and calls
+      // resetAttempt() a second time, silently bumping attempts to 2 on what looks like a first try.
+      clearTimeout(deathResetTimer);
       currentLevelKey = key;
       level = LEVELS[key];
       attempts = 0;
@@ -630,6 +676,7 @@ if (typeof document !== 'undefined') {
     function backToMenu() {
       running = false;
       dying = false;
+      clearTimeout(deathResetTimer); // see startLevel's own comment on why this matters
       stopMusic();
       // Without this, a player who finishes/dies out and returns to the menu (rather than
       // immediately picking another level, which is the only other path that closes gwSocket —
@@ -651,7 +698,8 @@ if (typeof document !== 'undefined') {
       dying = true;
       spawnDeathParticles(state.x, state.y, level ? level.color : '#ff4d4d');
       flashUntil = performance.now() + 180;
-      setTimeout(() => { if (currentLevelKey) resetAttempt(); }, 260);
+      clearTimeout(deathResetTimer);
+      deathResetTimer = setTimeout(() => { if (currentLevelKey) resetAttempt(); }, 260);
     }
 
     function onComplete() {
@@ -733,6 +781,11 @@ if (typeof document !== 'undefined') {
     window.addEventListener('mouseup', () => setHolding(false));
     canvas.addEventListener('touchstart', (e) => { e.preventDefault(); setHolding(true); }, { passive: false });
     window.addEventListener('touchend', () => setHolding(false));
+    // Found by the Geometry Wave client-correctness audit: only touchend was handled — if the OS/
+    // browser cancels a touch without a matching touchend (an interrupting system gesture, a
+    // notification, certain multi-touch edge cases), holding stuck true forever, the same bug
+    // class the blur/visibilitychange guards below already exist to prevent for other cases.
+    window.addEventListener('touchcancel', () => setHolding(false));
     window.addEventListener('keydown', (e) => {
       if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); setHolding(true); }
     });
@@ -933,6 +986,7 @@ if (typeof document !== 'undefined') {
           onDeath();
         }
       }
+      updateRemoteGhosts(dt);
       tickMusic();
       draw();
     }
