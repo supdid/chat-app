@@ -15,6 +15,8 @@ const roomPinForm = document.getElementById('room-pin-form');
 const roomPinFormInput = document.getElementById('room-pin-form-input');
 const roomCodeChip = document.getElementById('room-code-chip');
 const messagesEl = document.getElementById('messages');
+const newMessagesPill = document.getElementById('new-messages-pill');
+const connectionBannerEl = document.getElementById('connection-banner');
 const messageForm = document.getElementById('message-form');
 const messageInput = document.getElementById('message-input');
 const attachBtn = document.getElementById('attach-btn');
@@ -249,6 +251,10 @@ let activeReactionPopover = null;
 const roomActivity = new Map(); // name -> game code ('bc'|'gw'|'dg')
 const ACTIVITY_BADGES = { bc: '🏝️', gw: '🔺', dg: '🖍️', wb: '🖌️', tv: '❓', tt: '⭕', ch: '♟️', hm: '🪢', sk: '🐍', tf: '🔢', fp: '🛩️', sw: '🕸️', fg: '🔫' };
 let lastRoomUsers = [];
+// Found by the room-chat client-side correctness audit: tracks the single currently-open message
+// edit form ({ messageId, restore }), so starting a second edit can auto-cancel the first instead
+// of leaving both open at once (see startEditingMessage).
+let activeMessageEdit = null;
 
 // --- Saved messages — purely client-side (localStorage), stores a content snapshot (not just
 // an id) so a saved message still shows something even if the original is later deleted or the
@@ -605,6 +611,11 @@ function connect() {
   });
 
   ws.addEventListener('message', (event) => {
+    // Any message at all proves the round trip is back up — simplest, most robust place to clear
+    // the connection banner (see the close handler below for where it's shown). Deliberately not
+    // scattered across every individual terminal state (joined-room, join-error, kicked, etc.) that
+    // could follow a reconnect; ANY server response, whichever it is, means we're connected again.
+    connectionBannerEl.classList.add('hidden');
     let data;
     try {
       data = JSON.parse(event.data);
@@ -624,6 +635,12 @@ function connect() {
     // tab suspend during a call used to leave the user talking into a call that looks fully live
     // but is actually already over for everyone else, with no indication anything happened.
     if (voiceActive) hangUpVoiceCall();
+    // Found by the room-chat client-side correctness audit: a dropped connection had no visible
+    // indicator anywhere — the UI just silently stopped updating during the retry loop below, with
+    // no explanation. Only shown once actually in the chat/room-select UI (not during the very
+    // first page load, before any screen has been shown yet) — an initial connection failure
+    // already has its own dedicated login-screen error path (see setLoginPending/loginErrorEl).
+    if (myProfile) connectionBannerEl.classList.remove('hidden');
     setTimeout(connect, 1500);
   });
 }
@@ -781,12 +798,19 @@ function handleServerMessage(data) {
       bansListEl.classList.add('hidden');
       unreadCount = 0;
       updateUnreadBadge();
+      // Found by the room-chat client-side correctness audit: renderOnlineList (the only place
+      // that (re)assigns lastRoomUsers, which mention-highlighting keys off) used to run AFTER
+      // this history render loop — so on a fresh join lastRoomUsers was still [] (or, on a room
+      // switch, still the PREVIOUS room's roster) while every scrollback message rendered, and
+      // every @mention in that history rendered as plain unhighlighted text. Messages that arrive
+      // live afterward were already correct, since lastRoomUsers is set by then. Moved ahead of
+      // the render loop so history gets the same highlighting live messages always had.
+      renderOnlineList(data.users);
       data.messages.forEach(renderMessage);
       if (data.messages.length) sendReadReceipt(data.messages[data.messages.length - 1].id);
       roomCodeChip.textContent = currentRoomName ? `${currentRoomName} (${data.code})` : data.code;
       menuRoomCode.textContent = data.code;
       renameRoomInput.value = currentRoomName || '';
-      renderOnlineList(data.users);
       updateGameLinks();
       saveRecentRoom(data.code, currentRoomName);
       showScreen(chatScreen);
@@ -1019,7 +1043,15 @@ function handleServerMessage(data) {
       break;
 
     case 'message-edited': {
-      const bubble = document.querySelector(`#msg-${data.messageId} .bubble`);
+      const msgEl = document.getElementById(`msg-${data.messageId}`);
+      // Found by the room-chat client-side correctness audit: a message-edited broadcast that
+      // arrives (or is still in flight) for a message that has since been deleted used to silently
+      // resurrect deleted text — the deleted placeholder still carries class "text", which this
+      // handler's own selector matches just as readily as a real live message. dataset.deleted
+      // (set below in message-deleted) makes that state explicit instead of relying on server-side
+      // event ordering to never produce this sequence.
+      if (msgEl && msgEl.dataset.deleted) break;
+      const bubble = msgEl && msgEl.querySelector('.bubble');
       const textEl = bubble && bubble.querySelector('.text, .edit-message-form');
       if (textEl) {
         const fresh = document.createElement('span');
@@ -1036,6 +1068,7 @@ function handleServerMessage(data) {
     case 'message-deleted': {
       const el = document.getElementById(`msg-${data.messageId}`);
       if (el) {
+        el.dataset.deleted = '1';
         const bubble = el.querySelector('.bubble');
         const metaText = bubble.querySelector('.meta')?.textContent || '';
         bubble.innerHTML = '';
@@ -1244,6 +1277,7 @@ function renderMessage(data, opts = {}) {
   bubble.appendChild(meta);
 
   if (data.deleted) {
+    el.dataset.deleted = '1'; // see the message-edited handler's own comment on why this matters
     const text = document.createElement('span');
     text.className = 'text deleted-text';
     text.textContent = 'This message was deleted';
@@ -1251,7 +1285,7 @@ function renderMessage(data, opts = {}) {
     el.appendChild(makeAvatar(data.name));
     el.appendChild(bubble);
     messagesEl.appendChild(el);
-    scrollToBottom();
+    maybeScrollToBottom();
     return;
   }
 
@@ -1283,6 +1317,18 @@ function renderMessage(data, opts = {}) {
       media.alt = 'shared image';
     }
     media.className = 'media' + extraClass;
+    // Found by the room-chat client-side correctness audit: a 404'd/expired upload (deleted file,
+    // orphan-sweep reclaim, etc.) had no fallback at all — just the browser's bare default broken-
+    // image glyph, or a blank/inert player with zero explanation. One shared handler for all three
+    // element types (img/video/audio all fire a plain, non-bubbling 'error' event the same way).
+    media.addEventListener('error', () => {
+      const fallback = document.createElement('span');
+      fallback.className = 'media-unavailable';
+      fallback.textContent = data.mediaType === 'video' ? '🎬 Video unavailable'
+        : data.mediaType === 'audio' ? '🔊 Audio unavailable'
+        : '🖼️ Image unavailable';
+      media.replaceWith(fallback);
+    }, { once: true });
     bubble.appendChild(media);
   }
 
@@ -1313,7 +1359,9 @@ function renderMessage(data, opts = {}) {
   el.appendChild(makeAvatar(data.name));
   el.appendChild(bubble);
   messagesEl.appendChild(el);
-  scrollToBottom();
+  // force for your own outgoing message — sending should always show what you just sent
+  // regardless of scroll position, same as every mainstream chat app.
+  maybeScrollToBottom(Boolean(myProfile && data.sub === myProfile.sub));
 
   if (data.id) {
     lastMessageEl = el;
@@ -1544,6 +1592,11 @@ function startEditingMessage(messageId) {
   const bubble = document.querySelector(`#msg-${messageId} .bubble`);
   const textEl = bubble && bubble.querySelector('.text');
   if (!bubble || !textEl) return;
+  // Found by the room-chat client-side correctness audit: clicking Edit on a second message while
+  // one was already being edited left BOTH forms open with no cancel-the-other or block — auto-
+  // cancel whatever was already open, matching how most chat apps only allow one open edit at a
+  // time.
+  if (activeMessageEdit) activeMessageEdit.restore();
   // .textContent would give the *rendered* text with markdown delimiters already stripped by
   // renderTextWithMentions (e.g. "important" instead of "**important**") — dataset.rawText (set
   // in renderMessage/message-edited) holds the actual source. Fall back to textContent only for
@@ -1576,6 +1629,7 @@ function startEditingMessage(messageId) {
     freshText.dataset.rawText = originalText;
     freshText.appendChild(renderTextWithMentions(originalText));
     editForm.replaceWith(freshText);
+    if (activeMessageEdit && activeMessageEdit.messageId === messageId) activeMessageEdit = null;
   };
   cancelBtn.addEventListener('click', restore);
   editForm.addEventListener('submit', (e) => {
@@ -1583,7 +1637,13 @@ function startEditingMessage(messageId) {
     const text = input.value.trim();
     if (!text || text === originalText) { restore(); return; }
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'edit-message', messageId, text }));
+    // The form stays visible (showing the submitted text) until the server's message-edited
+    // broadcast replaces it — untrack it as "the active edit" now since the user's done
+    // interacting with it either way, so a newly-started edit elsewhere won't also try to restore
+    // this already-submitted one.
+    if (activeMessageEdit && activeMessageEdit.messageId === messageId) activeMessageEdit = null;
   });
+  activeMessageEdit = { messageId, restore };
 }
 
 function openReactionPicker(anchorBtn, messageId) {
@@ -1873,7 +1933,7 @@ function renderSystem(data) {
   el.className = 'system';
   el.textContent = data.text;
   messagesEl.appendChild(el);
-  scrollToBottom();
+  maybeScrollToBottom();
 }
 
 function renderOnlineList(users) {
@@ -1974,6 +2034,48 @@ function renderOnlineList(users) {
 function scrollToBottom() {
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
+
+// Found by the room-chat client-side correctness audit: scrollToBottom() used to fire
+// unconditionally from every incoming message/system line, yanking anyone who'd scrolled up to
+// read history straight back down to the newest message. maybeScrollToBottom replaces those call
+// sites: it still scrolls immediately when the user is already near the bottom (or force=true, for
+// the user's own outgoing message — sending always shows what you just sent, regardless of scroll
+// position) but otherwise leaves the viewport alone and shows a "new messages" pill instead, the
+// same pattern Discord/Slack/iMessage all use. During a bulk history render on room join, the
+// container starts empty (trivially "near the bottom") and each append keeps it pinned there, so
+// this naturally still lands at the bottom by the end without needing a separate code path.
+const NEAR_BOTTOM_PX = 100;
+let unseenNewCount = 0;
+
+function isScrolledNearBottom() {
+  return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < NEAR_BOTTOM_PX;
+}
+
+function hideNewMessagesPill() {
+  unseenNewCount = 0;
+  newMessagesPill.classList.add('hidden');
+}
+
+function maybeScrollToBottom(force = false) {
+  if (force || isScrolledNearBottom()) {
+    scrollToBottom();
+    hideNewMessagesPill();
+  } else {
+    unseenNewCount++;
+    newMessagesPill.textContent = `↓ ${unseenNewCount} new message${unseenNewCount === 1 ? '' : 's'}`;
+    newMessagesPill.classList.remove('hidden');
+  }
+}
+
+newMessagesPill.addEventListener('click', () => {
+  scrollToBottom();
+  hideNewMessagesPill();
+});
+
+// Catches the user manually scrolling back down themselves (not just clicking the pill).
+messagesEl.addEventListener('scroll', () => {
+  if (!newMessagesPill.classList.contains('hidden') && isScrolledNearBottom()) hideNewMessagesPill();
+});
 
 function requestNotificationPermission() {
   if ('Notification' in window && Notification.permission === 'default') {
@@ -4138,7 +4240,16 @@ function resolveSlashCommand(text) {
 messageForm.addEventListener('submit', (e) => {
   e.preventDefault();
   const raw = messageInput.value.trim();
-  if (!raw || ws.readyState !== WebSocket.OPEN) return;
+  if (!raw) return;
+  // Found by the room-chat client-side correctness audit: sending while disconnected used to be a
+  // silent no-op — the text just stayed in the box with zero indication anything was wrong, easy
+  // to mistake for the message having actually gone through. The connection-banner (shown/hidden
+  // by the ws close/reconnect handlers) already explains WHY, but a per-attempt toast makes each
+  // specific failed send unmissable too.
+  if (ws.readyState !== WebSocket.OPEN) {
+    showAppToast("Not connected — your message wasn't sent. It'll stay in the box until you're back online.");
+    return;
+  }
   const text = resolveSlashCommand(raw);
   const payload = { type: 'message', text };
   if (replyingTo) payload.replyTo = replyingTo.id;

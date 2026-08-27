@@ -471,6 +471,40 @@ body {
   height: 36px;
 }
 
+/* Found by the room-chat client-side correctness audit: scrollToBottom() used to fire
+   unconditionally on every incoming message/system line, yanking anyone who'd scrolled up to
+   read history straight back down. This pill (position: fixed, matching .app-toast/.worldwide-
+   badge's existing overlay convention elsewhere in this file rather than needing #chat-screen to
+   become a new positioning context) surfaces new-message arrivals instead, without moving the
+   viewport. */
+.new-messages-pill {
+  position: fixed;
+  left: 50%;
+  bottom: 5.5rem;
+  transform: translateX(-50%);
+  background: linear-gradient(90deg, #34e89e, #3b9dff); /* this app's established CTA gradient */
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  padding: 0.5rem 1rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+  cursor: pointer;
+  z-index: 15;
+}
+
+.bubble .media-unavailable {
+  display: block;
+  margin-top: 0.25rem;
+  padding: 0.4rem 0.6rem;
+  border-radius: 8px;
+  background: rgba(127, 127, 127, 0.15);
+  font-size: 0.85rem;
+  opacity: 0.75;
+  width: fit-content;
+}
+
 #voice-clip-btn.recording {
   background: rgba(224, 60, 60, 0.18);
   color: #e03c3c;
@@ -793,6 +827,19 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
+}
+
+/* Found by the room-chat client-side correctness audit: a dropped connection had NO visible
+   indicator anywhere — the client silently retried in the background (connect()'s setTimeout
+   loop) with the UI just quietly stopping updating, giving no explanation why messages seemed to
+   stop arriving. */
+.connection-banner {
+  padding: 0.5rem 1.5rem;
+  background: #e0a13c;
+  color: #2a1c00;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-align: center;
 }
 
 .announcement-banner {
