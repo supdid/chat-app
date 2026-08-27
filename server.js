@@ -2191,6 +2191,29 @@ const BC_MAX_BLOCK_TYPE = 300;
 // client-reported position by design, see comments elsewhere), just enough to stop a client from
 // broadcasting coordinates so large they break other players' rendering/camera math.
 const BC_MAX_COORD = 10000;
+// Found by an unbounded-memory-growth audit: unlike whiteboard strokes (capped at 3000, oldest
+// evicted — see room.wb.strokes below) or Pictionary strokes (same 3000 cap), Build Craft's
+// per-cell block overrides had NO cap at all. bc-block is only gated by isStrokeRateLimited
+// (20msg/sec) and each message can carry up to 2000 distinct cell changes, so one sustained
+// client could grow room.bc.overrides (and the bc_overrides table in lockstep) into hundreds of
+// MB-GB well within an hour — a single-threaded-process-wide DoS, not just that client's own
+// session, and bc-init resends the ENTIRE overrides map to every new joiner so join latency/
+// payload size scale with it too. 50000 is generous headroom for real creative building (a very
+// large legitimate structure) while still being a hard ceiling; oldest-changed cells are evicted
+// first once over it, the same "bounded history, not a gameplay guarantee" tradeoff already
+// accepted for whiteboard/Pictionary strokes and room pins.
+// Overridable so the regression suite can verify the eviction actually happens without needing
+// to send tens of thousands of real cell changes; unset in production, no effect there.
+const BC_MAX_OVERRIDES = Number(process.env.BC_MAX_OVERRIDES ?? 50000);
+// Same audit: bc-claim had no room-wide cap at all — the only limit (BC_MAX_CLAIMS_PER_PLAYER)
+// is keyed on a client-supplied, unverified stableId (see bc-join), so cycling WS connections
+// with a fresh stableId each time resets that count to zero, letting claims grow without bound.
+// isClaimedByOther (bc-block's per-change ownership check) does an O(claims) linear scan, so an
+// inflated claims list also makes every player's ordinary block editing progressively slower —
+// this caps the cost of that scan too, not just memory.
+// Overridable for the same reason as BC_MAX_OVERRIDES above — a real test would otherwise need to
+// send thousands of individual bc-claim messages (also individually flood-gated) to prove eviction.
+const BC_MAX_ROOM_CLAIMS = Number(process.env.BC_MAX_ROOM_CLAIMS ?? 2000);
 // ---- Web Swing PvP (web strikes) — small integer health scale, same convention as
 // BC_MAX_HEALTH, since a strike (like a punch) is always worth exactly 1 point.
 const SW_MAX_HEALTH = 3;
@@ -4017,6 +4040,13 @@ wss.on('connection', (ws, req) => {
         validChanges.push({ x: bx, y: by, z: bz, t: type });
       }
       if (persistEntries.length) db.setBcOverrides(ws.bcRoom, persistEntries);
+      // Evict oldest-changed cells once over BC_MAX_OVERRIDES — Map iteration order is insertion
+      // order, so the first keys() are the longest-standing overrides. Mirrored in the DB by
+      // setBcOverrides itself (see db.js) so a room that empties out and reloads from disk can't
+      // resurrect the unbounded pre-cap history.
+      while (room.bc.overrides.size > BC_MAX_OVERRIDES) {
+        room.bc.overrides.delete(room.bc.overrides.keys().next().value);
+      }
       if (validChanges.length) broadcastBc(ws.bcRoom, { type: 'bc-block', changes: validChanges }, ws);
       return;
     }
@@ -4123,11 +4153,23 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'bc-claim' && ws.bcRoom) {
+      // Found by an unbounded-memory-growth audit: bc-claim was the one bc-* handler with no
+      // flood gate at all (every sibling — bc-pos/bc-block via isStrokeRateLimited, bc-sleep/
+      // bc-wake/bc-set-armor/bc-set-skin via isWsMsgRateLimited — has one).
+      if (isWsMsgRateLimited(ws)) return;
       const room = rooms.get(ws.bcRoom);
       const bc = room && room.bc;
       const me = bc && bc.players.get(ws);
       if (!bc || !me) return;
       if (!bc.claims) bc.claims = [];
+      // Same audit: BC_MAX_CLAIMS_PER_PLAYER alone doesn't bound room.bc.claims' total size — it's
+      // keyed on a client-supplied stableId (bc-join), so a connection cycling through fresh
+      // stableIds resets its own count to zero every time, letting claims grow without bound. A
+      // room-wide ceiling closes that regardless of how ownership is being computed.
+      if (bc.claims.length >= BC_MAX_ROOM_CLAIMS) {
+        send(ws, { type: 'bc-claim-denied' });
+        return;
+      }
       const ownedCount = bc.claims.filter((c) => bcClaimOwnedBy(c, me)).length;
       if (ownedCount >= BC_MAX_CLAIMS_PER_PLAYER) {
         send(ws, { type: 'bc-claim-denied' });

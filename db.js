@@ -157,6 +157,12 @@ ensureColumn('rooms', 'wallpaper_url', 'TEXT');
 // back to the old name-based check (see isClaimedByOther in server.js), so nothing already placed
 // silently loses its protection.
 ensureColumn('bc_claims', 'owner_id', 'TEXT');
+// Found by an unbounded-memory-growth audit: bc_overrides had no cap and no timestamp column to
+// even evict by — see BC_MAX_OVERRIDES in server.js and setBcOverrides below. Existing
+// pre-migration rows get NULL here, which sorts before every real timestamp in ORDER BY ... ASC,
+// so they're evicted first if a cap-trim is ever needed on an old install — a reasonable default
+// (they're the oldest changes anyway) needing no backfill.
+ensureColumn('bc_overrides', 'updated_at', 'INTEGER');
 
 // One-time migration: pins used to be single-pin-per-room (PK: room_code) — multi-pin needs a
 // composite PK (room_code, message_id) instead, which ALTER TABLE can't change in place.
@@ -675,6 +681,14 @@ function getReactionsForRoom(code, limit) {
 // ---- pins ----
 // Multiple pins per room (composite PK) — see the pins table migration near ensureColumn.
 
+// Found by an unbounded-memory-growth audit: any room member (not just the host) can pin, and
+// this had no cap at all — getPins' own JOIN query and the full pins-list broadcast/rehydration-
+// on-join it feeds both scale with every pin ever placed in a room's lifetime, with no eviction.
+// Same "bounded history, oldest evicted" tradeoff already accepted for whiteboard/Pictionary
+// strokes and (this same audit) Build Craft overrides — growth here is at ordinary chat-message
+// speed (pin-message already shares isWsMsgRateLimited with every other content-mutating path),
+// so this is a much slower-growing gap than those, but still genuinely unbounded without this.
+const MAX_PINS_PER_ROOM = 200;
 function setPin(code, messageId, pinnedBy) {
   db.prepare('INSERT OR REPLACE INTO pins (room_code, message_id, pinned_by, at) VALUES (?, ?, ?, ?)').run(
     code,
@@ -682,6 +696,14 @@ function setPin(code, messageId, pinnedBy) {
     pinnedBy,
     Date.now()
   );
+  const { n } = db.prepare('SELECT COUNT(*) AS n FROM pins WHERE room_code = ?').get(code);
+  if (n > MAX_PINS_PER_ROOM) {
+    db.prepare(
+      `DELETE FROM pins WHERE room_code = ? AND message_id IN (
+         SELECT message_id FROM pins WHERE room_code = ? ORDER BY at ASC LIMIT ?
+       )`
+    ).run(code, code, n - MAX_PINS_PER_ROOM);
+  }
 }
 
 function unpinMessage(code, messageId) {
@@ -762,17 +784,30 @@ function createBcWorld(code, seed) {
 }
 
 const setBcOverrideStmt = db.prepare(
-  `INSERT INTO bc_overrides (room_code, cell_key, type) VALUES (?, ?, ?)
-   ON CONFLICT(room_code, cell_key) DO UPDATE SET type = excluded.type`
+  `INSERT INTO bc_overrides (room_code, cell_key, type, updated_at) VALUES (?, ?, ?, ?)
+   ON CONFLICT(room_code, cell_key) DO UPDATE SET type = excluded.type, updated_at = excluded.updated_at`
 );
 // Building/mining can send up to a couple thousand cell changes in a single batch (e.g. a
 // cave-in) — wrapped in one transaction so that doesn't become a couple thousand separate disk syncs.
-const setBcOverridesBulk = db.transaction((code, entries) => {
-  for (const [key, type] of entries) setBcOverrideStmt.run(code, key, type);
+const setBcOverridesBulk = db.transaction((code, entries, now) => {
+  for (const [key, type] of entries) setBcOverrideStmt.run(code, key, type, now);
 });
 
+// BC_MAX_OVERRIDES (server.js) is enforced in-memory per bc-block call already — this mirrors the
+// same cap here so a room that empties out and later reloads from disk (getBcOverrides below)
+// can't resurrect the unbounded pre-cap history the in-memory eviction already trimmed away.
+const BC_OVERRIDES_DB_CAP = 50000;
 function setBcOverrides(code, entries) {
-  if (entries.length) setBcOverridesBulk(code, entries);
+  if (!entries.length) return;
+  setBcOverridesBulk(code, entries, Date.now());
+  const { n } = db.prepare('SELECT COUNT(*) AS n FROM bc_overrides WHERE room_code = ?').get(code);
+  if (n > BC_OVERRIDES_DB_CAP) {
+    db.prepare(
+      `DELETE FROM bc_overrides WHERE room_code = ? AND cell_key IN (
+         SELECT cell_key FROM bc_overrides WHERE room_code = ? ORDER BY updated_at ASC LIMIT ?
+       )`
+    ).run(code, code, n - BC_OVERRIDES_DB_CAP);
+  }
 }
 
 function getBcOverrides(code) {

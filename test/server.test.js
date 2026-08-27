@@ -1204,6 +1204,139 @@ describe('Build Craft land claims', () => {
   });
 });
 
+describe('unbounded-memory-growth audit: Build Craft resource caps', () => {
+  // Found by the audit: bc-claim was the one bc-* handler with no flood gate at all — every
+  // sibling (bc-pos/bc-block via isStrokeRateLimited, bc-sleep/bc-wake/etc via isWsMsgRateLimited)
+  // already had one. Proven directly: send more claims in one burst than RATE_LIMIT_MAX_MESSAGES
+  // (8/6s) allows and confirm the excess get NO response at all (not even bc-claim-denied), not
+  // just that the pre-existing per-player cap (3) denies them — a denial is still a real response,
+  // silence is what the flood gate produces.
+  test('bc-claim is flood-gated — a burst beyond the message rate limit gets no response at all', async () => {
+    const ws = await connectWs();
+    send(ws, { type: 'bc-join', code: 'BCCLAIMFLOOD1', name: 'ClaimFlooder', playerId: 'flood-stable-id' });
+    await waitFor(ws, (m) => m.type === 'bc-init');
+
+    let responses = 0;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'bc-claim-added' || m.type === 'bc-claim-denied') responses++; };
+    ws.on('message', h);
+    for (let i = 0; i < 9; i++) {
+      send(ws, { type: 'bc-claim', x: i * 100, z: i * 100 });
+    }
+    await sleep(400);
+    ws.off('message', h);
+    assert.ok(responses <= 8, `expected at most 8 of 9 rapid bc-claim attempts to get any response (added or denied), got ${responses}`);
+    ws.close();
+  });
+
+  // Found by the audit: room.bc.claims had no room-wide cap — only a per-player one
+  // (BC_MAX_CLAIMS_PER_PLAYER), keyed on a client-supplied stableId that a connection can reset by
+  // simply presenting a fresh one. A room-wide ceiling (BC_MAX_ROOM_CLAIMS) closes that regardless
+  // of per-identity accounting. Overridden low so this doesn't need thousands of real messages.
+  test('a room-wide claim cap is enforced independent of per-player identity', async () => {
+    const claimCapServer = await startTestServer({ BC_MAX_ROOM_CLAIMS: '2' }, 3212);
+    try {
+      const base = `ws://localhost:${claimCapServer.port}`;
+      const wsA = new WebSocket(base);
+      await new Promise((resolve) => wsA.on('open', resolve));
+      const wsFor = (ws, msg, pred) => { ws.send(JSON.stringify(msg)); return new Promise((resolve) => { const h = (data) => { const m = JSON.parse(data); if (pred(m)) { ws.off('message', h); resolve(m); } }; ws.on('message', h); }); };
+      await wsFor(wsA, { type: 'bc-join', code: 'BCROOMCAP1', name: 'CapA', playerId: 'cap-stable-a' }, (m) => m.type === 'bc-init');
+      const wsB = new WebSocket(base);
+      await new Promise((resolve) => wsB.on('open', resolve));
+      await wsFor(wsB, { type: 'bc-join', code: 'BCROOMCAP1', name: 'CapB', playerId: 'cap-stable-b' }, (m) => m.type === 'bc-init');
+      const wsC = new WebSocket(base);
+      await new Promise((resolve) => wsC.on('open', resolve));
+      await wsFor(wsC, { type: 'bc-join', code: 'BCROOMCAP1', name: 'CapC', playerId: 'cap-stable-c' }, (m) => m.type === 'bc-init');
+
+      // bc-claim-added is BROADCAST to every player in the room, not just the claimant (so
+      // everyone's client can render the new claim) — unlike bc-claim-denied, which is only ever
+      // sent privately to the requester. Matching on bare message type alone risks a listener
+      // attached right after sending catching an EARLIER claimant's still-in-flight broadcast
+      // (e.g. B's own listener catching A's broadcast of A's claim) instead of the response to
+      // this connection's own request — the exact "two sockets, one trigger" pitfall this app's
+      // test suite has hit before. Disambiguated by requiring the added claim's owner match this
+      // player's own name; bc-claim-denied needs no such check since it's never broadcast.
+      const addedA = await wsFor(wsA, { type: 'bc-claim', x: 10, z: 10 }, (m) => (m.type === 'bc-claim-added' && m.owner === 'CapA') || m.type === 'bc-claim-denied');
+      assert.equal(addedA.type, 'bc-claim-added', 'the 1st claim in the room (cap=2) must succeed');
+      const addedB = await wsFor(wsB, { type: 'bc-claim', x: 20, z: 20 }, (m) => (m.type === 'bc-claim-added' && m.owner === 'CapB') || m.type === 'bc-claim-denied');
+      assert.equal(addedB.type, 'bc-claim-added', 'the 2nd claim in the room (cap=2) must succeed');
+      // C is a totally different player, nowhere near their OWN per-player cap — only the
+      // room-wide cap can explain a denial here.
+      const deniedC = await wsFor(wsC, { type: 'bc-claim', x: 30, z: 30 }, (m) => (m.type === 'bc-claim-added' && m.owner === 'CapC') || m.type === 'bc-claim-denied');
+      assert.equal(deniedC.type, 'bc-claim-denied', 'the 3rd claim in the room must be denied once the room-wide cap is reached, regardless of which player sent it');
+
+      wsA.close(); wsB.close(); wsC.close();
+    } finally {
+      await claimCapServer.stop();
+    }
+  });
+
+  // Found by the audit: room.bc.overrides (and the bc_overrides table) had no cap at all —
+  // bc-block is only gated by isStrokeRateLimited (20/2s) and each message can carry up to 2000
+  // changes, so a single sustained client could grow it unboundedly, and bc-init resends the
+  // ENTIRE map to every new joiner. Overridden low so this test doesn't need tens of thousands of
+  // real cell changes.
+  test('room.bc.overrides evicts the oldest cells once over the cap, and a fresh joiner only ever sees the capped set', async () => {
+    const overridesCapServer = await startTestServer({ BC_MAX_OVERRIDES: '10' }, 3213);
+    try {
+      const base = `ws://localhost:${overridesCapServer.port}`;
+      const wsA = new WebSocket(base);
+      await new Promise((resolve) => wsA.on('open', resolve));
+      const wsFor = (ws, msg, pred) => { ws.send(JSON.stringify(msg)); return new Promise((resolve) => { const h = (data) => { const m = JSON.parse(data); if (pred(m)) { ws.off('message', h); resolve(m); } }; ws.on('message', h); }); };
+      await wsFor(wsA, { type: 'bc-join', code: 'BCOVERCAP1', name: 'OverA', playerId: 'over-stable-a' }, (m) => m.type === 'bc-init');
+
+      // 15 distinct cells against a cap of 10 — the oldest 5 (x: 0-4) must be evicted, leaving
+      // only the newest 10 (x: 5-14).
+      const changes = [];
+      for (let i = 0; i < 15; i++) changes.push({ x: i, y: 0, z: 0, t: 1 });
+      wsA.send(JSON.stringify({ type: 'bc-block', changes }));
+      await sleep(300);
+
+      const wsB = new WebSocket(base);
+      await new Promise((resolve) => wsB.on('open', resolve));
+      const init = await wsFor(wsB, { type: 'bc-join', code: 'BCOVERCAP1', name: 'OverB', playerId: 'over-stable-b' }, (m) => m.type === 'bc-init');
+      assert.equal(init.overrides.length, 10, 'a fresh joiner must only ever see the capped set of overrides, not the full unbounded history');
+      const xs = init.overrides.map(([key]) => Number(key.split(',')[0])).sort((a, b) => a - b);
+      assert.deepEqual(xs, [5, 6, 7, 8, 9, 10, 11, 12, 13, 14], 'the oldest-changed cells (x: 0-4) must be the ones evicted, not an arbitrary subset');
+
+      wsA.close(); wsB.close();
+    } finally {
+      await overridesCapServer.stop();
+    }
+  });
+
+  // Found by the audit: any room member (not just the host) can pin, and getPins had no cap at
+  // all — its own comment already flagged this. Calls the real db.js setPin directly (same
+  // "require the scratch instance's own db.js" pattern used elsewhere in this suite for direct
+  // DB-state assertions) so this exercises the actual cap-eviction code, not a reimplementation,
+  // without needing 201 real rate-limited pin-message round trips.
+  test('room pins are capped at MAX_PINS_PER_ROOM, oldest evicted first', async () => {
+    const scratchDb = require(require('node:path').join(server.dir, 'db.js'));
+    const { ws, code } = await joinRoom('PinCapHost');
+    const ids = [];
+    for (let i = 0; i < 205; i++) {
+      const id = require('node:crypto').randomUUID();
+      scratchDb.insertMessage({ id, roomCode: code, name: 'PinCapHost', text: 'm' + i, mediaUrl: null, mediaType: null, at: Date.now() + i, accountId: null });
+      ids.push(id);
+    }
+    // setPin timestamps each pin with Date.now() internally (no way to inject a controlled value)
+    // and eviction orders by that column — 205 calls in a tight synchronous loop can land multiple
+    // pins in the same millisecond, making "which one is oldest" an arbitrary tie-break rather
+    // than a real ordering. A tiny real delay between calls guarantees genuinely distinct,
+    // monotonically increasing timestamps so the eviction-order assertion below is deterministic.
+    for (const id of ids) {
+      scratchDb.setPin(code, id, 'PinCapHost');
+      await sleep(2);
+    }
+
+    const pins = scratchDb.getPins(code);
+    assert.equal(pins.length, 200, 'pins must be capped at MAX_PINS_PER_ROOM (200), not grow unboundedly');
+    const pinnedIds = new Set(pins.map((p) => p.message.id));
+    assert.ok(!pinnedIds.has(ids[0]), 'the oldest pin must have been evicted');
+    assert.ok(pinnedIds.has(ids[ids.length - 1]), 'the newest pin must still be present');
+    ws.close();
+  });
+});
+
 describe('Web Swing PvP', () => {
   test('cooldown, damage progression, death/respawn, self-target and range guards all hold', async () => {
     const a = await connectWs();
