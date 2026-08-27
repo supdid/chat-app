@@ -821,6 +821,34 @@ describe('room PIN actually gates join-room', () => {
     });
     assert.equal(res.status, 403, 'a length-mismatched PIN over HTTP must 403, not 500');
   });
+
+  // Found by the room-settings/menu-panel correctness audit: joined-room never told the client
+  // whether a PIN was currently set at all -- the host-only PIN form always showed the same blank
+  // field/placeholder regardless of actual state.
+  test('joined-room reports pinRequired accurately for both a plain room and a PIN-locked one', async () => {
+    const { ws: plainHost, code: plainCode } = await joinRoom('PinFlagPlain');
+    // create-room's own joined-room (inside joinRoom() above) already exercises the no-PIN case;
+    // re-fetch via a fresh join to also cover the OTHER joined-room send site (server.js's
+    // join-room handler, not create-room's).
+    const rejoin = await connectWs();
+    send(rejoin, { type: 'join-server', username: 'PinFlagPlainRejoin' });
+    await waitFor(rejoin, (m) => m.type === 'joined-server');
+    send(rejoin, { type: 'join-room', code: plainCode });
+    const plainJoined = await waitFor(rejoin, (m) => m.type === 'joined-room');
+    assert.equal(plainJoined.pinRequired, false);
+
+    send(plainHost, { type: 'set-room-pin', pin: '9911' });
+    await waitFor(plainHost, (m) => m.type === 'room-pin-updated' && m.pinRequired === true);
+
+    const rightPin = await connectWs();
+    send(rightPin, { type: 'join-server', username: 'PinFlagRight' });
+    await waitFor(rightPin, (m) => m.type === 'joined-server');
+    send(rightPin, { type: 'join-room', code: plainCode, pin: '9911' });
+    const lockedJoined = await waitFor(rightPin, (m) => m.type === 'joined-room');
+    assert.equal(lockedJoined.pinRequired, true);
+
+    rejoin.close(); rightPin.close();
+  });
 });
 
 describe('set-wallpaper/set-announcement are host-only and enforce the upload allowlist', () => {

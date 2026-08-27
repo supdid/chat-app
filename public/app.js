@@ -797,10 +797,24 @@ function handleServerMessage(data) {
       } else {
         voiceCallBanner.classList.add('hidden');
       }
+      // Found by the room-settings/menu-panel correctness audit: unlike every sibling host-only
+      // control here (announcement/PIN/wallpaper/bans, all gated the same way just below), the
+      // rename-room form had no isHost gate at all — a non-host member saw a fully live, editable
+      // "rename this room" control that always silently no-oped server-side (isRoomHost fails,
+      // the handler just returns with no error sent back), with zero feedback explaining why.
+      renameRoomForm.classList.toggle('hidden', !isHost);
       announcementForm.classList.toggle('hidden', !isHost);
       announcementInput.value = currentAnnouncement || '';
       roomPinForm.classList.toggle('hidden', !isHost);
       roomPinFormInput.value = '';
+      // Found by the room-settings/menu-panel correctness audit: this field was always blank with
+      // the same static placeholder whether or not a PIN was actually currently set — no way to
+      // tell state without trying to rejoin blind. The raw PIN itself is never sent (roomPinOk
+      // only ever compares a hash server-side) — just whether one is required, mirrored into the
+      // placeholder the same way room-pin-updated's own live toast already communicates it.
+      roomPinFormInput.placeholder = data.pinRequired
+        ? 'PIN is set — new PIN, or blank to remove'
+        : 'No PIN set — enter one to require it';
       wallpaperRow.classList.toggle('hidden', !isHost);
       applyWallpaper(data.wallpaperUrl || null);
       bansRow.classList.toggle('hidden', !isHost);
@@ -914,6 +928,9 @@ function handleServerMessage(data) {
     case 'room-pin-updated':
       showAppToast(data.pinRequired ? '🔒 Room PIN set' : '🔓 Room PIN removed');
       roomPinFormInput.value = '';
+      roomPinFormInput.placeholder = data.pinRequired
+        ? 'PIN is set — new PIN, or blank to remove'
+        : 'No PIN set — enter one to require it';
       break;
 
     case 'wallpaper-updated':
@@ -2260,6 +2277,13 @@ if (notifySoundTestBtn) {
 
 function closeMenu() {
   menuOverlay.classList.add('hidden');
+  // Found by the room-settings/menu-panel correctness audit: bansListEl was only ever reset to
+  // hidden on a full room switch, never on menu close — reopening the menu later showed the same
+  // now-possibly-stale list from last time, and manageBansBtn's own click handler treats "already
+  // visible" as "the user wants to collapse it" rather than "refetch," so a stale list took an
+  // extra click (collapse, then reopen-and-refetch) to actually refresh. Hiding it here means the
+  // next "Manage banned users" click always starts from a real get-bans fetch again.
+  bansListEl.classList.add('hidden');
 }
 
 // Carries the room code + display name into each mini-game's own URL, so its separate
@@ -3020,19 +3044,40 @@ function applyWallpaper(url) {
 
 wallpaperSetBtn.addEventListener('click', () => wallpaperFileInput.click());
 
+// Mirrors the server's own real limits (server.js's shared multer `upload` instance) — not a
+// security boundary (the server still enforces both for real), just gets the user a same-second
+// answer instead of waiting on a whole upload for something that was always going to be rejected.
+const WALLPAPER_MAX_BYTES = 300 * 1024 * 1024;
+
 wallpaperFileInput.addEventListener('change', async () => {
   const file = wallpaperFileInput.files[0];
   wallpaperFileInput.value = '';
   if (!file || !ws || ws.readyState !== WebSocket.OPEN) return;
+  // Found by the room-settings/menu-panel correctness audit: a rejected upload (wrong type, over
+  // the size cap) was completely silent — no toast, no error, the host had no way to tell whether
+  // their click had registered, was still uploading, or had failed. `accept="image/*"` on the file
+  // input is only a picker HINT, not enforcement (many OS pickers let it be bypassed), so this
+  // client-side check is the first real gate, not just the server's.
+  if (!file.type.startsWith('image/')) {
+    showAppToast('Wallpaper must be an image file');
+    return;
+  }
+  if (file.size > WALLPAPER_MAX_BYTES) {
+    showAppToast('That image is too large (300MB max)');
+    return;
+  }
   const formData = new FormData();
   formData.append('file', file);
   try {
     const res = await fetch('/upload', { method: 'POST', body: formData });
     const data = await res.json();
-    if (!res.ok) return;
+    if (!res.ok) {
+      showAppToast(data.error || 'Wallpaper upload failed');
+      return;
+    }
     ws.send(JSON.stringify({ type: 'set-wallpaper', url: data.url }));
   } catch {
-    console.error('Wallpaper upload failed');
+    showAppToast('Wallpaper upload failed');
   }
 });
 

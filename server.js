@@ -6032,7 +6032,7 @@ wss.on('connection', (ws, req) => {
       db.setRoomHostIfUnset(code, ws.profile.name, ws.accountId || null);
       rooms.set(code, { history: [], clients: new Set([ws]) });
       ws.room = code;
-      send(ws, { type: 'joined-room', code, messages: [], users: roomUsers(code), name: null, reactions: [], pins: [], activity: [], isHost: true, announcement: null, wallpaperUrl: null });
+      send(ws, { type: 'joined-room', code, messages: [], users: roomUsers(code), name: null, reactions: [], pins: [], activity: [], isHost: true, announcement: null, wallpaperUrl: null, pinRequired: false });
       return;
     }
 
@@ -6121,6 +6121,11 @@ wss.on('connection', (ws, req) => {
         isHost: isRoomHost({ host_name: hostName, host_account_id: hostAccountId }, ws),
         announcement: dbRoom ? dbRoom.announcement : null,
         wallpaperUrl: dbRoom ? dbRoom.wallpaper_url : null,
+        // Found by the room-settings/menu-panel correctness audit: the host-only PIN form gave no
+        // indication whether a PIN was currently even set — always the same blank field/placeholder
+        // regardless of actual state, only discoverable by trying to (re)join blind. Never sends
+        // the PIN itself, just whether one is required, same boolean roomPinOk already checks.
+        pinRequired: !!(dbRoom && dbRoom.pin_required),
         voiceCallActive: !!(room.voice && room.voice.size > 0),
       });
       broadcastRoom(code, { type: 'system', text: `${ws.profile.name} joined the room`, at: Date.now() }, ws);
