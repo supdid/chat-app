@@ -1521,8 +1521,15 @@ function setErrorReportStatus(id, status) {
   db.prepare('UPDATE error_reports SET status = ? WHERE id = ?').run(status, id);
 }
 
-function getRecentErrorReports(limit = 50) {
-  return db.prepare('SELECT * FROM error_reports ORDER BY created_at DESC LIMIT ?').all(limit);
+// Found by the admin-panel functional-correctness audit: this used to cap by RECENCY across every
+// status, then admin.html filtered client-side down to status === 'new' — once a table accumulated
+// more than 50 rows total (any status), an older still-unresolved report could fall entirely
+// outside the top-50-by-recency window and simply never appear in the admin panel again, no matter
+// how long it stayed unresolved. Filters by status server-side instead, mirroring
+// getPendingPatchProposals's own established "unbounded, status-filtered" pattern just below — an
+// unresolved item should never be able to silently age out of view.
+function getRecentErrorReports() {
+  return db.prepare("SELECT * FROM error_reports WHERE status = 'new' ORDER BY created_at DESC").all();
 }
 
 // ---- Abuse reports (message or user) ----
@@ -1544,8 +1551,9 @@ function insertReport(entry) {
   );
 }
 
-function getRecentReports(limit = 50) {
-  return db.prepare('SELECT * FROM reports ORDER BY created_at DESC LIMIT ?').all(limit);
+// Same fix as getRecentErrorReports above, same reasoning — see its comment.
+function getRecentReports() {
+  return db.prepare("SELECT * FROM reports WHERE status = 'new' ORDER BY created_at DESC").all();
 }
 
 function setReportStatus(id, status) {
@@ -1649,8 +1657,9 @@ function insertScorptureReport(entry) {
   ).run(entry.id, entry.videoId, entry.reporterAccountId, entry.reporterUsername, entry.uploaderUsername, entry.reason || null, Date.now());
 }
 
-function getRecentScorptureReports(limit = 50) {
-  return db.prepare('SELECT * FROM scorpture_reports ORDER BY created_at DESC LIMIT ?').all(limit);
+// Same fix as getRecentErrorReports above, same reasoning — see its comment.
+function getRecentScorptureReports() {
+  return db.prepare("SELECT * FROM scorpture_reports WHERE status = 'new' ORDER BY created_at DESC").all();
 }
 
 function setScorptureReportStatus(id, status) {

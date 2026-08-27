@@ -2339,15 +2339,31 @@ describe('admin error-report resolve/dismiss', () => {
     const wrongKeyRes = await fetch(`${BASE_URL}/admin/errors/${target.id}/resolve`, { method: 'POST', headers: adminAuth('wrong') });
     assert.equal(wrongKeyRes.status, 401);
 
+    // Found by the admin-panel functional-correctness audit: GET /admin/errors now only ever
+    // returns status='new' rows (see getRecentErrorReports's own comment in db.js) — admin.html
+    // itself already discarded anything else client-side, so a resolved/dismissed item correctly
+    // disappearing from this list entirely (not lingering with an updated status field) is the
+    // actual intended contract, not a regression.
     const resolveRes = await fetch(`${BASE_URL}/admin/errors/${target.id}/resolve`, { method: 'POST', headers: adminAuth(adminKey) });
     assert.equal(resolveRes.status, 200);
     const afterResolve = await (await fetch(`${BASE_URL}/admin/errors`, { headers: adminAuth(adminKey) })).json();
-    assert.equal(afterResolve.errors.find((e) => e.id === target.id).status, 'resolved');
+    assert.ok(!afterResolve.errors.some((e) => e.id === target.id), 'a resolved error must no longer appear in the open list');
 
-    const dismissRes = await fetch(`${BASE_URL}/admin/errors/${target.id}/dismiss`, { method: 'POST', headers: adminAuth(adminKey) });
+    // Re-report the same message to get a fresh 'new' row to exercise dismiss on its own.
+    await fetch(`${BASE_URL}/errors/report`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'admin-error-dismiss-test', stack: null, url: null }),
+    });
+    await sleep(150);
+    const target2 = (await (await fetch(`${BASE_URL}/admin/errors`, { headers: adminAuth(adminKey) })).json())
+      .errors.find((e) => e.message === 'admin-error-dismiss-test');
+    assert.ok(target2, 'the second reported error should show up in the admin list');
+
+    const dismissRes = await fetch(`${BASE_URL}/admin/errors/${target2.id}/dismiss`, { method: 'POST', headers: adminAuth(adminKey) });
     assert.equal(dismissRes.status, 200);
     const afterDismiss = await (await fetch(`${BASE_URL}/admin/errors`, { headers: adminAuth(adminKey) })).json();
-    assert.equal(afterDismiss.errors.find((e) => e.id === target.id).status, 'dismissed');
+    assert.ok(!afterDismiss.errors.some((e) => e.id === target2.id), 'a dismissed error must no longer appear in the open list');
   });
 });
 
@@ -2371,15 +2387,26 @@ describe('WS report -> /admin/reports pipeline', () => {
     assert.equal(found.status, 'new');
     assert.equal(found.reason, 'being annoying');
 
+    // Found by the admin-panel functional-correctness audit: GET /admin/reports now only ever
+    // returns status='new' rows (see getRecentReports's own comment in db.js) — admin.html itself
+    // already discarded anything else client-side, so a resolved/dismissed report correctly
+    // disappearing from this list entirely is the actual intended contract, not a regression.
     const resolveRes = await fetch(`${BASE_URL}/admin/reports/${found.id}/resolve`, { method: 'POST', headers: adminAuth(adminKey) });
     assert.equal(resolveRes.status, 200);
     const afterResolve = await (await fetch(`${BASE_URL}/admin/reports`, { headers: adminAuth(adminKey) })).json();
-    assert.equal(afterResolve.reports.find((r) => r.id === found.id).status, 'resolved');
+    assert.ok(!afterResolve.reports.some((r) => r.id === found.id), 'a resolved report must no longer appear in the open list');
 
-    const dismissRes = await fetch(`${BASE_URL}/admin/reports/${found.id}/dismiss`, { method: 'POST', headers: adminAuth(adminKey) });
+    // A second report to exercise dismiss on its own fresh 'new' row.
+    send(reporter, { type: 'report', targetName: 'ReportTargetUser', reason: 'still annoying' });
+    await waitFor(reporter, (m) => m.type === 'report-received');
+    const found2 = (await (await fetch(`${BASE_URL}/admin/reports`, { headers: adminAuth(adminKey) })).json())
+      .reports.find((r) => r.reason === 'still annoying');
+    assert.ok(found2, 'the second submitted report must show up in the admin list');
+
+    const dismissRes = await fetch(`${BASE_URL}/admin/reports/${found2.id}/dismiss`, { method: 'POST', headers: adminAuth(adminKey) });
     assert.equal(dismissRes.status, 200);
     const afterDismiss = await (await fetch(`${BASE_URL}/admin/reports`, { headers: adminAuth(adminKey) })).json();
-    assert.equal(afterDismiss.reports.find((r) => r.id === found.id).status, 'dismissed');
+    assert.ok(!afterDismiss.reports.some((r) => r.id === found2.id), 'a dismissed report must no longer appear in the open list');
 
     reporter.close(); target.close();
   });

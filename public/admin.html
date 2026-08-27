@@ -28,6 +28,7 @@
     <h1>Admin key required</h1>
     <p style="color:#8a8f99;font-size:13px;">Find it in the server console log, or <code>~/chat-app/admin-key.json</code>.</p>
     <input id="key-input" placeholder="Paste admin key" aria-label="Admin key">
+    <p id="key-status" style="color:#e05252;font-size:13px;min-height:1.2em;"></p>
   </div>
   <div id="panel" style="display:none;">
     <h1>Self-healing panel <button class="reject" id="forget-key-btn" type="button" style="font-size:12px;padding:4px 10px;">Forget admin key</button></h1>
@@ -41,6 +42,7 @@
     <div class="card">
       <div class="meta">Get pushed to this device the moment a new report is filed, instead of only seeing it here.</div>
       <button class="approve" id="enable-push-btn" type="button">Enable notifications</button>
+      <button class="reject" id="disable-push-btn" type="button">Disable notifications</button>
       <span id="push-status" class="meta"></span>
     </div>
     <h2>Reports (users/messages)</h2>
@@ -62,8 +64,23 @@ function headers() {
 }
 
 async function tryLoad() {
-  const res = await fetch('/admin/patches', { headers: headers() });
-  if (!res.ok) return false;
+  const keyStatusEl = document.getElementById('key-status');
+  let res;
+  try {
+    res = await fetch('/admin/patches', { headers: headers() });
+  } catch {
+    // Found by the admin-panel functional-correctness audit: a wrong/stale key gave zero
+    // feedback anywhere — pasting one just did nothing, with no way to tell "still typing" apart
+    // from "rejected." A genuine network failure here is the same "nothing happened" experience
+    // otherwise, so it gets its own message too rather than being silently swallowed.
+    if (keyStatusEl) keyStatusEl.textContent = 'Could not reach the server — check your connection.';
+    return false;
+  }
+  if (!res.ok) {
+    if (keyStatusEl) keyStatusEl.textContent = res.status === 401 ? 'Invalid admin key.' : `Couldn't verify the key (HTTP ${res.status}).`;
+    return false;
+  }
+  if (keyStatusEl) keyStatusEl.textContent = '';
   // A throw here (storage-blocking extension, etc.) previously aborted unlocking the panel below
   // too, even with a server-confirmed valid key — stuck on the key-entry gate with no explanation.
   try { localStorage.setItem(KEY_STORAGE, adminKey); } catch {}
@@ -279,6 +296,25 @@ document.getElementById('enable-push-btn').addEventListener('click', async () =>
       method: 'POST', headers: headers(), body: JSON.stringify({ subscription: subscription.toJSON() }),
     });
     statusEl.textContent = 'Notifications enabled on this device.';
+  } catch (err) {
+    statusEl.textContent = `Failed: ${err.message}`;
+  }
+});
+
+// Found by the admin-panel functional-correctness audit: the server's own /admin/push/unsubscribe
+// route already existed, but nothing on this page ever called it — no way to turn notifications
+// back off once enabled short of clearing browser site data entirely.
+document.getElementById('disable-push-btn').addEventListener('click', async () => {
+  const statusEl = document.getElementById('push-status');
+  if (!('serviceWorker' in navigator)) { statusEl.textContent = 'Push not supported in this browser.'; return; }
+  try {
+    const reg = await navigator.serviceWorker.getRegistration('/sw.js');
+    const subscription = reg && await reg.pushManager.getSubscription();
+    if (!subscription) { statusEl.textContent = 'Notifications were not enabled on this device.'; return; }
+    const endpoint = subscription.endpoint;
+    await subscription.unsubscribe();
+    await fetch('/admin/push/unsubscribe', { method: 'POST', headers: headers(), body: JSON.stringify({ endpoint }) });
+    statusEl.textContent = 'Notifications disabled on this device.';
   } catch (err) {
     statusEl.textContent = `Failed: ${err.message}`;
   }
