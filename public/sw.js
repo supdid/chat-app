@@ -1,6 +1,6 @@
 // Bump this on every deploy. Changing it is what makes the browser see sw.js as a new file, which
 // is what puts a worker into the "waiting" state and raises the update screen (see update-prompt.js).
-const CACHE_NAME = 'valk-cache-v223';
+const CACHE_NAME = 'valk-cache-v224';
 const APP_SHELL = [
   '/',
   '/index.html',
@@ -120,7 +120,20 @@ self.addEventListener('notificationclick', (event) => {
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
       for (const client of list) {
-        if ('focus' in client) return client.focus();
+        if ('focus' in client) {
+          // Found by a push-notification correctness follow-up: this used to just focus() an
+          // already-open tab and stop there — url (the actual room this notification is for) was
+          // only ever used in the openWindow() fallback below, when NO tab was already open. The
+          // much more common case — the app already open somewhere, in a different room or still
+          // on the room-select screen — silently just brought that unrelated view to the front
+          // with no navigation at all, the exact "roomCode is computed but never actually used"
+          // bug. navigate() (a real WindowClient method, safe here since matchAll was scoped to
+          // type:'window') triggers the same fresh page load app.js's own rejoinRoom URL-param
+          // handling already reacts to on a normal navigation, so this reuses that existing
+          // auto-rejoin path rather than needing any new client-side logic.
+          if ('navigate' in client) return client.navigate(url).then((c) => c && c.focus());
+          return client.focus();
+        }
       }
       return self.clients.openWindow(url);
     })
