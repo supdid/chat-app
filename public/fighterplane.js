@@ -645,6 +645,10 @@ function destroyBot(bot) {
     else orangeAliveCount--;
   }
   spawnExplosion(bot.mesh.position.clone(), 0xffa64d);
+  // Found by the Fighter Plane client-correctness audit: every other kill method (missile,
+  // grenade, tank shell, nuke) plays 'explosion' alongside its own explode effect, but a plain
+  // machine-gun kill through this shared destroyBot() path was completely silent — visual only.
+  playSound('explosion');
   addScore(1);
   sendScore();
   if (bot.faction) checkWarOutcome();
@@ -1208,12 +1212,14 @@ function updateTroopBullets(dt) {
   }
 }
 
-// Wandering when no enemy's in range (forward movement toward a random waypoint near home,
-// re-picking on arrival, same obstacle push-out the player uses); once a target's found (a
-// sampled enemy troop, or — for red only — the player, checked directly since the player isn't
-// in blueTroops for findNearbyEnemy to sample), advance on it until in range, then plant, turn
-// to face it, fire, and strafe sideways (flipping direction every couple seconds) rather than
-// standing dead still.
+// Found by the Fighter Plane client-correctness audit: the comment here used to describe red
+// troops targeting the player directly — that mechanic doesn't exist in this file (findNearbyEnemy
+// only ever samples FACTION_ENEMIES, never the player; see the "aerial bots never target the
+// player" comments elsewhere confirming this was an intentional design change). Corrected to match
+// actual behavior: wandering when no enemy's in range (forward movement toward a random waypoint
+// near home, re-picking on arrival, same obstacle push-out the player uses); once a target's found
+// (a sampled enemy troop), advance on it until in range, then plant, turn to face it, fire, and
+// strafe sideways (flipping direction every couple seconds) rather than standing dead still.
 function updateGroundBots(dt) {
   const now = performance.now();
   for (const bot of groundBots) {
@@ -1591,7 +1597,11 @@ function updateBluePilots(dt) {
 
 function updateTouchStickVisibility() {
   if (!isTouchDevice) return;
-  missileJoystickEl.classList.toggle('hidden', !(controllingMissile || mode === 'onfoot' || mode === 'parachuting' || mode === 'swinging'));
+  // Found by the Fighter Plane client-correctness audit: 'tank' was missing here — updateTank()
+  // reads touchMissileX/Y for movement exactly like onfoot/parachuting/swinging do, but the
+  // joystick element stays `display:none` (so receives no touches) while hidden, leaving a tank
+  // completely undrivable on a touch device (can still look around and fire, but never move).
+  missileJoystickEl.classList.toggle('hidden', !(controllingMissile || mode === 'onfoot' || mode === 'parachuting' || mode === 'swinging' || mode === 'tank'));
 }
 
 function bailOut() {
