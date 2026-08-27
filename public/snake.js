@@ -138,6 +138,11 @@ board.addEventListener('touchend', (e) => {
   if (touchStartX === null) return;
   const dx = e.changedTouches[0].clientX - touchStartX;
   const dy = e.changedTouches[0].clientY - touchStartY;
+  // Found by the Snake/2048 correctness audit: with no minimum-movement threshold, a stationary
+  // tap (dx=0, dy=0 — tapping to focus, a slight tremor, a mistap) fell through to the else branch
+  // and `0 > 0` is false, so it silently always resolved to "turn up" — 2048.js already guards
+  // this exact scenario ("ignore taps"), Snake was just missing the same check.
+  if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
   if (Math.abs(dx) > Math.abs(dy)) setDirection(dx > 0 ? 'right' : 'left');
   else setDirection(dy > 0 ? 'down' : 'up');
   touchStartX = null;

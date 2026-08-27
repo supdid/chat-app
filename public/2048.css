@@ -159,6 +159,39 @@ button.small-btn {
   padding: 1rem;
 }
 
+/* Found by the Snake/2048 correctness audit: reaching the actual goal tile -- the entire premise
+   of the game -- was never detected or acknowledged anywhere. A small dismissible banner (not a
+   blocking modal, unlike #gameover-overlay) matches classic 2048's own "You win! Keep playing"
+   UX -- the board stays fully interactive underneath so play can continue immediately. */
+#win-banner {
+  position: absolute;
+  top: 0.75rem;
+  left: 0.75rem;
+  right: 0.75rem;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  background: rgba(237, 194, 46, 0.95);
+  color: #3c3a32;
+  font-weight: 700;
+  border-radius: 8px;
+  padding: 0.6rem 0.9rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+#win-banner button {
+  background: rgba(60, 58, 50, 0.15);
+  border: none;
+  border-radius: 6px;
+  padding: 0.3rem 0.7rem;
+  font-weight: 700;
+  color: #3c3a32;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
 #players-overlay {
   position: fixed;
   inset: 0;

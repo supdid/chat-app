@@ -15,11 +15,13 @@ const boardEl = document.getElementById('board');
 const gameoverOverlay = document.getElementById('gameover-overlay');
 const gameoverText = document.getElementById('gameover-text');
 const restartBtn = document.getElementById('restart-btn');
+const winBanner = document.getElementById('win-banner');
+const winDismissBtn = document.getElementById('win-dismiss-btn');
 const playersOverlay = document.getElementById('players-overlay');
 const playersCloseBtn = document.getElementById('players-close-btn');
 const leaderboardListEl = document.getElementById('leaderboard-list');
 
-let grid, score, best, running;
+let grid, score, best, running, won;
 
 function emptyGrid() {
   return [[null, null, null, null], [null, null, null, null], [null, null, null, null], [null, null, null, null]];
@@ -120,6 +122,16 @@ function move(dir) {
   score += totalGained;
   spawnTile();
   render();
+  // Found by the Snake/2048 correctness audit: reaching the actual goal tile — the entire premise
+  // of the game — was never detected or acknowledged anywhere; play could silently continue past
+  // it (colors/sizing already scale fine well beyond 2048) with zero indication the player won.
+  // A dismissible banner, not a blocking overlay, matches classic 2048's own "You win! Keep
+  // playing" UX — checked once per game (the `won` flag) so it doesn't re-trigger on every
+  // subsequent move once already shown.
+  if (!won && grid.some((row) => row.some((v) => v >= 2048))) {
+    won = true;
+    winBanner.classList.remove('hidden');
+  }
   if (!hasMovesLeft()) gameOver();
 }
 
@@ -127,14 +139,19 @@ function startGame() {
   grid = emptyGrid();
   score = 0;
   running = true;
+  won = false;
   gameoverOverlay.classList.add('hidden');
+  winBanner.classList.add('hidden');
   spawnTile();
   spawnTile();
   render();
 }
 
+winDismissBtn.addEventListener('click', () => winBanner.classList.add('hidden'));
+
 function gameOver() {
   running = false;
+  winBanner.classList.add('hidden'); // avoid stacking with the game-over overlay if still showing
   if (score > best) {
     best = score;
     bestLabel.textContent = `Best: ${best}`;
