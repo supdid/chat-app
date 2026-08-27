@@ -108,7 +108,10 @@ board.addEventListener('pointerdown', (e) => {
   isDrawing = true;
   lastSentPoint = null;
   const p = getBoardPoint(e);
-  pendingPoints = [p];
+  // Stamped with the color/size active right now, not just {x,y} — see flushStroke's comment on
+  // why this matters (a mid-stroke color/size change needs to be tracked per-point to send what
+  // was actually drawn).
+  pendingPoints = [{ ...p, color: currentColor, size: currentSize }];
   board.setPointerCapture(e.pointerId);
 });
 
@@ -116,8 +119,9 @@ board.addEventListener('pointermove', (e) => {
   if (!isDrawing || !canDraw()) return;
   const p = getBoardPoint(e);
   const prev = pendingPoints[pendingPoints.length - 1] || lastSentPoint;
-  pendingPoints.push(p);
-  if (prev) drawStroke({ points: [prev, p], color: currentColor, size: currentSize });
+  const stamped = { ...p, color: currentColor, size: currentSize };
+  pendingPoints.push(stamped);
+  if (prev) drawStroke({ points: [prev, stamped], color: currentColor, size: currentSize });
   const now = performance.now();
   if (now - lastFlushAt > STROKE_FLUSH_MS) flushStroke();
 });
@@ -130,14 +134,44 @@ board.addEventListener('pointermove', (e) => {
   });
 });
 
+// Found by the whiteboard/pictionary drawing-correctness audit: this used to tag the WHOLE
+// buffered batch (up to 80ms of points) with whatever currentColor/currentSize was active at
+// flush time — if the drawer changed color/size mid-drag, the drawer's own canvas correctly
+// showed a two-toned segment (pointermove always draws with the LIVE color/size), but what got
+// SENT — and so what every guesser/spectator, and anyone who joins later and replays from
+// storage, ever sees — was the whole thing in one wrong color: a genuine, persistent cross-client
+// visual divergence for that stroke. Splits the batch into same-style runs (each starting from
+// the previous run's last point, so segments still connect with no gap) and sends one dg-stroke
+// per run instead.
+function sendStrokeRun(run) {
+  if (!run.length) return;
+  let points = run.map(({ x, y }) => ({ x, y }));
+  // A plain click/tap (pointerdown immediately followed by pointerup with zero pointermove
+  // events — normal for a stationary click) buffers exactly one point; a single point can't form
+  // a line, so nothing was ever drawn OR sent, silently preventing a click/tap from placing so
+  // much as a dot (common for eyes, punctuation, small details in Pictionary specifically).
+  // Duplicating it into a degenerate zero-length segment renders as a filled dot (lineCap is
+  // already 'round') instead.
+  if (points.length === 1) points = [points[0], points[0]];
+  if (points.length < 2) return;
+  send({ type: 'dg-stroke', points, color: run[0].color, size: run[0].size });
+}
+
 function flushStroke() {
   lastFlushAt = performance.now();
   if (pendingPoints.length === 0) return;
-  const points = lastSentPoint ? [lastSentPoint, ...pendingPoints] : [...pendingPoints];
-  lastSentPoint = pendingPoints[pendingPoints.length - 1];
+  const pts = pendingPoints;
   pendingPoints = [];
-  if (points.length < 2) return;
-  send({ type: 'dg-stroke', points, color: currentColor, size: currentSize });
+  let run = lastSentPoint ? [{ ...lastSentPoint, color: pts[0].color, size: pts[0].size }] : [];
+  for (const p of pts) {
+    if (run.length && (p.color !== run[0].color || p.size !== run[0].size)) {
+      sendStrokeRun(run);
+      run = [{ x: run[run.length - 1].x, y: run[run.length - 1].y, color: p.color, size: p.size }];
+    }
+    run.push(p);
+  }
+  sendStrokeRun(run);
+  lastSentPoint = { x: pts[pts.length - 1].x, y: pts[pts.length - 1].y };
 }
 
 clearBtn.addEventListener('click', () => {
