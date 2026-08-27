@@ -1210,8 +1210,18 @@ function getGroupDmsForAccount(accountId) {
   const membersStmt = db.prepare(
     `SELECT a.id, a.username FROM group_dm_members m JOIN accounts a ON a.id = m.account_id WHERE m.group_id = ?`
   );
-  const lastMessageStmt = db.prepare(
-    `SELECT from_name, text, at FROM group_dm_messages WHERE group_id = ? ORDER BY at DESC LIMIT 1`
+  // Found by a friends/DM authorization audit: block enforcement was added to live delivery
+  // (sendGroupDm) and full history (getGroupDmMessages, via getBlockedAccountIds) but this
+  // thread-list preview was a separate, unfiltered query — so a group-mate this account has
+  // blocked (or who blocked them) could still have their newest message shown here as the
+  // preview text, even though it never appears in the actual message list once opened. LIMIT 20
+  // (not 1) so there's a real fallback to skip to if the single newest message happens to be from
+  // a blocked account; a very inactive group could in principle have >20 consecutive blocked-sender
+  // messages and briefly show "No messages yet" instead of an older real one, an acceptable
+  // trade-off for a preview line.
+  const blockedIds = getBlockedAccountIds(accountId);
+  const lastMessagesStmt = db.prepare(
+    `SELECT from_account_id, from_name, text, at FROM group_dm_messages WHERE group_id = ? ORDER BY at DESC LIMIT 20`
   );
   return groups.map((g) => ({
     id: g.id,
@@ -1219,7 +1229,7 @@ function getGroupDmsForAccount(accountId) {
     createdBy: g.created_by,
     createdAt: g.created_at,
     members: membersStmt.all(g.id),
-    lastMessage: lastMessageStmt.get(g.id) || null,
+    lastMessage: lastMessagesStmt.all(g.id).find((m) => !blockedIds.has(m.from_account_id)) || null,
   }));
 }
 

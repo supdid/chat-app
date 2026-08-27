@@ -1529,6 +1529,37 @@ describe('friend DMs and group DMs (account-gated)', () => {
     assert.ok(count > 0 && count <= 8, `expected 1-8 of 15 group-dm creations through, got ${count}`);
   });
 
+  // Found by a friends/DM authorization audit: every other group-DM handler (create/send/leave)
+  // already gates on isWsMsgRateLimited; these two read-only handlers had been left out, letting a
+  // signed-in client hammer unlimited DB reads with no cost. Scoping to the caller's own membership
+  // was already correct (no IDOR) — this only covers the flood-cost gap. Uses the shared instance
+  // directly, same as the 'create-group-dm is rate-limited' test above, since RATE_LIMIT_MAX_MESSAGES
+  // (unlike FRIENDS_ACTION_MAX) isn't part of this suite's "effectively unlimited" env overrides.
+  test('get-group-dm-threads and get-group-dm-messages are flood-gated like every other group-DM handler', async () => {
+    const alice = await joinAsAccount('FdmAliceFlood2', aliceToken);
+    send(alice, { type: 'create-group-dm', memberUsernames: ['FdmBob', 'FdmCarol'], name: 'Flood Read Group' });
+    const created = await waitFor(alice, (m) => m.type === 'group-dm-created');
+    const groupId = created.thread.id;
+    await sleep(6200); // let the flood window opened by create-group-dm's own send clear first
+
+    let threadsCount = 0;
+    const h1 = (data) => { const m = JSON.parse(data); if (m.type === 'group-dm-threads') threadsCount++; };
+    alice.on('message', h1);
+    for (let i = 0; i < 15; i++) send(alice, { type: 'get-group-dm-threads' });
+    await sleep(500);
+    alice.off('message', h1);
+    assert.ok(threadsCount > 0 && threadsCount <= 8, `expected 1-8 of 15 get-group-dm-threads through, got ${threadsCount}`);
+
+    await sleep(6200);
+    let messagesCount = 0;
+    const h2 = (data) => { const m = JSON.parse(data); if (m.type === 'group-dm-messages') messagesCount++; };
+    alice.on('message', h2);
+    for (let i = 0; i < 15; i++) send(alice, { type: 'get-group-dm-messages', groupId });
+    await sleep(500);
+    alice.off('message', h2);
+    assert.ok(messagesCount > 0 && messagesCount <= 8, `expected 1-8 of 15 get-group-dm-messages through, got ${messagesCount}`);
+  });
+
   // Same "insert directly into the scratch server's own DB" approach as the DM-thread window
   // test in the 'room DMs' describe block above. Must run before the blocking test below, which
   // blocks FdmBob for this same aliceToken account — create-group-dm requires every member to
@@ -1551,6 +1582,51 @@ describe('friend DMs and group DMs (account-gated)', () => {
     assert.equal(history.messages.length, 200);
     assert.equal(history.messages[0].text, 'm6', 'the oldest message kept should be the 6th (205 - 200 + 1), not m1');
     assert.equal(history.messages[history.messages.length - 1].text, 'm205', 'the newest message must be included');
+  });
+
+  // Must run before the blocking test below, which blocks FdmBob for this same aliceToken account —
+  // create-group-dm requires every member to currently be a friend, and a blocked member no longer
+  // counts as one (see that test's own comment on the same constraint).
+  test('get-group-dm-threads does not leak a blocked member\'s message content in the thread-list preview', async () => {
+    const alice = await joinAsAccount('FdmAlice3b', aliceToken);
+    send(alice, { type: 'create-group-dm', memberUsernames: ['FdmBob', 'FdmCarol'], name: 'Preview Test Group' });
+    const created = await waitFor(alice, (m) => m.type === 'group-dm-created');
+    const groupId = created.thread.id;
+
+    const bob = await joinAsAccount('FdmBob2b', bobToken);
+    await sleep(150);
+    send(bob, { type: 'send-group-dm', groupId, text: 'preview leak attempt' });
+    await waitFor(bob, (m) => m.type === 'group-dm-sent');
+    await sleep(150);
+
+    await fetch(`${BASE_URL}/friends/block`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${aliceToken}` },
+      body: JSON.stringify({ username: 'FdmBob' }),
+    });
+
+    send(alice, { type: 'get-group-dm-threads' });
+    const { threads } = await waitFor(alice, (m) => m.type === 'group-dm-threads');
+    const thread = threads.find((t) => t.id === groupId);
+    assert.ok(thread, 'the group DM thread must still be listed');
+    assert.ok(!thread.lastMessage || thread.lastMessage.text !== 'preview leak attempt', "the blocked member's message must not appear as the thread's preview text");
+
+    // Unblock and re-friend so this test's own block doesn't interfere with later tests in this
+    // describe block that assume aliceToken/FdmBob are still friends (including the dedicated
+    // blocking test below, which expects to be the one establishing the block relationship itself)
+    // — unblock only removes the 'blocked' row (db.js's unblock), it does not restore a prior
+    // friendship, so without re-requesting/accepting they'd be left as total strangers.
+    await fetch(`${BASE_URL}/friends/unblock`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${aliceToken}` },
+      body: JSON.stringify({ username: 'FdmBob' }),
+    });
+    await fetch(`${BASE_URL}/friends/request`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${aliceToken}` },
+      body: JSON.stringify({ username: 'FdmBob' }),
+    });
+    await fetch(`${BASE_URL}/friends/accept`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${bobToken}` },
+      body: JSON.stringify({ username: 'FdmAlice' }),
+    });
   });
 
   test('blocking a group-DM co-member silences them for the blocker only, live and on reload', async () => {
@@ -3651,6 +3727,30 @@ describe('more previously-unprotected HTTP routes are now rate-limited', () => {
       assert.ok(sawLimited, 'a burst of 12 requests should eventually hit the rate limit');
     } finally {
       await presenceServer.stop();
+    }
+  });
+
+  // Found by a friends/DM authorization audit: every /friends/* mutation route (and, as fixed just
+  // above, /friends/presence) is rate-limited, but the base GET /friends listing route was left out
+  // entirely. Same dedicated-instance pattern for the same reason.
+  test('GET /friends is rate-limited, same as its /friends/* siblings', async () => {
+    const friendsListServer = await startTestServer({ FRIENDS_ACTION_MAX: '8' }, 3211);
+    try {
+      const base = `http://localhost:${friendsListServer.port}`;
+      const signup = await fetch(`${base}/auth/signup`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'FriendsListRateLimiter', password: 'pass1234', email: 'friendslistratelimiter@test.com' }),
+      }).then((r) => r.json());
+      const authHeaders = { Authorization: `Bearer ${signup.token}` };
+
+      let sawLimited = false;
+      for (let i = 0; i < 12; i++) {
+        const res = await fetch(`${base}/friends`, { headers: authHeaders });
+        if (res.status === 429) sawLimited = true;
+      }
+      assert.ok(sawLimited, 'a burst of 12 requests should eventually hit the rate limit');
+    } finally {
+      await friendsListServer.stop();
     }
   });
 });

@@ -1308,6 +1308,12 @@ app.post('/account/password', (req, res) => {
 // identity to hang a friends list off of) ----
 
 app.get('/friends', (req, res) => {
+  // Found by a friends/DM authorization audit: every /friends/* mutation route (and the separate
+  // /friends/presence, which got its own copy of this same limiter — see its comment) is
+  // rate-limited, but this base listing route (3 DB queries: friends+incoming+outgoing+blocked)
+  // was left out. No cross-account exposure either way — just closing the one gap in an otherwise
+  // consistently-limited route family.
+  if (isFriendsActionRateLimited(req)) return res.status(429).json({ error: 'Too many attempts — try again in a minute' });
   const account = getAccountFromReq(req);
   if (!account) return res.status(401).json({ error: 'Not signed in' });
   res.json({
@@ -5676,6 +5682,12 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'get-group-dm-threads') {
+      // Found by a friends/DM authorization audit: every other group-DM handler (create/send/leave)
+      // already gates on isWsMsgRateLimited; these two read-only handlers were left out, letting a
+      // signed-in client hammer unlimited DB reads (member-list + last-message subqueries per
+      // thread) with no cost. Scoping to the caller's own membership was already correct — this is
+      // purely a flood-cost gap, not an IDOR.
+      if (isWsMsgRateLimited(ws)) return;
       if (!ws.accountId) {
         send(ws, { type: 'error', message: 'Sign in to view group DMs' });
         return;
@@ -5685,6 +5697,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'get-group-dm-messages') {
+      if (isWsMsgRateLimited(ws)) return;
       if (!ws.accountId) {
         send(ws, { type: 'error', message: 'Sign in to view group DMs' });
         return;
