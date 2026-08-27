@@ -2774,6 +2774,54 @@ describe('Scorpture channel description', () => {
   });
 });
 
+describe('account-recovery/email-flow audit fixes', () => {
+  // Found by an account-recovery/email-flow audit: pushMentionNotifications used to page EVERY
+  // account sharing a mentioned email string (db.getAccountsByEmail) — but this app never verifies
+  // email ownership at signup, and MAX_ACCOUNTS_PER_EMAIL explicitly permits several accounts to
+  // share one email, so an attacker could register a throwaway account claiming a real person's
+  // email and silently piggyback on every future mention-push meant for that address. Narrowed to
+  // db.getAccountByEmail (oldest-created-wins), the same ambiguity resolution already used for
+  // Google-sign-in account linking. This tests the exact piece of logic the fix now relies on,
+  // requiring the scratch test instance's own db.js (never the real repo's) — same "require via
+  // server.dir" pattern already used elsewhere in this suite for direct DB-state assertions.
+  test('an email shared by multiple accounts resolves to only the oldest one for mention-push purposes', async () => {
+    const scratchDb = require(require('node:path').join(server.dir, 'db.js'));
+    const email = 'mentionshared@test.com';
+    const older = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'MentionShareOlder', password: 'password123', email }),
+    }).then((r) => r.json());
+    await sleep(10); // ensure a distinct created_at from the second signup below
+    const newer = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'MentionShareNewer', password: 'password123', email }),
+    }).then((r) => r.json());
+
+    const resolved = scratchDb.getAccountByEmail(email);
+    const olderAccount = scratchDb.getSessionAccount(older.token);
+    const newerAccount = scratchDb.getSessionAccount(newer.token);
+    assert.equal(resolved.id, olderAccount.id, 'mention-push must resolve to the OLDEST account sharing this email');
+    assert.notEqual(resolved.id, newerAccount.id, 'a later-signed-up account sharing the same email must not be the one paged');
+  });
+
+  // Found by the same audit: isScorptureAdmin used to check account.username === 'supdid67' &&
+  // account.email === 'supdid41@gmail.com' — both self-reported, unverified fields any signup can
+  // claim. Since this app never verifies email and has no account deletion (so there was never a
+  // real "deleted/recreated account" case to defend against), matching that exact string pair
+  // provided no actual defense-in-depth. Fixed to key off account.id, this app's one truly
+  // immutable identifier.
+  test('the Scorpture admin gate is keyed off account id, not a matching username/email pair', async () => {
+    const signup = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'supdid67', password: 'password123', email: 'supdid41@gmail.com' }),
+    }).then((r) => r.json());
+    const res = await fetch(`${BASE_URL}/api/scorpture/admin/bonus-subscribers`, {
+      headers: { Authorization: `Bearer ${signup.token}` },
+    });
+    assert.equal(res.status, 403, 'an exact username+email match must not grant Scorpture admin access any more');
+  });
+});
+
 describe('Scorpture video creation is rate-limited', () => {
   // Unlike its siblings (.../comments, .../report — both already rate-limited), POST
   // /api/scorpture/videos had no throttle at all — nothing stopped reusing one already-uploaded

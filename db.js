@@ -954,15 +954,13 @@ function getAccountByUsername(username) {
   return db.prepare('SELECT * FROM accounts WHERE username = ? COLLATE NOCASE').get(username) || null;
 }
 
-// Returns the oldest account for this email — used only where a single account must be picked
-// (Google-sign-in account linking). Prefer getAccountsByEmail/countAccountsByEmail everywhere
-// else now that one email can back multiple accounts (see MAX_ACCOUNTS_PER_EMAIL in server.js).
+// Returns the oldest account for this email — used both for Google-sign-in account linking and
+// (since a follow-up account-recovery/email-flow audit) for mention-notification paging, since
+// email ownership is never verified at signup and MAX_ACCOUNTS_PER_EMAIL (server.js) lets up to 10
+// accounts share one email string — "oldest wins" is the same ambiguity-resolution this app
+// already used for Google linking, reused rather than paging every account sharing the email.
 function getAccountByEmail(email) {
   return db.prepare('SELECT * FROM accounts WHERE email = ? COLLATE NOCASE ORDER BY created_at ASC').get(email) || null;
-}
-
-function getAccountsByEmail(email) {
-  return db.prepare('SELECT * FROM accounts WHERE email = ? COLLATE NOCASE ORDER BY created_at ASC').all(email);
 }
 
 function countAccountsByEmail(email) {
@@ -1765,7 +1763,6 @@ module.exports = {
   createAccount,
   getAccountByUsername,
   getAccountByEmail,
-  getAccountsByEmail,
   countAccountsByEmail,
   getAccountById,
   updateAccountUsername,

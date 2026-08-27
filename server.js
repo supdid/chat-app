@@ -123,24 +123,33 @@ function pushMentionNotifications(code, entry, senderAccountId) {
     const key = email.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
-    // Up to MAX_ACCOUNTS_PER_EMAIL accounts can now share one email — page every one of them,
-    // not just a single account, since there's no longer a 1:1 email-to-account mapping.
-    const accounts = db.getAccountsByEmail(email);
-    for (const account of accounts) {
-      // Unlike room chat itself (no ACL beyond the room code), this reaches an account
-      // independent of room membership, online status, or having ever been in this room — the
-      // same block enforcement every other cross-account push channel (friend-DM, group-DM)
-      // already respects, which this one had been missing.
-      if (senderAccountId && db.isBlockedBetween(senderAccountId, account.id)) continue;
-      const subs = db.getPushSubscriptionsForAccount(account.id);
-      if (!subs.length) continue;
-      sendPushToSubs(subs, {
-        title: `${entry.name} mentioned you`,
-        body: entry.text,
-        roomCode: code,
-        messageId: entry.id,
-      });
-    }
+    // Found by an account-recovery/email-flow audit: this used to page EVERY account sharing this
+    // email string (db.getAccountsByEmail) — but this app never verifies email ownership at
+    // signup, so anyone could register a throwaway account claiming a real person's email address
+    // (MAX_ACCOUNTS_PER_EMAIL explicitly permits up to 10 accounts per email) and silently receive
+    // a copy of every future "mentioned you" push meant for that address — full message body,
+    // room code, forever, with zero interaction from or visibility to the real owner. Narrowed to
+    // getAccountByEmail (singular, oldest-created-wins) — the same "pick the one legitimate owner
+    // for an ambiguous shared email" resolution already used for Google-sign-in account linking
+    // elsewhere in this file. Doesn't require building real email verification, and closes the
+    // realistic threat model (an attacker targeting someone who already has an account here); it
+    // does not protect a victim who has never signed up here at all under that email, which no
+    // fix short of real verification could anyway.
+    const account = db.getAccountByEmail(email);
+    if (!account) continue;
+    // Unlike room chat itself (no ACL beyond the room code), this reaches an account
+    // independent of room membership, online status, or having ever been in this room — the
+    // same block enforcement every other cross-account push channel (friend-DM, group-DM)
+    // already respects, which this one had been missing.
+    if (senderAccountId && db.isBlockedBetween(senderAccountId, account.id)) continue;
+    const subs = db.getPushSubscriptionsForAccount(account.id);
+    if (!subs.length) continue;
+    sendPushToSubs(subs, {
+      title: `${entry.name} mentioned you`,
+      body: entry.text,
+      roomCode: code,
+      messageId: entry.id,
+    });
   }
 }
 
@@ -1793,14 +1802,23 @@ app.post('/api/scorpture/description', (req, res) => {
   res.json({ ok: true, description: description || null });
 });
 
-// Cosmetic-only admin panel, hardcoded to one specific account by username *and* email (not just
-// username — a deleted/recreated account with the same name shouldn't inherit this). The
-// right-click-the-logo UI gate in videos.js is purely a discovery mechanic; this check here is
-// the actual boundary, same getAccountFromReq(req) auth every other route uses, so there is no
-// way to hit this by guessing a URL — it 403s anyone whose token doesn't resolve to this exact
-// account.
+// Cosmetic-only admin panel, hardcoded to one specific account by its immutable id. Originally
+// checked username *and* email instead — found by an account-recovery/email-flow audit to be a
+// latent gap: email is never verified at signup (self-reported, and MAX_ACCOUNTS_PER_EMAIL even
+// permits several accounts sharing one email), so it adds no real defense-in-depth, and account
+// deletion doesn't exist in this app (confirmed by that same audit) so there was never actually a
+// "deleted/recreated account" case to defend against in the first place — a username IS
+// permanently reserved the moment its original owner holds it, but only for as long as they don't
+// rename away from it, at which point anyone could reclaim 'supdid67' and self-declare the same
+// email at signup, passing the old check outright. account.id is this app's one truly immutable,
+// non-reusable identifier (a session-verified accounts.id, never reassigned), so it's the only
+// safe thing to hardcode a permanent identity check against. The right-click-the-logo UI gate in
+// videos.js is purely a discovery mechanic; this check here is the actual boundary, same
+// getAccountFromReq(req) auth every other route uses, so there is no way to hit this by guessing
+// a URL — it 403s anyone whose token doesn't resolve to this exact account.
+const SCORPTURE_ADMIN_ACCOUNT_ID = '6b108ee9-cd84-44dc-a50f-823066886f9a';
 function isScorptureAdmin(account) {
-  return !!account && account.username === 'supdid67' && account.email === 'supdid41@gmail.com';
+  return !!account && account.id === SCORPTURE_ADMIN_ACCOUNT_ID;
 }
 
 app.get('/api/scorpture/admin/bonus-subscribers', (req, res) => {
