@@ -5410,6 +5410,46 @@ describe('Self-healing patcher: auth-sensitive-code detection and syntax validat
     assert.equal(body.ok, true);
     assert.match(fs.readFileSync(targetPath, 'utf8'), /\/\/ patched by test/);
   });
+
+  test('applying a patch prunes old backups for that target file down to the retention cap', async () => {
+    // Found by the backups/secrets/ops-exposure audit: patch_backups/ had no retention at all,
+    // unlike every other bounded-history collection in this app (whiteboard strokes, Build Craft
+    // overrides, room pins). Pre-seed 25 fake old backups (well past the 20-per-file cap) with an
+    // ascending, deliberately-spread timestamp sequence in the filename — the same naming scheme
+    // applyProposal itself uses — so pruning has an unambiguous oldest-first order to enforce.
+    //
+    // Deliberately targets patcher.js, NOT a public/*.js file: startTestServer (helpers.js)
+    // symlinks the scratch instance's public/ straight back to this real repo's own public/ dir
+    // (only server.js/db.js/patcher.js/package.json get an actual per-instance copy) — an earlier
+    // draft of this test used public/chess.js as the target and, via applyProposal's real
+    // write-then-rename, patched the REAL production public/chess.js through that symlink. Caught
+    // via `git status` after the run; reverted, no live impact (the "fix" was an inert comment
+    // append, service was never restarted with it). Every other target-file choice in this describe
+    // block already independently avoided this by sticking to patcher.js/server.js/db.js — this is
+    // the one to point to if that pattern is ever forgotten again.
+    const backupDir = path.join(patcherServer.dir, 'patch_backups');
+    fs.mkdirSync(backupDir, { recursive: true });
+    const prefix = 'patcher.js.';
+    for (let i = 0; i < 25; i++) {
+      fs.writeFileSync(path.join(backupDir, `${prefix}${1000000000000 + i}.bak`), `fake backup ${i}`);
+    }
+    seedProposal({
+      id: 'test-backup-prune-1',
+      targetFile: 'patcher.js',
+      oldString: "const vm = require('vm');",
+      newString: "const vm = require('vm'); // patched by prune test",
+    });
+    const res = await fetch(`http://localhost:${patcherServer.port}/admin/patches/test-backup-prune-1/approve`, {
+      method: 'POST',
+      headers: adminAuth(adminKey),
+    });
+    assert.equal(res.status, 200);
+    const remaining = fs.readdirSync(backupDir).filter((n) => n.startsWith(prefix)).sort();
+    // 25 pre-seeded + 1 just-written by this approval = 26; capped to the newest 20.
+    assert.equal(remaining.length, 20);
+    assert.ok(!remaining.includes(`${prefix}1000000000000.bak`), 'oldest pre-seeded backup must have been pruned');
+    assert.ok(remaining.includes(`${prefix}1000000000024.bak`), 'newest pre-seeded backup must survive');
+  });
 });
 
 // Found by a push-notification authorization/target-scoping audit: /push/subscribe and

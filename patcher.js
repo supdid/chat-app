@@ -239,8 +239,21 @@ function applyProposal(id) {
 
   const backupDir = path.join(ROOT, 'patch_backups');
   fs.mkdirSync(backupDir, { recursive: true });
-  const backupPath = path.join(backupDir, `${proposal.target_file.replace(/\//g, '_')}.${Date.now()}.bak`);
+  const backupPrefix = `${proposal.target_file.replace(/\//g, '_')}.`;
+  const backupPath = path.join(backupDir, `${backupPrefix}${Date.now()}.bak`);
   fs.writeFileSync(backupPath, fileContent);
+
+  // Same bounded-history/oldest-evicted pattern already used for whiteboard strokes, Build Craft
+  // overrides, and room pins elsewhere in this app — patches are approved by a human one at a time
+  // (not an attacker-triggerable flood like those), so this is precautionary against unbounded
+  // growth over the app's real lifetime, not an urgent fix.
+  const siblingBackups = fs.readdirSync(backupDir)
+    .filter((name) => name.startsWith(backupPrefix) && name.endsWith('.bak'))
+    .sort();
+  const PATCH_BACKUPS_MAX_PER_FILE = 20;
+  for (const stale of siblingBackups.slice(0, siblingBackups.length - PATCH_BACKUPS_MAX_PER_FILE)) {
+    fs.unlinkSync(path.join(backupDir, stale));
+  }
 
   // String.prototype.replace still interprets special replacement patterns ($&, $`, $', $$, $<name>)
   // in its second argument even when the first argument is a plain string, not a regex — an
