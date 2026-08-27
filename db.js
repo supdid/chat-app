@@ -147,6 +147,7 @@ ensureColumn('messages', 'deleted', 'INTEGER DEFAULT 0');
 // See insertMessage's comment — a signed-in poster's account_id, not just their display name.
 ensureColumn('messages', 'account_id', 'TEXT');
 ensureColumn('rooms', 'host_name', 'TEXT');
+ensureColumn('rooms', 'host_account_id', 'TEXT');
 ensureColumn('rooms', 'announcement', 'TEXT');
 ensureColumn('rooms', 'pin_required', 'TEXT');
 ensureColumn('rooms', 'wallpaper_url', 'TEXT');
@@ -503,15 +504,30 @@ function getRoom(code) {
 
 // Set only the first time a room gets a host (room creation) — never overwritten by a later
 // upsertRoom call (e.g. renaming), so the host stays whoever actually created the room.
-function setRoomHostIfUnset(code, name) {
-  db.prepare("UPDATE rooms SET host_name = ? WHERE code = ? AND (host_name IS NULL OR host_name = '')").run(name, code);
+// accountId (when the creator was signed in) is stored alongside host_name so authorization can be
+// checked against a durable identity instead of the display-name string alone — see
+// isRoomHost/the host-identity-spoofing audit note in server.js for why host_name alone isn't
+// enough: it's client-supplied and has no uniqueness enforcement, so anyone who types the exact
+// same display name as the host would otherwise pass a host_name-only check.
+function setRoomHostIfUnset(code, name, accountId = null) {
+  db.prepare("UPDATE rooms SET host_name = ?, host_account_id = ? WHERE code = ? AND (host_name IS NULL OR host_name = '')").run(name, accountId, code);
 }
 
 // Keeps host privileges attached to whoever the host actually is across a display-name rename
-// (see 'set-name' in server.js) — a no-op if this room's host isn't oldName, so it's safe to call
-// unconditionally for every room a renaming user happens to be in.
-function renameRoomHostIfMatches(code, oldName, newName) {
-  db.prepare('UPDATE rooms SET host_name = ? WHERE code = ? AND host_name = ?').run(newName, code, oldName);
+// (see 'set-name' in server.js). When the host is signed in, host_account_id is the real
+// authorization key (see isRoomHost in server.js) — host_name is then just a display value, so
+// this updates it across every room that account hosts, not only the room the rename happened in
+// (previously scoped to one room via a code+oldName match, which left every OTHER room that
+// account hosts pointing at a now-stale host_name, locking the real host out of it and leaving it
+// squattable by name). A guest host (no accountId) has no durable identity to key off, so falls
+// back to the original room-scoped, exact-name-match update — unavoidable given no account exists,
+// same accepted trust model as everywhere else guest identity is handled in this app.
+function renameRoomHostIfMatches(code, oldName, newName, accountId = null) {
+  if (accountId) {
+    db.prepare('UPDATE rooms SET host_name = ? WHERE host_account_id = ?').run(newName, accountId);
+  } else {
+    db.prepare('UPDATE rooms SET host_name = ? WHERE code = ? AND host_name = ?').run(newName, code, oldName);
+  }
 }
 
 function setAnnouncement(code, text) {

@@ -3616,6 +3616,26 @@ function leaveWb(ws) {
   ws.wbRoom = null;
 }
 
+// Found by a room-host/moderation-powers audit: every host-only check in this file used to compare
+// dbRoom.host_name === ws.profile.name directly — host_name is a client-supplied, unauthenticated
+// display-name string with no uniqueness enforcement, so anyone who simply typed the exact same
+// display name as the host would pass every one of these checks too. Concretely: join-room's
+// same-name eviction (below, "Reconnected from another tab") has no account check, so an attacker
+// could join as "<hostName>", force-disconnect the real host's live session, and have their OWN
+// connection now match host_name — full host powers (kick/mute/ban, rename, announcement,
+// wallpaper, pin, unban) with the real host actively locked out, not just impersonating an absent
+// one. Fixed by keying off host_account_id (set at room creation when the creator is signed in —
+// see setRoomHostIfUnset) whenever it's present: a display name can never satisfy that, since it
+// requires ws.accountId to match a durable account id, not a string. A guest-created room (no
+// account, host_account_id stays NULL) has no durable identity to key off at all and keeps the
+// original name-only check — an accepted, explicitly-documented trust model already ("no accounts
+// to actually verify identity"), not something this fix can or should change.
+function isRoomHost(dbRoom, ws) {
+  if (!dbRoom) return false;
+  if (dbRoom.host_account_id) return ws.accountId === dbRoom.host_account_id;
+  return dbRoom.host_name === ws.profile.name;
+}
+
 // Shared by kick-user/mute-user/ban-user (host check + target-name parsing + in-memory room
 // lookup) — was copy-pasted verbatim at all three call sites. unmute-user isn't included: its
 // shape genuinely differs (no empty/self-name guard, doesn't bail if the room is already gone),
@@ -3626,7 +3646,7 @@ function resolveModerationTarget(ws, msg) {
   // not just the attacker's own.
   if (isWsMsgRateLimited(ws)) return null;
   const dbRoom = db.getRoom(ws.room);
-  if (!dbRoom || dbRoom.host_name !== ws.profile.name) return null;
+  if (!isRoomHost(dbRoom, ws)) return null;
   const targetName = String(msg.name || '').trim();
   if (!targetName || targetName === ws.profile.name) return null;
   const room = rooms.get(ws.room);
@@ -5826,7 +5846,7 @@ wss.on('connection', (ws, req) => {
       if (ws.room) leaveRoom(ws);
       const code = generateRoomCode();
       db.upsertRoom(code);
-      db.setRoomHostIfUnset(code, ws.profile.name);
+      db.setRoomHostIfUnset(code, ws.profile.name, ws.accountId || null);
       rooms.set(code, { history: [], clients: new Set([ws]) });
       ws.room = code;
       send(ws, { type: 'joined-room', code, messages: [], users: roomUsers(code), name: null, reactions: [], pins: [], activity: [], isHost: true, announcement: null, wallpaperUrl: null });
@@ -5883,13 +5903,16 @@ wss.on('connection', (ws, req) => {
       ws.room = code;
       // Rooms created before this feature existed have no host_name yet — the first person
       // to (re)join effectively becomes the host rather than leaving the room host-less forever.
-      // hostName tracks whichever value is now actually true in the DB, since setRoomHostIfUnset
-      // below can change it out from under the stale `dbRoom` object fetched above — this avoids
-      // a third db.getRoom(code) purely to re-read the field it itself just wrote.
+      // hostName/hostAccountId track whichever values are now actually true in the DB, since
+      // setRoomHostIfUnset below can change them out from under the stale `dbRoom` object fetched
+      // above — this avoids a third db.getRoom(code) purely to re-read the fields it itself just
+      // wrote.
       let hostName = dbRoom ? dbRoom.host_name : null;
+      let hostAccountId = dbRoom ? dbRoom.host_account_id : null;
       if (dbRoom && !dbRoom.host_name) {
-        db.setRoomHostIfUnset(code, ws.profile.name);
+        db.setRoomHostIfUnset(code, ws.profile.name, ws.accountId || null);
         hostName = ws.profile.name;
+        hostAccountId = ws.accountId || null;
       }
       // Re-apply a persistent (account-based) mute even if they rejoined under a new display
       // name — otherwise a signed-in target could dodge a mute just by picking a new name.
@@ -5912,7 +5935,7 @@ wss.on('connection', (ws, req) => {
         // hydrated on join, just for this one field that was missed.
         readReceipts: db.getReadReceipts(code),
         activity: roomActivityList(room),
-        isHost: hostName === ws.profile.name,
+        isHost: isRoomHost({ host_name: hostName, host_account_id: hostAccountId }, ws),
         announcement: dbRoom ? dbRoom.announcement : null,
         wallpaperUrl: dbRoom ? dbRoom.wallpaper_url : null,
         voiceCallActive: !!(room.voice && room.voice.size > 0),
@@ -5998,9 +6021,18 @@ wss.on('connection', (ws, req) => {
       const oldName = ws.profile.name;
       ws.profile.name = newName;
       db.upsertProfile(newName, { avatarUrl: ws.profile.avatarUrl, status: ws.profile.status });
+      // Found by a room-host/moderation-powers audit: for a signed-in host, renameRoomHostIfMatches'
+      // accountId branch updates every room that account hosts (not just ws.room), so this call must
+      // run even when the renaming connection isn't currently sitting in any room at all — nesting
+      // it inside `if (ws.room)` (as it used to be) silently skipped updating host_name for every
+      // OTHER room that account hosts, leaving those rooms pointing at a stale display name (locking
+      // the real host out of a room they created just by renaming while elsewhere, and leaving that
+      // room's host slot squattable by name in the meantime). A guest (no accountId) has no identity
+      // to key off outside ws.room anyway, so passing `ws.room || null` is a safe no-op for them when
+      // they have no current room.
+      db.renameRoomHostIfMatches(ws.room || null, oldName, newName, ws.accountId || null);
       if (ws.room) {
         const room = rooms.get(ws.room);
-        db.renameRoomHostIfMatches(ws.room, oldName, newName);
         if (ws.accountId) db.renamePersistentMuteName(ws.room, ws.accountId, newName);
         if (room && room.muted && room.muted.has(oldName)) {
           room.muted.delete(oldName);
@@ -6021,7 +6053,7 @@ wss.on('connection', (ws, req) => {
       // resolveModerationTarget's identical guard just above.
       if (isWsMsgRateLimited(ws)) return;
       const dbRoom = db.getRoom(ws.room);
-      if (!dbRoom || dbRoom.host_name !== ws.profile.name) return;
+      if (!isRoomHost(dbRoom, ws)) return;
       const name = String(msg.name || '').slice(0, 50).trim() || null;
       db.upsertRoom(ws.room, name);
       broadcastRoom(ws.room, { type: 'room-renamed', name });
@@ -6031,7 +6063,7 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'set-room-pin' && ws.room) {
       if (isWsMsgRateLimited(ws)) return; // see rename-room's comment on this same guard
       const dbRoom = db.getRoom(ws.room);
-      if (!dbRoom || dbRoom.host_name !== ws.profile.name) return;
+      if (!isRoomHost(dbRoom, ws)) return;
       const pin = String(msg.pin || '').slice(0, 12).trim() || null;
       db.setRoomPin(ws.room, pin);
       send(ws, { type: 'room-pin-updated', pinRequired: !!pin });
@@ -6041,7 +6073,7 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'set-wallpaper' && ws.room) {
       if (isWsMsgRateLimited(ws)) return; // see rename-room's comment on this same guard
       const dbRoom = db.getRoom(ws.room);
-      if (!dbRoom || dbRoom.host_name !== ws.profile.name) return;
+      if (!isRoomHost(dbRoom, ws)) return;
       // Same tracker-link gap set-avatar had (fixed earlier this session): the real UI only ever
       // sends back its own /upload result, but nothing server-side enforced that — a raw WS client
       // could set any external URL, loaded as a real background-image for every room member.
@@ -6056,7 +6088,7 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'set-announcement' && ws.room) {
       if (isWsMsgRateLimited(ws)) return; // see rename-room's comment on this same guard
       const dbRoom = db.getRoom(ws.room);
-      if (!dbRoom || dbRoom.host_name !== ws.profile.name) return;
+      if (!isRoomHost(dbRoom, ws)) return;
       const text = String(msg.text || '').slice(0, 200).trim() || null;
       db.setAnnouncement(ws.room, text);
       broadcastRoom(ws.room, { type: 'announcement-updated', text });
@@ -6112,7 +6144,7 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'unmute-user' && ws.room) {
       if (isWsMsgRateLimited(ws)) return; // see rename-room's comment on this same guard
       const dbRoom = db.getRoom(ws.room);
-      if (!dbRoom || dbRoom.host_name !== ws.profile.name) return;
+      if (!isRoomHost(dbRoom, ws)) return;
       const targetName = String(msg.name || '').trim();
       const room = rooms.get(ws.room);
       if (room && room.muted) room.muted.delete(targetName);
@@ -6184,7 +6216,7 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'unban-user' && ws.room) {
       if (isWsMsgRateLimited(ws)) return; // see rename-room's comment on this same guard
       const dbRoom = db.getRoom(ws.room);
-      if (!dbRoom || dbRoom.host_name !== ws.profile.name) return;
+      if (!isRoomHost(dbRoom, ws)) return;
       const banId = String(msg.banId || '');
       if (!banId) return;
       db.unbanFromRoom(banId, ws.room);
@@ -6194,7 +6226,7 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'get-bans' && ws.room) {
       const dbRoom = db.getRoom(ws.room);
-      if (!dbRoom || dbRoom.host_name !== ws.profile.name) return;
+      if (!isRoomHost(dbRoom, ws)) return;
       send(ws, { type: 'bans-result', bans: db.getRoomBans(ws.room) });
       return;
     }
@@ -6498,7 +6530,7 @@ wss.on('connection', (ws, req) => {
       const target = db.getMessage(messageId);
       if (!target || target.room_code !== ws.room || target.deleted) return;
       const dbRoom = db.getRoom(ws.room);
-      const isHost = dbRoom && dbRoom.host_name === ws.profile.name;
+      const isHost = isRoomHost(dbRoom, ws);
       if (!ownsMessage(target, ws) && !isHost) return;
       // Found by a file-upload storage audit: deleteMessageRow nulls media_url as part of the same
       // UPDATE that marks the row deleted — cleanupInactiveRooms' 90-day sweep finds files solely

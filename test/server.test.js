@@ -530,6 +530,94 @@ describe('room moderation', () => {
   });
 });
 
+describe('room host identity cannot be spoofed via a matching display name', () => {
+  // Found by a room-host/moderation-powers audit: host_name is a client-supplied, unauthenticated
+  // display-name string with no uniqueness enforcement. join-room's own same-name eviction (any two
+  // connections sharing a display name — "Reconnected from another tab") has no account check, so
+  // before this fix, an attacker could join using the exact same display name as a signed-in host,
+  // force-disconnect that host's live connection, and have their OWN connection now satisfy the old
+  // host_name === ws.profile.name check — full host powers, with the real host actively locked out,
+  // not merely impersonating an absent one. Fixed by keying host status off host_account_id
+  // (isRoomHost in server.js) whenever the room's creator was signed in.
+  test('an attacker joining with the host\'s exact display name does not gain host status, and the real host keeps it under any display name', async () => {
+    const signup = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'HostSpoofOwner', password: 'password123', email: 'hostspoofowner@test.com' }),
+    }).then((r) => r.json());
+
+    const host = await connectWs();
+    send(host, { type: 'join-server', username: 'HostSpoofVictim', accountToken: signup.token });
+    await waitFor(host, (m) => m.type === 'joined-server');
+    send(host, { type: 'create-room' });
+    const created = await waitFor(host, (m) => m.type === 'joined-room');
+    assert.equal(created.isHost, true, 'the real signed-in creator must be host');
+    const code = created.code;
+
+    // Attacker: same display name, no account of their own. This join legitimately evicts the
+    // real host's connection via the pre-existing "Reconnected from another tab" mechanism (that
+    // part is intended multi-tab behavior) — what must NOT happen is the attacker's own connection
+    // inheriting host status just because the display-name string matches.
+    const attacker = await connectWs();
+    send(attacker, { type: 'join-server', username: 'HostSpoofVictim' });
+    await waitFor(attacker, (m) => m.type === 'joined-server');
+    send(attacker, { type: 'join-room', code });
+    const attackerJoined = await waitFor(attacker, (m) => m.type === 'joined-room');
+    assert.equal(attackerJoined.isHost, false, 'a name-only match must not grant host status to a different account/connection');
+
+    // Confirm it's not just the reported flag that's wrong — an actual host-only action must be
+    // refused too.
+    let renamed = null;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'room-renamed') renamed = m; };
+    attacker.on('message', h);
+    send(attacker, { type: 'rename-room', name: 'Attacker Owns This Now' });
+    await sleep(250);
+    attacker.off('message', h);
+    assert.equal(renamed, null, 'the attacker must not be able to exercise host-only actions either');
+
+    // The real host, reconnecting under a DIFFERENT display name (same account), must still be
+    // recognized as host — status is keyed off host_account_id, not the current name string.
+    const hostReturns = await connectWs();
+    send(hostReturns, { type: 'join-server', username: 'HostSpoofVictimReturns', accountToken: signup.token });
+    await waitFor(hostReturns, (m) => m.type === 'joined-server');
+    send(hostReturns, { type: 'join-room', code });
+    const rejoinMsg = await waitFor(hostReturns, (m) => m.type === 'joined-room');
+    assert.equal(rejoinMsg.isHost, true, 'the real host must still be recognized as host after reconnecting under a new display name');
+
+    attacker.close();
+    hostReturns.close();
+  });
+
+  // Found by the same audit: renameRoomHostIfMatches used to be scoped to code+oldName (only the
+  // room the rename happened to occur in) — a signed-in host renaming while sitting in a DIFFERENT
+  // room, or in no room at all, silently left every room they actually host still pointing at the
+  // stale pre-rename host_name.
+  test('renaming while in no room at all still updates host_name for every room that account hosts', async () => {
+    const scratchDb = require(require('node:path').join(server.dir, 'db.js'));
+    const signup = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'HostRenameOwner', password: 'password123', email: 'hostrenameowner@test.com' }),
+    }).then((r) => r.json());
+
+    const ws = await connectWs();
+    send(ws, { type: 'join-server', username: 'HostRenameOld', accountToken: signup.token });
+    await waitFor(ws, (m) => m.type === 'joined-server');
+    send(ws, { type: 'create-room' });
+    const created = await waitFor(ws, (m) => m.type === 'joined-room');
+    const code = created.code;
+
+    send(ws, { type: 'leave-room' });
+    await waitFor(ws, (m) => m.type === 'left-room');
+
+    send(ws, { type: 'set-name', name: 'HostRenameNew' });
+    await waitFor(ws, (m) => m.type === 'name-updated');
+    await sleep(150);
+
+    const roomRow = scratchDb.getRoom(code);
+    assert.equal(roomRow.host_name, 'HostRenameNew', 'host_name must be updated even though the rename happened while the account was in no room at all');
+    ws.close();
+  });
+});
+
 // Found by a moderation-enforcement-consistency audit: room ban/mute were only ever enforced on
 // the real chat page's own connection (join-room, message, send-dm, etc.) — every minigame opens
 // its own independent WebSocket from its own page (see bc-join's comment in server.js) and none
