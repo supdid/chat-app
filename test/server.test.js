@@ -3366,6 +3366,110 @@ describe('inactive-room purge cascade', () => {
   });
 });
 
+describe('file-upload storage audit: deleting/replacing media actually deletes the old file', () => {
+  // Found by a file-upload storage audit: deleteMessageRow nulls media_url as part of the same
+  // UPDATE that marks a message deleted, and cleanupInactiveRooms' 90-day sweep finds files solely
+  // via a live media_url column — so once that column is nulled, the file becomes invisible to
+  // every existing cleanup mechanism, not just orphaned-until-90-days. Uses the same
+  // fetch-the-/uploads/-URL-and-check-status trick as the 'orphaned upload sweep' describe block
+  // above (a claimed/still-referenced file 200s, a deleted one 404s) instead of touching the
+  // filesystem directly — public/ is a symlink shared with the real repo across every test
+  // instance, so this stays consistent with how every other upload-lifecycle test already verifies
+  // file state.
+  test('deleting a message deletes its uploaded file from disk, not just the DB reference', async () => {
+    const { ws, code } = await joinRoom('DeleteFileHost');
+
+    const form = new FormData();
+    form.append('file', new Blob(['delete-message file test'], { type: 'image/png' }), 'del.png');
+    const { url } = await (await fetch(`${BASE_URL}/upload`, { method: 'POST', body: form })).json();
+
+    const postedPromise = waitFor(ws, (m) => m.type === 'message' && m.mediaUrl === url);
+    const postRes = await fetch(`${BASE_URL}/post-image`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, name: 'DeleteFileHost', mediaUrl: url, prompt: 'x' }),
+    });
+    assert.equal(postRes.status, 200);
+    const posted = await postedPromise;
+
+    assert.equal((await fetch(`${BASE_URL}${url}`)).status, 200, 'the file must exist right after posting');
+
+    send(ws, { type: 'delete-message', messageId: posted.id });
+    await waitFor(ws, (m) => m.type === 'message-deleted' && m.messageId === posted.id);
+    await sleep(200);
+
+    assert.equal((await fetch(`${BASE_URL}${url}`)).status, 404, 'deleting the message must delete the underlying file, not just null out the DB reference');
+    ws.close();
+  });
+
+  // Same root cause, different call sites: replacing a Scorpture banner/avatar (or a video's
+  // thumbnail, or an overlay list) never deleted the file it superseded — each new upload was
+  // claimUpload()'d (exempting it from the orphan sweep), but nothing ever referenced the old one
+  // again once it was overwritten.
+  test('replacing a Scorpture banner deletes the old banner file', async () => {
+    await sleep(6500); // clear the shared isPostMediaRateLimited budget before this test's own requests
+    const signupRes = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'BannerReplace', password: 'password123', email: 'bannerreplace@test.com' }),
+    });
+    const { token } = await signupRes.json();
+
+    const uploadOne = async (label) => {
+      const form = new FormData();
+      form.append('file', new Blob([`banner ${label}`], { type: 'image/png' }), `${label}.png`);
+      const res = await fetch(`${BASE_URL}/upload`, { method: 'POST', body: form });
+      return (await res.json()).url;
+    };
+    const firstUrl = await uploadOne('first');
+    const secondUrl = await uploadOne('second');
+
+    const firstRes = await fetch(`${BASE_URL}/api/scorpture/banner`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ bannerUrl: firstUrl }),
+    });
+    assert.equal(firstRes.status, 200);
+    assert.equal((await fetch(`${BASE_URL}${firstUrl}`)).status, 200, 'the first banner file must exist after being set');
+
+    const secondRes = await fetch(`${BASE_URL}/api/scorpture/banner`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ bannerUrl: secondUrl }),
+    });
+    assert.equal(secondRes.status, 200);
+
+    assert.equal((await fetch(`${BASE_URL}${secondUrl}`)).status, 200, 'the new banner file must exist');
+    assert.equal((await fetch(`${BASE_URL}${firstUrl}`)).status, 404, 'replacing the banner must delete the file it superseded');
+  });
+
+  test('saving a new Scorpture overlay list deletes an image overlay dropped from it', async () => {
+    await sleep(6500);
+    const signupRes = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'OverlayReplace', password: 'password123', email: 'overlayreplace@test.com' }),
+    });
+    const { token } = await signupRes.json();
+    const authHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+
+    const form = new FormData();
+    form.append('file', new Blob(['overlay image'], { type: 'image/png' }), 'overlay.png');
+    const { url: overlayUrl } = await (await fetch(`${BASE_URL}/upload`, { method: 'POST', body: form })).json();
+
+    const firstRes = await fetch(`${BASE_URL}/api/scorpture/overlays`, {
+      method: 'POST', headers: authHeaders,
+      body: JSON.stringify({ overlays: [{ type: 'image', content: overlayUrl, position: 'top-left' }] }),
+    });
+    assert.equal(firstRes.status, 200);
+    assert.equal((await fetch(`${BASE_URL}${overlayUrl}`)).status, 200, 'the overlay image must exist after being saved');
+
+    // Replace the whole list with one that no longer includes it (a plain text overlay instead).
+    const secondRes = await fetch(`${BASE_URL}/api/scorpture/overlays`, {
+      method: 'POST', headers: authHeaders,
+      body: JSON.stringify({ overlays: [{ type: 'text', content: 'hello', position: 'top-left' }] }),
+    });
+    assert.equal(secondRes.status, 200);
+
+    assert.equal((await fetch(`${BASE_URL}${overlayUrl}`)).status, 404, 'dropping an image overlay from the saved list must delete its file');
+  });
+});
+
 describe('per-username login brute-force throttle', () => {
   // isAuthRateLimited (the pre-existing per-IP limiter) is stricter (8/60s) than a real brute-
   // force threshold needs to be and would trip first if this test just hammered /auth/login

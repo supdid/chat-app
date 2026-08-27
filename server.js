@@ -423,7 +423,13 @@ function baseMimeType(mimetype) {
 const storage = multer.diskStorage({
   destination: path.join(__dirname, 'public/uploads'),
   filename: (req, file, cb) => {
-    cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${SAFE_UPLOAD_EXT[baseMimeType(file.mimetype)] || ''}`);
+    // Found by a file-upload storage audit: every other security-relevant identifier in this app
+    // (session tokens, message/account ids, the admin key) uses crypto.randomUUID()/randomBytes —
+    // this was the one place still using Math.random(), which is not cryptographically secure.
+    // Not a practically exploitable hole today (uploaded files aren't otherwise access-controlled
+    // by anything except this same unguessability, and 128 bits from randomBytes is a large step
+    // up from Math.random()'s ~52), but there's no reason for this one path to be the weak link.
+    cb(null, `${Date.now()}-${crypto.randomBytes(16).toString('hex')}${SAFE_UPLOAD_EXT[baseMimeType(file.mimetype)] || ''}`);
   },
 });
 const upload = multer({
@@ -1593,6 +1599,11 @@ app.put('/api/scorpture/videos/:id', (req, res) => {
     : video.thumbnail_url;
   claimUpload(thumbnailUrl);
   db.updateScorptureVideo(video.id, { title, description, category, thumbnailUrl });
+  // Found by a file-upload storage audit: replacing the thumbnail here never deleted the file it
+  // superseded — claimUpload only stops the NEW url from being swept as orphaned, it does nothing
+  // for the old one, which nothing else ever references again. Same unbounded-disk-fill shape as
+  // the video-delete route just above (upload near the cap, re-edit the thumbnail, repeat).
+  if (thumbnailUrl !== video.thumbnail_url) deleteUploadFile(video.thumbnail_url);
   res.json({ ok: true, title, description, category, thumbnailUrl });
 });
 
@@ -1749,7 +1760,12 @@ app.post('/api/scorpture/banner', (req, res) => {
   const bannerUrl = typeof req.body.bannerUrl === 'string' ? req.body.bannerUrl.slice(0, 2000) : '';
   claimUpload(bannerUrl);
   if (!bannerUrl.startsWith('/uploads/')) return res.status(400).json({ error: 'Missing banner image' });
+  const oldBannerUrl = account.scorpture_banner_url;
   db.setScorptureBanner(account.id, bannerUrl);
+  // Found by a file-upload storage audit: replacing a banner/avatar never deleted the file it
+  // superseded, letting an account re-upload near the 300MB cap indefinitely with no cleanup —
+  // same unbounded-disk-fill shape as the video-delete/thumbnail-edit fixes above.
+  if (bannerUrl !== oldBannerUrl) deleteUploadFile(oldBannerUrl);
   res.json({ ok: true, bannerUrl });
 });
 
@@ -1761,7 +1777,10 @@ app.post('/api/scorpture/avatar', (req, res) => {
   const avatarUrl = typeof req.body.avatarUrl === 'string' ? req.body.avatarUrl.slice(0, 2000) : '';
   claimUpload(avatarUrl);
   if (!avatarUrl.startsWith('/uploads/')) return res.status(400).json({ error: 'Missing avatar image' });
+  const oldAvatarUrl = account.scorpture_avatar_url;
   db.setScorptureAvatar(account.id, avatarUrl);
+  // Same leaked-file-on-replace fix as /api/scorpture/banner above.
+  if (avatarUrl !== oldAvatarUrl) deleteUploadFile(oldAvatarUrl);
   res.json({ ok: true, avatarUrl });
 });
 
@@ -1842,6 +1861,15 @@ app.post('/api/scorpture/overlays', (req, res) => {
   // established — this loop just hadn't gotten it.
   for (const o of overlays) {
     if (o.type === 'image') claimUpload(o.content);
+  }
+  // Found by a file-upload storage audit: this route replaces the whole overlay list every call,
+  // but an old image overlay dropped from the new list (removed, or replaced with a fresh upload)
+  // was never deleted — nothing else ever references it again once it drops out of this row. Same
+  // unbounded-disk-fill shape as the banner/avatar/thumbnail fixes above; diffed against the new
+  // list (not deleted unconditionally) so an image kept unchanged across saves survives.
+  const keptUrls = new Set(overlays.filter((o) => o.type === 'image').map((o) => o.content));
+  for (const old of db.getScorptureOverlays(account.id)) {
+    if (old.type === 'image' && !keptUrls.has(old.content)) deleteUploadFile(old.content);
   }
   db.setScorptureOverlays(account.id, overlays);
   res.json({ overlays });
@@ -5909,8 +5937,17 @@ wss.on('connection', (ws, req) => {
       const rawAvatarUrl = typeof msg.avatarUrl === 'string' ? msg.avatarUrl.slice(0, 500) : null;
       const avatarUrl = rawAvatarUrl && rawAvatarUrl.startsWith('/uploads/') ? rawAvatarUrl : null;
       claimUpload(avatarUrl);
+      // Found by a file-upload storage audit: replacing an avatar never deleted the file it
+      // superseded, same unbounded-disk-fill shape fixed at the Scorpture banner/avatar/thumbnail
+      // routes above (re-set an avatar near the 300MB cap indefinitely, no cleanup). profiles is
+      // keyed by display name, not an authenticated account, so ws.profile.avatarUrl (this
+      // connection's own live view, captured before it's overwritten below) is the only "old value"
+      // available here — same last-write-wins model this route's profile row already accepts for
+      // name/status.
+      const oldAvatarUrl = ws.profile.avatarUrl;
       ws.profile.avatarUrl = avatarUrl;
       db.upsertProfile(ws.profile.name, { avatarUrl });
+      if (avatarUrl !== oldAvatarUrl) deleteUploadFile(oldAvatarUrl);
       const payload = { type: 'profile-updated', name: ws.profile.name, avatarUrl, status: ws.profile.status };
       send(ws, payload);
       if (ws.room) broadcastRoom(ws.room, payload, ws);
@@ -6463,6 +6500,13 @@ wss.on('connection', (ws, req) => {
       const dbRoom = db.getRoom(ws.room);
       const isHost = dbRoom && dbRoom.host_name === ws.profile.name;
       if (!ownsMessage(target, ws) && !isHost) return;
+      // Found by a file-upload storage audit: deleteMessageRow nulls media_url as part of the same
+      // UPDATE that marks the row deleted — cleanupInactiveRooms' 90-day sweep finds files solely
+      // via a live media_url column (getRoomMediaUrls), so once that column is nulled the file
+      // becomes invisible to every existing cleanup mechanism, not just "orphaned until the next
+      // sweep." Capturing it first and deleting the actual file here (same deleteUploadFile helper
+      // the Scorpture video-delete route already uses) closes that permanently-unrecoverable gap.
+      deleteUploadFile(target.media_url);
       db.deleteMessageRow(messageId);
       const room = rooms.get(ws.room);
       const entry = room && room.history.find((m) => m.id === messageId);
