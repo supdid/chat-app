@@ -893,6 +893,14 @@ app.get('/link-preview', async (req, res) => {
   }
 });
 
+// Built from the actual files on disk (rather than duplicating public/stickers.js's list here)
+// so the two can't silently drift — a sticker added to one and not the other would otherwise
+// either 404 in the picker or get rejected below with no error, the same "one list missed a
+// mediaUrl format" shape as the /uploads/ prefix checks elsewhere in this file.
+const STICKER_URLS = new Set(
+  fs.readdirSync(path.join(__dirname, 'public/images/stickers')).map((f) => `/images/stickers/${f}`)
+);
+
 // /upload is the single shared, public, unauthenticated endpoint every "attach media" feature in
 // this app funnels through — but nothing ever required the returned URL to actually get used for
 // anything. A file uploaded and never attached to a message/video/avatar/etc. was invisible to
@@ -6674,7 +6682,13 @@ wss.on('connection', (ws, req) => {
       // an arbitrary external URL that auto-loads (mediaType 'video'/'image'/'audio') in every
       // room member's browser as a classic IP/UA-grabbing tracker link. Polls use the literal
       // sentinel 'poll' here instead of a real URL, so they're exempted from the prefix check.
-      const mediaUrl = typeof msg.mediaUrl === 'string' && (mediaType === 'poll' ? msg.mediaUrl === 'poll' : msg.mediaUrl.startsWith('/uploads/'))
+      // Found by the sticker-picker audit: the curated sticker pack (public/stickers.js) posts a
+      // static /images/stickers/<file> URL, not an /uploads/ one — this check rejected every
+      // single one, so every sticker send was silently dropped right here with zero error back to
+      // the sender. STICKER_URLS (built from the real files on disk, see above) is the same kind
+      // of known-safe exception the AI Studio pollinations.ai host gets in /post-image, just for a
+      // fixed local file set instead of a fixed external host.
+      const mediaUrl = typeof msg.mediaUrl === 'string' && (mediaType === 'poll' ? msg.mediaUrl === 'poll' : (msg.mediaUrl.startsWith('/uploads/') || STICKER_URLS.has(msg.mediaUrl)))
         ? msg.mediaUrl
         : null;
       if (!text && !(mediaUrl && mediaType)) return;

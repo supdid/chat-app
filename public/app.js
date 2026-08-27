@@ -778,6 +778,10 @@ function handleServerMessage(data) {
       // reachable as a wrong-room jump) but still cosmetically stale — a fresh get-media re-fetches
       // once reopened anyway, so there's no reason to leave the old room's grid showing.
       galleryOverlay.classList.add('hidden');
+      // Same staleness class as the overlays above, just missed for the sticker picker — left open
+      // across a room switch/reconnect, a stray click on a still-visible sticker would fire the
+      // send handler against whatever room the composer now actually posts to.
+      if (stickerPicker) stickerPicker.classList.add('hidden');
       seedReactions(data.reactions);
       // read_receipts was being persisted server-side on every real read event but never sent
       // back on join — found by a read-receipt-integrity audit. Without this, a client
@@ -1509,6 +1513,9 @@ function updateMentionDropdown() {
   });
   mentionDropdownEl.classList.remove('hidden');
   highlightMentionItem(0);
+  // Found by the sticker-picker audit: the two composer popups had no awareness of each other,
+  // so typing "@" while the sticker picker was open left both stacked on screen at once.
+  if (stickerPicker) stickerPicker.classList.add('hidden');
 }
 
 function insertMention(name) {
@@ -3449,6 +3456,10 @@ document.addEventListener('keydown', (e) => {
   for (const [overlay, closeBtn] of ESCAPE_CLOSABLE) {
     if (overlay && closeBtn && !overlay.classList.contains('hidden')) closeBtn.click();
   }
+  // Found by the sticker-picker audit: every other overlay/panel in this app closes on Escape via
+  // ESCAPE_CLOSABLE above, but stickerPicker has no dedicated close button for that list to drive
+  // (it's a bare toggled div, not a full overlay) — toggled directly here instead.
+  if (stickerPicker && !stickerPicker.classList.contains('hidden')) stickerPicker.classList.add('hidden');
 });
 
 // --- Raise hand / "ask everyone to mute" ---
@@ -4448,9 +4459,15 @@ fileInput.addEventListener('change', async () => {
     img.alt = s.label;
     btn.appendChild(img);
     btn.addEventListener('click', () => {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'message', mediaUrl: s.url, mediaType: 'image' }));
+      // Found by the sticker-picker audit: this used to silently drop the send and still close
+      // the picker when disconnected, indistinguishable from the sticker having actually gone
+      // through — same failure shape the plain-text send path already guards against above.
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        showAppToast("Not connected — your sticker wasn't sent.");
+        stickerPicker.classList.add('hidden');
+        return;
       }
+      ws.send(JSON.stringify({ type: 'message', mediaUrl: s.url, mediaType: 'image' }));
       stickerPicker.classList.add('hidden');
     });
     stickerPicker.appendChild(btn);
@@ -4459,6 +4476,11 @@ fileInput.addEventListener('change', async () => {
 
 stickerBtn.addEventListener('click', () => {
   stickerPicker.classList.toggle('hidden');
+  // Same mutual-exclusion fix as updateMentionDropdown() above, the other direction.
+  if (!stickerPicker.classList.contains('hidden')) {
+    mentionDropdownEl.classList.add('hidden');
+    mentionHighlightIndex = -1;
+  }
 });
 
 document.addEventListener('click', (e) => {

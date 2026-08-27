@@ -2280,6 +2280,34 @@ describe('/post-image and /post-media external URL allowlist', () => {
   });
 });
 
+// Found by a sticker-picker correctness audit: public/stickers.js builds each sticker's url as
+// /images/stickers/<file> (a real static file, not an /uploads/ upload), but the WS 'message'
+// handler's mediaUrl check only ever accepted an /uploads/ prefix (or the literal 'poll' sentinel)
+// — every single sticker send was silently dropped end-to-end with zero error back to the sender.
+// server.js now whitelists the real on-disk sticker files (STICKER_URLS) alongside /uploads/.
+describe('sticker send (WS message with a /images/stickers/ mediaUrl)', () => {
+  test('a real sticker file path is accepted and broadcast; an arbitrary /images/stickers/ path is not', async () => {
+    const { ws } = await joinRoom('StickerHost');
+
+    const realStickerFile = fs.readdirSync(path.join(__dirname, '..', 'public/images/stickers'))[0];
+    const realUrl = `/images/stickers/${realStickerFile}`;
+    send(ws, { type: 'message', mediaUrl: realUrl, mediaType: 'image' });
+    const posted = await waitFor(ws, (m) => m.type === 'message' && m.mediaUrl === realUrl);
+    assert.equal(posted.mediaType, 'image');
+
+    let sawFake = false;
+    const h = (data) => {
+      const m = JSON.parse(data);
+      if (m.type === 'message' && m.mediaUrl === '/images/stickers/not-a-real-sticker.png') sawFake = true;
+    };
+    ws.on('message', h);
+    send(ws, { type: 'message', mediaUrl: '/images/stickers/not-a-real-sticker.png', mediaType: 'image' });
+    await sleep(300);
+    ws.off('message', h);
+    assert.equal(sawFake, false, 'a path outside the real sticker file set must still be dropped, not posted');
+  });
+});
+
 describe('admin routes require the admin key', () => {
   test('every /admin/* route rejects a missing or wrong key', async () => {
     for (const adminPath of ['/admin/errors', '/admin/reports', '/admin/patches']) {

@@ -18,4 +18,11 @@ const STICKERS = [
   { file: 'umbrella.png', label: 'Umbrella' },
   { file: 'diamond.png', label: 'Diamond' },
   { file: 'club.png', label: 'Club' },
-].map((s) => ({ ...s, url: `images/stickers/${s.file}` }));
+// Found by the sticker-picker correctness audit: this used to be a relative path with no leading
+// slash — resolved against whatever page happened to load it, and even once absolute, the
+// server's message handler only ever accepted a real /uploads/ URL for mediaUrl (a deliberate
+// tracker-link hardening pass that predates this feature and never accounted for stickers), so
+// every single sticker send was silently dropped server-side with zero error. Fixed here (a real
+// absolute path) plus server-side (server.js now whitelists this exact set of paths) — both
+// halves were needed, this alone wasn't enough on its own.
+].map((s) => ({ ...s, url: `/images/stickers/${s.file}` }));
