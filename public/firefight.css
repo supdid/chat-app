@@ -556,6 +556,20 @@ button.primary:disabled {
   100% { transform: scale(1); opacity: 1; }
 }
 
+/* Found by the Firefight client-correctness audit: a shot attempt blocked by the weapon's own
+   cooldown returned silently -- no sound, no crosshair change, nothing -- reading as unresponsive
+   input rather than "still reloading," most noticeable on the grenade's 3.2s cooldown. Animates
+   (rather than a plain color swap left in place) so it self-resolves back to normal the same way
+   .fired's kick above does, without needing JS to remove the class again afterward. */
+#crosshair.denied::before, #crosshair.denied::after {
+  animation: crosshair-denied 0.35s ease-out;
+}
+
+@keyframes crosshair-denied {
+  0% { background: rgba(255, 70, 70, 0.95); }
+  100% { background: rgba(255, 255, 255, 0.9); }
+}
+
 /* Confirmed-hit feedback — separate from #crosshair's fire-kick above, which fires on every shot
    regardless of whether it lands. This only shows once fg-hit/fg-death actually confirms the
    shooter's own shot connected, so it needed its own element rather than reusing the crosshair's. */

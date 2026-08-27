@@ -99,6 +99,9 @@ function blip(kind) {
     punch: { type: 'square', f0: 140, f1: 55, g: 0.16, dur: 0.09 },
     throw: { type: 'sine', f0: 320, f1: 520, g: 0.07, dur: 0.12 },
     explosion: { type: 'sawtooth', f0: 160, f1: 35, g: 0.28, dur: 0.45 },
+    // Found by the Firefight client-correctness audit: a dull, low click distinct from every real
+    // firing sound above, for a shot attempt blocked by the weapon's own cooldown.
+    denied: { type: 'square', f0: 160, f1: 100, g: 0.06, dur: 0.05 },
   };
   const p = presets[kind];
   if (!p) return;
@@ -1046,7 +1049,16 @@ function showLandedShot(byId, targetId, headshot, weapon) {
       const shooterPos = posForId(byId);
       if (shooterPos) { spawnTracer(shooterPos, targetPos, TRACER_COLOR[weapon] || TRACER_COLOR.pistol); flashAt(shooterPos); }
     }
-    if (w && w.thrown) spawnExplosion(targetPos);
+    // Found by the Firefight client-correctness audit: this used to fire unconditionally for every
+    // confirmed grenade hit, including the local thrower's own — but the flight-arc animation
+    // above (see its "hit or miss" comment) already unconditionally explodes at the arc's landing
+    // point the moment it completes, which for MY OWN throw is the only explosion needed (a fresh
+    // one here would land moments later, offset by the network round-trip fg-hit/fg-death took to
+    // arrive, producing two overlapping explosion flashes/sounds for one grenade). A remote
+    // player's throw has no arc animation at all on this client (activeProjectiles only ever holds
+    // the local player's own throws), so this remains the ONLY explosion visual for anyone else's
+    // grenade — only skip it for byId === myId.
+    if (w && w.thrown) { if (byId !== myId) spawnExplosion(targetPos); }
     else spawnImpactSpark(targetPos, headshot);
   };
   const delay = WEAPON_IMPACT_DELAY_MS[weapon] || 0;
@@ -1099,7 +1111,16 @@ function attemptShoot() {
   const w = weapons[player.weapon];
   if (!w) return;
   const now = performance.now();
-  if (now - (lastShotAt[player.weapon] || 0) < w.cooldownMs) return;
+  if (now - (lastShotAt[player.weapon] || 0) < w.cooldownMs) {
+    // Found by the Firefight client-correctness audit: this returned completely silently before —
+    // no sound, no crosshair change, nothing — reading as unresponsive input rather than "still on
+    // cooldown," most noticeable on the grenade's 3.2s cooldown.
+    playSound('denied');
+    crosshairEl.classList.remove('denied');
+    void crosshairEl.offsetWidth;
+    crosshairEl.classList.add('denied');
+    return;
+  }
   lastShotAt[player.weapon] = now;
   const headshot = computeHeadshot();
   kickViewmodel();
@@ -1265,6 +1286,7 @@ rematchBtn.addEventListener('click', () => {
 });
 leaderboardBtn.addEventListener('click', () => {
   leaderboardOverlay.classList.remove('hidden');
+  if (document.pointerLockElement) document.exitPointerLock();
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'fg-leaderboard', code: roomCode }));
 });
 leaderboardCloseBtn.addEventListener('click', () => leaderboardOverlay.classList.add('hidden'));
@@ -1384,6 +1406,10 @@ function handleMessage(data) {
       scoreA = 0; scoreB = 0; roundNumber = 0;
       matchendOverlay.classList.add('hidden');
       menuEl.classList.remove('hidden');
+      // This fires from a server push (the opponent leaving), not a click — the remaining player
+      // could easily still have pointer lock actively engaged from mid-fight, same pointer-lock
+      // gap as fg-match-end above (see its own comment for the full explanation).
+      if (document.pointerLockElement) document.exitPointerLock();
       updateScoreboard();
       refreshMenuForState();
       break;
@@ -1499,6 +1525,13 @@ function handleMessage(data) {
         : (won ? `You win the match! (${data.scoreA}-${data.scoreB})` : `${winnerName} wins the match. (${data.scoreA}-${data.scoreB})`);
       rematchBtn.classList.toggle('hidden', mySlot !== 'a' && mySlot !== 'b');
       matchendOverlay.classList.remove('hidden');
+      // Found by the Firefight client-correctness audit: unlike every sibling FPS minigame
+      // (fighterplane.js, blockbattle.js, buildcraft.js all call exitPointerLock before showing an
+      // overlay/menu), this page never released pointer lock anywhere — winning/losing a match with
+      // the mouse locked (the normal way to play) left the OS cursor invisible/frozen at whatever
+      // point it was when lock engaged, unable to click Rematch, with no documented way out short
+      // of already knowing to press Escape first.
+      if (document.pointerLockElement) document.exitPointerLock();
       // Back to the lobby plaza once the match is over, same as a fresh join — otherwise everyone
       // stays standing wherever the final round left them (out at a duel spawn point) instead of
       // back at the fountain for the next one.
