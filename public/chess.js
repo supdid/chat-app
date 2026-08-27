@@ -16,6 +16,7 @@ const rematchBtn = document.getElementById('rematch-btn');
 const boardEl = document.getElementById('board');
 const seatBarEl = document.getElementById('seat-bar');
 const claimSeatBtn = document.getElementById('claim-seat-btn');
+const seatBarFullHintEl = document.getElementById('seat-bar-full-hint');
 
 const PIECE_GLYPH = {
   white: { king: '♔', queen: '♕', rook: '♖', bishop: '♗', knight: '♘', pawn: '♙' },
@@ -121,8 +122,16 @@ function renderStatus() {
       : `${turnName}'s move${checkNote}…`;
   }
   rematchBtn.classList.toggle('hidden', !state.winner);
+  // Found by the turn-based-minigame UI correctness audit: this only ever showed the "You're
+  // watching" bar when a seat was ALSO still open — once both seats fill, a 3rd+ joiner got no
+  // indication anywhere that they're spectating (the board renders as ordinary buttons, clicking
+  // does nothing, with nothing on screen ever explaining why). Now shown for anyone unseated
+  // regardless of seat availability; only the "Play" button itself is conditional on one actually
+  // being open.
   const openSeat = !state.whiteId || !state.blackId;
-  seatBarEl.classList.toggle('hidden', !(!color && openSeat));
+  seatBarEl.classList.toggle('hidden', !!color);
+  claimSeatBtn.classList.toggle('hidden', !openSeat);
+  seatBarFullHintEl.classList.toggle('hidden', openSeat);
 }
 
 function renderAll() {

@@ -19,6 +19,7 @@ const rematchBtn = document.getElementById('rematch-btn');
 const boardEl = document.getElementById('board');
 const seatBarEl = document.getElementById('seat-bar');
 const claimXBtn = document.getElementById('claim-x-btn');
+const seatBarFullHintEl = document.getElementById('seat-bar-full-hint');
 
 // Must match TT_MODES on the server.
 const TT_MODES = {
@@ -75,6 +76,11 @@ function renderBoard() {
       const val = state.board[idx];
       if (val) cell.textContent = emoji[val];
       cell.disabled = !!val || !!state.winner;
+      // Found by the turn-based-minigame UI correctness audit: there was no win-line highlight at
+      // all — every cell just uniformly dimmed on game-end, making it genuinely hard to spot which
+      // four disks actually connected on the larger Connect Four board. winCells (server-computed
+      // in ttCheckWinner) is now threaded through every tt-state/tt-init broadcast.
+      if (state.winCells && state.winCells.includes(idx)) cell.classList.add('win-cell');
       cell.addEventListener('click', () => {
         if (state.mode === 'connect4') send({ type: 'tt-move', col });
         else send({ type: 'tt-move', col, row });
@@ -100,8 +106,14 @@ function renderStatus() {
     roundStatusEl.textContent = `${playerName(state.turn === 'X' ? state.xId : state.oId)}'s move…`;
   }
   rematchBtn.classList.toggle('hidden', !state.winner);
+  // Found by the turn-based-minigame UI correctness audit: this only ever showed the "You're
+  // watching" bar when a seat was ALSO still open — once both seats fill, a 3rd+ joiner got no
+  // indication anywhere that they're spectating. Now shown for anyone unseated regardless of seat
+  // availability; only the "Play" button itself is conditional on one actually being open.
   const openSeat = !state.xId || !state.oId;
-  seatBarEl.classList.toggle('hidden', !(!sym && openSeat));
+  seatBarEl.classList.toggle('hidden', !!sym);
+  claimXBtn.classList.toggle('hidden', !openSeat);
+  seatBarFullHintEl.classList.toggle('hidden', openSeat);
   [modeTictactoeBtn, modeConnect4Btn].forEach((btn) => btn.classList.remove('active'));
   (state.mode === 'connect4' ? modeConnect4Btn : modeTictactoeBtn).classList.add('active');
   titleEl.textContent = state.mode === 'connect4' ? '🔴 Connect Four' : '⭕ Tic-Tac-Toe';

@@ -3360,6 +3360,11 @@ function broadcastTt(code, data, exclude) {
   }
 }
 
+// Found by the turn-based-minigame UI correctness audit: this used to return just the winning
+// symbol, discarding exactly which cells actually formed the winning run — so the client had no
+// win-line highlight to render at all, just the generic "everyone dims" treatment, making it
+// genuinely hard to spot which four disks connected on the larger Connect Four board. Now also
+// returns the matched run's own coordinates when there is one.
 function ttCheckWinner(board, width, height, winLength) {
   const dirs = [[1, 0], [0, 1], [1, 1], [1, -1]];
   for (let row = 0; row < height; row++) {
@@ -3373,11 +3378,15 @@ function ttCheckWinner(board, width, height, winLength) {
           if (r < 0 || r >= height || c < 0 || c >= width || board[r * width + c] !== sym) break;
           count++;
         }
-        if (count >= winLength) return sym;
+        if (count >= winLength) {
+          const cells = [];
+          for (let i = 0; i < winLength; i++) cells.push((row + dr * i) * width + (col + dc * i));
+          return { symbol: sym, cells };
+        }
       }
     }
   }
-  if (board.every((c) => c)) return 'draw';
+  if (board.every((c) => c)) return { symbol: 'draw', cells: null };
   return null;
 }
 
@@ -3387,6 +3396,7 @@ function ttPublicState(tt) {
     board: tt.board,
     turn: tt.turn,
     winner: tt.winner,
+    winCells: tt.winCells || null,
     xId: tt.xId,
     oId: tt.oId,
     players: [...tt.players.values()].map((p) => ({ id: p.id, name: p.name, symbol: p.symbol, wins: p.wins })),
@@ -5426,7 +5436,7 @@ wss.on('connection', (ws, req) => {
       if (ws.ttRoom) leaveTt(ws);
       const room = getOrCreateRoom(code);
       if (!room.tt) {
-        room.tt = { players: new Map(), mode: 'tictactoe', board: new Array(9).fill(null), turn: 'X', winner: null, xId: null, oId: null };
+        room.tt = { players: new Map(), mode: 'tictactoe', board: new Array(9).fill(null), turn: 'X', winner: null, winCells: null, xId: null, oId: null };
       }
       const tt = room.tt;
       if (tt.players.size >= MAX_GAME_PLAYERS) {
@@ -5457,6 +5467,7 @@ wss.on('connection', (ws, req) => {
       const cfg = TT_MODES[tt.mode];
       tt.board = new Array(cfg.width * cfg.height).fill(null);
       tt.winner = null;
+      tt.winCells = null;
       tt.turn = 'X';
       broadcastTt(ws.ttRoom, { type: 'tt-state', state: ttPublicState(tt) });
       return;
@@ -5498,11 +5509,12 @@ wss.on('connection', (ws, req) => {
         if (!(row >= 0 && row < cfg.height) || tt.board[row * cfg.width + col]) return;
       }
       tt.board[row * cfg.width + col] = me.symbol;
-      const winner = ttCheckWinner(tt.board, cfg.width, cfg.height, cfg.winLength);
-      tt.winner = winner;
-      if (winner && winner !== 'draw') {
+      const result = ttCheckWinner(tt.board, cfg.width, cfg.height, cfg.winLength);
+      tt.winner = result ? result.symbol : null;
+      tt.winCells = result ? result.cells : null;
+      if (result && result.symbol !== 'draw') {
         for (const p of tt.players.values()) {
-          if (p.symbol === winner) { p.wins += 1; db.bumpLeaderboard(ws.ttRoom, `tictactoe-${tt.mode}`, p.name, p.wins); }
+          if (p.symbol === result.symbol) { p.wins += 1; db.bumpLeaderboard(ws.ttRoom, `tictactoe-${tt.mode}`, p.name, p.wins); }
         }
       }
       tt.turn = tt.turn === 'X' ? 'O' : 'X';
@@ -5517,6 +5529,7 @@ wss.on('connection', (ws, req) => {
       const cfg = TT_MODES[tt.mode];
       tt.board = new Array(cfg.width * cfg.height).fill(null);
       tt.winner = null;
+      tt.winCells = null;
       tt.turn = 'X';
       const oldX = tt.xId, oldO = tt.oId; // swap seats so the loser doesn't always go second
       tt.xId = oldO;

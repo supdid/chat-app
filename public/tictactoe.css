@@ -225,6 +225,12 @@ button.small-btn {
   background: rgba(255, 255, 255, 0.16);
 }
 
+/* Found by the turn-based-minigame UI correctness audit: no win-line highlight existed at all. */
+.cell.win-cell {
+  background: rgba(46, 204, 113, 0.35);
+  border-color: rgba(46, 204, 113, 0.7);
+}
+
 #seat-bar {
   display: flex;
   align-items: center;

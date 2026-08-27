@@ -166,6 +166,28 @@ function handleMessage(data) {
       lobbyStatusEl.textContent = 'Connected!';
       lobbyEl.classList.add('hidden');
       gameEl.classList.remove('hidden');
+      // Found by the turn-based-minigame UI correctness audit: unlike ch-state/tt-state (always
+      // the full current game state) and hm-init (always includes roundActive/revealedWord), this
+      // message carries no round info at all — a real tv-question only follows when a round is
+      // actually active right now. On a WS reconnect (this page auto-reconnects in place, same
+      // pattern as chess/tictactoe/hangman) while no round happens to be active — an idle lobby,
+      // or the round ended during the brief drop — everything below was previously left exactly as
+      // it was pre-disconnect: a stale question, clickable-looking answer buttons, a frozen timer,
+      // and answering it would silently no-op server-side (tv.currentQuestion is already null) with
+      // zero feedback. Reset to the idle view unconditionally here; if a round IS actually active,
+      // the server always sends a real tv-question synchronously right after this same tv-join
+      // handler runs, which immediately overwrites every one of these fields correctly.
+      roundActive = false;
+      hasAnsweredThisRound = false;
+      correctIndex = null;
+      roundEndsAt = null;
+      questionCategoryEl.textContent = '';
+      questionCategoryEl.classList.add('hidden');
+      questionTextEl.textContent = '';
+      choicesGridEl.innerHTML = '';
+      answerCountEl.textContent = '';
+      roundStatusEl.textContent = 'Waiting for a round to start…';
+      roundTimerEl.textContent = '';
       refreshPlayerLists();
       updateRoundUi();
       break;

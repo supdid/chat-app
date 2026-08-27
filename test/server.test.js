@@ -4812,6 +4812,47 @@ describe('fixed-role two-player games reject a same-connection repeat join', () 
 
     a.close(); b.close();
   });
+
+  // Found by the turn-based-minigame UI correctness audit: ttCheckWinner used to return only the
+  // winning symbol, discarding exactly which cells formed the run — the client had no win-line to
+  // render at all. winCells is now threaded through every tt-state/tt-init broadcast.
+  test('tic-tac-toe: tt-state reports the exact cells that formed the winning line', async () => {
+    const code = 'TTWINCELLS1';
+    const x = await connectWs();
+    send(x, { type: 'tt-join', code, name: 'WinCellsX' });
+    await waitFor(x, (m) => m.type === 'tt-init');
+    const o = await connectWs();
+    send(o, { type: 'tt-join', code, name: 'WinCellsO' });
+    await waitFor(o, (m) => m.type === 'tt-init');
+
+    // X takes the top row (indices 0,1,2); O plays the middle row in between. Board index =
+    // row*3+col for the default 3x3 tictactoe mode.
+    //
+    // broadcastTt fans a move's resulting tt-state out to BOTH sockets, sender included — waiting
+    // for only the mover's own copy before starting the next move raced the other socket's still-
+    // in-flight copy of THIS move against the next move's own send: found live (a scratch WS
+    // script against production reproduced it directly) as an off-by-one board where a later
+    // move's "confirmation" was actually the previous move's stale broadcast just now arriving.
+    // Waiting for both sockets to receive each move's broadcast before proceeding fully drains the
+    // queue every round, so no leftover message can be mistaken for the next round's response.
+    async function move(mover, other, row, col) {
+      const p1 = waitFor(mover, (m) => m.type === 'tt-state');
+      const p2 = waitFor(other, (m) => m.type === 'tt-state');
+      send(mover, { type: 'tt-move', row, col });
+      const [moverState] = await Promise.all([p1, p2]);
+      return moverState;
+    }
+    await move(x, o, 0, 0); // X: idx 0
+    await move(o, x, 1, 0); // O: idx 3
+    await move(x, o, 0, 1); // X: idx 1
+    await move(o, x, 1, 1); // O: idx 4
+    const finalX = await move(x, o, 0, 2); // X: idx 2 -- completes the top row
+
+    assert.equal(finalX.state.winner, 'X');
+    assert.deepEqual([...finalX.state.winCells].sort((a, b) => a - b), [0, 1, 2]);
+
+    x.close(); o.close();
+  });
 });
 
 describe('minigame-authority audit: missing flood gates', () => {
