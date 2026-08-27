@@ -100,6 +100,10 @@ let music = null;     // { file, name, volume, url }
 let musicAudioEl = null;
 let resultBlob = null;
 let resultUrl = null;
+// Snapshot of the editable state taken at the moment an export completes (see timelineFingerprint
+// below) — compared against the current state on every render pass so a further edit can
+// invalidate a now-outdated completed export (see checkExportStaleness).
+let exportedFingerprint = null;
 let selected = { type: null, id: null }; // type: 'clip' | 'title' | 'music'
 
 let playheadTime = 0;
@@ -152,6 +156,38 @@ function totalDuration() {
 
 function refreshExportButton() {
   exportBtn.disabled = !(clips.length && ffmpegReady);
+  checkExportStaleness();
+}
+
+// Found by the video-editor pipeline correctness audit: resultBlob/resultUrl/the visible result
+// panel were only ever reset at the *start* of a fresh export — nothing invalidated them when the
+// timeline was edited afterward, so Download/Send-to-chat/Publish-to-Scorpture kept silently
+// operating on a stale export that no longer matched what the timeline actually showed, with no
+// indication anywhere that it was out of date. Deliberately content-only (excludes clip.thumb/url
+// and music.url, which change on their own as async side effects unrelated to any real edit — an
+// in-flight thumbnail regeneration must never falsely invalidate a just-finished, still-current
+// export) and order-sensitive (clip sequence affects the actual export, so the id array itself is
+// part of the fingerprint, not just each clip's own fields).
+function timelineFingerprint() {
+  return JSON.stringify({
+    clipOrder: clips.map((c) => c.id),
+    clips: clips.map((c) => [c.trimStart, c.trimEnd, c.speed, c.volume]),
+    overlays: overlays.map((o) => [o.clipId, o.localStart, o.localEnd, o.text, o.pos, o.color]),
+    music: music ? [music.name, music.volume] : null,
+  });
+}
+
+// Called from every render/refresh pass (via refreshExportButton) plus the handful of edit paths
+// that mutate state without going through either (title position/color, clip/music volume — see
+// their own listeners below).
+function checkExportStaleness() {
+  if (!resultUrl) return;
+  if (timelineFingerprint() === exportedFingerprint) return;
+  URL.revokeObjectURL(resultUrl);
+  resultBlob = null;
+  resultUrl = null;
+  exportedFingerprint = null;
+  resultSection.classList.add('hidden');
 }
 
 // --- Clip loading (metadata + a thumbnail frame, from one hidden <video>) ---
@@ -705,7 +741,9 @@ function renderInspector() {
     startInput.addEventListener('input', () => {
       let v = parseFloat(startInput.value) || 0;
       v = Math.max(0, Math.min(v, clip.trimEnd - 0.1));
+      const oldTrimStart = clip.trimStart;
       clip.trimStart = v;
+      rescaleOverlaysForClipEdit(clip.id, oldTrimStart, clip.speed, v, clip.speed);
       syncOverlaysToClips();
       renderTimeline();
       refreshPreviewForEdits();
@@ -741,12 +779,18 @@ function renderInspector() {
       speedSelect.appendChild(opt);
     });
     speedSelect.addEventListener('change', () => {
-      clip.speed = parseFloat(speedSelect.value);
+      const oldSpeed = clip.speed;
+      const newSpeed = parseFloat(speedSelect.value);
       // Every other structural edit (trim, reorder, split, delete) calls this — speed was the
       // one mutation left out. Overlay start/end are cached, not recomputed live from
       // clipGlobalStarts(), and changing any clip's speed shifts every later clip's true global
       // start — without this, a caption's cached timing silently drifts out of sync with the
       // footage in both the live preview and the actual rendered export.
+      // Also rescale this clip's own overlays against the new speed (see
+      // rescaleOverlaysForClipEdit's own comment) — the global-shift issue above and this clip's
+      // own local-axis rescale are two distinct effects of the same edit, both needed.
+      rescaleOverlaysForClipEdit(clip.id, clip.trimStart, oldSpeed, clip.trimStart, newSpeed);
+      clip.speed = newSpeed;
       syncOverlaysToClips();
       renderTimeline();
       refreshPreviewForEdits();
@@ -763,6 +807,7 @@ function renderInspector() {
     volInput.addEventListener('input', () => {
       clip.volume = parseInt(volInput.value, 10);
       if (loadedClipId === clip.id) previewVideo.volume = clamp01(clip.volume / 100);
+      checkExportStaleness();
     });
     volLabel.appendChild(volInput);
 
@@ -842,6 +887,7 @@ function renderInspector() {
     posSelect.addEventListener('change', () => {
       ov.pos = posSelect.value;
       updateCaptions(playheadTime);
+      checkExportStaleness();
     });
     posLabel.appendChild(posSelect);
 
@@ -852,6 +898,7 @@ function renderInspector() {
     colorInput.addEventListener('input', () => {
       ov.color = colorInput.value;
       updateCaptions(playheadTime);
+      checkExportStaleness();
     });
 
     row2.append(startLabel, endLabel, posLabel, colorInput);
@@ -876,6 +923,7 @@ function renderInspector() {
     volInput.addEventListener('input', () => {
       music.volume = parseInt(volInput.value, 10);
       if (musicAudioEl) musicAudioEl.volume = clamp01(music.volume / 100);
+      checkExportStaleness();
     });
     volLabel.appendChild(volInput);
     row.appendChild(volLabel);
@@ -1076,7 +1124,9 @@ function onTrimMove(e) {
   if (dragCtx.side === 'left') {
     let v = dragCtx.startTrimStart + dtSec;
     v = Math.max(0, Math.min(v, clip.trimEnd - 0.1));
+    const oldTrimStart = clip.trimStart;
     clip.trimStart = v;
+    rescaleOverlaysForClipEdit(clip.id, oldTrimStart, clip.speed, v, clip.speed);
   } else {
     let v = dragCtx.startTrimEnd + dtSec;
     v = Math.max(clip.trimStart + 0.1, Math.min(v, clip.duration));
@@ -1199,6 +1249,29 @@ function reanchorOverlay(ov) {
   ov.localEnd = ov.end - found.clipStart;
 }
 
+// Found by the video-editor pipeline correctness audit: an overlay's localStart/localEnd are
+// project-output seconds relative to its clip's start, i.e. (sourceTime - trimStart) / speed.
+// syncOverlaysToClips's clamp below keeps that pair inside [0, duration] after a structural edit,
+// but clamping alone only actually holds an overlay fixed to the SAME source footage when the edit
+// is a right-trim (trimEnd doesn't appear in the mapping at all). A left-trim (trimStart moves) or
+// a speed change rescales the whole local-time axis — without recomputing localStart/localEnd
+// against the mapping itself, the overlay stays at the same LOCAL position but that position now
+// corresponds to different source footage (a left-trim) or is stretched/compressed relative to it
+// (a speed change), so a caption visibly jumps onto the wrong part of the clip or gets truncated.
+// Called with the pre- and post-edit trimStart/speed right before syncOverlaysToClips() from every
+// site that changes either (the numeric Start field, the left trim-drag handle, the speed select)
+// — a right-trim-only edit passes the same trimStart/speed for old and new, a no-op here, correctly
+// leaving clamping as the only thing that runs.
+function rescaleOverlaysForClipEdit(clipId, oldTrimStart, oldSpeed, newTrimStart, newSpeed) {
+  for (const ov of overlays) {
+    if (ov.clipId !== clipId) continue;
+    const sourceStart = oldTrimStart + ov.localStart * oldSpeed;
+    const sourceEnd = oldTrimStart + ov.localEnd * oldSpeed;
+    ov.localStart = (sourceStart - newTrimStart) / newSpeed;
+    ov.localEnd = (sourceEnd - newTrimStart) / newSpeed;
+  }
+}
+
 // Recomputes every overlay's absolute start/end from its clip anchor — call after any edit that
 // changes clip order, trim, or count (reorder, trim, split, delete), since those all shift where
 // "this clip's global start" actually is. An overlay whose anchor clip no longer exists (that
@@ -1215,9 +1288,12 @@ function syncOverlaysToClips() {
     // anchored further into it — without clamping, localEnd (or even localStart) could point past
     // the clip's new, shorter duration, and the caption would silently bleed onto whatever clip
     // now immediately follows, in both the live preview and the actual export filter, with no
-    // error anywhere.
-    const localStart = Math.min(ov.localStart, dur);
-    const localEnd = Math.min(ov.localEnd, dur);
+    // error anywhere. Lower-bounded at 0 too (not just upper-bounded at dur) — a left-trim can, via
+    // rescaleOverlaysForClipEdit above, legitimately push localStart negative when the trimmed-away
+    // footage included the overlay's own start; without the Math.max, a negative local time would
+    // reach the export filter/preview math unclamped.
+    const localStart = Math.max(0, Math.min(ov.localStart, dur));
+    const localEnd = Math.max(0, Math.min(ov.localEnd, dur));
     if (localEnd <= localStart) return false; // nothing of the overlay's anchored span survived
     ov.localStart = localStart;
     ov.localEnd = localEnd;
@@ -1308,6 +1384,28 @@ function splitAtPlayhead() {
   const firstPart = { ...clip, trimEnd: localSplitTime };
   const secondPart = { ...clip, id: uid(), trimStart: localSplitTime };
   clips.splice(idx, 1, firstPart, secondPart);
+
+  // Found by the video-editor pipeline correctness audit: secondPart gets a brand-new id, but
+  // every overlay anchored to the original clip still has clipId pointing at it — which after the
+  // splice above only resolves to firstPart. syncOverlaysToClips() below clamps to firstPart's new
+  // (shorter) duration, so an overlay anchored entirely past the split point used to just vanish,
+  // no warning. Re-home those onto secondPart first. splitLocal is the split point expressed in
+  // the same "project-output seconds relative to this clip's start" units overlays' localStart/
+  // localEnd already use — playheadTime IS clipStart plus that offset by definition (findClipAt
+  // above), so no unit conversion is needed here (compare localSplitTime just above, which is in
+  // source-time units instead, for trimStart/trimEnd — a different scale, not reusable here). An
+  // overlay straddling the split point is left on firstPart, where the existing clamp below
+  // correctly truncates it to end exactly at the split — a deliberate, simple choice over silently
+  // cloning it onto both halves.
+  const splitLocal = playheadTime - clipStart;
+  for (const ov of overlays) {
+    if (ov.clipId !== clip.id) continue;
+    if (ov.localStart >= splitLocal) {
+      ov.clipId = secondPart.id;
+      ov.localStart -= splitLocal;
+      ov.localEnd -= splitLocal;
+    }
+  }
   syncOverlaysToClips();
 
   renderTimeline();
@@ -1610,9 +1708,19 @@ async function clipHasAudio(inputName) {
   probingAudio = true;
   try {
     await withTimeout(ffmpeg.exec(['-i', inputName, '-t', '0.1', '-f', 'null', '-']), FFMPEG_STEP_TIMEOUT_MS, 'Timed out probing the clip.');
-  } catch {
+  } catch (err) {
     // ffmpeg exits nonzero here if there's no video stream either, but we
     // only care whether the audio-stream line showed up in the log.
+    //
+    // Found by the video-editor pipeline correctness audit: a genuine wasm-worker hang on THIS
+    // exec() used to be swallowed identically to the expected "no stream" nonzero exit — the outer
+    // renderVideo() catch (below) only recognizes a hang by checking err.message for the "Timed
+    // out" prefix withTimeout produces, so a timeout here has to actually propagate to be caught,
+    // not get treated as "well, no audio then". Left unswallowed, recovery only ever happened once
+    // the NEXT real transcode call also timed out (the worker really is stuck) — doubling the wait
+    // before the terminate-and-reload recovery kicked in, behind a misleading "preparing a clip"
+    // error that had nothing to do with the actual hang.
+    if (err && typeof err.message === 'string' && err.message.startsWith('Timed out')) throw err;
   } finally {
     ffmpeg.off('log', logListener);
     probingAudio = false;
@@ -1757,6 +1865,7 @@ async function renderVideo() {
     resultBlob = new Blob([data], { type: 'video/mp4' });
     if (resultUrl) URL.revokeObjectURL(resultUrl);
     resultUrl = URL.createObjectURL(resultBlob);
+    exportedFingerprint = timelineFingerprint();
     resultVideo.src = resultUrl;
     resultVideo.addEventListener('loadedmetadata', () => { resultVideo.currentTime = 0.1; }, { once: true });
     resultSection.classList.remove('hidden');
@@ -1916,6 +2025,20 @@ document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (!musicPickerOverlay.classList.contains('hidden')) musicPickerCloseBtn.click();
   if (!scorptureOverlay.classList.contains('hidden')) scorptureCloseBtn.click();
+});
+
+// Found by the video-editor pipeline correctness audit: nothing persists the timeline (it's
+// in-memory only, by design — see FFMPEG_STEP_TIMEOUT_MS's own comment on why a hang recovery
+// can't lose it either), and there was no warning at all before discarding it — the visible
+// "Back" link, a tab close, or a reload all silently dropped the entire in-progress edit, even
+// mid-export. A plain `<a href>` navigation fires 'beforeunload' the same as a close/reload, so
+// this one listener covers all three without needing to separately intercept the link's click.
+// Modern browsers ignore any custom returnValue text and show their own generic confirmation, so
+// the message here is only ever read by very old browsers that still honor it.
+window.addEventListener('beforeunload', (e) => {
+  if (!clips.length && !overlays.length && !music) return;
+  e.preventDefault();
+  e.returnValue = 'You have an unsaved video edit — leaving now will discard it.';
 });
 
 // --- Initial render ---
