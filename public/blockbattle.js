@@ -2148,9 +2148,54 @@ const BB_AVATARS = Array.from({ length: 400 }, (_, i) => {
     id: `av${n}`, number: n, name: `Fighter #${n}`, price: bbAvatarPrice(n),
     body, limb, head, legendary,
     glow: legendary ? new THREE.Color().setHSL(hue, 1, 0.55).getHex() : null,
+    // Gates the Roblox-style face decal (see getBbFaceTexture/attachFaceDecal below) — only
+    // avatars get one, not the 49 named skins, matching exactly what was asked for.
+    isAvatar: true,
   };
 });
 for (const a of BB_AVATARS) BB_SKIN_BY_ID[a.id] = a;
+
+// ---- Roblox-style face for avatars ----
+// One shared transparent-background texture (just two black eyes + a smile, nothing else) reused
+// by every avatar's head — NOT baked per-avatar-color, so it works correctly over any of the 400
+// head colors without needing 400 separate textures. Rendered as a thin decal plane sitting just
+// proud of the head cube's front face rather than a materials-array-per-box-face — much simpler
+// than figuring out which of BoxGeometry's 6 face-material indices is "front" for this character
+// rig, and works identically for both the local avatar and every remote one.
+let bbFaceTexture = null;
+function getBbFaceTexture() {
+  if (bbFaceTexture) return bbFaceTexture;
+  const canvas = document.createElement('canvas');
+  canvas.width = 64; canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, 64, 64);
+  ctx.fillStyle = '#1a1a1a';
+  ctx.beginPath(); ctx.ellipse(20, 24, 5, 7, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(44, 24, 5, 7, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#1a1a1a';
+  ctx.lineWidth = 3.5;
+  ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.arc(32, 34, 13, 0.18 * Math.PI, 0.82 * Math.PI); ctx.stroke();
+  bbFaceTexture = new THREE.CanvasTexture(canvas);
+  return bbFaceTexture;
+}
+// Character yaw convention here is local +Z = forward (see e.g. the bot facing code:
+// `bot.group.rotation.y = Math.atan2(dx, dz)`, the standard three.js "angle from +Z" form) — the
+// decal sits just past the head cube's own +Z face (half of its 0.28 width) so it doesn't z-fight.
+function attachFaceDecal(headMesh) {
+  const decal = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.24, 0.24),
+    new THREE.MeshBasicMaterial({ map: getBbFaceTexture(), transparent: true, depthWrite: false })
+  );
+  decal.position.z = 0.141;
+  decal.visible = false; // toggled on per-character by whichever skin/avatar is actually equipped
+  // Flags this mesh's material.map as the single shared bbFaceTexture, not a uniquely-owned one —
+  // removeRemotePlayer's disposal traversal (below) checks this to skip disposing it, since every
+  // other character's decal is still referencing the exact same texture object.
+  decal.userData.sharedMap = true;
+  headMesh.add(decal);
+  return decal;
+}
 
 // Applies (or clears, if `skin.glow` is falsy) an emissive glow across a character's three
 // materials — shared by ensureLocalAvatar/applyLocalAvatarSkin/spawnRemotePlayer so a legendary
@@ -2544,6 +2589,52 @@ const avatarShopGrid = document.getElementById('avatar-shop-grid');
 const avatarShopSearchEl = document.getElementById('avatar-shop-search');
 let avatarShopSearchQuery = '';
 
+// A little 2D "portrait" per avatar — a head circle (with the same eyes+smile face the 3D decal
+// draws, so the shop card and the in-game look actually match) over a torso-and-arms silhouette,
+// instead of the flat gradient-circle-with-a-number this used to be. Drawn fresh per card rather
+// than reusing one shared canvas since every avatar's colors differ and cards render side by side.
+function drawAvatarThumbnail(a) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 72; canvas.height = 72;
+  canvas.className = 'avatar-card-canvas';
+  const ctx = canvas.getContext('2d');
+
+  if (a.legendary) {
+    // A soft glow behind the whole figure — same spirit as the 3D legendary emissive glow, just
+    // the 2D-canvas version of it, so the shop card previews the "this one glows" tier honestly.
+    const glow = ctx.createRadialGradient(36, 36, 6, 36, 36, 34);
+    glow.addColorStop(0, hex6(a.glow) + 'aa');
+    glow.addColorStop(1, hex6(a.glow) + '00');
+    ctx.fillStyle = glow;
+    ctx.fillRect(0, 0, 72, 72);
+  }
+
+  // Arms, peeking out either side of the torso.
+  ctx.fillStyle = hex6(a.limb);
+  ctx.fillRect(10, 40, 10, 24);
+  ctx.fillRect(52, 40, 10, 24);
+  // Torso — plain fillRect rather than ctx.roundRect() (not supported in older browsers, and the
+  // corner rounding wouldn't be visible at this size anyway).
+  ctx.fillStyle = hex6(a.body);
+  ctx.fillRect(20, 36, 32, 30);
+  // Head.
+  ctx.fillStyle = hex6(a.head);
+  ctx.beginPath();
+  ctx.arc(36, 24, 15, 0, Math.PI * 2);
+  ctx.fill();
+  // Face — same shape/proportions as getBbFaceTexture's 3D version, just drawn directly here
+  // instead of sampled from a shared texture (a 2D canvas card has no use for a THREE.Texture).
+  ctx.fillStyle = '#1a1a1a';
+  ctx.beginPath(); ctx.ellipse(30, 23, 2.2, 3, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(42, 23, 2.2, 3, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#1a1a1a';
+  ctx.lineWidth = 1.6;
+  ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.arc(36, 28, 6, 0.18 * Math.PI, 0.82 * Math.PI); ctx.stroke();
+
+  return canvas;
+}
+
 function renderAvatarShopGrid() {
   avatarShopGrid.innerHTML = '';
   const q = avatarShopSearchQuery.trim();
@@ -2554,8 +2645,7 @@ function renderAvatarShopGrid() {
 
     const swatch = document.createElement('div');
     swatch.className = 'avatar-card-swatch';
-    swatch.style.background = `linear-gradient(135deg, ${hex6(a.head)} 0%, ${hex6(a.body)} 55%, ${hex6(a.limb)} 100%)`;
-    swatch.textContent = a.number;
+    swatch.appendChild(drawAvatarThumbnail(a));
 
     const number = document.createElement('div');
     number.className = 'avatar-card-number';
@@ -3894,6 +3984,7 @@ function spawnRemotePlayer(id, name, level, pos) {
   head.position.y = 0.78;
   head.castShadow = true;
   group.add(head);
+  attachFaceDecal(head).visible = !!skin.isAvatar;
   const nameSprite = makeBbNameSprite(name, level);
   group.add(nameSprite);
   const p = pos || { x: 0, y: 0, z: 0, yaw: 0 };
@@ -3915,7 +4006,11 @@ function removeRemotePlayer(id) {
     if (!o.isMesh && !o.isSprite) return;
     if (o.isMesh && o.geometry) o.geometry.dispose();
     if (o.material) {
-      if (o.material.map) o.material.map.dispose();
+      // The face decal's map is the single shared bbFaceTexture (see attachFaceDecal) — every
+      // OTHER character's decal, including ones not spawned yet, references that exact same
+      // texture object, so disposing it here would silently break every face in the game the
+      // moment any one remote player with a face decal disconnects.
+      if (o.material.map && !o.userData.sharedMap) o.material.map.dispose();
       o.material.dispose();
     }
   });
@@ -3964,8 +4059,10 @@ function ensureLocalAvatar() {
   head.position.y = 0.78;
   head.castShadow = true;
   group.add(head);
+  const faceDecal = attachFaceDecal(head);
+  faceDecal.visible = !!skin.isAvatar;
   scene.add(group);
-  localAvatar = { group, legs, arms, bodyMat, limbMat, headMat };
+  localAvatar = { group, legs, arms, bodyMat, limbMat, headMat, faceDecal };
 }
 // Re-colors the already-built local avatar in place when a skin is equipped mid-session — cheaper
 // than tearing down and rebuilding the whole group, and keeps whatever walk-cycle pose it's mid-way
@@ -3978,6 +4075,7 @@ function applyLocalAvatarSkin() {
   localAvatar.limbMat.color.setHex(skin.limb);
   localAvatar.headMat.color.setHex(skin.head);
   applyGlowToMats([localAvatar.bodyMat, localAvatar.limbMat, localAvatar.headMat], skin);
+  localAvatar.faceDecal.visible = !!skin.isAvatar;
 }
 function removeLocalAvatar() {
   if (!localAvatar) return;
