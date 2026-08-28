@@ -2926,6 +2926,18 @@ function trySelectWeapon(key) {
   equipWeapon(key);
 }
 
+// Found by the Fight for Glory client-correctness audit: the 1/2 quick-swap hotkeys let a desktop
+// player pick directly between any already-unlocked ladder gun, but touch had no equivalent at
+// all — only forward-only Upgrade (a real <button>, tappable on any device) and knife-toggle were
+// reachable, so a touch player who upgraded past an earlier gun (e.g. glock -> ak47) had no way
+// back to it. A single toggle button rather than two separate 1/2-style buttons since touch screen
+// real estate is scarce and this only ever needs to swap TO whichever of the two isn't currently
+// equipped — trySelectWeapon's own no-op-if-locked guard means tapping this before ak47 is
+// unlocked just silently does nothing, same as pressing 1 too early already does.
+function touchSwapWeapon() {
+  trySelectWeapon(weapon === 'ak47' ? 'glock' : 'ak47');
+}
+
 // Dedicated fists-select for the "3" hotkey and the loadout picker — unlike Q's toggleKnife(),
 // this always SELECTS fists rather than toggling them off if already out, matching "press 3 for
 // fists" as a direct pick, not a toggle.
@@ -3177,6 +3189,7 @@ const modeSelect = document.getElementById('mode-select');
 
 function startMode(m) {
   mode = m;
+  arcadeJoinMode(m);
   modeSelect.classList.add('hidden');
   // A clean field for the new mode; kills and weapon stay — they're the ladder.
   while (bullets.length) removeBullet(0);
@@ -3419,6 +3432,11 @@ function takeDamage(amount) {
     // Scoreboard time: this run against the best this browser has ever seen.
     // Each mode keeps its own best — FS, One Shot, and Headhunter have no waves, so it's kills only.
     const runKills = kills - killsAtRunStart;
+    // Room leaderboard (server-side, cross-device/cross-player) alongside the existing
+    // this-browser-only localStorage best above — wave mode's meaningful number is the wave
+    // reached, same as its own local "Best: wave X" already optimizes for; every other mode is
+    // kills, same as its own local best.
+    arcadeSubmitScore(mode, mode === 'wave' ? wave : runKills);
     if (mode === 'fs') {
       const best = loadBestFs();
       const record = runKills > best;
@@ -4044,8 +4062,15 @@ function handleBbMessage(data) {
       // reached anyone — a challenge to someone already busy or who'd already left was silently
       // dropped server-side with nothing to correct that false-positive toast. This corrective
       // toast lands shortly after the optimistic one specifically in the failure case.
+      // 'self-busy' and this same message reused for a failed ACCEPT (the challenger going busy
+      // or leaving in the gap before the accepter responds — the Accept click already hides the
+      // popup optimistically, same false-positive shape as the challenge-send case) were both
+      // found by the Fight for Glory client-correctness audit, closing the two remaining gaps in
+      // this same "server silently drops it, client already showed success" bug class.
       showWaveBanner(data.reason === 'busy'
         ? `${data.targetName || 'They'} are already in a duel — try again later`
+        : data.reason === 'self-busy'
+        ? 'Finish what you\'re doing first'
         : "That player isn't here anymore");
       break;
     }
@@ -4202,6 +4227,138 @@ function handleBbMessage(data) {
     }
   }
 }
+
+// ---- Solo-mode room leaderboard ----
+// Every other minigame in this app has a per-room leaderboard; Fight for Glory's 8 solo modes
+// never did (Online Play's win/loss record isn't a substitute — it says nothing about how good a
+// run someone had solo). Reuses the app's generic arcade-join/arcade-submit-score/arcade-
+// leaderboard protocol (same one Snake/2048/Fighter Plane already use) on its own dedicated
+// connection — deliberately NOT reusing bbWs/connectBb, which is entirely Online-Play-lobby
+// shaped (bb-join, remote players, matches, challenges) and only ever opens when Online Play is
+// actually entered; solo modes should get a leaderboard without paying that cost or entanglement.
+const BB_MODE_KEYS = {
+  wave: 'bbwave', fs: 'bbfs', oneshot: 'bboneshot', headhunter: 'bbheadhunter',
+  juggernaut: 'bbjuggernaut', berserker: 'bbberserker', vampire: 'bbvampire', swarm: 'bbswarm',
+};
+const BB_MODE_LABELS = {
+  wave: '🌊 Wave Challenge', fs: '⚔️ FS', oneshot: '💥 One Shot', headhunter: '🎯 Headhunter',
+  juggernaut: '👹 Juggernaut', berserker: '🔪 Berserker', vampire: '🧛 Vampire', swarm: '🐝 Swarm',
+};
+let arcadeWs = null;
+let arcadeJoinedGame = null; // which BB_MODE_KEYS value the current connection is arcade-joined for
+let arcadeLatestScores = [];
+let arcadeLeaderboardMode = 'wave'; // which tab the (lazily built) leaderboard overlay is showing
+
+function arcadeSend(obj) {
+  if (arcadeWs && arcadeWs.readyState === WebSocket.OPEN) arcadeWs.send(JSON.stringify(obj));
+}
+
+// Solo Fight for Glory is fully playable with no chat room at all (unlike every other minigame,
+// which always launches from a room's own menu) — falls back to the same shared 'GLOBAL-LOBBY'
+// bucket Online Play already uses when there's no ?room=, so there's always somewhere for a score
+// to land instead of silently having nowhere to go.
+function arcadeJoinMode(modeKey) {
+  const game = BB_MODE_KEYS[modeKey];
+  if (!game) return; // Online Play ('online-play-btn') has no BB_MODE_KEYS entry — not an arcade mode
+  const doJoin = () => {
+    arcadeJoinedGame = game;
+    arcadeSend({ type: 'arcade-join', code: bbRoomCode || 'GLOBAL-LOBBY', game, name: bbPlayerName || 'Player' });
+  };
+  if (arcadeWs && arcadeWs.readyState === WebSocket.OPEN) {
+    doJoin();
+    return;
+  }
+  if (arcadeWs) return; // already connecting — the open handler below will join once it lands
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  arcadeWs = new WebSocket(`${protocol}//${location.host}`);
+  arcadeWs.addEventListener('open', doJoin);
+  arcadeWs.addEventListener('message', (event) => {
+    let data;
+    try { data = JSON.parse(event.data); } catch { return; }
+    if (data.type === 'arcade-leaderboard') {
+      arcadeLatestScores = data.scores || [];
+      renderArcadeLeaderboard();
+    }
+  });
+  arcadeWs.addEventListener('close', () => {
+    arcadeWs = null;
+    arcadeJoinedGame = null;
+  });
+}
+
+function arcadeSubmitScore(modeKey, score) {
+  const game = BB_MODE_KEYS[modeKey];
+  if (!game) return;
+  // A death can land before this connection's own 'open' handler has actually fired and sent the
+  // join (fast/lucky-first-life runs) — arcade-submit-score silently no-ops server-side without a
+  // matching arcadeRoom on the connection anyway, so this is just avoiding a doomed send, not a
+  // correctness requirement.
+  if (arcadeJoinedGame !== game) return;
+  arcadeSend({ type: 'arcade-submit-score', score });
+}
+
+const bbLeaderboardBtn = document.getElementById('bb-leaderboard-btn');
+const bbLeaderboardOverlay = document.getElementById('bb-leaderboard-overlay');
+const bbLeaderboardTabs = document.getElementById('bb-leaderboard-tabs');
+const bbLeaderboardList = document.getElementById('bb-leaderboard-list');
+const bbLeaderboardCloseBtn = document.getElementById('bb-leaderboard-close-btn');
+
+function renderArcadeLeaderboard() {
+  if (BB_MODE_KEYS[arcadeLeaderboardMode] !== arcadeJoinedGame) return; // stale response from a since-switched tab
+  bbLeaderboardList.innerHTML = '';
+  if (!arcadeLatestScores.length) {
+    const li = document.createElement('li');
+    li.textContent = 'No scores yet — play a run!';
+    bbLeaderboardList.appendChild(li);
+    return;
+  }
+  arcadeLatestScores.forEach((s, i) => {
+    const li = document.createElement('li');
+    const name = document.createElement('span');
+    name.textContent = `${i + 1}. ${s.name}`;
+    const score = document.createElement('span');
+    score.className = 'score';
+    score.textContent = s.score;
+    li.append(name, score);
+    bbLeaderboardList.appendChild(li);
+  });
+}
+
+function openBbLeaderboard(modeKey) {
+  arcadeLeaderboardMode = modeKey;
+  bbLeaderboardTabs.innerHTML = '';
+  Object.keys(BB_MODE_KEYS).forEach((key) => {
+    const tab = document.createElement('button');
+    tab.type = 'button';
+    tab.className = 'bb-lb-tab' + (key === modeKey ? ' active' : '');
+    tab.textContent = BB_MODE_LABELS[key];
+    tab.addEventListener('click', () => openBbLeaderboard(key));
+    bbLeaderboardTabs.appendChild(tab);
+  });
+  bbLeaderboardList.innerHTML = '<li>Loading…</li>';
+  arcadeJoinMode(modeKey);
+  bbLeaderboardOverlay.classList.remove('hidden');
+}
+
+if (bbLeaderboardBtn) {
+  bbLeaderboardBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openBbLeaderboard(mode && BB_MODE_KEYS[mode] ? mode : 'wave');
+  });
+}
+if (bbLeaderboardCloseBtn) {
+  bbLeaderboardCloseBtn.addEventListener('click', () => bbLeaderboardOverlay.classList.add('hidden'));
+}
+if (bbLeaderboardOverlay) {
+  bbLeaderboardOverlay.addEventListener('click', (e) => {
+    if (e.target === bbLeaderboardOverlay) bbLeaderboardOverlay.classList.add('hidden');
+  });
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && bbLeaderboardOverlay && !bbLeaderboardOverlay.classList.contains('hidden')) {
+    bbLeaderboardOverlay.classList.add('hidden');
+  }
+});
 
 function connectBb() {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -4668,7 +4825,7 @@ if (isTouchDevice) {
     'Move: left joystick &nbsp;&middot;&nbsp; Look: drag anywhere on screen<br>' +
     'Fire: 🔫 &nbsp;&middot;&nbsp; Scope: hold 🎯 (snipers only) &nbsp;&middot;&nbsp; Jump: ⤒<br>' +
     'Crouch: hold ⬇️ &nbsp;&middot;&nbsp; Slide: tap ⬇️ while moving &nbsp;&middot;&nbsp; Knife: 🥊 toggles<br>' +
-    'Upgrade/Save buttons: tap directly &nbsp;&middot;&nbsp; After dying: 🏠 Change Mode';
+    'Swap gun: 🔄 &nbsp;&middot;&nbsp; Upgrade/Save buttons: tap directly &nbsp;&middot;&nbsp; After dying: 🏠 Change Mode';
 
   const joystickBase = document.getElementById('touch-joystick');
   const joystickKnob = document.getElementById('touch-joystick-knob');
@@ -4752,6 +4909,11 @@ if (isTouchDevice) {
   document.getElementById('touch-knife').addEventListener('touchstart', (e) => {
     e.preventDefault();
     if (!dead && !paused) toggleKnife();
+  }, { passive: false });
+
+  document.getElementById('touch-weapon-swap').addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    if (!dead && !paused) touchSwapWeapon();
   }, { passive: false });
 
   const touchJumpBtn = document.getElementById('touch-jump');

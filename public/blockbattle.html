@@ -133,8 +133,18 @@
       <div id="mode-select-coins">🪙 <span class="bb-coin-count">0</span></div>
       <button id="view-weapons-btn" type="button">🔫 View Weapons</button>
       <button id="view-skins-btn" type="button">👕 Skins</button>
+      <button id="bb-leaderboard-btn" type="button">🏆 Leaderboards</button>
       <button id="settings-btn" type="button">⚙️ Settings</button>
     </div>
+  </div>
+
+  <div id="bb-leaderboard-overlay" class="hidden">
+    <div class="panel-header">
+      <h2>🏆 Leaderboards</h2>
+      <button id="bb-leaderboard-close-btn" aria-label="Close">✕</button>
+    </div>
+    <div id="bb-leaderboard-tabs"></div>
+    <ul id="bb-leaderboard-list"></ul>
   </div>
 
   <div id="settings-panel" class="hidden">
@@ -278,6 +288,7 @@
       <button id="touch-fire" class="touch-btn" aria-label="Fire">🔫</button>
     </div>
     <button id="touch-knife" class="touch-btn" aria-label="Toggle knife">🥊</button>
+    <button id="touch-weapon-swap" class="touch-btn" aria-label="Swap gun">🔄</button>
     <button id="touch-crouch" class="touch-btn" aria-label="Crouch / slide">⬇️</button>
     <button id="touch-jump" class="touch-btn" aria-label="Jump">⤒</button>
   </div>

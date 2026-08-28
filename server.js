@@ -2362,6 +2362,27 @@ const BB_STATIONS = [
   { id: 'st3', n: 3, x: 3 },
   { id: 'st4', n: 4, x: 9 },
 ];
+const BB_STATIONS_BY_ID = Object.fromEntries(BB_STATIONS.map((s) => [s.id, s]));
+
+// Mirrors blockbattle.js's own bbPlatePositions() exactly (BB_PLATE_GAP/BB_PLATE_ROW_Z there) —
+// needed here so bb-plate-enter can check a claim against where that exact plate actually sits,
+// not just trust the client's self-reported slot.
+const BB_PLATE_GAP = 0.9;
+const BB_PLATE_ROW_Z = 1.15;
+// Found by the Fight for Glory client-correctness audit: bb-plate-enter had no position check at
+// all, unlike bb-shoot (which range-checks damage against the player's own tracked x/y/z) — a
+// client could queue into (and force-fill/force-start) any station from anywhere on the map, or
+// while genuinely elsewhere, without ever walking there. Generous vs. the client's own 0.4 "on-
+// plate" detection radius on purpose: this is anti-cheat, not gameplay feel — it only needs to
+// reject someone who obviously isn't near the station, not reproduce exact client-side snapping.
+const BB_PLATE_ENTER_MAX_DIST = 3;
+function bbPlatePosition(stationId, side, slot) {
+  const station = BB_STATIONS_BY_ID[stationId];
+  if (!station) return null;
+  const rowZ = side === 'a' ? -BB_PLATE_ROW_Z : BB_PLATE_ROW_Z;
+  const start = -(station.n - 1) / 2;
+  return { x: station.x + (start + slot) * BB_PLATE_GAP, z: rowZ };
+}
 
 function bbInitStations() {
   const stations = {};
@@ -2689,8 +2710,21 @@ function leaveBb(ws) {
 // ---- Single-player arcade games (Snake, 2048) — no shared room state to speak of, just a
 // per-room best-score leaderboard reusing the same generic `leaderboard` table every other
 // game already uses. One handler pair covers both instead of duplicating near-identical code.
-const ARCADE_LEADERBOARD_KEY = { snake: 'snake', '2048': 'g2048', fighterplane: 'fighterplane' };
-const ARCADE_ACTIVITY_CODE = { snake: 'sk', '2048': 'tf', fighterplane: 'fp' };
+// Fight for Glory's 8 solo modes never had ANY server-side leaderboard (unlike literally every
+// other minigame in this app) — each mode gets its own key since scores aren't comparable across
+// modes (a Juggernaut kill count means something completely different from a Swarm kill count).
+// Reuses the 'bb' activity code the online lobby already uses (see setRoomActivity(code, name,
+// 'bb') at bb-join) rather than minting 8 near-identical activity codes for one game.
+const ARCADE_LEADERBOARD_KEY = {
+  snake: 'snake', '2048': 'g2048', fighterplane: 'fighterplane',
+  bbwave: 'bbwave', bbfs: 'bbfs', bboneshot: 'bboneshot', bbheadhunter: 'bbheadhunter',
+  bbjuggernaut: 'bbjuggernaut', bbberserker: 'bbberserker', bbvampire: 'bbvampire', bbswarm: 'bbswarm',
+};
+const ARCADE_ACTIVITY_CODE = {
+  snake: 'sk', '2048': 'tf', fighterplane: 'fp',
+  bbwave: 'bb', bbfs: 'bb', bboneshot: 'bb', bbheadhunter: 'bb',
+  bbjuggernaut: 'bb', bbberserker: 'bb', bbvampire: 'bb', bbswarm: 'bb',
+};
 // arcade-submit-score is fully client-computed (flagged in review as a known, accepted, low-
 // severity gap — a real fix needs server-side gameplay simulation, out of scope) but had no
 // throttle at all, unlike every score/message-creation path elsewhere in this app. These two
@@ -4976,6 +5010,12 @@ wss.on('connection', (ws, req) => {
       ws.bbId = id;
       const entry = {
         id, name, level, skin, x: 0, y: 0, z: 0, yaw: 0, health: BB_MAX_HEALTH, dueling: false, opponentId: null, duelId: null, lastShotAt: 0, respawnedAt: 0,
+        // x/y/z start at the spawn default, not "position unknown" — and that default happens to
+        // sit within BB_PLATE_ENTER_MAX_DIST of the two central stations (st2/st3). Without this
+        // flag, bb-plate-enter's own position check (below) could be satisfied by a client that
+        // fires it immediately after bb-join, before ever sending a real bb-pos update reflecting
+        // an actual walked position — fails closed until at least one real position lands.
+        hasPos: false,
         plateStation: null, plateSide: null, plateSlot: null, matchId: null, matchSide: null, eliminated: false,
         // Found by the Block Battle client-correctness audit: a second incoming challenge used to
         // silently overwrite the client's popup for the first, with no signal ever sent back to
@@ -5034,6 +5074,7 @@ wss.on('connection', (ws, req) => {
       if (!p) return;
       const bbClamp = (n) => Math.max(-BC_MAX_COORD, Math.min(BC_MAX_COORD, +n || 0));
       p.x = bbClamp(msg.x); p.y = bbClamp(msg.y); p.z = bbClamp(msg.z); p.yaw = +msg.yaw || 0;
+      p.hasPos = true;
       broadcastBb(ws.bbRoom, { type: 'bb-pos', id: p.id, x: p.x, y: p.y, z: p.z, yaw: p.yaw }, ws);
       return;
     }
@@ -5049,8 +5090,14 @@ wss.on('connection', (ws, req) => {
       // vs. dueling separately) would silently apply damage through whichever one fires first,
       // invisible to the other — the exact kind of cross-system state corruption bb-shoot's own
       // matchId-first branch order was never designed to coexist with.
-      if (!me || bbIsBusy(me)) return;
+      if (!me) return;
       const targetId = String(msg.targetId || '');
+      // Found by the Fight for Glory client-correctness audit: unlike a busy TARGET (nacked just
+      // below), a busy SENDER got no feedback at all — the client only disables the Challenge
+      // button while `dueling`, not while merely plate-queued (bbIsBusy also covers matchId/
+      // plateStation), so a plate-queued player could click Challenge, see the optimistic "sent"
+      // toast fire, and have it silently dropped here with no correction.
+      if (bbIsBusy(me)) { send(ws, { type: 'bb-challenge-failed', targetId, reason: 'self-busy' }); return; }
       if (targetId === me.id) return; // can't challenge yourself
       const target = bbFindById(bb, targetId);
       // Found by the Block Battle client-correctness audit: a challenge to someone already busy
@@ -5091,7 +5138,18 @@ wss.on('connection', (ws, req) => {
       // The challenger may have left, already started a different duel, or (same reasoning as
       // bb-challenge above) joined an NvN match or plate queue in the time since they sent the
       // challenge — either way there's nothing safe to accept into anymore.
-      if (!from || bbIsBusy(from.p)) return;
+      if (!from || bbIsBusy(from.p)) {
+        // Found by the Fight for Glory client-correctness audit: the accepter had zero feedback in
+        // this case — the client already hides the challenge popup optimistically the instant
+        // Accept is clicked, so with nothing sent back here they were just left in the lobby with
+        // no duel and no explanation, unlike bb-challenge's own busy-target nack just above.
+        // Declining needs no such nack: nobody's waiting on UI feedback for a decline the now-
+        // gone/busy challenger isn't around to see anyway, so this only fires on an accept.
+        if (msg.accept) {
+          send(ws, { type: 'bb-challenge-failed', targetId: fromId, targetName: from ? from.p.name : undefined, reason: from ? 'busy' : 'not-found' });
+        }
+        return;
+      }
       if (!msg.accept) { send(from.ws, { type: 'bb-challenge-declined', byId: me.id }); return; }
       // Both sides lock into a mutual duel — this pairing (opponentId matching in both
       // directions) is what bb-shoot below trusts as "these two, and only these two, can hurt
@@ -5126,6 +5184,11 @@ wss.on('connection', (ws, req) => {
       const side = msg.side === 'a' || msg.side === 'b' ? msg.side : null;
       const slot = Math.floor(+msg.slot);
       if (!side || !Number.isInteger(slot) || slot < 0 || slot >= station.n) return; // malformed — same as above
+      if (!me.hasPos) return; // no real position on file yet — see the entry's own hasPos comment at bb-join
+      const platePos = bbPlatePosition(stationId, side, slot);
+      const dx = me.x - platePos.x;
+      const dz = me.z - platePos.z;
+      if (dx * dx + dz * dz > BB_PLATE_ENTER_MAX_DIST * BB_PLATE_ENTER_MAX_DIST) return; // not actually near this plate — same "not reachable by a real client" no-feedback-needed case as above
       // Both of these ARE reachable by the real client (its plate detection is purely distance-
       // based and doesn't know a station is locked, and two players can physically step onto the
       // same slot in the same instant) — tell the requester explicitly so it can correct its own
@@ -5184,6 +5247,16 @@ wss.on('connection', (ws, req) => {
           return;
         }
         target.p.eliminated = true;
+        // Found by the Fight for Glory client-correctness audit: the lethal blow used to skip
+        // straight to bb-match-eliminated/bb-match-player-eliminated, never sending the target its
+        // own bb-match-hit (so their health bar froze at its last non-lethal value instead of
+        // dropping to 0, with no final damage flash/sound) or the shooter their usual bb-match-hit-
+        // confirm (so no hit marker/roster update on the kill itself) — both messages exist and
+        // already do exactly the right thing for every non-lethal hit above, they just weren't
+        // being sent on the hit that actually matters most. Sent in addition to, not instead of,
+        // the elimination messages below, which still drive the eliminated/spectator state itself.
+        send(target.ws, { type: 'bb-match-hit', health: 0, byId: me.id });
+        send(ws, { type: 'bb-match-hit-confirm', targetId: target.p.id, targetHealth: 0 });
         send(target.ws, { type: 'bb-match-eliminated' });
         broadcastToBbMatch(bb, me.matchId, { type: 'bb-match-player-eliminated', matchId: me.matchId, id: target.p.id });
         bbCheckMatchEnd(bb, ws.bbRoom, me.matchId);

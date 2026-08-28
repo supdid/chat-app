@@ -22,9 +22,34 @@ after(async () => { await server.stop(); });
 // silently breaking every map-vote assertion below since the vote almost always resolved outside
 // the small hand-copied list) and a second manual copy would only be one future edit away from
 // the same failure mode.
-const BB_MAP_IDS_FOR_TEST = new Function(
-  `return ${fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8').match(/const BB_MAP_IDS = (\[[\s\S]*?\]);/)[1]};`
-)();
+const bbServerSrc = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+const BB_MAP_IDS_FOR_TEST = new Function(`return ${bbServerSrc.match(/const BB_MAP_IDS = (\[[\s\S]*?\]);/)[1]};`)();
+
+// Same "extracted from source, not hand-copied" reasoning as BB_MAP_IDS_FOR_TEST above — these
+// feed bb-plate-enter's own position check (added by the Fight for Glory client-correctness audit
+// fixes: a client used to be able to queue into any station from anywhere on the map), and a
+// hand-copied mirror of the plate-position formula would silently drift out of sync with the real
+// one exactly like BB_MAP_IDS_FOR_TEST's own comment warns about.
+const BB_STATIONS_FOR_TEST = new Function(`return ${bbServerSrc.match(/const BB_STATIONS = (\[[\s\S]*?\]);/)[1]};`)();
+const BB_PLATE_GAP_FOR_TEST = Number(bbServerSrc.match(/const BB_PLATE_GAP = ([\d.]+);/)[1]);
+const BB_PLATE_ROW_Z_FOR_TEST = Number(bbServerSrc.match(/const BB_PLATE_ROW_Z = ([\d.]+);/)[1]);
+
+function bbPlateXZForTest(stationId, side, slot) {
+  const station = BB_STATIONS_FOR_TEST.find((s) => s.id === stationId);
+  const rowZ = side === 'a' ? -BB_PLATE_ROW_Z_FOR_TEST : BB_PLATE_ROW_Z_FOR_TEST;
+  const start = -(station.n - 1) / 2;
+  return { x: station.x + (start + slot) * BB_PLATE_GAP_FOR_TEST, z: rowZ };
+}
+
+// Every test claiming a plate needs to simulate actually standing there first, same as a real
+// client always does by virtue of having walked to it — bb-plate-enter now requires a real, nearby
+// bb-pos already on file (see server.js's BB_PLATE_ENTER_MAX_DIST comment).
+async function bbEnterPlate(ws, stationId, side, slot) {
+  const { x, z } = bbPlateXZForTest(stationId, side, slot);
+  send(ws, { type: 'bb-pos', x, y: 0, z, yaw: 0 });
+  await sleep(30);
+  send(ws, { type: 'bb-plate-enter', stationId, side, slot });
+}
 
 async function joinRoom(username) {
   const ws = await connectWs();
@@ -1646,6 +1671,40 @@ describe('arcade leaderboard submission throttle', () => {
     assert.ok(!clearedA.activity.some((a) => a.name === 'ArcadeSwitcher'), "room A's activity badge must clear the moment the player switches to room B's arcade, not stay stuck forever");
 
     hostA.close(); hostB.close(); player.close();
+  });
+
+  // Fight for Glory's 8 solo modes never had a server-side leaderboard at all (unlike every other
+  // minigame) — added by registering 8 new keys in ARCADE_LEADERBOARD_KEY/ARCADE_ACTIVITY_CODE
+  // rather than new handlers, since arcade-join/-submit-score/-leaderboard are fully generic. A
+  // typo or missing entry in either map silently no-ops the join (arcade-join's own guard:
+  // `if (!code || !ARCADE_LEADERBOARD_KEY[game]) return;`), so this exercises every one of the 8.
+  test('every Fight for Glory solo mode is registered as a valid arcade leaderboard key', async () => {
+    const modes = ['bbwave', 'bbfs', 'bboneshot', 'bbheadhunter', 'bbjuggernaut', 'bbberserker', 'bbvampire', 'bbswarm'];
+    for (const game of modes) {
+      const ws = await connectWs();
+      send(ws, { type: 'arcade-join', code: 'FFGMODES1', name: 'FfgTester', game });
+      const board = await waitFor(ws, (m) => m.type === 'arcade-leaderboard');
+      assert.deepEqual(board.scores, [], `${game} should register and return an (empty) leaderboard, not silently no-op`);
+      ws.close();
+    }
+  });
+
+  test('a Fight for Glory mode score round-trips through the room leaderboard and stays isolated from a different mode', async () => {
+    const code = 'FFGSCORE1';
+    const juggernaut = await connectWs();
+    send(juggernaut, { type: 'arcade-join', code, name: 'FfgJuggernautPlayer', game: 'bbjuggernaut' });
+    await waitFor(juggernaut, (m) => m.type === 'arcade-leaderboard');
+    await sleep(3050); // clear ARCADE_SUBMIT_MIN_SESSION_MS
+    send(juggernaut, { type: 'arcade-submit-score', score: 7 });
+    const board = await waitFor(juggernaut, (m) => m.type === 'arcade-leaderboard' && m.scores.length > 0);
+    assert.equal(board.scores[0].name, 'FfgJuggernautPlayer');
+    assert.equal(board.scores[0].score, 7);
+
+    // Same room, a DIFFERENT mode — must not see the juggernaut score.
+    const swarm = await connectWs();
+    send(swarm, { type: 'arcade-join', code, name: 'FfgSwarmPlayer', game: 'bbswarm' });
+    const swarmBoard = await waitFor(swarm, (m) => m.type === 'arcade-leaderboard');
+    assert.deepEqual(swarmBoard.scores, [], 'a different Fight for Glory mode in the same room must have its own separate leaderboard');
   });
 });
 
@@ -5203,6 +5262,58 @@ describe('Block Battle 1v1 duel: challenge, accept/decline, pre-duel map vote, r
     a.ws.close(); b.ws.close(); c.ws.close();
   });
 
+  // Found by the Fight for Glory client-correctness audit: unlike a busy TARGET (tested just
+  // above), a busy SENDER got no feedback at all — the client only disables the Challenge button
+  // while actually dueling, not while merely plate-queued, so a plate-queued player could send a
+  // challenge that silently dropped here with no correction to the optimistic "sent" toast.
+  test('a busy sender challenging someone gets bb-challenge-failed with reason self-busy', async () => {
+    const code = 'BBDUEL-SELFBUSY';
+    const a = await duelJoin(code);
+    const b = await duelJoin(code);
+    const c = await duelJoin(code);
+
+    // Lock A into a duel with B first so A is the one who's busy.
+    send(a.ws, { type: 'bb-challenge', targetId: b.id });
+    await waitFor(b.ws, (m) => m.type === 'bb-challenged');
+    send(b.ws, { type: 'bb-challenge-response', fromId: a.id, accept: true });
+    await waitFor(a.ws, (m) => m.type === 'bb-duel-map-vote');
+
+    const failed = waitFor(a.ws, (m) => m.type === 'bb-challenge-failed');
+    send(a.ws, { type: 'bb-challenge', targetId: c.id });
+    const fail = await failed;
+    assert.equal(fail.reason, 'self-busy');
+
+    a.ws.close(); b.ws.close(); c.ws.close();
+  });
+
+  // Found by the same audit: the accepter had zero feedback when the challenger became unavailable
+  // (busy with something else, or gone) in the gap between sending a challenge and it being
+  // answered — the client already hides the challenge popup optimistically the instant Accept is
+  // clicked, so with nothing sent back here they were just left in the lobby with no duel.
+  test('accepting a challenge whose sender went busy in the meantime gets bb-challenge-failed', async () => {
+    const code = 'BBDUEL-ACCEPTRACE';
+    const a = await duelJoin(code);
+    const b = await duelJoin(code);
+    const c = await duelJoin(code);
+
+    send(a.ws, { type: 'bb-challenge', targetId: b.id });
+    await waitFor(b.ws, (m) => m.type === 'bb-challenged');
+
+    // A gets busy with C instead, before B ever answers A's original challenge.
+    send(a.ws, { type: 'bb-challenge', targetId: c.id });
+    await waitFor(c.ws, (m) => m.type === 'bb-challenged');
+    send(c.ws, { type: 'bb-challenge-response', fromId: a.id, accept: true });
+    await waitFor(a.ws, (m) => m.type === 'bb-duel-map-vote');
+
+    const failed = waitFor(b.ws, (m) => m.type === 'bb-challenge-failed');
+    send(b.ws, { type: 'bb-challenge-response', fromId: a.id, accept: true });
+    const fail = await failed;
+    assert.equal(fail.reason, 'busy');
+    assert.equal(fail.targetId, a.id);
+
+    a.ws.close(); b.ws.close(); c.ws.close();
+  });
+
   // Found by the same audit: a second incoming challenge silently overwrote the client's popup for
   // the first, with no signal ever sent back to that first challenger -- who'd be left waiting
   // forever on a challenge no one could ever now answer.
@@ -5359,6 +5470,44 @@ describe('Block Battle NvN match stations', () => {
     }
   }
 
+  // Found by the Fight for Glory client-correctness audit: bb-plate-enter had no position check at
+  // all, unlike bb-shoot (which range-checks damage against the player's own tracked x/y/z) — a
+  // client could queue into any station from anywhere on the map without ever walking there. Every
+  // OTHER test in this suite goes through bbEnterPlate (which sends a real matching bb-pos first,
+  // same as a real client walking there does); this one deliberately does NOT, to prove the
+  // rejection itself actually works rather than just trusting every other test's happy path.
+  test('bb-plate-enter is rejected with no matching bb-pos on file, and again from far away', async () => {
+    const code = 'BBPLATE-FAR';
+    const a = await bbJoin(code);
+
+    let anyMessage = false;
+    const h = () => { anyMessage = true; };
+    a.ws.on('message', h);
+    send(a.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'a', slot: 0 }); // no bb-pos ever sent
+    await sleep(300);
+    a.ws.off('message', h);
+    assert.equal(anyMessage, false, 'no position on file at all must reject silently, same as a malformed request');
+
+    send(a.ws, { type: 'bb-pos', x: 1000, y: 0, z: 1000, yaw: 0 }); // nowhere near st1 (x: -9)
+    await sleep(50);
+    let anyMessage2 = false;
+    const h2 = () => { anyMessage2 = true; };
+    a.ws.on('message', h2);
+    send(a.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'a', slot: 0 });
+    await sleep(300);
+    a.ws.off('message', h2);
+    assert.equal(anyMessage2, false, 'a real but far-away position must also reject the claim');
+
+    // Sanity check: the exact same request succeeds once actually near the plate (via the normal
+    // bbEnterPlate helper), proving the rejections above are the position check specifically and
+    // not some other bug silently swallowing every bb-plate-enter for this connection.
+    const updated = waitFor(a.ws, (m) => m.type === 'bb-station-update' && m.a[0] === 'Guest');
+    await bbEnterPlate(a.ws, 'st1', 'a', 0);
+    await updated;
+
+    a.ws.close();
+  });
+
   test('bb-init reports empty station occupancy; entering and leaving a plate round-trips through bb-station-update', async () => {
     const code = 'BBPLATE1';
     const a = await bbJoin(code);
@@ -5367,7 +5516,7 @@ describe('Block Battle NvN match stations', () => {
     assert.equal(st1.inProgress, false);
 
     const enterPromise = waitFor(a.ws, (m) => m.type === 'bb-station-update' && m.stationId === 'st1');
-    send(a.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'a', slot: 0 });
+    await bbEnterPlate(a.ws, 'st1', 'a', 0);
     const afterEnter = await enterPromise;
     assert.deepEqual(afterEnter.a, ['Guest']);
 
@@ -5387,11 +5536,11 @@ describe('Block Battle NvN match stations', () => {
     let matchStartedEarly = false;
     const aStarted = waitFor(a.ws, (m) => m.type === 'bb-match-started').then((m) => { matchStartedEarly = true; return m; });
     const bStarted = waitFor(b.ws, (m) => m.type === 'bb-match-started');
-    send(a.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'a', slot: 0 });
+    await bbEnterPlate(a.ws, 'st1', 'a', 0);
     // Not yet full — no match should start off one side alone.
     await sleep(150);
     assert.equal(matchStartedEarly, false, 'a match must not start with only one side filled');
-    send(b.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'b', slot: 0 });
+    await bbEnterPlate(b.ws, 'st1', 'b', 0);
     const [startA, startB] = await Promise.all([aStarted, bStarted]);
     assert.equal(startA.side, 'a');
     assert.equal(startB.side, 'b');
@@ -5412,24 +5561,55 @@ describe('Block Battle NvN match stations', () => {
     const c = await bbJoin(code);
     const d = await bbJoin(code);
     const cStarted = waitFor(c.ws, (m) => m.type === 'bb-match-started');
-    send(c.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'a', slot: 0 });
-    send(d.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'b', slot: 0 });
+    await bbEnterPlate(c.ws, 'st1', 'a', 0);
+    await bbEnterPlate(d.ws, 'st1', 'b', 0);
     await cStarted;
 
     a.ws.close(); b.ws.close(); c.ws.close(); d.ws.close();
+  });
+
+  // Found by the Fight for Glory client-correctness audit: the lethal blow used to skip straight
+  // to bb-match-eliminated, never sending the target its own bb-match-hit (health bar frozen at
+  // its last non-lethal value instead of dropping to 0, no final damage flash/sound) or the
+  // shooter their usual bb-match-hit-confirm (no hit marker/roster update on the kill itself) —
+  // both messages already exist and fire correctly for every non-lethal hit, they just weren't
+  // being sent on the hit that actually finishes the job.
+  test('the lethal hit in an NvN match sends bb-match-hit/bb-match-hit-confirm, not just bb-match-eliminated', async () => {
+    const code = 'BBMATCH-LETHAL';
+    const a = await bbJoin(code);
+    const b = await bbJoin(code);
+    const aStarted = waitFor(a.ws, (m) => m.type === 'bb-match-started');
+    const bStarted = waitFor(b.ws, (m) => m.type === 'bb-match-started');
+    await bbEnterPlate(a.ws, 'st1', 'a', 0);
+    await bbEnterPlate(b.ws, 'st1', 'b', 0);
+    await Promise.all([aStarted, bStarted]);
+
+    // Non-lethal hits send these same two message types too (health 80/60/40/20 as the run
+    // progresses) — filtering for health 0 specifically picks out the killing blow, not shot 1.
+    const finalHit = waitFor(b.ws, (m) => m.type === 'bb-match-hit' && m.health === 0);
+    const finalConfirm = waitFor(a.ws, (m) => m.type === 'bb-match-hit-confirm' && m.targetHealth === 0);
+    const eliminated = waitFor(b.ws, (m) => m.type === 'bb-match-eliminated');
+    await bbShootUntilEliminated(a.ws, b.id);
+
+    const [hit, confirm] = await Promise.all([finalHit, finalConfirm, eliminated]);
+    assert.equal(hit.byId, a.id, 'the victim must still get a bb-match-hit for the killing blow, same as every non-lethal one');
+    assert.equal(confirm.targetId, b.id, 'the shooter must still get a bb-match-hit-confirm (hit marker/roster update) for the kill');
+    assert.equal(confirm.targetHealth, 0);
+
+    a.ws.close(); b.ws.close();
   });
 
   test('leaving a plate before both sides fill frees the slot for a different connection', async () => {
     const code = 'BBPLATE2';
     const a = await bbJoin(code);
     const b = await bbJoin(code);
-    send(a.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'a', slot: 0 });
+    await bbEnterPlate(a.ws, 'st1', 'a', 0);
     await waitFor(a.ws, (m) => m.type === 'bb-station-update' && m.a[0] === 'Guest');
     send(a.ws, { type: 'bb-plate-leave' });
     await waitFor(a.ws, (m) => m.type === 'bb-station-update' && m.a[0] === null);
 
     const bUpdate = waitFor(b.ws, (m) => m.type === 'bb-station-update' && m.a[0] === 'Guest');
-    send(b.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'a', slot: 0 });
+    await bbEnterPlate(b.ws, 'st1', 'a', 0);
     await bUpdate;
 
     a.ws.close(); b.ws.close();
@@ -5444,10 +5624,10 @@ describe('Block Battle NvN match stations', () => {
 
     const startedA = waitFor(a.ws, (m) => m.type === 'bb-match-started');
     const startedC = waitFor(c.ws, (m) => m.type === 'bb-match-started');
-    send(a.ws, { type: 'bb-plate-enter', stationId: 'st2', side: 'a', slot: 0 });
-    send(b.ws, { type: 'bb-plate-enter', stationId: 'st2', side: 'a', slot: 1 });
-    send(c.ws, { type: 'bb-plate-enter', stationId: 'st2', side: 'b', slot: 0 });
-    send(d.ws, { type: 'bb-plate-enter', stationId: 'st2', side: 'b', slot: 1 });
+    await bbEnterPlate(a.ws, 'st2', 'a', 0);
+    await bbEnterPlate(b.ws, 'st2', 'a', 1);
+    await bbEnterPlate(c.ws, 'st2', 'b', 0);
+    await bbEnterPlate(d.ws, 'st2', 'b', 1);
     const [startA, startC] = await Promise.all([startedA, startedC]);
     assert.deepEqual(startA.teammates.map((t) => t.id), [b.id]);
     assert.deepEqual(startA.enemies.map((t) => t.id).sort(), [c.id, d.id].sort());
@@ -5476,8 +5656,8 @@ describe('Block Battle NvN match stations', () => {
     const b = await bbJoin(code);
     const aStarted = waitFor(a.ws, (m) => m.type === 'bb-match-started');
     const aWon = waitFor(a.ws, (m) => m.type === 'bb-match-ended' && m.won === true);
-    send(a.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'a', slot: 0 });
-    send(b.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'b', slot: 0 });
+    await bbEnterPlate(a.ws, 'st1', 'a', 0);
+    await bbEnterPlate(b.ws, 'st1', 'b', 0);
     await aStarted;
     b.ws.close(); // no bb-leave sent — a raw drop, same as a network blip
     await aWon;
@@ -5492,8 +5672,8 @@ describe('Block Battle NvN match stations', () => {
     const c = await bbJoin(code);
     const aStarted = waitFor(a.ws, (m) => m.type === 'bb-match-started');
     const bStarted = waitFor(b.ws, (m) => m.type === 'bb-match-started');
-    send(a.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'a', slot: 0 });
-    send(b.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'b', slot: 0 });
+    await bbEnterPlate(a.ws, 'st1', 'a', 0);
+    await bbEnterPlate(b.ws, 'st1', 'b', 0);
     await Promise.all([aStarted, bStarted]);
 
     // C challenges A, who is mid-match — A must never see the challenge popup.
@@ -5522,11 +5702,11 @@ describe('Block Battle NvN match stations', () => {
     const a = await bbJoin(code);
     const b = await bbJoin(code);
     const winUpdate = waitFor(a.ws, (m) => m.type === 'bb-station-update' && m.a[0] === 'Guest');
-    send(a.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'a', slot: 0 });
+    await bbEnterPlate(a.ws, 'st1', 'a', 0);
     await winUpdate;
 
     const rejected = waitFor(b.ws, (m) => m.type === 'bb-plate-rejected');
-    send(b.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'a', slot: 0 });
+    await bbEnterPlate(b.ws, 'st1', 'a', 0);
     const rej = await rejected;
     assert.deepEqual({ stationId: rej.stationId, side: rej.side, slot: rej.slot }, { stationId: 'st1', side: 'a', slot: 0 });
 
@@ -5547,10 +5727,10 @@ describe('Block Battle NvN match stations', () => {
     const d = await bbJoin(code); // side b slot 1
 
     const startedA = waitFor(a.ws, (m) => m.type === 'bb-match-started');
-    send(a.ws, { type: 'bb-plate-enter', stationId: 'st2', side: 'a', slot: 0 });
-    send(b.ws, { type: 'bb-plate-enter', stationId: 'st2', side: 'a', slot: 1 });
-    send(c.ws, { type: 'bb-plate-enter', stationId: 'st2', side: 'b', slot: 0 });
-    send(d.ws, { type: 'bb-plate-enter', stationId: 'st2', side: 'b', slot: 1 });
+    await bbEnterPlate(a.ws, 'st2', 'a', 0);
+    await bbEnterPlate(b.ws, 'st2', 'a', 1);
+    await bbEnterPlate(c.ws, 'st2', 'b', 0);
+    await bbEnterPlate(d.ws, 'st2', 'b', 1);
     await startedA;
 
     // C shoots A (not B) — B is a bystander teammate who should still learn A's new health.
@@ -5603,8 +5783,8 @@ describe('Block Battle NvN match: pre-match map vote and multi-round continuatio
 
     const voteA = waitFor(a.ws, (m) => m.type === 'bb-match-map-vote');
     const voteB = waitFor(b.ws, (m) => m.type === 'bb-match-map-vote');
-    send(a.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'a', slot: 0 });
-    send(b.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'b', slot: 0 });
+    await bbEnterPlate(a.ws, 'st1', 'a', 0);
+    await bbEnterPlate(b.ws, 'st1', 'b', 0);
     const [va, vb] = await Promise.all([voteA, voteB]);
     assert.equal(va.matchId, vb.matchId, 'both sides must be voting on the same pending match');
 
@@ -5622,8 +5802,8 @@ describe('Block Battle NvN match: pre-match map vote and multi-round continuatio
     // on why (both sockets get bb-match-started in the same tick once the vote resolves).
     const startedA = waitFor(a.ws, (m) => m.type === 'bb-match-started', 3000);
     const startedB = waitFor(b.ws, (m) => m.type === 'bb-match-started', 3000);
-    send(a.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'a', slot: 0 });
-    send(b.ws, { type: 'bb-plate-enter', stationId: 'st1', side: 'b', slot: 0 });
+    await bbEnterPlate(a.ws, 'st1', 'a', 0);
+    await bbEnterPlate(b.ws, 'st1', 'b', 0);
     await Promise.all([startedA, startedB]);
 
     // Round 1: A eliminates B — the match must NOT end yet (BB_ROUNDS_TO_WIN is 2).
@@ -5684,10 +5864,10 @@ describe('Block Battle NvN match: a departed voter is dropped from the tally', (
 
     const voteA = waitFor(a.ws, (m) => m.type === 'bb-match-map-vote');
     const voteB = waitFor(b.ws, (m) => m.type === 'bb-match-map-vote');
-    send(a.ws, { type: 'bb-plate-enter', stationId: 'st2', side: 'a', slot: 0 });
-    send(b.ws, { type: 'bb-plate-enter', stationId: 'st2', side: 'a', slot: 1 });
-    send(c.ws, { type: 'bb-plate-enter', stationId: 'st2', side: 'b', slot: 0 });
-    send(d.ws, { type: 'bb-plate-enter', stationId: 'st2', side: 'b', slot: 1 });
+    await bbEnterPlate(a.ws, 'st2', 'a', 0);
+    await bbEnterPlate(b.ws, 'st2', 'a', 1);
+    await bbEnterPlate(c.ws, 'st2', 'b', 0);
+    await bbEnterPlate(d.ws, 'st2', 'b', 1);
     await Promise.all([voteA, voteB]);
 
     // A votes, then vanishes mid-vote (a raw drop, same as a network blip) — no bb-leave sent.

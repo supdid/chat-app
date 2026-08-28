@@ -560,7 +560,8 @@ html, body {
 }
 
 #view-skins-btn,
-#settings-btn {
+#settings-btn,
+#bb-leaderboard-btn {
   border: 1px solid rgba(255, 255, 255, 0.25);
   border-radius: 12px;
   padding: 0.55rem 1rem;
@@ -572,7 +573,8 @@ html, body {
 }
 
 #view-skins-btn:hover,
-#settings-btn:hover {
+#settings-btn:hover,
+#bb-leaderboard-btn:hover {
   background: #2fb6ac;
   color: #04211e;
   border-color: rgba(255, 255, 255, 0.4);
@@ -691,6 +693,104 @@ html, body {
 .settings-swatch-group {
   display: flex;
   gap: 0.5rem;
+}
+
+/* Same "solid near-black, full-screen" overlay treatment as #settings-panel, one z-index lower
+   since it's opened FROM mode-select (28) rather than alongside settings/shop. */
+#bb-leaderboard-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 27;
+  display: flex;
+  flex-direction: column;
+  background: rgba(4, 4, 6, 0.97);
+  color: #eaf6ff;
+}
+
+#bb-leaderboard-overlay .panel-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 1.2rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+  flex-shrink: 0;
+}
+
+#bb-leaderboard-overlay .panel-header h2 {
+  margin: 0;
+  font-size: 1.3rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+
+#bb-leaderboard-close-btn {
+  margin-left: auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.08);
+  color: #eaf6ff;
+  font-size: 1rem;
+  cursor: pointer;
+}
+#bb-leaderboard-close-btn:hover { background: rgba(255, 255, 255, 0.18); }
+
+#bb-leaderboard-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  padding: 1rem 1.2rem 0;
+  max-width: 480px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+/* Same toggle-group look as .settings-choice-btn, one size down (8 tabs need to fit). */
+.bb-lb-tab {
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 999px;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #eaf6ff;
+  background: rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+}
+.bb-lb-tab:hover { background: rgba(255, 255, 255, 0.14); }
+.bb-lb-tab.active {
+  background: #2fb6ac;
+  color: #04211e;
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+#bb-leaderboard-list {
+  list-style: none;
+  margin: 0 auto;
+  padding: 1rem 1.2rem 2rem;
+  max-width: 480px;
+  width: 100%;
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+#bb-leaderboard-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 0.5rem 0.8rem;
+  font-size: 0.9rem;
+}
+
+#bb-leaderboard-list .score {
+  color: #9fe0ff;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 
 .settings-swatch {
@@ -1531,6 +1631,11 @@ body::after {
 #touch-crouch { left: 18px; bottom: 140px; }
 #touch-jump { left: 96px; bottom: 140px; }
 #touch-knife { right: 18px; bottom: 190px; }
+/* Found by the Fight for Glory client-correctness audit: the 1/2 quick-swap hotkeys (switch
+   directly to any already-unlocked gun, not just the next upgrade rung) had no touch equivalent —
+   a touch player who upgraded past an earlier gun had no way back to it. Stacked above
+   touch-knife on the same right-edge column, same 50px rhythm as the crouch/jump row below it. */
+#touch-weapon-swap { right: 18px; bottom: 260px; }
 
 #touch-fire-buttons {
   position: absolute;
