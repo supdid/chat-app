@@ -2574,7 +2574,21 @@ let saveFlashTimer = null;
 // something the player didn't ask for. The manual Save button/P key keep that feedback exactly
 // as before, since there it IS the point — confirming "yes, that press worked."
 function saveGame(silent) {
-  if (dead) return; // no saving from the grave
+  // Found by the Fight for Glory bot-AI/economy/save audit: this guard already existed (matching
+  // tryUpgrade()/trySelectWeapon()/selectFists()'s own "no-ops while dead" behavior) but gave zero
+  // feedback, unlike those — pressing P (or the "still works from the pause screen" pause-menu
+  // path) right after dying, a very natural reflex since P is the save key, looked identical to a
+  // successful save with nothing to say otherwise. Reuses the exact same flash mechanism as a real
+  // save, just a different message, and still respects `silent` (autosave has nothing to show
+  // either way).
+  if (dead) {
+    if (!silent) {
+      saveBtn.textContent = "💾 Can't save now";
+      clearTimeout(saveFlashTimer);
+      saveFlashTimer = setTimeout(() => { saveBtn.textContent = '💾 Save (P)'; }, 1200);
+    }
+    return; // no saving from the grave
+  }
   try {
     localStorage.setItem(SAVE_KEY, JSON.stringify({ kills, weapon, wave, health, savedAt: Date.now() }));
   } catch { return; }
@@ -3070,6 +3084,13 @@ function spawnBot(fireInterval) {
     // A visibly smaller, paler recruit — cosmetic cue that this one goes down fast, same as
     // Juggernaut's bigger/darker treatment signals the opposite.
     bot.health = SWARM_HEALTH;
+    // Found by the Fight for Glory bot-AI/economy/save audit: missing the same bot.juggernaut =
+    // true treatment just above — without it, respawnBot() (which DOES special-case juggernaut's
+    // health but had nothing to check for swarm) brought every respawned Swarm bot back at full
+    // BOT_MAX_HEALTH instead of SWARM_HEALTH, silently defeating "8 frail enemies" the moment any
+    // of them died and its respawn timer elapsed, while still showing the small/pale "fragile"
+    // look that was no longer true.
+    bot.swarm = true;
     bodyMat.color.setHex(0xc98a6a);
     limbMat.color.setHex(0xa06a4a);
     headMat.color.setHex(0xd9a888);
@@ -3298,7 +3319,7 @@ function respawnBot(bot) {
   const [i, j] = randomBotCell(player.x, player.z);
   bot.x = i + 0.5;
   bot.z = j + 0.5;
-  bot.health = bot.juggernaut ? JUGGERNAUT_HEALTH : BOT_MAX_HEALTH;
+  bot.health = bot.juggernaut ? JUGGERNAUT_HEALTH : bot.swarm ? SWARM_HEALTH : BOT_MAX_HEALTH;
   bot.deadBot = false;
   bot.deathStyle = null; // a finisher launch is over once you're back
   bot.deathT = 0;
@@ -3311,10 +3332,16 @@ function respawnBot(bot) {
   bot.group.visible = true;
 }
 
+// Found by the Fight for Glory bot-AI/economy/save audit: callers used to fire a hit-marker/
+// sfxHit() unconditionally whenever a shot geometrically struck a bot mesh, even in Headhunter/
+// Berserker on exactly the hits those modes' own rules say should do nothing (a headhunter body
+// shot, a berserker gunshot) — actively misleading feedback that the weapon "worked" when the
+// mode's whole premise is that it didn't. Now returns whether the hit actually applied damage so
+// callers can gate the hit-marker on a real hit, not just a geometric one.
 function damageBot(bot, amount, killCredit, isHeadshot, isMelee) {
-  if (bot.deadBot) return;
-  if (mode === 'headhunter' && !isHeadshot) { bot.flashT = 0.12; return; } // body shots flinch the bot but do nothing — only headshots count
-  if (mode === 'berserker' && !isMelee) { bot.flashT = 0.12; return; } // gunfire flinches the bot but does nothing — only the knife kills
+  if (bot.deadBot) return false;
+  if (mode === 'headhunter' && !isHeadshot) { bot.flashT = 0.12; return false; } // body shots flinch the bot but do nothing — only headshots count
+  if (mode === 'berserker' && !isMelee) { bot.flashT = 0.12; return false; } // gunfire flinches the bot but does nothing — only the knife kills
   if (mode === 'oneshot') amount = bot.health; // any hit is lethal, whatever weapon dealt it
   bot.health -= amount;
   bot.flashT = 0.12;
@@ -3356,6 +3383,7 @@ function damageBot(bot, amount, killCredit, isHeadshot, isMelee) {
       }
     }
   }
+  return true;
 }
 
 // ---- Health packs ----
@@ -4588,11 +4616,16 @@ function shootOnce(spec) {
     const rec = hit && meshToBot.get(hit.object);
     const headBot = rec && rec.head ? rec.bot : null;
     let anyHit = false;
+    // Found by the Fight for Glory bot-AI/economy/save audit: this used to mark anyHit=true (and
+    // the hitscan branch below used to call showHitMarker unconditionally) for any bot the blast
+    // geometrically reached, even in Headhunter/Berserker where damageBot's own mode rules mean
+    // most of those hits apply zero damage — a false "your shot worked" confirmation on exactly
+    // the hits those modes say shouldn't count. damageBot's return value is now the source of
+    // truth for whether a hit actually landed.
     for (const bot of bots) {
       if (bot.deadBot) continue;
       if (Math.hypot(bot.x - end.x, 0.5 - end.y, bot.z - end.z) < 1.6) {
-        damageBot(bot, spec.damage, spec.headshotDoubleKill && bot === headBot ? 2 : 1, bot === headBot);
-        anyHit = true;
+        if (damageBot(bot, spec.damage, spec.headshotDoubleKill && bot === headBot ? 2 : 1, bot === headBot)) anyHit = true;
       }
     }
     if (anyHit) showHitMarker(!!headBot);
@@ -4600,8 +4633,7 @@ function shootOnce(spec) {
     const rec = meshToBot.get(hit.object);
     if (rec) {
       spawnImpact(hit.point.x, hit.point.y, hit.point.z, 0xc23b36, 5);
-      damageBot(rec.bot, rec.head ? spec.headshot : spec.damage, 1, rec.head);
-      showHitMarker(rec.head);
+      if (damageBot(rec.bot, rec.head ? spec.headshot : spec.damage, 1, rec.head)) showHitMarker(rec.head);
     } else {
       spawnImpact(hit.point.x, hit.point.y, hit.point.z, 0xa8a8a8, 5); // chips off the block
     }
