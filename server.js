@@ -2871,8 +2871,25 @@ function roomActivityList(room) {
 
 // Poll messages don't carry their vote tally in room.history (that'd go stale the moment
 // anyone votes) — attach current counts from SQLite only when actually sending history out.
-function attachPollVotes(historyEntries) {
-  return historyEntries.map((e) => (e.mediaType === 'poll' ? { ...e, votes: db.getPollVotes(e.id) } : e));
+//
+// Found by the poll-creation-UI audit: this used to spread the raw per-voter `db.getPollVotes`
+// result (every voter's real name paired with their optionIndex) straight onto the message sent
+// to EVERY joining client — the poll UI only ever renders aggregate counts and the viewer's own
+// vote highlighted, never anyone else's identity, so this handed every room member a full,
+// plaintext name-to-vote mapping for every poll in the room's history, trivially readable via
+// DevTools, with nothing in the UI ever claiming or needing that anonymity to be broken. Now
+// computes an aggregate `counts` array (safe for everyone) plus `myVote` resolved specifically
+// for `forName`, the one recipient this call is actually being sent to.
+function attachPollVotes(historyEntries, forName) {
+  return historyEntries.map((e) => {
+    if (e.mediaType !== 'poll') return e;
+    const allVotes = db.getPollVotes(e.id);
+    let optionCount = 0;
+    try { optionCount = JSON.parse(e.text).options.length; } catch {}
+    const counts = Array.from({ length: optionCount }, (_, i) => allVotes.filter((v) => v.optionIndex === i).length);
+    const mine = allVotes.find((v) => v.name === forName);
+    return { ...e, counts, myVote: mine ? mine.optionIndex : null };
+  });
 }
 
 function setRoomActivity(code, name, game) {
@@ -6154,7 +6171,7 @@ wss.on('connection', (ws, req) => {
       send(ws, {
         type: 'joined-room',
         code,
-        messages: attachPollVotes(room.history),
+        messages: attachPollVotes(room.history, ws.profile.name),
         users: roomUsers(code),
         name: dbRoom ? dbRoom.name : null,
         reactions: db.getReactionsForRoom(code, HISTORY_LIMIT),
@@ -6501,8 +6518,21 @@ wss.on('connection', (ws, req) => {
       // sqlite3 silently stores it as SQL NULL instead of throwing — a corrupted-looking vote
       // broadcast to the whole room for an option that was never actually selected.
       if (!Array.isArray(options) || !Number.isInteger(optionIndex) || optionIndex < 0 || optionIndex >= options.length) return;
+      const room = rooms.get(ws.room);
+      if (!room) return;
       db.setPollVote(messageId, ws.profile.name, optionIndex);
-      broadcastRoom(ws.room, { type: 'poll-voted', messageId, votes: db.getPollVotes(messageId) });
+      // Found by the poll-creation-UI audit: this used to be a single broadcastRoom call carrying
+      // the raw per-voter name/optionIndex list to every room member — see attachPollVotes' own
+      // comment above for why that leaked every voter's identity to everyone despite the UI only
+      // ever showing aggregate results. Sent per-connection instead so each recipient gets the
+      // same safe aggregate counts plus ONLY their own vote, never anyone else's.
+      const allVotes = db.getPollVotes(messageId);
+      const counts = options.map((_, i) => allVotes.filter((v) => v.optionIndex === i).length);
+      for (const client of room.clients) {
+        if (client.readyState !== client.OPEN) continue;
+        const mine = allVotes.find((v) => v.name === client.profile.name);
+        send(client, { type: 'poll-voted', messageId, counts, myVote: mine ? mine.optionIndex : null });
+      }
       return;
     }
 

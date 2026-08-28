@@ -2714,10 +2714,15 @@ describe('polls', () => {
     const posted = await waitFor(creator, (m) => m.type === 'message' && m.mediaType === 'poll');
 
     send(voter, { type: 'vote-poll', messageId: posted.id, optionIndex: 1 });
+    // Poll votes are aggregate-only on the wire (counts per option + the recipient's own myVote)
+    // since the poll-creation-UI audit fixed a plaintext voter-identity leak — see attachPollVotes'
+    // own comment in server.js. The creator didn't vote, so their myVote is null; the aggregate
+    // count for option 1 is what actually proves the vote landed.
     const voteUpdate = await waitFor(creator, (m) => m.type === 'poll-voted' && m.messageId === posted.id);
-    assert.ok(voteUpdate.votes.some((v) => v.name === 'PollVoter' && v.optionIndex === 1));
+    assert.equal(voteUpdate.counts[1], 1);
+    assert.equal(voteUpdate.myVote, null);
 
-    // A fresh join resends history via attachPollVotes(), which should carry the same vote.
+    // A fresh join resends history via attachPollVotes(), which should carry the same aggregate.
     const joiner = await connectWs();
     send(joiner, { type: 'join-server', username: 'PollJoiner' });
     await waitFor(joiner, (m) => m.type === 'joined-server');
@@ -2725,7 +2730,8 @@ describe('polls', () => {
     const joined = await waitFor(joiner, (m) => m.type === 'joined-room');
     const pollMsg = joined.messages.find((m) => m.id === posted.id);
     assert.ok(pollMsg, 'the poll message should be in the room history');
-    assert.ok(pollMsg.votes.some((v) => v.name === 'PollVoter' && v.optionIndex === 1), 'the recorded vote should survive a fresh join');
+    assert.equal(pollMsg.counts[1], 1, 'the recorded vote should survive a fresh join');
+    assert.equal(pollMsg.myVote, null, 'PollJoiner never voted, so their own myVote must be null, not someone else\'s');
   });
 
   test('vote-poll rejects a non-numeric optionIndex instead of writing NaN into the DB', async () => {

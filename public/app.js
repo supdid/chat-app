@@ -744,7 +744,7 @@ function handleServerMessage(data) {
       break;
 
     case 'poll-voted': {
-      seedPollVotes(data.messageId, data.votes);
+      seedPollVotes(data.messageId, data);
       const el = document.getElementById(`msg-${data.messageId}`);
       const bubble = el && el.querySelector('.bubble');
       const oldCard = bubble && bubble.querySelector('.poll-card');
@@ -875,6 +875,12 @@ function handleServerMessage(data) {
       updateGameLinks();
       saveRecentRoom(data.code, currentRoomName);
       showScreen(chatScreen);
+      // The history render loop above (data.messages.forEach(renderMessage)) runs while
+      // chatScreen still has the .hidden class, so every maybeScrollToBottom() call it triggers
+      // reads a display:none messagesEl (scrollHeight 0) and no-ops — the container then opens
+      // at the default scrollTop 0 (top) instead of the bottom. Force one real scroll now that
+      // the screen is actually visible and has real layout dimensions.
+      scrollToBottom();
       messageInput.focus();
       subscribeToPush();
       break;
@@ -1956,6 +1962,17 @@ function renderAnnouncementBanner() {
   }
   announcementBannerEl.classList.remove('hidden');
   announcementBannerEl.textContent = `📣 ${currentAnnouncement}`;
+}
+
+// Found by the poll-creation-UI audit: renderMessage/renderPoll already know to JSON.parse a
+// poll message's .text to get its real question, but every OTHER surface that displays a
+// message's .text verbatim (pinned banner, saved-messages panel, reply-quote preview) had no
+// equivalent — a poll's raw JSON blob (`{"question":"...","options":[...]}`) showed up literally
+// instead of the question. Shared here so all three surfaces stay in sync with renderPoll's own
+// parsing logic rather than three separate hand-rolled copies.
+function pollDisplayText(m) {
+  if (m.mediaType !== 'poll') return m.text;
+  try { return `📊 ${JSON.parse(m.text).question}`; } catch { return m.text; }
 }
 
 // --- Pinned messages banner (a room can have several pins now, not just one) ---
@@ -5061,7 +5078,14 @@ dmForm.addEventListener('submit', (e) => {
 });
 
 // --- Polls ---
-const pollVotesByMessage = new Map(); // messageId -> Map<name, optionIndex>
+// Found by the poll-creation-UI audit: this used to be messageId -> Map<name, optionIndex>,
+// built from a raw per-voter name/optionIndex list the server broadcast to every room member —
+// the poll UI only ever displays aggregate counts + your own vote highlighted, never anyone
+// else's identity, but the full name-to-vote mapping was sitting in plaintext in every
+// 'poll-voted'/'joined-room' WS message regardless, trivially readable via DevTools even though
+// nothing in the UI ever claimed anonymity. Server now sends only an aggregate counts array plus
+// this specific recipient's own myVote — this map mirrors that shape 1:1.
+const pollVotesByMessage = new Map(); // messageId -> { counts: number[], myVote: number|null }
 
 function addPollOptionRow(value) {
   if (pollOptionsListEl.children.length >= 6) return;
@@ -5113,20 +5137,16 @@ pollCreateForm.addEventListener('submit', (e) => {
   pollOverlay.classList.add('hidden');
 });
 
-function seedPollVotes(messageId, votes) {
-  const map = new Map();
-  (votes || []).forEach((v) => map.set(v.name, v.optionIndex));
-  pollVotesByMessage.set(messageId, map);
+function seedPollVotes(messageId, data) {
+  pollVotesByMessage.set(messageId, { counts: (data && data.counts) || [], myVote: data && data.myVote != null ? data.myVote : null });
 }
 
 function renderPoll(container, data) {
   let poll;
   try { poll = JSON.parse(data.text); } catch { return; }
-  if (!pollVotesByMessage.has(data.id)) seedPollVotes(data.id, data.votes);
-  const votes = pollVotesByMessage.get(data.id) || new Map();
-  const counts = poll.options.map((_, i) => [...votes.values()].filter((v) => v === i).length);
+  if (!pollVotesByMessage.has(data.id)) seedPollVotes(data.id, data);
+  const { counts, myVote } = pollVotesByMessage.get(data.id) || { counts: poll.options.map(() => 0), myVote: null };
   const total = counts.reduce((a, b) => a + b, 0);
-  const myVote = myProfile ? votes.get(myProfile.name) : undefined;
 
   const card = document.createElement('div');
   card.className = 'poll-card';
