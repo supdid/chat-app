@@ -15,6 +15,78 @@
 </head>
 <body>
 
+  <div id="loading-screen">
+    <img id="loading-banner" src="images/blockbattle-banner.jpg" alt="Fight for Glory">
+    <div id="loading-scrim"></div>
+    <div id="loading-content">
+      <div id="loading-title">Loading assets&hellip;</div>
+      <div id="loading-bar-wrap"><div id="loading-bar-fill"></div></div>
+      <div id="loading-tip"></div>
+    </div>
+  </div>
+
+  <script>
+    // Self-contained on purpose — the actual game (three.js + blockbattle.js, both loaded via
+    // blocking <script> tags below) has no genuinely slow async asset step to gate on, so this is
+    // a themed minimum-duration splash rather than a real progress bar, same accepted pattern
+    // AI Studio's loading screen already uses elsewhere in this app. Kept out of blockbattle.js
+    // (5000+ lines already) to stay a small, easily-removable, zero-blast-radius addition.
+    (function () {
+      const MIN_MS = 2600;
+      const TIP_INTERVAL_MS = 750;
+      const TIPS = [
+        'Sharpening blades…', 'Summoning the crimson dragon…', 'Waking the azure tiger…',
+        'Loading the arena…', 'Calibrating your aim…', 'Stocking ammo crates…',
+        'Polishing the Glock…', 'Reticulating splines…', 'Warming up respawns…',
+        'Tuning the crosshair…', 'Charging jump shards…', 'Provoking the Juggernaut…',
+        'Oiling the AK47…', 'Briefing the sidekicks…', 'Setting up the wave counter…',
+        'Chalking the arena floor…', 'Testing the slide mechanics…', 'Counting headshots…',
+      ];
+      // Fisher-Yates so tips still cycle fully (no repeats until every tip is shown) but in a
+      // different order each visit — "random stuff", per the ask, without ever back-to-back
+      // repeating the same line.
+      for (let i = TIPS.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [TIPS[i], TIPS[j]] = [TIPS[j], TIPS[i]];
+      }
+
+      const screenEl = document.getElementById('loading-screen');
+      const barEl = document.getElementById('loading-bar-fill');
+      const tipEl = document.getElementById('loading-tip');
+      const startedAt = performance.now();
+
+      let tipIndex = 0;
+      tipEl.textContent = TIPS[0];
+      const tipTimer = setInterval(() => {
+        tipIndex = (tipIndex + 1) % TIPS.length;
+        tipEl.textContent = TIPS[tipIndex];
+      }, TIP_INTERVAL_MS);
+
+      // Same asymptotic-ease-toward-90%-then-snap-on-real-completion technique as aistudio.js's
+      // loading screen — never looks "done" before the page actually is.
+      let progress = 0;
+      const barTimer = setInterval(() => {
+        progress += (92 - progress) * 0.08;
+        barEl.style.width = progress + '%';
+      }, 80);
+
+      function reveal() {
+        clearInterval(tipTimer);
+        clearInterval(barTimer);
+        barEl.style.width = '100%';
+        setTimeout(() => {
+          screenEl.classList.add('loaded');
+          setTimeout(() => screenEl.remove(), 500); // matches the CSS fade-out duration below
+        }, 150); // a beat to actually see the bar hit 100% before fading
+      }
+
+      window.addEventListener('load', () => {
+        const elapsed = performance.now() - startedAt;
+        setTimeout(reveal, Math.max(0, MIN_MS - elapsed));
+      });
+    })();
+  </script>
+
   <a id="back-link" href="index.html">&larr; Back to chat</a>
 
   <canvas id="map"></canvas>
