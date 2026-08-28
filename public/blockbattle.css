@@ -383,11 +383,14 @@ html, body {
   text-align: center;
 }
 
-#mode-name {
-  font-size: 3.4rem;
-  font-weight: 900;
-  letter-spacing: 0.12em;
-  text-shadow: 0 3px 12px rgba(0, 0, 0, 0.6);
+#mode-banner {
+  width: min(560px, 90vw);
+  max-width: 100%;
+  border-radius: 14px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  /* Slight inset so the banner reads as a card sitting on #mode-select's own translucent
+     background rather than a flat edge-to-edge image. */
+  border: 1px solid rgba(255, 255, 255, 0.15);
 }
 
 #mode-sub {
