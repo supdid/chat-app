@@ -2118,13 +2118,62 @@ const BB_SKINS = [
 ];
 const BB_SKIN_BY_ID = Object.fromEntries(BB_SKINS.map((s) => [s.id, s]));
 
+// ---- 400 numbered Avatars ----
+// A second, separate purchasable pool from BB_SKINS above (400 numbered "fighters" rather than 49
+// named skins, priced by number, matching a reference poster the user supplied), but sharing the
+// exact same underlying appearance mechanism — equipping one just sets equippedSkin to its id, so
+// every existing skin code path (ensureLocalAvatar, applyLocalAvatarSkin, spawnRemotePlayer, and
+// bb-join's own `skin` field that gets broadcast to other Online Play players) already renders it
+// correctly with zero protocol changes. This app draws every character/skin as flat-colored
+// primitives already (no external texture/model assets anywhere) — 400 unique detailed portraits
+// isn't reproducible that way, so these are procedurally colored badges instead: a full hue sweep
+// across the set, with the last 50 (351-400) getting a genuinely glowing "legendary" emissive
+// material (see applyGlowToMats below) to match the fiery empowered-fighter tier in the reference
+// art's final row.
+function bbAvatarPrice(n) {
+  if (n === 1) return 0; // free starter, same idea as skins' own free 'default'
+  if (n <= 350) return Math.round(20 + (n - 2) * 8); // 20 .. ~2792
+  return Math.round(3200 + (n - 351) * 200); // 3200 .. 13000 — the steep legendary-tier jump
+}
+const BB_AVATARS = Array.from({ length: 400 }, (_, i) => {
+  const n = i + 1;
+  const legendary = n > 350;
+  // *47 (coprime-ish with 360) spreads consecutive numbers across the hue wheel rather than
+  // stepping through it in a slow, boring gradient.
+  const hue = ((n - 1) * 47) % 360 / 360;
+  const body = new THREE.Color().setHSL(hue, legendary ? 0.85 : 0.55, legendary ? 0.35 : 0.42).getHex();
+  const limb = new THREE.Color().setHSL(hue, legendary ? 0.85 : 0.55, legendary ? 0.22 : 0.28).getHex();
+  const head = new THREE.Color().setHSL(hue, legendary ? 0.9 : 0.55, legendary ? 0.55 : 0.62).getHex();
+  return {
+    id: `av${n}`, number: n, name: `Fighter #${n}`, price: bbAvatarPrice(n),
+    body, limb, head, legendary,
+    glow: legendary ? new THREE.Color().setHSL(hue, 1, 0.55).getHex() : null,
+  };
+});
+for (const a of BB_AVATARS) BB_SKIN_BY_ID[a.id] = a;
+
+// Applies (or clears, if `skin.glow` is falsy) an emissive glow across a character's three
+// materials — shared by ensureLocalAvatar/applyLocalAvatarSkin/spawnRemotePlayer so a legendary
+// avatar's glow, and clearing it when switching away to a non-legendary skin, only needs writing
+// once. MeshLambertMaterial's `emissive` is unlit (always visible regardless of scene lighting),
+// which is exactly the "this one visibly glows" effect the reference art's top tier has.
+function applyGlowToMats(mats, skin) {
+  const glow = skin.glow || 0x000000;
+  const intensity = skin.glow ? 0.65 : 0;
+  for (const mat of mats) {
+    mat.emissive.setHex(glow);
+    mat.emissiveIntensity = intensity;
+  }
+}
+
 const SKINS_OWNED_KEY = 'valk-bb-skins-owned';
 function loadOwnedSkins() {
   try {
     const saved = new Set(JSON.parse(localStorage.getItem(SKINS_OWNED_KEY)) || []);
     saved.add('default'); // always owned, whatever's in storage
+    saved.add('av1'); // free starter avatar (price 0, same idea as skins' own 'default')
     return saved;
-  } catch { return new Set(['default']); }
+  } catch { return new Set(['default', 'av1']); }
 }
 function saveOwnedSkins(set) {
   try { localStorage.setItem(SKINS_OWNED_KEY, JSON.stringify([...set])); } catch {}
@@ -2486,6 +2535,110 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !skinShopOverlay.classList.contains('hidden')) skinShopOverlay.classList.add('hidden');
 });
 
+// ---- Avatar Shop UI ----
+// Same overlay/grid/buy-confirm/search shape as the skin shop right above — see BB_AVATARS' own
+// header comment for why this is a separate purchasable pool sharing the same underlying
+// appearance mechanism rather than a whole parallel rendering system.
+const avatarShopOverlay = document.getElementById('avatar-shop');
+const avatarShopGrid = document.getElementById('avatar-shop-grid');
+const avatarShopSearchEl = document.getElementById('avatar-shop-search');
+let avatarShopSearchQuery = '';
+
+function renderAvatarShopGrid() {
+  avatarShopGrid.innerHTML = '';
+  const q = avatarShopSearchQuery.trim();
+  const avatars = q ? BB_AVATARS.filter((a) => String(a.number).includes(q)) : BB_AVATARS;
+  for (const a of avatars) {
+    const card = document.createElement('div');
+    card.className = 'avatar-card' + (a.legendary ? ' legendary' : '');
+
+    const swatch = document.createElement('div');
+    swatch.className = 'avatar-card-swatch';
+    swatch.style.background = `linear-gradient(135deg, ${hex6(a.head)} 0%, ${hex6(a.body)} 55%, ${hex6(a.limb)} 100%)`;
+    swatch.textContent = a.number;
+
+    const number = document.createElement('div');
+    number.className = 'avatar-card-number';
+    number.textContent = `#${a.number}`;
+
+    const action = document.createElement('button');
+    action.type = 'button';
+    const owned = ownedSkins.has(a.id);
+    const equipped = equippedSkin === a.id;
+    if (equipped) {
+      action.className = 'avatar-card-action equipped';
+      action.textContent = '✓';
+      action.disabled = true;
+    } else if (owned) {
+      action.className = 'avatar-card-action equip';
+      action.textContent = 'Equip';
+      action.addEventListener('click', () => {
+        equippedSkin = a.id;
+        saveEquippedSkin(equippedSkin);
+        if (localAvatar) applyLocalAvatarSkin();
+        renderAvatarShopGrid();
+      });
+    } else {
+      action.className = 'avatar-card-action buy';
+      action.textContent = `🪙${a.price.toLocaleString()}`;
+      action.disabled = coins < a.price;
+      // Same two-click confirm as the skin shop's own buy button — see its comment for why.
+      action.addEventListener('click', () => {
+        if (coins < a.price) return;
+        if (action.dataset.confirm === '1') {
+          coins -= a.price;
+          saveCoins(coins);
+          ownedSkins.add(a.id);
+          saveOwnedSkins(ownedSkins);
+          updateCoinDisplays();
+          renderAvatarShopGrid();
+          return;
+        }
+        action.dataset.confirm = '1';
+        action.textContent = 'Confirm?';
+        action.classList.add('confirming');
+        clearTimeout(action._confirmTimer);
+        action._confirmTimer = setTimeout(() => {
+          action.dataset.confirm = '0';
+          action.textContent = `🪙${a.price.toLocaleString()}`;
+          action.classList.remove('confirming');
+        }, 2500);
+      });
+    }
+
+    card.append(swatch, number, action);
+    avatarShopGrid.appendChild(card);
+  }
+}
+
+document.getElementById('view-avatars-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  avatarShopSearchQuery = '';
+  avatarShopSearchEl.value = '';
+  renderAvatarShopGrid();
+  avatarShopOverlay.classList.remove('hidden');
+});
+document.getElementById('avatar-shop-close-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  avatarShopOverlay.classList.add('hidden');
+});
+avatarShopSearchEl.addEventListener('input', () => {
+  avatarShopSearchQuery = avatarShopSearchEl.value;
+  renderAvatarShopGrid();
+});
+avatarShopSearchEl.addEventListener('click', (e) => e.stopPropagation());
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !avatarShopOverlay.classList.contains('hidden') && avatarShopSearchQuery) {
+    avatarShopSearchQuery = '';
+    avatarShopSearchEl.value = '';
+    renderAvatarShopGrid();
+    e.stopImmediatePropagation();
+  }
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !avatarShopOverlay.classList.contains('hidden')) avatarShopOverlay.classList.add('hidden');
+});
+
 // ---- Best run ----
 // localStorage, so the number to beat survives refreshes. A run is one life;
 // the best is the furthest wave, kills breaking ties.
@@ -2561,6 +2714,21 @@ function loadBestSwarm() {
 function saveBestSwarm(k) {
   try { localStorage.setItem(BEST_SWARM_KEY, JSON.stringify(k)); } catch {}
 }
+
+// ---- Play time (feeds the Play Time leaderboard — see syncPlaytime) ----
+// Kept as its own localStorage key rather than folded into SAVE_KEY below, which only writes at
+// meaningful checkpoints (Save button, a kill, a new wave) — this needs to accumulate every tick,
+// and flushing SAVE_KEY that often would be wasteful and would also spam the save-button's own
+// "Saved ✓" confirmation flash for something the player never asked to save.
+const PLAYTIME_KEY = 'valk-fps-playtime';
+function loadTotalPlaytimeSec() {
+  try { return Math.max(0, parseInt(localStorage.getItem(PLAYTIME_KEY), 10) || 0); } catch { return 0; }
+}
+function saveTotalPlaytimeSec(sec) {
+  try { localStorage.setItem(PLAYTIME_KEY, String(Math.floor(sec))); } catch {}
+}
+let totalPlaytimeSec = loadTotalPlaytimeSec();
+let playtimeFlushAccum = 0; // seconds accumulated since the last localStorage write
 
 // ---- Save & continue ----
 // The Save button (or P) keeps your kills, weapon, wave, and health in
@@ -3369,6 +3537,10 @@ function damageBot(bot, amount, killCredit, isHeadshot, isMelee) {
     for (const key of WEAPON_ORDER) {
       if (killsBefore < WEAPONS[key].unlock && kills >= WEAPONS[key].unlock) {
         showWaveBanner(`⭐ LEVEL UP! Level ${getLevel()}`);
+        // Only catches level-ups within the 8-weapon ladder (this loop's own scope) — getLevel()
+        // keeps climbing indefinitely past that (see its own comment), which the periodic
+        // setInterval sync near the bottom of this file catches within a minute instead.
+        syncLevel();
         // Skip opening the picker here if an already-in-flight enemy bullet resolved earlier in
         // this same tick() and killed the player (bullet-vs-player collision runs before this
         // point) — pointerlockchange/`paused` only flip asynchronously, so `dead` is the one
@@ -3715,6 +3887,7 @@ function spawnRemotePlayer(id, name, level, pos) {
   const bodyMat = new THREE.MeshLambertMaterial({ color: skin.body });
   const limbMat = new THREE.MeshLambertMaterial({ color: skin.limb });
   const headMat = new THREE.MeshLambertMaterial({ color: skin.head });
+  applyGlowToMats([bodyMat, limbMat, headMat], skin); // a legendary avatar equipped by someone else glows for you too
   const group = new THREE.Group();
   const { legs, arms } = addLimbs(group, bodyMat, limbMat);
   const head = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.28, 0.28), headMat);
@@ -3784,6 +3957,7 @@ function ensureLocalAvatar() {
   const bodyMat = new THREE.MeshLambertMaterial({ color: skin.body });
   const limbMat = new THREE.MeshLambertMaterial({ color: skin.limb });
   const headMat = new THREE.MeshLambertMaterial({ color: skin.head });
+  applyGlowToMats([bodyMat, limbMat, headMat], skin);
   const group = new THREE.Group();
   const { legs, arms } = addLimbs(group, bodyMat, limbMat);
   const head = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.28, 0.28), headMat);
@@ -3803,6 +3977,7 @@ function applyLocalAvatarSkin() {
   localAvatar.bodyMat.color.setHex(skin.body);
   localAvatar.limbMat.color.setHex(skin.limb);
   localAvatar.headMat.color.setHex(skin.head);
+  applyGlowToMats([localAvatar.bodyMat, localAvatar.limbMat, localAvatar.headMat], skin);
 }
 function removeLocalAvatar() {
   if (!localAvatar) return;
@@ -4272,6 +4447,16 @@ const BB_MODE_LABELS = {
   wave: '🌊 Wave Challenge', fs: '⚔️ FS', oneshot: '💥 One Shot', headhunter: '🎯 Headhunter',
   juggernaut: '👹 Juggernaut', berserker: '🔪 Berserker', vampire: '🧛 Vampire', swarm: '🐝 Swarm',
 };
+// The leaderboard OVERLAY shows 3 more tabs beyond the 8 startable solo modes above — Level and
+// Play Time ride the same arcade-* protocol (client-reported, room-scoped, same accepted tradeoff
+// as every score here), Win Streak does not (see server.js's bumpBbWinStreak: it's server-
+// authoritative and global, since the server already knows every duel/match outcome and Online
+// Play is always one shared lobby regardless of room). Kept as a separate map from BB_MODE_KEYS
+// since those two ('level'/'playtime') aren't real startMode() modes — only this overlay ever
+// needs to know about them.
+const BB_LEADERBOARD_EXTRA_KEYS = { level: 'bblevel', playtime: 'bbplaytime' };
+const BB_LEADERBOARD_EXTRA_LABELS = { level: '⭐ Level', playtime: '⏱️ Play Time' };
+const BB_LEADERBOARD_TAB_ORDER = [...Object.keys(BB_MODE_KEYS), 'level', 'playtime', 'winstreak'];
 let arcadeWs = null;
 let arcadeJoinedGame = null; // which BB_MODE_KEYS value the current connection is arcade-joined for
 let arcadeLatestScores = [];
@@ -4285,9 +4470,13 @@ function arcadeSend(obj) {
 // which always launches from a room's own menu) — falls back to the same shared 'GLOBAL-LOBBY'
 // bucket Online Play already uses when there's no ?room=, so there's always somewhere for a score
 // to land instead of silently having nowhere to go.
-function arcadeJoinMode(modeKey) {
-  const game = BB_MODE_KEYS[modeKey];
-  if (!game) return; // Online Play ('online-play-btn') has no BB_MODE_KEYS entry — not an arcade mode
+//
+// Lower-level join, keyed by the raw ARCADE_LEADERBOARD_KEY game string rather than a BB_MODE_KEYS
+// entry — arcadeJoinMode (below) is the thin wrapper every real startMode() call site uses; the
+// leaderboard overlay's Level/Play Time tabs call this directly since those two aren't real
+// startable modes.
+function arcadeJoinGame(game) {
+  if (!game) return;
   const doJoin = () => {
     arcadeJoinedGame = game;
     arcadeSend({ type: 'arcade-join', code: bbRoomCode || 'GLOBAL-LOBBY', game, name: bbPlayerName || 'Player' });
@@ -4314,15 +4503,111 @@ function arcadeJoinMode(modeKey) {
   });
 }
 
-function arcadeSubmitScore(modeKey, score) {
+function arcadeJoinMode(modeKey) {
   const game = BB_MODE_KEYS[modeKey];
+  if (!game) return; // Online Play ('online-play-btn') has no BB_MODE_KEYS entry — not an arcade mode
+  arcadeJoinGame(game);
+}
+
+function arcadeSubmitScoreRaw(game, score) {
   if (!game) return;
-  // A death can land before this connection's own 'open' handler has actually fired and sent the
-  // join (fast/lucky-first-life runs) — arcade-submit-score silently no-ops server-side without a
-  // matching arcadeRoom on the connection anyway, so this is just avoiding a doomed send, not a
-  // correctness requirement.
+  // A death (or a level-up/playtime tick) can land before this connection's own 'open' handler has
+  // actually fired and sent the join (fast/lucky-first-life runs) — arcade-submit-score silently
+  // no-ops server-side without a matching arcadeRoom on the connection anyway, so this is just
+  // avoiding a doomed send, not a correctness requirement.
   if (arcadeJoinedGame !== game) return;
   arcadeSend({ type: 'arcade-submit-score', score });
+}
+
+function arcadeSubmitScore(modeKey, score) {
+  arcadeSubmitScoreRaw(BB_MODE_KEYS[modeKey], score);
+}
+
+// ---- Level / Play Time background sync ----
+// Both ride the same arcade-* protocol as the 8 solo modes, but on their OWN dedicated connection
+// rather than sharing arcadeWs — that one is bound to whichever solo mode is currently being
+// played (rebinding it here would break the current run's own mode-score submission at its next
+// death, since arcadeSubmitScoreRaw's own arcadeJoinedGame check would then reject it). Joined
+// once, held open for the page's lifetime, and just resubmits in place — no rejoin needed since
+// the game key never changes on this connection.
+// Two small dedicated connections rather than one shared one — an earlier version tried to share
+// a single connection and rebind it between 'bblevel'/'bbplaytime' as needed, but syncPlaytime()
+// and syncLevel() firing back-to-back off the same setInterval tick meant the second rejoin could
+// stomp the first's still-pending submit before it fired, silently dropping it (found in review
+// before this ever shipped). Each connection here joins its ONE game exactly once, ever, and just
+// resubmits in place after that — no rejoin logic, no race.
+let bbLevelWs = null;
+let bbLevelJoined = false;
+let lastSubmittedLevel = 0;
+let bbPlaytimeWs = null;
+let bbPlaytimeJoined = false;
+
+function ensureBbLevelWs() {
+  if (bbLevelWs) return;
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  bbLevelWs = new WebSocket(`${protocol}//${location.host}`);
+  bbLevelWs.addEventListener('open', () => {
+    bbLevelJoined = true;
+    bbLevelWs.send(JSON.stringify({ type: 'arcade-join', code: bbRoomCode || 'GLOBAL-LOBBY', game: 'bblevel', name: bbPlayerName || 'Player' }));
+  });
+  bbLevelWs.addEventListener('close', () => { bbLevelWs = null; bbLevelJoined = false; });
+}
+
+function ensureBbPlaytimeWs() {
+  if (bbPlaytimeWs) return;
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  bbPlaytimeWs = new WebSocket(`${protocol}//${location.host}`);
+  bbPlaytimeWs.addEventListener('open', () => {
+    bbPlaytimeJoined = true;
+    bbPlaytimeWs.send(JSON.stringify({ type: 'arcade-join', code: bbRoomCode || 'GLOBAL-LOBBY', game: 'bbplaytime', name: bbPlayerName || 'Player' }));
+  });
+  bbPlaytimeWs.addEventListener('close', () => { bbPlaytimeWs = null; bbPlaytimeJoined = false; });
+}
+
+// A death (or a level-up/playtime tick) can land before this connection's own 'open' handler has
+// fired the join yet — arcade-submit-score silently no-ops server-side without a matching
+// arcadeRoom anyway, so the readiness checks below are just avoiding a doomed send, not a
+// correctness requirement; the next periodic sync tick picks it back up regardless.
+function syncLevel() {
+  const level = getLevel();
+  if (level <= lastSubmittedLevel) return;
+  ensureBbLevelWs();
+  // Only recorded as submitted once actually sent — updating this optimistically before knowing
+  // the connection was even open yet would permanently skip the retry the next periodic tick was
+  // relying on (level would already read as "not changed" against the stale recorded value).
+  if (bbLevelWs && bbLevelWs.readyState === WebSocket.OPEN && bbLevelJoined) {
+    bbLevelWs.send(JSON.stringify({ type: 'arcade-submit-score', score: level }));
+    lastSubmittedLevel = level;
+  }
+}
+
+function syncPlaytime() {
+  const mins = Math.floor(totalPlaytimeSec / 60);
+  if (mins <= 0) return;
+  ensureBbPlaytimeWs();
+  if (bbPlaytimeWs && bbPlaytimeWs.readyState === WebSocket.OPEN && bbPlaytimeJoined) {
+    bbPlaytimeWs.send(JSON.stringify({ type: 'arcade-submit-score', score: mins }));
+  }
+}
+
+// ---- Win streak leaderboard (global, server-authoritative — see server.js's bumpBbWinStreak) ----
+let winstreakWs = null;
+
+function requestWinstreakLeaderboard() {
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  if (!winstreakWs || winstreakWs.readyState === WebSocket.CLOSED) {
+    winstreakWs = new WebSocket(`${protocol}//${location.host}`);
+    winstreakWs.addEventListener('open', () => winstreakWs.send(JSON.stringify({ type: 'bb-winstreak-leaderboard' })));
+    winstreakWs.addEventListener('message', (event) => {
+      let data;
+      try { data = JSON.parse(event.data); } catch { return; }
+      if (data.type === 'bb-winstreak-leaderboard-result' && arcadeLeaderboardMode === 'winstreak') {
+        renderLeaderboardRows(data.scores || [], (score) => `🔥 ${score}`);
+      }
+    });
+    return;
+  }
+  if (winstreakWs.readyState === WebSocket.OPEN) winstreakWs.send(JSON.stringify({ type: 'bb-winstreak-leaderboard' }));
 }
 
 const bbLeaderboardBtn = document.getElementById('bb-leaderboard-btn');
@@ -4331,40 +4616,62 @@ const bbLeaderboardTabs = document.getElementById('bb-leaderboard-tabs');
 const bbLeaderboardList = document.getElementById('bb-leaderboard-list');
 const bbLeaderboardCloseBtn = document.getElementById('bb-leaderboard-close-btn');
 
-function renderArcadeLeaderboard() {
-  if (BB_MODE_KEYS[arcadeLeaderboardMode] !== arcadeJoinedGame) return; // stale response from a since-switched tab
+// Minutes -> "Xh Ym" (or just "Xm" under an hour) — the raw integer-minutes score this app
+// otherwise shows verbatim (like every other leaderboard here) would read as a meaningless big
+// number for a stat that's fundamentally a duration.
+function formatPlaytimeMinutes(mins) {
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+function renderLeaderboardRows(scores, formatScore) {
   bbLeaderboardList.innerHTML = '';
-  if (!arcadeLatestScores.length) {
+  if (!scores.length) {
     const li = document.createElement('li');
     li.textContent = 'No scores yet — play a run!';
     bbLeaderboardList.appendChild(li);
     return;
   }
-  arcadeLatestScores.forEach((s, i) => {
+  scores.forEach((s, i) => {
     const li = document.createElement('li');
     const name = document.createElement('span');
     name.textContent = `${i + 1}. ${s.name}`;
     const score = document.createElement('span');
     score.className = 'score';
-    score.textContent = s.score;
+    score.textContent = formatScore ? formatScore(s.score) : s.score;
     li.append(name, score);
     bbLeaderboardList.appendChild(li);
   });
 }
 
-function openBbLeaderboard(modeKey) {
-  arcadeLeaderboardMode = modeKey;
+function renderArcadeLeaderboard() {
+  const game = BB_MODE_KEYS[arcadeLeaderboardMode] || BB_LEADERBOARD_EXTRA_KEYS[arcadeLeaderboardMode];
+  if (game !== arcadeJoinedGame) return; // stale response from a since-switched tab
+  renderLeaderboardRows(arcadeLatestScores, arcadeLeaderboardMode === 'playtime' ? formatPlaytimeMinutes : null);
+}
+
+function openBbLeaderboard(tabKey) {
+  arcadeLeaderboardMode = tabKey;
   bbLeaderboardTabs.innerHTML = '';
-  Object.keys(BB_MODE_KEYS).forEach((key) => {
+  BB_LEADERBOARD_TAB_ORDER.forEach((key) => {
     const tab = document.createElement('button');
     tab.type = 'button';
-    tab.className = 'bb-lb-tab' + (key === modeKey ? ' active' : '');
-    tab.textContent = BB_MODE_LABELS[key];
+    tab.className = 'bb-lb-tab' + (key === tabKey ? ' active' : '');
+    tab.textContent = key === 'winstreak' ? '🔥 Win Streak (Global)' : BB_MODE_LABELS[key] || BB_LEADERBOARD_EXTRA_LABELS[key];
     tab.addEventListener('click', () => openBbLeaderboard(key));
     bbLeaderboardTabs.appendChild(tab);
   });
   bbLeaderboardList.innerHTML = '<li>Loading…</li>';
-  arcadeJoinMode(modeKey);
+  if (tabKey === 'winstreak') {
+    requestWinstreakLeaderboard();
+  } else if (BB_MODE_KEYS[tabKey]) {
+    arcadeJoinMode(tabKey);
+  } else {
+    // Level/Play Time — not a real startMode() mode, so arcadeJoinMode's own BB_MODE_KEYS lookup
+    // would reject it; join directly with the extra-key map instead.
+    arcadeJoinGame(BB_LEADERBOARD_EXTRA_KEYS[tabKey]);
+  }
   bbLeaderboardOverlay.classList.remove('hidden');
 }
 
@@ -5048,6 +5355,19 @@ function tick(now) {
     return;
   }
 
+  // Play time counts whenever a mode is actually active and not paused — not gated on !dead, since
+  // sitting on the death screen mid-run is still part of a play session, same spirit as "screen
+  // time," not "only while actively shooting." Flushed to localStorage every 10s of accumulated
+  // time rather than every tick, which would be a wasteful write on every single frame.
+  if (mode !== null) {
+    totalPlaytimeSec += dt;
+    playtimeFlushAccum += dt;
+    if (playtimeFlushAccum >= 10) {
+      playtimeFlushAccum = 0;
+      saveTotalPlaytimeSec(totalPlaytimeSec);
+    }
+  }
+
   let fwd = 0;
   let strafe = 0;
   if (!dead) {
@@ -5729,3 +6049,19 @@ updateWeaponHud();
 updateAmmoHud();
 updateWaveHud();
 requestAnimationFrame(tick);
+
+// Periodic background sync for the Play Time leaderboard — deliberately not tied to any specific
+// gameplay event (unlike Level, which only ever needs to move on an actual level-up) since play
+// time changes continuously just by having the tab open. Level is included here too as a low-
+// frequency safety net in case a level-up's own sync (see the WEAPON_ORDER loop in damageBot)
+// somehow got missed — cheap to double-check since syncLevel() itself no-ops when nothing's changed.
+setInterval(() => { syncPlaytime(); syncLevel(); }, 60000);
+
+// Best-effort — a real network send during pagehide isn't guaranteed to complete, but this is the
+// same "accepted low-severity tradeoff" every other self-reported stat in this app already lives
+// with (see arcade-submit-score's own comment on client-computed scores), not a correctness gap
+// worth a sendBeacon/keepalive rework for a stat that also gets flushed every 10s regardless.
+window.addEventListener('pagehide', () => {
+  saveTotalPlaytimeSec(totalPlaytimeSec);
+  syncPlaytime();
+});

@@ -1091,6 +1091,151 @@ html, body {
 .skin-card-action.equip:hover { background: rgba(255, 255, 255, 0.24); }
 .skin-card-action.equipped { background: rgba(47, 182, 172, 0.25); color: #6fe0d3; cursor: default; }
 
+/* ---- Avatar shop (400 numbered avatars) ---- */
+/* Same "solid near-black, full-screen" shape as #skin-shop, one z-index lower since it's opened
+   from the same mode-select footer and the two are never open at once. */
+#avatar-shop {
+  position: fixed;
+  inset: 0;
+  z-index: 28;
+  display: flex;
+  flex-direction: column;
+  background: rgba(4, 4, 6, 0.97);
+  color: #eaf6ff;
+}
+
+#avatar-shop-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 1.2rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+  flex-shrink: 0;
+}
+
+#avatar-shop-title {
+  font-size: 1.3rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+
+#avatar-shop-coins {
+  margin-left: auto;
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: #ffd54f;
+}
+
+#avatar-shop-close-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.08);
+  color: #eaf6ff;
+  font-size: 1rem;
+  cursor: pointer;
+}
+#avatar-shop-close-btn:hover { background: rgba(255, 255, 255, 0.18); }
+
+#avatar-shop-sub {
+  padding: 0.7rem 1.2rem 0;
+  font-size: 0.78rem;
+  color: rgba(234, 246, 255, 0.6);
+  flex-shrink: 0;
+}
+
+#avatar-shop-search {
+  flex-shrink: 0;
+  margin: 0.6rem 1.2rem 0;
+  padding: 0.6rem 0.9rem;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.06);
+  color: #eaf6ff;
+  font-size: 0.9rem;
+}
+#avatar-shop-search::placeholder { color: rgba(234, 246, 255, 0.5); }
+#avatar-shop-search:focus { outline: none; border-color: #2fb6ac; background: rgba(255, 255, 255, 0.1); }
+
+/* Denser than #skin-shop-grid — 400 small numbered badges rather than 49 named swatches. */
+#avatar-shop-grid {
+  flex: 1;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: 0.6rem;
+  padding: 1rem 1.2rem 1.6rem;
+  align-content: start;
+}
+
+.avatar-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 12px;
+  padding: 0.5rem 0.4rem;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.avatar-card-swatch {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 900;
+  font-size: 0.85rem;
+  color: rgba(0, 0, 0, 0.55);
+  text-shadow: 0 1px 2px rgba(255, 255, 255, 0.35);
+}
+
+/* The last 50 (351-400) — a fiery, pulsing "empowered" ring, matching the glowing top tier in the
+   reference poster art. Legendary cards also get a brighter border on the whole card, not just the
+   swatch, so the tier reads even at a glance while scrolling past. */
+.avatar-card.legendary {
+  border-color: rgba(255, 200, 80, 0.5);
+}
+.avatar-card.legendary .avatar-card-swatch {
+  border-color: #ffd54f;
+  color: #fff;
+  text-shadow: 0 0 6px rgba(0, 0, 0, 0.8);
+  animation: avatar-legendary-glow 1.8s ease-in-out infinite;
+}
+@keyframes avatar-legendary-glow {
+  0%, 100% { box-shadow: 0 0 8px 2px rgba(255, 160, 40, 0.55); }
+  50% { box-shadow: 0 0 16px 6px rgba(255, 80, 40, 0.75); }
+}
+
+.avatar-card-number {
+  font-size: 0.7rem;
+  font-weight: 800;
+  color: rgba(234, 246, 255, 0.7);
+}
+
+.avatar-card-action {
+  width: 100%;
+  margin-top: auto;
+  border: none;
+  border-radius: 8px;
+  padding: 0.35rem;
+  font-size: 0.68rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+.avatar-card-action.buy { background: #ffd54f; color: #3a2a00; }
+.avatar-card-action.buy:hover { background: #ffdf7a; }
+.avatar-card-action.buy:disabled { background: rgba(255, 255, 255, 0.12); color: rgba(234, 246, 255, 0.4); cursor: default; }
+.avatar-card-action.buy.confirming { background: #ff7043; color: #2a0f00; }
+.avatar-card-action.buy.confirming:hover { background: #ff8a5c; }
+.avatar-card-action.equip { background: rgba(255, 255, 255, 0.14); color: #eaf6ff; }
+.avatar-card-action.equip:hover { background: rgba(255, 255, 255, 0.24); }
+.avatar-card-action.equipped { background: rgba(47, 182, 172, 0.25); color: #6fe0d3; cursor: default; }
+
 /* Same "solid near-black, sits above everything" treatment as #weapon-shop — shown the instant
    online mode starts (before any duel/match popup could possibly be relevant yet), so it doesn't
    need a higher z-index than the shop/players panel it shares one with. */

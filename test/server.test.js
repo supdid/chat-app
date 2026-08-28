@@ -1677,9 +1677,10 @@ describe('arcade leaderboard submission throttle', () => {
   // minigame) — added by registering 8 new keys in ARCADE_LEADERBOARD_KEY/ARCADE_ACTIVITY_CODE
   // rather than new handlers, since arcade-join/-submit-score/-leaderboard are fully generic. A
   // typo or missing entry in either map silently no-ops the join (arcade-join's own guard:
-  // `if (!code || !ARCADE_LEADERBOARD_KEY[game]) return;`), so this exercises every one of the 8.
-  test('every Fight for Glory solo mode is registered as a valid arcade leaderboard key', async () => {
-    const modes = ['bbwave', 'bbfs', 'bboneshot', 'bbheadhunter', 'bbjuggernaut', 'bbberserker', 'bbvampire', 'bbswarm'];
+  // `if (!code || !ARCADE_LEADERBOARD_KEY[game]) return;`), so this exercises every one of the 8,
+  // plus the later-added bblevel/bbplaytime (see the Level/Play Time leaderboard tabs).
+  test('every Fight for Glory solo mode (plus level/playtime) is registered as a valid arcade leaderboard key', async () => {
+    const modes = ['bbwave', 'bbfs', 'bboneshot', 'bbheadhunter', 'bbjuggernaut', 'bbberserker', 'bbvampire', 'bbswarm', 'bblevel', 'bbplaytime'];
     for (const game of modes) {
       const ws = await connectWs();
       send(ws, { type: 'arcade-join', code: 'FFGMODES1', name: 'FfgTester', game });
@@ -5219,6 +5220,49 @@ describe('Block Battle 1v1 duel: challenge, accept/decline, pre-duel map vote, r
       await sleep(160); // just past BB_WEAPON.cooldownMs (150)
     }
   }
+  // Win streak is keyed globally by NAME (see server.js's bumpBbWinStreak), and anonymous bb-join
+  // has no free-text name field at all — every unauthenticated connection is just "Guest" (see
+  // bb-join's own comment on why). A real signed-up account is the only way distinct connections
+  // get distinct names on this specific protocol, needed so these tests don't collide with each
+  // other (or with any other anonymous "Guest" in this same server instance) on one shared row.
+  async function duelJoinAsAccount(username, code) {
+    const signup = await fetch(`http://localhost:${duelServer.port}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password: 'pass1234', email: `${username.toLowerCase()}@test.com` }),
+    }).then((r) => r.json());
+    const ws = await duelConnect();
+    send(ws, { type: 'bb-join', code, level: 1, accountToken: signup.token });
+    const init = await waitFor(ws, (m) => m.type === 'bb-init');
+    return { ws, id: init.id, name: username };
+  }
+  function queryWinstreak(ws) {
+    const p = waitFor(ws, (m) => m.type === 'bb-winstreak-leaderboard-result');
+    send(ws, { type: 'bb-winstreak-leaderboard' });
+    return p;
+  }
+  // Runs a full 2-round duel (BB_ROUNDS_TO_WIN=2 on this dedicated instance) to completion, `a`
+  // always winning both rounds — shared by every win-streak test below, which only care about the
+  // outcome, not the round-by-round mechanics already covered by the "first to BB_ROUNDS_TO_WIN"
+  // test above.
+  async function runFullDuel(a, b) {
+    send(a.ws, { type: 'bb-challenge', targetId: b.id });
+    await waitFor(b.ws, (m) => m.type === 'bb-challenged');
+    send(b.ws, { type: 'bb-challenge-response', fromId: a.id, accept: true });
+    await Promise.all([
+      waitFor(a.ws, (m) => m.type === 'bb-duel-started', 3000),
+      waitFor(b.ws, (m) => m.type === 'bb-duel-started', 3000),
+    ]);
+    // Listener attached BEFORE fireRound, not after — the 5th shot's round-end response can (and
+    // in practice does) arrive before fireRound's own final sleep(160) resolves, so waiting to
+    // attach the listener until after fireRound returns would race the message and miss it.
+    const roundEnd = waitFor(a.ws, (m) => m.type === 'bb-duel-round-end');
+    await fireRound(a.ws); // round 1
+    await roundEnd;
+    const aWon = waitFor(a.ws, (m) => m.type === 'bb-duel-won');
+    const bLost = waitFor(b.ws, (m) => m.type === 'bb-duel-lost');
+    await fireRound(a.ws); // round 2 — wins the duel
+    await Promise.all([aWon, bLost]);
+  }
 
   test('a declined challenge notifies the challenger and leaves both free to duel someone else', async () => {
     const code = 'BBDUEL-DECLINE';
@@ -5431,6 +5475,54 @@ describe('Block Battle 1v1 duel: challenge, accept/decline, pre-duel map vote, r
 
     a.ws.close(); b.ws.close();
   });
+
+  describe('win streak (server-authoritative, global — see db.js bumpBbWinStreak)', () => {
+    test('winning a duel starts a streak of 1; the loser never appears (best_streak stays 0)', async () => {
+      const code = 'BBSTREAK-1';
+      const a = await duelJoinAsAccount('StreakWinner1', code);
+      const b = await duelJoinAsAccount('StreakLoser1', code);
+      await runFullDuel(a, b);
+
+      const board = await queryWinstreak(a.ws);
+      const winnerRow = board.scores.find((s) => s.name === 'StreakWinner1');
+      assert.ok(winnerRow, 'the winner should appear on the global win-streak leaderboard');
+      assert.equal(winnerRow.score, 1);
+      assert.ok(!board.scores.some((s) => s.name === 'StreakLoser1'), 'a loser with best_streak 0 must not appear at all');
+
+      a.ws.close(); b.ws.close();
+    });
+
+    test('two consecutive duel wins climb the streak to 2', async () => {
+      const code = 'BBSTREAK-2';
+      const a = await duelJoinAsAccount('StreakWinner2', code);
+      const b = await duelJoinAsAccount('StreakLoser2', code);
+      await runFullDuel(a, b);
+      await runFullDuel(a, b);
+
+      const board = await queryWinstreak(a.ws);
+      const row = board.scores.find((s) => s.name === 'StreakWinner2');
+      assert.equal(row.score, 2);
+
+      a.ws.close(); b.ws.close();
+    });
+
+    test('a loss resets the CURRENT streak, but best_streak (what the leaderboard shows) keeps the prior peak', async () => {
+      const code = 'BBSTREAK-3';
+      const a = await duelJoinAsAccount('StreakPeak3', code);
+      const b = await duelJoinAsAccount('StreakComeback3', code);
+      await runFullDuel(a, b); // StreakPeak3 wins — streak 1
+      await runFullDuel(b, a); // StreakComeback3 wins this one — StreakPeak3's current streak resets to 0
+
+      const board = await queryWinstreak(a.ws);
+      const peakRow = board.scores.find((s) => s.name === 'StreakPeak3');
+      assert.ok(peakRow, 'best_streak (1) must still show on the leaderboard even though the current streak just reset');
+      assert.equal(peakRow.score, 1);
+      const comebackRow = board.scores.find((s) => s.name === 'StreakComeback3');
+      assert.equal(comebackRow.score, 1);
+
+      a.ws.close(); b.ws.close();
+    });
+  });
 });
 
 describe('Block Battle NvN match stations', () => {
@@ -5468,6 +5560,24 @@ describe('Block Battle NvN match stations', () => {
       send(shooter, { type: 'bb-shoot', targetId });
       await sleep(160);
     }
+  }
+  // Win streak is keyed globally by NAME (server.js's bumpBbWinStreak) — anonymous bb-join has no
+  // free-text name field at all, every unauthenticated connection is just "Guest" (see bb-join's
+  // own comment), so streak tests need a real signed-up account for a distinct, non-colliding name.
+  async function bbJoinAsAccount(username, code) {
+    const signup = await fetch(`http://localhost:${bbServer.port}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password: 'pass1234', email: `${username.toLowerCase()}@test.com` }),
+    }).then((r) => r.json());
+    const ws = await bbConnect();
+    send(ws, { type: 'bb-join', code, level: 1, accountToken: signup.token });
+    const init = await waitFor(ws, (m) => m.type === 'bb-init');
+    return { ws, id: init.id, name: username };
+  }
+  function queryWinstreak(ws) {
+    const p = waitFor(ws, (m) => m.type === 'bb-winstreak-leaderboard-result');
+    send(ws, { type: 'bb-winstreak-leaderboard' });
+    return p;
   }
 
   // Found by the Fight for Glory client-correctness audit: bb-plate-enter had no position check at
@@ -5740,6 +5850,50 @@ describe('Block Battle NvN match stations', () => {
     assert.equal(rosterUpdate.health, 80, 'B must see A drop to 80 health even though B was not the one shot');
 
     a.ws.close(); b.ws.close(); c.ws.close(); d.ws.close();
+  });
+
+  describe('win streak (server-authoritative, global — see db.js bumpBbWinStreak)', () => {
+    test('a decisive 1v1 station match updates both the winner and loser\'s win streak', async () => {
+      const code = 'BBSTREAK-MATCH';
+      const a = await bbJoinAsAccount('StreakMatchWinner', code);
+      const b = await bbJoinAsAccount('StreakMatchLoser', code);
+      const aStarted = waitFor(a.ws, (m) => m.type === 'bb-match-started');
+      const bStarted = waitFor(b.ws, (m) => m.type === 'bb-match-started');
+      await bbEnterPlate(a.ws, 'st1', 'a', 0);
+      await bbEnterPlate(b.ws, 'st1', 'b', 0);
+      await Promise.all([aStarted, bStarted]);
+      const ended = waitFor(a.ws, (m) => m.type === 'bb-match-ended');
+      await bbShootUntilEliminated(a.ws, b.id); // BB_ROUNDS_TO_WIN=1 here — this ends the whole match
+      await ended;
+
+      const board = await queryWinstreak(a.ws);
+      const winnerRow = board.scores.find((s) => s.name === 'StreakMatchWinner');
+      assert.ok(winnerRow, 'the winning side should appear on the global win-streak leaderboard');
+      assert.equal(winnerRow.score, 1);
+      assert.ok(!board.scores.some((s) => s.name === 'StreakMatchLoser'), 'the losing side must not appear (best_streak 0)');
+
+      a.ws.close(); b.ws.close();
+    });
+
+    // Exercises bbCheckMatchEnd's `aliveA === 0 && aliveB === 0` branch (both sides empty
+    // simultaneously, still mid pre-match map vote) — bbEndMatch's winnerSlot is null here, which
+    // must NOT be treated as a win or a loss for anyone (see bbEndMatch's own `if (won !== null)`
+    // guard around the bumpBbWinStreak call).
+    test('a match abandoned during the pre-fight map vote (both sides disconnect) does not touch anyone\'s win streak', async () => {
+      const code = 'BBSTREAK-ABANDON';
+      const a = await bbJoinAsAccount('StreakAbandonA', code);
+      const b = await bbJoinAsAccount('StreakAbandonB', code);
+      await bbEnterPlate(a.ws, 'st1', 'a', 0);
+      await bbEnterPlate(b.ws, 'st1', 'b', 0);
+      // The 1v1 station's own pre-fight map vote is now running (BB_MATCH_VOTE_MS=150) — both
+      // leave before it ever resolves, so neither side ever actually played a round.
+      a.ws.close(); b.ws.close();
+      await sleep(400);
+
+      const checker = await connectWs();
+      const board = await queryWinstreak(checker);
+      assert.ok(!board.scores.some((s) => s.name === 'StreakAbandonA' || s.name === 'StreakAbandonB'), 'an abandoned pre-vote match must not count as a win or a loss for either side');
+    });
   });
 });
 

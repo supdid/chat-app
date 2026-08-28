@@ -2584,7 +2584,12 @@ function bbEndMatch(bb, code, matchId, winnerSlot) {
   for (const w of new Set([...match.sideA, ...match.sideB])) {
     const p = bb.players.get(w);
     if (!p || p.matchId !== matchId) continue;
-    send(w, { type: 'bb-match-ended', matchId, won: winnerSlot ? p.matchSide === winnerSlot : null, roundsWonA: match.roundsWonA, roundsWonB: match.roundsWonB });
+    const won = winnerSlot ? p.matchSide === winnerSlot : null;
+    // Only a real decisive finish updates streaks — the null case here is specifically a match
+    // abandoned before any round was even played (see this function's own header comment), which
+    // shouldn't count as a win OR a loss for anyone.
+    if (won !== null) db.bumpBbWinStreak(p.name, won);
+    send(w, { type: 'bb-match-ended', matchId, won, roundsWonA: match.roundsWonA, roundsWonB: match.roundsWonB });
     p.matchId = null; p.matchSide = null; p.eliminated = false; p.health = BB_MAX_HEALTH;
   }
   bb.matches.delete(matchId);
@@ -2715,15 +2720,23 @@ function leaveBb(ws) {
 // modes (a Juggernaut kill count means something completely different from a Swarm kill count).
 // Reuses the 'bb' activity code the online lobby already uses (see setRoomActivity(code, name,
 // 'bb') at bb-join) rather than minting 8 near-identical activity codes for one game.
+// bblevel/bbplaytime: two more Fight for Glory stats reported the same client-computed way as its
+// 8 solo modes above (level is derived from lifetime kills, play time from active session time —
+// both self-reported, same accepted tradeoff already documented for every arcade score here). Win
+// streak is NOT in this map on purpose — it's server-authoritative (see bumpBbWinStreak in db.js)
+// since the server already knows every duel/match outcome, so it gets its own dedicated
+// bb-winstreak-leaderboard request/response instead of riding this generic protocol.
 const ARCADE_LEADERBOARD_KEY = {
   snake: 'snake', '2048': 'g2048', fighterplane: 'fighterplane',
   bbwave: 'bbwave', bbfs: 'bbfs', bboneshot: 'bboneshot', bbheadhunter: 'bbheadhunter',
   bbjuggernaut: 'bbjuggernaut', bbberserker: 'bbberserker', bbvampire: 'bbvampire', bbswarm: 'bbswarm',
+  bblevel: 'bblevel', bbplaytime: 'bbplaytime',
 };
 const ARCADE_ACTIVITY_CODE = {
   snake: 'sk', '2048': 'tf', fighterplane: 'fp',
   bbwave: 'bb', bbfs: 'bb', bboneshot: 'bb', bbheadhunter: 'bb',
   bbjuggernaut: 'bb', bbberserker: 'bb', bbvampire: 'bb', bbswarm: 'bb',
+  bblevel: 'bb', bbplaytime: 'bb',
 };
 // arcade-submit-score is fully client-computed (flagged in review as a known, accepted, low-
 // severity gap — a real fix needs server-side gameplay simulation, out of scope) but had no
@@ -5300,6 +5313,8 @@ wss.on('connection', (ws, req) => {
         const finishedDuelId = me.duelId;
         me.dueling = false; me.opponentId = null; me.duelId = null;
         target.p.dueling = false; target.p.opponentId = null; target.p.duelId = null;
+        db.bumpBbWinStreak(me.name, true);
+        db.bumpBbWinStreak(target.p.name, false);
         send(ws, { type: 'bb-duel-won', roundsWon: myRounds, roundsLost: oppRounds });
         send(target.ws, { type: 'bb-duel-lost', roundsWon: oppRounds, roundsLost: myRounds });
         bb.duels.delete(finishedDuelId);
@@ -5463,6 +5478,15 @@ wss.on('connection', (ws, req) => {
       if (ws.arcadeRoom && ws.arcadeName) clearRoomActivity(ws.arcadeRoom, ws.arcadeName);
       ws.arcadeRoom = null;
       ws.arcadeGame = null;
+      return;
+    }
+
+    // Global (not room-scoped) and read-only — see bumpBbWinStreak's own comment on why win streak
+    // doesn't ride the generic arcade-* protocol above. No join/session-tracking needed since
+    // nothing is ever submitted through this connection; it's purely a leaderboard fetch.
+    if (msg.type === 'bb-winstreak-leaderboard') {
+      if (isWsMsgRateLimited(ws)) return;
+      send(ws, { type: 'bb-winstreak-leaderboard-result', scores: db.getBbWinStreakLeaderboard(10) });
       return;
     }
 

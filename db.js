@@ -107,6 +107,16 @@ db.exec(`
     PRIMARY KEY (room_code, game, name)
   );
 
+  -- Fight for Glory PvP win streak — global (not room_code-scoped, see bumpBbWinStreak's own
+  -- comment), and needs a live mutable current_streak alongside the display-only best_streak, so
+  -- it's a dedicated table rather than shoehorned into the generic leaderboard table above.
+  CREATE TABLE IF NOT EXISTS bb_win_streaks (
+    name TEXT PRIMARY KEY,
+    current_streak INTEGER DEFAULT 0,
+    best_streak INTEGER DEFAULT 0,
+    updated_at INTEGER
+  );
+
   -- Firefight weapon-unlock progress. Deliberately separate from the generic leaderboard table
   -- above: that one only ever keeps the best score a name has achieved (a high-score board), not
   -- a running total, so it can't answer "how many kills has this player earned, ever" — exactly
@@ -853,6 +863,31 @@ function bumpLeaderboard(code, game, name, score) {
        score = CASE WHEN excluded.score > leaderboard.score THEN excluded.score ELSE leaderboard.score END,
        updated_at = excluded.updated_at`
   ).run(code, game, name, score, Date.now());
+}
+
+// ---- Fight for Glory PvP win streak (global, not room-scoped — Online Play is always one shared
+// lobby across every room, same reasoning as bb-join's own GLOBAL-LOBBY fallback) ----
+// Unlike every other leaderboard in this app (client-reported best score, room-scoped), a streak
+// needs a LIVE mutable counter that resets to 0 on a loss, not just a monotonic best — the generic
+// `leaderboard` table's bumpLeaderboard only ever keeps a higher value, which can't express "you
+// lost, so the counter that was climbing is back to zero now." Server-authoritative by
+// construction (the caller is server.js's own duel/match resolution, which already knows exactly
+// who won and lost — this one genuinely can't be spoofed by a client, unlike the arcade-style
+// scores above).
+function bumpBbWinStreak(name, won) {
+  const row = db.prepare('SELECT current_streak, best_streak FROM bb_win_streaks WHERE name = ?').get(name);
+  const current = won ? (row ? row.current_streak : 0) + 1 : 0;
+  const best = Math.max(current, row ? row.best_streak : 0);
+  db.prepare(
+    `INSERT INTO bb_win_streaks (name, current_streak, best_streak, updated_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(name) DO UPDATE SET current_streak = excluded.current_streak, best_streak = excluded.best_streak, updated_at = excluded.updated_at`
+  ).run(name, current, best, Date.now());
+}
+
+function getBbWinStreakLeaderboard(limit = 10) {
+  return db
+    .prepare('SELECT name, best_streak AS score FROM bb_win_streaks WHERE best_streak > 0 ORDER BY best_streak DESC LIMIT ?')
+    .all(limit);
 }
 
 function getLeaderboard(code, game, limit = 10) {
@@ -1783,6 +1818,8 @@ module.exports = {
   upsertProfile,
   bumpLeaderboard,
   getLeaderboard,
+  bumpBbWinStreak,
+  getBbWinStreakLeaderboard,
   getFgKills,
   bumpFgKills,
   saveBlueprint,
