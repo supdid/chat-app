@@ -184,6 +184,7 @@ const qrOverlay = document.getElementById('qr-overlay');
 const qrCloseBtn = document.getElementById('qr-close-btn');
 const qrImage = document.getElementById('qr-image');
 const qrLinkEl = document.getElementById('qr-link');
+const qrErrorEl = document.getElementById('qr-error');
 const threadOverlay = document.getElementById('thread-overlay');
 const threadCloseBtn = document.getElementById('thread-close-btn');
 const threadRootEl = document.getElementById('thread-root');
@@ -785,6 +786,10 @@ function handleServerMessage(data) {
       // silently missing from the thread until manually closed and reopened. Closing it here, same
       // as dmOverlay/threadOverlay, is simpler than trying to reconcile a gap of unknown size.
       if (groupDmOverlay) { groupDmOverlay.classList.add('hidden'); currentGroupDmId = null; }
+      // Found by the QR-code join-flow audit: same staleness class as the overlays above, just
+      // missed for the Room QR code panel — its image/link both encode the OLD room's code, and
+      // this fires on a plain reconnect too, not just a deliberate switch.
+      qrOverlay.classList.add('hidden');
       // Same staleness class as the three overlays above, just missed for search: left open across
       // a reconnect/room-switch, it kept showing whatever room's results were last rendered even
       // though currentRoomCode (and the message list a hit would jump to) had already moved on.
@@ -908,6 +913,10 @@ function handleServerMessage(data) {
       currentThreadRootId = null;
       dmOverlay.classList.add('hidden');
       currentDmWithName = null;
+      // Found by the QR-code join-flow audit: leaving the room entirely (kicked/banned, or a
+      // server-side room cleanup) left a still-open QR panel showing a join code/link for a room
+      // you're no longer in, on a screen that had already switched to roomSelectScreen underneath.
+      qrOverlay.classList.add('hidden');
       showScreen(roomSelectScreen);
       break;
 
@@ -1115,6 +1124,19 @@ function handleServerMessage(data) {
         fresh.appendChild(renderTextWithMentions(data.text));
         textEl.replaceWith(fresh);
       }
+      // Found by the link-preview client-side audit: an edit never touched the link-preview card
+      // at all — an edit that removed/changed the URL left the OLD card showing forever, and an
+      // edit that added a URL to a previously-plain message never got a card at all. This handler
+      // has no mediaUrl field to check (the broadcast only ever carries messageId/text, since only
+      // text is editable), so a media message is instead recognized by an existing '.media'
+      // element — renderMessage never generates a link-preview card alongside one, so this stays
+      // consistent with that rule rather than growing a new "media message got a card" case.
+      if (bubble && !bubble.querySelector('.media')) {
+        const oldCard = bubble.querySelector('.link-preview-card');
+        if (oldCard) oldCard.remove();
+        const urlMatch = data.text.match(/https?:\/\/[^\s<]+/i);
+        if (urlMatch) renderLinkPreview(bubble, trimTrailingUrlPunctuation(urlMatch[0]));
+      }
       const metaEl = bubble && bubble.querySelector('.meta');
       if (metaEl && !metaEl.textContent.includes('edited')) metaEl.textContent += ' · edited';
       break;
@@ -1273,6 +1295,21 @@ function makeAvatar(name, size) {
   return el;
 }
 
+// Found by the link-preview client-side audit: the URL-detection regex has no trailing-
+// punctuation trim, unlike the near-identical @mention regex elsewhere in this file — a message
+// like "check this out: https://example.com/page." sent the trailing "." to the server as part
+// of the URL, which either 404s (no preview ever appears for what's actually a valid link) or,
+// if it happens to 200 anyway, makes the card's own click-through link carry the same garbage.
+// Balance-aware for ")": a trailing paren is only stripped if it's not matched by an earlier "("
+// in the same URL, since real URLs legitimately end in one (e.g. Wikipedia disambiguation links).
+function trimTrailingUrlPunctuation(url) {
+  let trimmed = url.replace(/[.,!?;:'"]+$/, '');
+  while (trimmed.endsWith(')') && (trimmed.match(/\(/g) || []).length < (trimmed.match(/\)/g) || []).length) {
+    trimmed = trimmed.slice(0, -1);
+  }
+  return trimmed;
+}
+
 // --- Link previews (URL unfurl) --- session-only cache, avoids re-fetching the same URL twice.
 const linkPreviewCache = new Map();
 function renderLinkPreview(bubble, url) {
@@ -1291,6 +1328,12 @@ function renderLinkPreview(bubble, url) {
       img.className = 'link-preview-image';
       img.src = data.image;
       img.alt = '';
+      // Found by the link-preview client-side audit: a 404'd/hotlink-protected og:image showed a
+      // bare broken-image glyph inside an otherwise-fine card (title/desc still there) — same gap
+      // this app already closed for message media, just not applied here. Removing the element
+      // (rather than swapping in fallback text, as message media does) is enough on its own since
+      // the title/description alongside it already make this a complete, non-broken-looking card.
+      img.addEventListener('error', () => img.remove(), { once: true });
       card.appendChild(img);
     }
     const info = document.createElement('div');
@@ -1311,17 +1354,20 @@ function renderLinkPreview(bubble, url) {
     card.classList.remove('hidden');
   };
 
-  if (linkPreviewCache.has(url)) {
-    apply(linkPreviewCache.get(url));
-    return;
+  // Found by the link-preview client-side audit: this used to only cache a RESOLVED response —
+  // room history renders every message synchronously in one loop, so the same URL posted/reposted
+  // several times fired one independent fetch per occurrence, all racing to land before the first
+  // one's .then() ever populated the cache. The cache now stores the in-flight Promise itself,
+  // set synchronously before the fetch resolves, so a repeat call within the same page load always
+  // reuses the one real request already underway.
+  let pending = linkPreviewCache.get(url);
+  if (!pending) {
+    pending = fetch(`/link-preview?url=${encodeURIComponent(url)}`)
+      .then((r) => r.json())
+      .catch(() => null);
+    linkPreviewCache.set(url, pending);
   }
-  fetch(`/link-preview?url=${encodeURIComponent(url)}`)
-    .then((r) => r.json())
-    .then((data) => {
-      linkPreviewCache.set(url, data);
-      apply(data);
-    })
-    .catch(() => {});
+  pending.then((data) => { if (data) apply(data); });
 }
 
 function renderMessage(data, opts = {}) {
@@ -1412,7 +1458,7 @@ function renderMessage(data, opts = {}) {
     bubble.appendChild(text);
     if (!data.mediaUrl) {
       const urlMatch = data.text.match(/https?:\/\/[^\s<]+/i);
-      if (urlMatch) renderLinkPreview(bubble, urlMatch[0]);
+      if (urlMatch) renderLinkPreview(bubble, trimTrailingUrlPunctuation(urlMatch[0]));
     }
   }
 
@@ -4723,9 +4769,18 @@ savedOverlay.addEventListener('click', (e) => {
 });
 
 // --- Room QR code ---
+// Found by the QR-code join-flow audit: a 404 (room gone between opening the menu and clicking)
+// or a 429 (rate limit) previously left the bare browser broken-image glyph with no explanation
+// — the same failure shape this app already has a fallback pattern for on message media.
+qrImage.addEventListener('error', () => {
+  qrImage.classList.add('hidden');
+  qrErrorEl.classList.remove('hidden');
+});
 qrBtn.addEventListener('click', () => {
   if (!currentRoomCode) return;
   closeMenu();
+  qrImage.classList.remove('hidden');
+  qrErrorEl.classList.add('hidden');
   qrImage.src = `/room-qr/${encodeURIComponent(currentRoomCode)}`;
   qrLinkEl.textContent = `${location.origin}/?room=${currentRoomCode}`;
   qrOverlay.classList.remove('hidden');
