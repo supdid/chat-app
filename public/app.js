@@ -696,6 +696,18 @@ function handleServerMessage(data) {
     case 'error':
       console.error(data.message);
       if (data.message) showAppToast(data.message);
+      // Found by the profile-editing client-side audit: a rejected rename (e.g. name already
+      // taken in this room) left myNameInput sitting on the rejected value forever — since
+      // myProfile.name never changed, the very next blur (even from an unrelated click, no
+      // further edits needed) saw a still-different value and resent the identical rejected name,
+      // re-showing the same toast in a loop until the user noticed and manually retyped their
+      // real name. Reverting here isn't perfectly scoped to "this error was specifically about my
+      // rename" (case 'error' is generic, shared by many handlers), but reverting is harmless even
+      // if triggered by an unrelated coincidental error — worst case is retyping a fresh edit.
+      if (pendingNameUpdate) {
+        pendingNameUpdate = false;
+        if (myProfile) myNameInput.value = myProfile.name;
+      }
       break;
 
     case 'kicked':
@@ -1092,6 +1104,7 @@ function handleServerMessage(data) {
       break;
 
     case 'name-updated': {
+      pendingNameUpdate = false;
       const previousName = myProfile ? myProfile.name : null;
       if (myProfile) myProfile.name = data.name;
       myUsername = data.name;
@@ -3306,21 +3319,49 @@ function renderMyProfile() {
   myStatusInput.value = myProfile.status || '';
 }
 
-myAvatarBtn.addEventListener('click', () => avatarFileInput.click());
+// Found by the profile-editing client-side audit: mirrors the same fix an earlier dimension
+// already applied to wallpaper uploads (see its own comment) — a rejected/failed avatar upload
+// used to be completely silent (a bare `return` on a non-2xx response, console-only on a network
+// error), giving zero indication the click had registered, was still working, or had failed.
+const AVATAR_MAX_BYTES = 300 * 1024 * 1024;
+
+// Same disabled-during-upload guard the message-attach button already uses (attachBtn.disabled) —
+// without it, reopening the picker and choosing a second file before the first upload's fetch
+// resolved raced two independent uploads against each other, and whichever fetch happened to
+// resolve last silently won as the final avatar, regardless of which was actually picked more
+// recently/intentionally. disabled also gives real visual feedback, not just a silent no-op click.
+myAvatarBtn.addEventListener('click', () => {
+  if (myAvatarBtn.disabled) return;
+  avatarFileInput.click();
+});
 
 avatarFileInput.addEventListener('change', async () => {
   const file = avatarFileInput.files[0];
   avatarFileInput.value = '';
   if (!file || !ws || ws.readyState !== WebSocket.OPEN) return;
+  if (!file.type.startsWith('image/')) {
+    showAppToast('Avatar must be an image file');
+    return;
+  }
+  if (file.size > AVATAR_MAX_BYTES) {
+    showAppToast('That image is too large (300MB max)');
+    return;
+  }
+  myAvatarBtn.disabled = true;
   const formData = new FormData();
   formData.append('file', file);
   try {
     const res = await fetch('/upload', { method: 'POST', body: formData });
     const data = await res.json();
-    if (!res.ok) return;
+    if (!res.ok) {
+      showAppToast(data.error || 'Avatar upload failed');
+      return;
+    }
     ws.send(JSON.stringify({ type: 'set-avatar', avatarUrl: data.url }));
   } catch {
-    console.error('Avatar upload failed');
+    showAppToast('Avatar upload failed');
+  } finally {
+    myAvatarBtn.disabled = false;
   }
 });
 
@@ -3336,6 +3377,7 @@ myStatusInput.addEventListener('keydown', (e) => {
 // Display-name rename — works for guests and signed-in accounts alike, since both use
 // ws.profile.name as their in-room identity (see 'set-name' in server.js). A signed-in
 // account's separate login username is changed via the account-username-form below instead.
+let pendingNameUpdate = false;
 function sendNameUpdate() {
   myNameError.classList.add('hidden');
   if (!myProfile || !ws || ws.readyState !== WebSocket.OPEN) return;
@@ -3346,6 +3388,7 @@ function sendNameUpdate() {
   }
   if (newName === myProfile.name) return;
   ws.send(JSON.stringify({ type: 'set-name', name: newName }));
+  pendingNameUpdate = true;
 }
 myNameInput.addEventListener('blur', sendNameUpdate);
 myNameInput.addEventListener('keydown', (e) => {
