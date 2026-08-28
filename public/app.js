@@ -162,6 +162,7 @@ const groupNewBtn = document.getElementById('group-new-btn');
 const groupNewForm = document.getElementById('group-new-form');
 const groupNameInput = document.getElementById('group-name-input');
 const groupFriendPicker = document.getElementById('group-friend-picker');
+const groupFriendFilter = document.getElementById('group-friend-filter');
 const groupNewError = document.getElementById('group-new-error');
 const groupCreateBtn = document.getElementById('group-create-btn');
 const groupsListEl = document.getElementById('groups-list');
@@ -928,7 +929,12 @@ function handleServerMessage(data) {
         if (emptyState) threadRepliesEl.innerHTML = '';
         renderThreadMessage(threadRepliesEl, data);
       }
-      if (data.sub !== myProfile.sub) {
+      // Found by the personal block/mute audit: this used to fire for every non-own message
+      // regardless of blockedNames — the bubble itself renders hidden for a blocked sender, but a
+      // real OS notification (full name + text, shown even backgrounded) and the notify sound
+      // still fired anyway, and the unread badge still counted them — exactly the content this
+      // feature exists to hide, leaking through every surface that isn't the message list itself.
+      if (data.sub !== myProfile.sub && !blockedNames.has(data.name)) {
         const mentioned = messageHasMention(data.text, myProfile.name);
         notify(mentioned ? `${data.name} mentioned you` : data.name, data.text, { messageId: data.id });
         playNotifySound();
@@ -1013,6 +1019,17 @@ function handleServerMessage(data) {
 
     case 'group-dm-created':
       showAppToast(`💬 Group DM ${data.thread.name ? `"${data.thread.name}"` : 'started'}`);
+      // Found by the group-DM creation-flow audit: this only ever showed a toast — the creator
+      // had to manually reopen the Groups panel and click into the fresh entry themselves. Now
+      // auto-opens for the tab that actually submitted the create; a friend's OWN unrelated
+      // group-dm-created (from being added to a DIFFERENT group someone else just made) still
+      // only gets the toast, since pendingGroupDmCreate is specific to this tab's own submission.
+      if (pendingGroupDmCreate) {
+        pendingGroupDmCreate = false;
+        groupNewForm.classList.add('hidden');
+        groupNameInput.value = '';
+        openGroupDm(data.thread.id, data.thread);
+      }
       if (groupsOverlay && !groupsOverlay.classList.contains('hidden')) loadGroupThreads();
       break;
 
@@ -1870,11 +1887,17 @@ function renderReactionPills(bubble, messageId) {
   const reactions = reactionsByMessage.get(messageId);
   if (!reactions) return;
   for (const [emoji, names] of reactions) {
-    if (names.size === 0) continue;
+    // Found by the personal block/mute audit: a blocked user's reaction was counted into the
+    // pill total indistinguishably from anyone else's — filtered out of the displayed count here
+    // (the underlying Set in reactionsByMessage is left untouched, so unblocking later and
+    // re-rendering this message naturally shows their reaction again with no separate bookkeeping
+    // needed).
+    const visibleNames = [...names].filter((n) => !blockedNames.has(n));
+    if (visibleNames.length === 0) continue;
     const pill = document.createElement('button');
     pill.type = 'button';
-    pill.className = 'reaction-pill' + (myProfile && names.has(myProfile.name) ? ' mine' : '');
-    pill.textContent = `${emoji} ${names.size}`;
+    pill.className = 'reaction-pill' + (myProfile && visibleNames.includes(myProfile.name) ? ' mine' : '');
+    pill.textContent = `${emoji} ${visibleNames.length}`;
     pill.addEventListener('click', () => toggleReaction(messageId, emoji));
     row.appendChild(pill);
   }
@@ -2950,6 +2973,11 @@ let currentGroupDmId = null;
 let currentGroupDmMemberNames = [];
 let lastLoadedFriends = [];
 let lastLoadedThreads = [];
+// Found by the group-DM creation-flow audit: set right before sending create-group-dm, cleared
+// once its response (success or error) is handled — lets the 'group-dm-created' handler tell
+// "this is my own just-submitted create finishing" apart from "a friend created a DIFFERENT
+// group DM and added me," which fires the identical event type on this same connection.
+let pendingGroupDmCreate = false;
 
 function renderGroupDmMessage(data) {
   const el = document.createElement('div');
@@ -3011,7 +3039,22 @@ function renderGroupFriendPicker() {
     li.innerHTML = `<label class="friend-name"><input type="checkbox" value="${escapeHtml(f.username)}"> ${escapeHtml(f.username)}</label>`;
     groupFriendPicker.appendChild(li);
   });
+  // Found by the group-DM creation audit: the picker had no way to narrow down a long friend
+  // list at all — plain checkboxes, no search, real friction once someone has more than a
+  // handful of friends. Only shown once there's actually enough friends for it to matter.
+  groupFriendFilter.value = '';
+  groupFriendFilter.classList.toggle('hidden', lastLoadedFriends.length <= 8);
+  filterGroupFriendPicker();
 }
+
+function filterGroupFriendPicker() {
+  const q = groupFriendFilter.value.trim().toLowerCase();
+  groupFriendPicker.querySelectorAll('.friend-row').forEach((li) => {
+    const name = li.querySelector('input[type="checkbox"]').value.toLowerCase();
+    li.classList.toggle('hidden', q.length > 0 && !name.includes(q));
+  });
+}
+groupFriendFilter.addEventListener('input', filterGroupFriendPicker);
 
 function openGroupsPanel() {
   const signedIn = !!accountToken;
@@ -3047,6 +3090,10 @@ groupsListEl.addEventListener('click', (e) => {
 groupNewBtn.addEventListener('click', async () => {
   groupNewError.classList.add('hidden');
   groupNewForm.classList.toggle('hidden');
+  // Guards against a stale flag from a previous submission that never got a response (panel
+  // closed and reopened mid-flight) wrongly auto-opening/closing the form for an unrelated later
+  // group-dm-created event.
+  pendingGroupDmCreate = false;
   if (!groupNewForm.classList.contains('hidden')) {
     // Friends list is fetched fresh each time the composer opens rather than trusting whatever
     // was last rendered into the friends overlay (which may never have been opened this session).
@@ -3074,10 +3121,36 @@ groupCreateBtn.addEventListener('click', () => {
     groupNewError.classList.remove('hidden');
     return;
   }
+  // Found by the group-DM creation-flow audit: the server silently truncates to 20 members
+  // (memberUsernames.slice(0, 20)) with no indication anyone was dropped — the creator would
+  // only discover it later by noticing who's missing from the member list. Caught here instead,
+  // before ever sending, so nothing is silently dropped.
+  if (memberUsernames.length > 20) {
+    groupNewError.textContent = `Group DMs support at most 20 members — you picked ${memberUsernames.length}, deselect ${memberUsernames.length - 20} to continue`;
+    groupNewError.classList.remove('hidden');
+    return;
+  }
+  // Found by the group-DM creation-flow audit: nothing checked for an already-existing group
+  // with this exact member set — clicking Create twice (or just forgetting a group already
+  // exists) silently made a second, functionally-identical thread with no warning either time.
+  const pickedSet = new Set(memberUsernames);
+  const existing = lastLoadedThreads.find((t) => {
+    const others = t.members.map((m) => m.username).filter((u) => u !== accountUsername);
+    return others.length === pickedSet.size && others.every((u) => pickedSet.has(u));
+  });
+  if (existing && !confirm(`You already have a group DM with exactly these members${existing.name ? ` ("${existing.name}")` : ''}. Create another one anyway?`)) {
+    return;
+  }
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify({ type: 'create-group-dm', name: groupNameInput.value.trim(), memberUsernames }));
-  groupNewForm.classList.add('hidden');
-  groupNameInput.value = '';
+  // Found by the group-DM creation-flow audit: this used to hide the form and clear the name
+  // field immediately on send, before the server had actually confirmed anything — a rejection
+  // (a friend removed in the meantime, the rate limit, etc.) still landed as an 'error' toast a
+  // moment later, but by then every picked checkbox was already gone, forcing a full re-pick from
+  // a freshly-refetched friends list. The form now only closes once 'group-dm-created' actually
+  // confirms success (see that handler, gated on pendingGroupDmCreate below); on an error it just
+  // stays open exactly as the user left it, nothing lost.
+  pendingGroupDmCreate = true;
 });
 
 groupDmCloseBtn.addEventListener('click', () => { groupDmOverlay.classList.add('hidden'); currentGroupDmId = null; });
@@ -4868,7 +4941,13 @@ threadOverlay.addEventListener('click', (e) => {
 
 function renderThreadMessage(container, data) {
   const el = document.createElement('div');
-  el.className = 'thread-message';
+  // Found by the personal block/mute audit: the main message list hides a blocked sender's
+  // bubbles via this exact data attribute + class (toggleBlockUser's own querySelectorAll
+  // retroactively re-applies it here too, for free, once tagged the same way) — thread replies
+  // never got either, so a blocked user's replies (including as the thread's own root message)
+  // rendered in full here regardless of block state.
+  el.dataset.senderName = data.name;
+  el.className = 'thread-message' + (blockedNames.has(data.name) ? ' blocked-hidden' : '');
   const meta = document.createElement('span');
   meta.className = 'meta';
   const time = new Date(data.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -5093,6 +5172,12 @@ searchForm.addEventListener('submit', async (e) => {
 
 function renderSearchResults(results) {
   searchResultsEl.innerHTML = '';
+  // Found by the personal block/mute audit: unlike the main message list, search never checked
+  // blockedNames at all — a blocked user's messages surfaced here in full, name and text both,
+  // even though the exact same content is hidden everywhere it's normally read from. Filtered out
+  // here rather than rendered-then-hidden, since this panel is a one-shot render per search with
+  // no later re-toggle expectation the way the always-live message list has.
+  results = results.filter((r) => !blockedNames.has(r.name));
   if (results.length === 0) {
     searchResultsEl.innerHTML = '<li class="search-status">No matches</li>';
     return;
