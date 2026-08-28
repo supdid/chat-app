@@ -3652,6 +3652,147 @@ function leaveHm(ws) {
   ws.hmRoom = null;
 }
 
+// ---- Word Guess (room.wg) — Wordle-style: everyone in the round races independently against
+// the SAME secret 5-letter word (own guess count/feedback, never shown to other players — only a
+// live "N/6 guesses used" progress bar, same privacy shape polls now use for the same reason: the
+// UI only ever needed aggregate/self info, not everyone else's private guesses). A dedicated word
+// list (not DG_ALL_WORDS/Pictionary's bank, which has phrases and words of every length) — curated
+// common English words, filtered/deduped defensively so one typo in the source list can't crash or
+// shrink-in-silence rather than just fail loudly at startup.
+const WG_WORDS_RAW = `
+abide above actor adapt adopt adult after again agent agree ahead alarm album alert alike alive
+allow alone along alter among anger angle angry apart apple apply arena argue arise armor aside
+asset audio avoid await award aware awful bacon badge baker basic basis batch beach beard beast
+began begin being belly below bench birth black blade blame blank blast blaze bleed blend bless
+blind block blood board boast boost booth bound brain brand brave bread break breed brick brief
+bring broad broke brown brush build built bunch buyer cabin cable canal candy canoe carry catch
+cause chain chair chalk chaos charm chart chase cheap check cheek chess chest chief child chili
+chill china chirp choir choke chord chose chunk cider civic civil claim clash class clean clear
+clerk click cliff climb cling cloak clock close cloth cloud clown coach coast cocoa color comet
+comic cough could count court cover crack craft crane crash crawl crazy cream creek crest crime
+crisp cross crowd crown crude cruel crush curly curve cycle daily dairy dance dandy dealt death
+debut decay decor delay dense depth derby diary dirty ditch diver dizzy donor donut doubt dough
+dozen draft drain drama drank drawn dream dress dried drift drill drink drive drove drown dryer
+dusty eager eagle early earth easel ebony elder elect embed ember empty enact endow enemy enjoy
+enter entry equal equip erase error essay ethic event every exact exert exile exist extra fable
+faith false fault fence ferry fetch fever fiber field fiery fifth fifty fight final finch first
+fixed flame flash flask fleet flesh flick fling flint float flock flood floor flora flour flown
+fluid flush focal focus foggy folks force forge forth forty forum found foyer frail frame fraud
+fresh friar front frost frown fruit fudge fully funky funny fuzzy gauge ghost giant given glare
+glass gleam glide globe gloom glory glove going goose grace grade grain grand grant grape graph
+grasp grass grave gravy great greed green greet grief grill grind groan groom gross group grove
+growl grown grump guard guess guest guide guild guilt habit happy harsh haste hasty hatch haven
+hazel heart heavy hedge hello hence herbs hilly hinge hobby hoist honey honor horse hotel house
+hover human humid humor hurry husky ideal idiom image index inner input inset ionic irony issue
+ivory jelly jewel joint joker jolly judge juice jumbo kayak kneel knife knock known label labor
+laser latch later laugh layer learn lease least leash ledge lemon level lever light limit linen
+liver lobby local lodge logic loose lorry lucky lunar lunch lyric magic major maker mango march
+marsh match maybe mayor meant medal media melon mercy merge merit merry metal meter midst might
+minor minus mirth model mogul moist molar month moral motor mount mouse mouth movie music nasty
+naval nerve never newly nicer night noble noise north notch novel nurse nylon oasis ocean offer
+often olive onion opera orbit order organ other ought ounce outer owner ozone paint panel panic
+pansy paper parka party pasta patch pause peace peach pearl pedal penny phase phone photo piano
+piece pilot pinch pitch pixel pizza place plain plane plant plate plaza plead pluck plush point
+poise poker polar porch pouch pound power press price pride prime print prior prize probe prone
+proof proud prove prowl pulse punch pupil puppy purse quack quart queen query quest queue quick
+quiet quilt quirk quota quote radar radio raise rally ranch range rapid ratio reach react ready
+realm rebel refer reign relax relay remix renew reply reset resin rider ridge rifle right rigid
+rinse risky rival river roast robin robot rocky rogue roman rough round route royal rugby ruler
+rural rusty sadly salad salon salsa sandy satin sauce scale scarf scary scene scent scoop scope
+score scout scrap screw scrub sedan serve seven shade shaft shake shame shape share shark sharp
+shave shelf shell shift shine shiny shirt shock shore short shout shove shown shrub shrug siege
+sight sigma silky silly since siren sixth sixty sized skate skill skirt skull slate slave sleek
+sleep slice slide slime slope small smart smell smile smoke snack snail snake sneak sniff solar
+solid solve sonic sorry sound south space spare spark speak spear speed spell spend spent spice
+spike spine spite splat split spoil spoke sport spray spree spurt squad stack staff stage stain
+stair stake stale stalk stall stamp stand stare start state steak steal steam steel steep steer
+stern stick stiff still sting stock stone stood stool stoop store storm story stout stove strap
+straw stray strip stuck study stuff style sugar suite sunny super surge swamp swarm swear sweat
+sweep sweet swell swift swing swirl swoop sword syrup table taken taste teach tempo tenth thank
+theft their theme there these thick thief thing think third thorn those three threw throw thumb
+thump tiger tight timer tired title toast today token tonic torch total touch tough towel tower
+toxic trace track trade trail train trait tramp trash tread treat trend trial tribe trick tried
+troop trout truck truly trunk trust truth tulip tummy tuner tunic turbo tutor twist tying ultra
+uncle under union unite unity until upset urban usage usual vague valid valor value valve vapor
+vault vegan venom venue verse video vigor villa vinyl viral virus visit visor vital vivid vocal
+voice voter wagon waist waste watch water weary weave wedge weigh weird whale wheat wheel where
+which while whine white whole whose widow width windy witch woman women wonky world worry worth
+would wound woven wrist write wrong yield young youth zebra
+`;
+const WG_WORDS = [...new Set(WG_WORDS_RAW.trim().split(/\s+/).map((w) => w.toLowerCase()))].filter((w) =>
+  /^[a-z]{5}$/.test(w)
+);
+const WG_WORDS_SET = new Set(WG_WORDS);
+const WG_MAX_GUESSES = 6;
+// Fewer guesses used = more points; unsolved (never reaches here — see below) scores nothing.
+const WG_SCORE_BY_GUESSES = [0, 60, 50, 40, 30, 20, 10];
+
+// Standard Wordle scoring, done in two passes so a repeated letter in the guess is never marked
+// 'present' more times than it actually occurs in the answer (e.g. guessing "sassy" against an
+// answer with one 's' must mark only one 's' present/correct, not both).
+function computeWgFeedback(guess, answer) {
+  const result = new Array(5).fill('absent');
+  const remaining = {};
+  for (let i = 0; i < 5; i++) {
+    if (guess[i] === answer[i]) result[i] = 'correct';
+    else remaining[answer[i]] = (remaining[answer[i]] || 0) + 1;
+  }
+  for (let i = 0; i < 5; i++) {
+    if (result[i] === 'correct') continue;
+    const letter = guess[i];
+    if (remaining[letter] > 0) {
+      result[i] = 'present';
+      remaining[letter] -= 1;
+    }
+  }
+  return result;
+}
+
+function broadcastWg(code, data, exclude) {
+  const room = rooms.get(code);
+  if (!room || !room.wg) return;
+  const payload = JSON.stringify(data);
+  for (const client of room.wg.players.keys()) {
+    if (client !== exclude && client.readyState === client.OPEN) client.send(payload);
+  }
+}
+
+// Progress-only view sent to everyone — deliberately never includes guesses/feedback content,
+// see this section's own header comment on why (mirrors the poll-privacy fix's aggregate-only
+// shape).
+function wgProgress(wg) {
+  return [...wg.players.values()].map((p) => ({
+    id: p.id,
+    name: p.name,
+    guessCount: p.guessCount,
+    done: p.done,
+    solved: p.solved,
+  }));
+}
+
+function leaveWg(ws) {
+  const code = ws.wgRoom;
+  if (!code) return;
+  const room = rooms.get(code);
+  if (room && room.wg) {
+    const wg = room.wg;
+    const me = wg.players.get(ws);
+    wg.players.delete(ws);
+    if (me) broadcastWg(code, { type: 'wg-player-left', id: me.id });
+    if (me) clearRoomActivity(code, me.name);
+    // A round only ever completes inside the wg-guess handler's "is everyone done" check — if the
+    // one remaining not-yet-done player leaves mid-round instead of finishing, that check never
+    // runs again and every already-done player would be stuck waiting on a round that can no
+    // longer end. Re-check here too so their departure can also close out the round.
+    if (wg.roundActive && wg.players.size > 0 && [...wg.players.values()].every((p) => p.done)) {
+      wg.roundActive = false;
+      broadcastWg(code, { type: 'wg-round-end', word: wg.word });
+    }
+    if (wg.players.size === 0) delete room.wg;
+  }
+  ws.wgRoom = null;
+}
+
 // ---- Pictionary-style drawing/guessing game (room.dg) ----
 // Modeled on room.bc/room.gw: a lazy per-room Map of players keyed by ws. Only one round
 // runs at a time per room; the word is sent solely to the drawer, never broadcast.
@@ -5355,6 +5496,115 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    if (msg.type === 'wg-join') {
+      if (isWsMsgRateLimited(ws)) return; // see bc-join's comment on this same guard
+      const code = String(msg.code || '').toUpperCase().trim();
+      const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
+      if (!code) return;
+      if (db.isBannedFromRoom(code, ws.accountId || null, name)) {
+        send(ws, { type: 'wg-join-error', message: "You've been banned from this room" });
+        return;
+      }
+      if (ws.wgRoom === code) return; // see bc-join's comment on this same guard
+      if (ws.wgRoom) leaveWg(ws);
+      const room = getOrCreateRoom(code);
+      if (!room.wg) room.wg = { players: new Map(), word: null, roundActive: false };
+      const wg = room.wg;
+      if (wg.players.size >= MAX_GAME_PLAYERS) {
+        send(ws, { type: 'wg-full' });
+        return;
+      }
+      const id = crypto.randomUUID();
+      ws.wgRoom = code;
+      ws.wgId = id;
+      wg.players.set(ws, { id, name, guessCount: 0, done: false, solved: false });
+      send(ws, {
+        type: 'wg-init',
+        id,
+        players: wgProgress(wg),
+        roundActive: wg.roundActive,
+        maxGuesses: WG_MAX_GUESSES,
+      });
+      broadcastWg(code, { type: 'wg-player-joined', id, name, guessCount: 0, done: false, solved: false }, ws);
+      setRoomActivity(code, name, 'wg');
+      return;
+    }
+
+    if (msg.type === 'wg-start' && ws.wgRoom) {
+      const room = rooms.get(ws.wgRoom);
+      const wg = room && room.wg;
+      if (!wg || wg.roundActive) return;
+      wg.word = WG_WORDS[Math.floor(Math.random() * WG_WORDS.length)];
+      wg.roundActive = true;
+      for (const p of wg.players.values()) {
+        p.guessCount = 0;
+        p.done = false;
+        p.solved = false;
+      }
+      broadcastWg(ws.wgRoom, { type: 'wg-round-start', maxGuesses: WG_MAX_GUESSES });
+      return;
+    }
+
+    if (msg.type === 'wg-guess' && ws.wgRoom) {
+      const room = rooms.get(ws.wgRoom);
+      const wg = room && room.wg;
+      if (!wg || !wg.roundActive) return;
+      const me = wg.players.get(ws);
+      if (!me || me.done) return;
+      const guess = String(msg.guess || '').toLowerCase().trim();
+      if (!/^[a-z]{5}$/.test(guess)) return;
+      if (!WG_WORDS_SET.has(guess)) {
+        send(ws, { type: 'wg-invalid-word', guess });
+        return;
+      }
+      const feedback = computeWgFeedback(guess, wg.word);
+      me.guessCount += 1;
+      me.solved = guess === wg.word;
+      me.done = me.solved || me.guessCount >= WG_MAX_GUESSES;
+      if (me.solved) {
+        const score = WG_SCORE_BY_GUESSES[me.guessCount];
+        db.bumpLeaderboard(ws.wgRoom, 'wordguess', me.name, score);
+      }
+      send(ws, {
+        type: 'wg-guess-result',
+        guess,
+        feedback,
+        guessCount: me.guessCount,
+        solved: me.solved,
+        done: me.done,
+        guessesLeft: WG_MAX_GUESSES - me.guessCount,
+        word: me.done ? wg.word : undefined,
+      });
+      broadcastWg(ws.wgRoom, {
+        type: 'wg-player-progress',
+        id: me.id,
+        name: me.name,
+        guessCount: me.guessCount,
+        done: me.done,
+        solved: me.solved,
+      });
+      if (me.done) {
+        broadcastWg(ws.wgRoom, { type: 'wg-player-finished', id: me.id, name: me.name, solved: me.solved, guessCount: me.guessCount });
+      }
+      if ([...wg.players.values()].every((p) => p.done)) {
+        wg.roundActive = false;
+        broadcastWg(ws.wgRoom, { type: 'wg-round-end', word: wg.word });
+      }
+      return;
+    }
+
+    if (msg.type === 'wg-leaderboard' && ws.wgRoom) {
+      // Same missing-flood-gate fix as tv-leaderboard/hm-leaderboard above.
+      if (isWsMsgRateLimited(ws)) return;
+      send(ws, { type: 'wg-leaderboard-result', scores: db.getLeaderboard(ws.wgRoom, 'wordguess', 10) });
+      return;
+    }
+
+    if (msg.type === 'wg-leave') {
+      leaveWg(ws);
+      return;
+    }
+
     if (msg.type === 'ch-join') {
       if (isWsMsgRateLimited(ws)) return; // see bc-join's comment on this same guard
       const code = String(msg.code || '').toUpperCase().trim();
@@ -6947,6 +7197,7 @@ wss.on('connection', (ws, req) => {
     if (ws.ttRoom) leaveTt(ws);
     if (ws.chRoom) leaveCh(ws);
     if (ws.hmRoom) leaveHm(ws);
+    if (ws.wgRoom) leaveWg(ws);
     if (ws.arcadeRoom && ws.arcadeName) clearRoomActivity(ws.arcadeRoom, ws.arcadeName);
     // Only end the stream if this closing socket is the one actually on file — see the identity
     // guard added to scorpture-go-live/scorpture-end-live above; without it, a stale tab that had
@@ -7073,6 +7324,7 @@ function isRoomFullyEmpty(room) {
   if (room.tt && room.tt.players && room.tt.players.size > 0) return false;
   if (room.ch && room.ch.players && room.ch.players.size > 0) return false;
   if (room.hm && room.hm.players && room.hm.players.size > 0) return false;
+  if (room.wg && room.wg.players && room.wg.players.size > 0) return false;
   return true;
 }
 setInterval(() => {

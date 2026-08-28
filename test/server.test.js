@@ -2580,6 +2580,124 @@ describe('Hangman reveals the word on a loss', () => {
   });
 });
 
+describe('Word Guess', () => {
+  test('rejects a guess that is not a real word', async () => {
+    const ws = await connectWs();
+    send(ws, { type: 'wg-join', code: 'WGINVALID1', name: 'WgInvalid' });
+    await waitFor(ws, (m) => m.type === 'wg-init');
+    send(ws, { type: 'wg-start' });
+    await waitFor(ws, (m) => m.type === 'wg-round-start');
+
+    send(ws, { type: 'wg-guess', guess: 'zzzzz' });
+    const invalid = await waitFor(ws, (m) => m.type === 'wg-invalid-word');
+    assert.equal(invalid.guess, 'zzzzz');
+  });
+
+  test('a guess broadcasts only aggregate progress to other players, never the guess/feedback content', async () => {
+    const code = 'WGPRIVACY1';
+    const guesser = await connectWs();
+    const bystander = await connectWs();
+    send(guesser, { type: 'wg-join', code, name: 'WgGuesser' });
+    await waitFor(guesser, (m) => m.type === 'wg-init');
+    send(bystander, { type: 'wg-join', code, name: 'WgBystander' });
+    await waitFor(bystander, (m) => m.type === 'wg-init');
+    send(guesser, { type: 'wg-start' });
+    await Promise.all([
+      waitFor(guesser, (m) => m.type === 'wg-round-start'),
+      waitFor(bystander, (m) => m.type === 'wg-round-start'),
+    ]);
+
+    const progressPromise = waitFor(bystander, (m) => m.type === 'wg-player-progress');
+    send(guesser, { type: 'wg-guess', guess: 'apple' });
+    const result = await waitFor(guesser, (m) => m.type === 'wg-guess-result');
+    assert.equal(result.guess, 'apple');
+    assert.equal(result.feedback.length, 5);
+    assert.equal(result.guessCount, 1);
+
+    const progress = await progressPromise;
+    assert.equal(progress.guessCount, 1);
+    assert.equal(progress.id !== undefined, true);
+    assert.equal('guess' in progress, false, 'the room-wide broadcast must never carry guess content');
+    assert.equal('feedback' in progress, false, 'the room-wide broadcast must never carry feedback content');
+  });
+
+  test('exhausting all guesses reveals the word, another player can then solve with it, and the leaderboard reflects the win', async () => {
+    const code = 'WGSOLVE1';
+    const revealer = await connectWs();
+    const solver = await connectWs();
+    send(revealer, { type: 'wg-join', code, name: 'WgRevealer' });
+    await waitFor(revealer, (m) => m.type === 'wg-init');
+    send(solver, { type: 'wg-join', code, name: 'WgSolver' });
+    await waitFor(solver, (m) => m.type === 'wg-init');
+    send(revealer, { type: 'wg-start' });
+    await Promise.all([
+      waitFor(revealer, (m) => m.type === 'wg-round-start'),
+      waitFor(solver, (m) => m.type === 'wg-round-start'),
+    ]);
+
+    // Burn through 6 distinct real words on the revealer — vanishingly unlikely to coincidentally
+    // land on the actual answer, but if it does the word is still legitimately revealed early
+    // (me.done covers both the solved and exhausted-guesses paths identically).
+    const candidates = ['apple', 'beach', 'chair', 'doubt', 'eagle', 'fable'];
+    let revealed = null;
+    for (const guess of candidates) {
+      if (revealed) break;
+      send(revealer, { type: 'wg-guess', guess });
+      const r = await waitFor(revealer, (m) => m.type === 'wg-guess-result');
+      if (r.done) revealed = r.word;
+    }
+    assert.ok(revealed, 'six distinct guesses must exhaust WG_MAX_GUESSES and reveal the word');
+
+    send(solver, { type: 'wg-guess', guess: revealed });
+    const solved = await waitFor(solver, (m) => m.type === 'wg-guess-result');
+    assert.equal(solved.solved, true);
+    assert.ok(solved.feedback.every((f) => f === 'correct'));
+
+    // Both players are now done, so the shared round should end for the whole room.
+    const roundEnd = await waitFor(solver, (m) => m.type === 'wg-round-end');
+    assert.equal(roundEnd.word, revealed);
+
+    send(solver, { type: 'wg-leaderboard' });
+    const board = await waitFor(solver, (m) => m.type === 'wg-leaderboard-result');
+    const entry = board.scores.find((s) => s.name === 'WgSolver');
+    assert.ok(entry, 'the solver should appear on the room leaderboard');
+    assert.ok(entry.score > 0);
+  });
+
+  test('a not-yet-done player leaving mid-round still closes out the round for everyone else', async () => {
+    const code = 'WGLEAVE1';
+    const finisher = await connectWs();
+    const straggler = await connectWs();
+    send(finisher, { type: 'wg-join', code, name: 'WgFinisher' });
+    await waitFor(finisher, (m) => m.type === 'wg-init');
+    send(straggler, { type: 'wg-join', code, name: 'WgStraggler' });
+    await waitFor(straggler, (m) => m.type === 'wg-init');
+    send(finisher, { type: 'wg-start' });
+    await Promise.all([
+      waitFor(finisher, (m) => m.type === 'wg-round-start'),
+      waitFor(straggler, (m) => m.type === 'wg-round-start'),
+    ]);
+
+    // finisher exhausts all 6 guesses (done=true) while straggler never guesses at all — before
+    // the leaveWg fix, the round-end check only ran inside wg-guess, so with the one remaining
+    // not-done player (straggler) never guessing, finisher would be stuck waiting forever.
+    const candidates = ['apple', 'beach', 'chair', 'doubt', 'eagle', 'fable'];
+    let done = false;
+    for (const guess of candidates) {
+      if (done) break;
+      send(finisher, { type: 'wg-guess', guess });
+      const r = await waitFor(finisher, (m) => m.type === 'wg-guess-result' && m.guess === guess);
+      done = r.done;
+    }
+    assert.ok(done, 'the finisher should exhaust all guesses');
+
+    const roundEndPromise = waitFor(finisher, (m) => m.type === 'wg-round-end', 2000);
+    send(straggler, { type: 'wg-leave' });
+    const roundEnd = await roundEndPromise;
+    assert.equal(typeof roundEnd.word, 'string');
+  });
+});
+
 describe('Geometry Wave leaderboard submission cooldown', () => {
   test('an immediate completion is accepted, a rapid re-submission is blocked, and it recovers after the cooldown', async () => {
     const code = 'GWCOOLDOWN1';
