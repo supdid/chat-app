@@ -312,11 +312,27 @@ function renderSavedList() {
     meta.textContent = `${m.name} · ${new Date(m.at).toLocaleString()}`;
     li.appendChild(meta);
     if (m.mediaUrl && m.mediaType !== 'poll') {
-      const media = m.mediaType === 'video' ? document.createElement('video') : document.createElement('img');
+      // Found by the saved-messages audit: this only ever branched video-vs-image, unlike the
+      // live chat renderer (which also has an 'audio' branch) — a saved voice message rendered
+      // as a broken <img> with the audio completely inaccessible from this panel.
+      let media;
+      if (m.mediaType === 'video') { media = document.createElement('video'); media.controls = true; }
+      else if (m.mediaType === 'audio') { media = document.createElement('audio'); media.controls = true; }
+      else { media = document.createElement('img'); media.alt = 'shared image'; }
       media.src = m.mediaUrl;
       media.className = 'saved-media';
-      if (m.mediaType === 'video') media.controls = true;
-      else media.alt = 'shared image';
+      // Same gap as above: the live chat renderer already has a broken-media fallback for a
+      // 404'd/deleted upload (see its own comment) — this panel's whole documented point is "a
+      // saved message still shows something even if the original is later deleted," but that
+      // promise never actually covered the media itself, which just showed a bare broken glyph.
+      media.addEventListener('error', () => {
+        const fallback = document.createElement('span');
+        fallback.className = 'media-unavailable';
+        fallback.textContent = m.mediaType === 'video' ? '🎬 Video unavailable'
+          : m.mediaType === 'audio' ? '🔊 Audio unavailable'
+          : '🖼️ Image unavailable';
+        media.replaceWith(fallback);
+      }, { once: true });
       li.appendChild(media);
     }
     if (m.text) {
@@ -2557,6 +2573,19 @@ function signOutAccount(toastMessage) {
   // that's the simplest correct behavior once an account merge has touched this list at all.
   try { localStorage.removeItem(RECENT_ROOMS_KEY); } catch {}
   renderRecentRooms();
+  // Found by the saved-messages audit: same shared-device exposure shape as the recent-rooms fix
+  // just above, arguably worse — saved entries store full message TEXT/IMAGE/VIDEO content
+  // inline (see SAVED_KEY's own comment), not just a room code, and nothing ever cleared them on
+  // sign-out. Unlike recent-rooms this list was never account-synced in the first place (it's
+  // purely per-device, populated by whoever used this browser regardless of which account, if
+  // any, was signed in at the time) — but that's exactly why leaving it forces the NEXT person to
+  // use this device to inherit it: they get no fresh-account merge to notice, it's just already
+  // sitting there. Signing out is this app's one clear "I'm done using this device as me" signal,
+  // so it's the right place to clear it, same as every other shared-device fix in this function.
+  try { localStorage.removeItem(SAVED_KEY); } catch {}
+  savedMessages = [];
+  document.querySelectorAll('.save-btn.saved').forEach((btn) => btn.classList.remove('saved'));
+  if (!savedOverlay.classList.contains('hidden')) renderSavedList();
   // Account-scoped overlays (friends/DMs/group DMs) were otherwise left open showing the
   // signed-out-out account's data — if a different account then signed in in the same tab,
   // stale friend/DM state could persist on screen until the next explicit fetch.
