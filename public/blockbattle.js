@@ -141,7 +141,15 @@ const SHOP_ARCHETYPES = [
     base: { damage: 20, interval: 0.38, mag: 10, reload: 1.9, headshot: 45, scope: true },
     names: ['Crossfire', 'Steady Hand', 'Farsight', 'Pinpoint', 'True North', 'Clear Skies', 'Precision X', 'Keen Eye', 'Sharp Edge', 'Dead Center'] },
   { key: 'launcher', label: 'Launchers', icon: '🚀', basePrice: 220,
-    base: { damage: 55, interval: 1.5, mag: 1, reload: 2.8, headshot: 55, explosive: true, headshotDoubleKill: true },
+    // Found by the Fight for Glory VFX/networking/economy audit: headshot used to equal body
+    // damage (55/55) here, unlike every other one of the 69 archetypes (which all start with a
+    // real headshot premium) — and since SHOP_TIER_SCALE compounds damage faster than headshot
+    // (1.09 vs 1.07 per tier), the two curves crossed almost immediately, leaving every Launcher
+    // tier above 1 dealing LESS damage on a headshot than a body shot. Backwards for a weapon
+    // whose whole premise (headshotDoubleKill) is rewarding headshots the most. 80 keeps a real
+    // (if modest, matching this archetype's other heavy-explosive siblings like cannon/coachgun)
+    // headshot advantage across all 10 tiers instead of inverting partway through the ladder.
+    base: { damage: 55, interval: 1.5, mag: 1, reload: 2.8, headshot: 80, explosive: true, headshotDoubleKill: true },
     names: ['Fat Boy', 'Hellstorm', 'Wrecking Ball', 'Meteor Strike', 'Skyfall', 'Cataclysm-9', 'Big Bertha', 'Ragnarok', 'Doomsday Device', 'World End'] },
   { key: 'energy', label: 'Energy Weapons', icon: '⚡', basePrice: 180,
     base: { damage: 11, interval: 0.09, mag: 40, reload: 2.0, headshot: 22, auto: true },
@@ -2803,9 +2811,17 @@ document.getElementById('avatar-shop-close-btn').addEventListener('click', (e) =
   e.stopPropagation();
   avatarShopOverlay.classList.add('hidden');
 });
+// Found by the Fight for Glory VFX/networking/economy audit: renderAvatarShopGrid rebuilds up to
+// 400 fresh <canvas> elements (each drawing several shapes, a radial gradient for every legendary
+// entry) from scratch — cheap for a click, but firing that on every single keystroke while typing
+// (no debounce) is real jank a fast typist would actually feel. The map-vote/skin-shop searches
+// don't need this (plain text/DOM cards, not per-card canvas draws) — this is specifically an
+// avatar-shop-shaped cost.
+let avatarShopSearchDebounce = null;
 avatarShopSearchEl.addEventListener('input', () => {
   avatarShopSearchQuery = avatarShopSearchEl.value;
-  renderAvatarShopGrid();
+  clearTimeout(avatarShopSearchDebounce);
+  avatarShopSearchDebounce = setTimeout(renderAvatarShopGrid, 150);
 });
 avatarShopSearchEl.addEventListener('click', (e) => e.stopPropagation());
 document.addEventListener('keydown', (e) => {
@@ -4360,6 +4376,18 @@ function handleBbMessage(data) {
       // (bb.currentMapId server-side, 'office' until any match's own pre-fight vote has ever
       // resolved). See bb-duel-map-vote/bb-match-map-vote for where voting now actually happens.
       activateMap(data.mapId || 'office');
+      // Found by the Fight for Glory VFX/networking/economy audit: bb-lobby-map-changed (below)
+      // already guards against exactly this — a bystander embedded in the new map's geometry once
+      // it swaps in — but bb-init never got the same guard. bb-init fires on a post-drop reconnect
+      // too (see this case's own opening comment), and the shared lobby's map can change (via some
+      // OTHER match's pre-fight vote) during however long that connection was down — the player's
+      // stale last-known position can land inside newly-active geometry with nothing to catch it.
+      // dueling/inMatch are always false here (just reset above), so no extra gate is needed.
+      if (blockedAt(player.x, player.z, player.y)) {
+        player.x = 0; player.z = 0;
+        player.y = groundHeightAt(0, 0);
+        vy = 0; onGround = true; hasAirMomentum = false;
+      }
       break;
     }
     case 'bb-lobby-map-changed': {
@@ -4862,6 +4890,20 @@ function openBbLeaderboard(tabKey) {
     arcadeJoinGame(BB_LEADERBOARD_EXTRA_KEYS[tabKey]);
   }
   bbLeaderboardOverlay.classList.remove('hidden');
+  // Found by the Fight for Glory VFX/networking/economy audit: none of arcadeWs/winstreakWs have
+  // any error handling — a refused connection or a hiccup before it ever opens just nulls the
+  // socket silently, leaving this panel stuck on "Loading…" forever with no signal anything went
+  // wrong. A real response (even an empty "No scores yet" li) always replaces the placeholder well
+  // before this fires in the normal case — this is purely a stuck-forever safety net, checked
+  // against whichever tab is still the active one when it fires (a since-switched tab already
+  // replaced the placeholder with ITS OWN "Loading…" via the same code path, so re-checking
+  // tabKey here avoids stomping a different, still-legitimately-loading tab).
+  setTimeout(() => {
+    const stillLoading = bbLeaderboardList.children.length === 1 && bbLeaderboardList.firstElementChild.textContent === 'Loading…';
+    if (arcadeLeaderboardMode === tabKey && stillLoading) {
+      bbLeaderboardList.innerHTML = '<li>Couldn\'t load this leaderboard — try closing and reopening.</li>';
+    }
+  }, 5000);
 }
 
 if (bbLeaderboardBtn) {
