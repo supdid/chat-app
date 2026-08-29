@@ -5602,6 +5602,23 @@ function tick(now) {
   let dt = Math.min((now - last) / 1000, 0.1);
   last = now;
 
+  // Online Play counts toward Play Time even while paused/AFK (no pointer lock) — unlike a solo
+  // run, where pausing is a deliberate "I opened a menu" action, being connected to the shared
+  // lobby is itself the thing "play time" is meant to measure here, idle or not. Placed BEFORE the
+  // `paused` early-return below (which stops everything else, including the solo-mode accumulation
+  // further down) specifically so AFK time in the lobby isn't lost the instant pointer lock drops.
+  // requestAnimationFrame still keeps firing while paused (see that branch below), just at
+  // whatever rate a backgrounded/inactive tab's own throttling allows — dt's 0.1s clamp above
+  // already exists for exactly that case, so this doesn't need its own separate handling.
+  if (onlineActive) {
+    totalPlaytimeSec += dt;
+    playtimeFlushAccum += dt;
+    if (playtimeFlushAccum >= 10) {
+      playtimeFlushAccum = 0;
+      saveTotalPlaytimeSec(totalPlaytimeSec);
+    }
+  }
+
   // Finisher slow motion: the whole world runs at a third speed for a beat.
   // The timer counts down in real time; everything below runs on the scaled dt.
   if (slowMoT > 0) {
@@ -5616,11 +5633,13 @@ function tick(now) {
     return;
   }
 
-  // Play time counts whenever a mode is actually active and not paused — not gated on !dead, since
-  // sitting on the death screen mid-run is still part of a play session, same spirit as "screen
-  // time," not "only while actively shooting." Flushed to localStorage every 10s of accumulated
-  // time rather than every tick, which would be a wasteful write on every single frame.
-  if (mode !== null) {
+  // Solo modes: play time counts whenever a mode is actually active and not paused — not gated on
+  // !dead, since sitting on the death screen mid-run is still part of a play session, same spirit
+  // as "screen time," not "only while actively shooting." Online Play is deliberately excluded
+  // here (!onlineActive) since it's already counted unconditionally above, pause or not — this
+  // branch would otherwise double-count every unpaused online tick. Flushed to localStorage every
+  // 10s of accumulated time rather than every tick, which would be a wasteful write on every frame.
+  if (mode !== null && !onlineActive) {
     totalPlaytimeSec += dt;
     playtimeFlushAccum += dt;
     if (playtimeFlushAccum >= 10) {
