@@ -2413,7 +2413,20 @@ const BB_MAP_IDS = [
 // blockbattle.js's own BB_SKINS list. The server never needs to know what a skin looks like
 // (that's client-side THREE.js material colors), only that a claimed id is a real one before it
 // gets forwarded on to every other player in the lobby.
-const BB_SKIN_IDS = ['default', 'khaki', 'sand', 'forest', 'rust', 'coral', 'ember', 'arctic', 'crimson', 'garnet', 'copper', 'toxic', 'shadow', 'teal', 'jade', 'indigo', 'violet', 'neon', 'plague', 'sunset', 'amber', 'royal', 'blaze', 'storm', 'solar', 'magma', 'gold', 'lagoon', 'platinum', 'steel', 'chrome', 'blood', 'ocean', 'onyx', 'inferno', 'slate', 'abyss', 'obsidian', 'aurora', 'opal', 'glacier', 'prestige', 'frostbite', 'void', 'nebula', 'ivory', 'cosmic', 'radiant', 'eclipse', 'phantom', 'starlight', 'quantum'];
+//
+// Found by the Fight for Glory maps/audio/polish audit: this list was never updated when the 400
+// numbered Avatars (av1..av400, see blockbattle.js's own BB_AVATARS) were added — bb-join's own
+// validation (`BB_SKIN_IDS.includes(...) ? ... : 'default'`) silently downgraded every equipped
+// avatar to the plain default skin the instant it left this client and reached anyone else, even
+// though the avatar shop's own subtitle explicitly promises "seen by other players in Online
+// Play's free-roam lobby and duels." The player equipping one saw it fine on their own screen
+// (the local third-person model reads equippedSkin straight from localStorage, never touching
+// this validation), which is exactly the kind of gap that's invisible without checking a SECOND
+// client's view of the same connection.
+const BB_SKIN_IDS = [
+  'default', 'khaki', 'sand', 'forest', 'rust', 'coral', 'ember', 'arctic', 'crimson', 'garnet', 'copper', 'toxic', 'shadow', 'teal', 'jade', 'indigo', 'violet', 'neon', 'plague', 'sunset', 'amber', 'royal', 'blaze', 'storm', 'solar', 'magma', 'gold', 'lagoon', 'platinum', 'steel', 'chrome', 'blood', 'ocean', 'onyx', 'inferno', 'slate', 'abyss', 'obsidian', 'aurora', 'opal', 'glacier', 'prestige', 'frostbite', 'void', 'nebula', 'ivory', 'cosmic', 'radiant', 'eclipse', 'phantom', 'starlight', 'quantum',
+  ...Array.from({ length: 400 }, (_, i) => `av${i + 1}`),
+];
 const BB_MATCH_VOTE_MS = Number(process.env.BB_MATCH_VOTE_MS ?? 10000);
 // First side to win this many rounds takes the match — same "kill ends the round, respawn,
 // continue" shape as Firefight's FG_ROUNDS_TO_WIN, just without a round time limit (BB combat has

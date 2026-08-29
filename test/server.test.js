@@ -5187,6 +5187,59 @@ describe('minigame-authority audit: missing flood gates', () => {
   });
 });
 
+describe('Fight for Glory avatars are visible to other Online Play players', () => {
+  // Found by the Fight for Glory maps/audio/polish audit: BB_SKIN_IDS (the allowlist bb-join
+  // validates the `skin` field against before broadcasting it to everyone else in the lobby) was
+  // never updated when the 400 numbered avatars (av1..av400) were added — every equipped avatar
+  // was silently downgraded to 'default' the instant it reached another player's screen, directly
+  // contradicting the avatar shop's own "seen by other players" subtitle. The equipper's OWN
+  // screen never caught this (their local third-person model reads equippedSkin straight from
+  // localStorage, bypassing this validation entirely) — only a second observer's view exposes it,
+  // which is exactly what this test checks.
+  test('an equipped avatar id survives bb-join and reaches another player via bb-player-joined/bb-init', async () => {
+    const code = 'BBAVATAR1';
+    // b joins FIRST and stays in the room, so it's the one that receives the live
+    // bb-player-joined broadcast fired by a's OWN join right after — a.js sends the notice
+    // describing whoever is joining, so the joiner (a, with skin under test) has to be the LATER
+    // one for this to actually check what it claims to.
+    const b = await connectWs();
+    send(b, { type: 'bb-join', code, level: 1 });
+    await waitFor(b, (m) => m.type === 'bb-init');
+
+    const a = await connectWs();
+    const joinedNotice = waitFor(b, (m) => m.type === 'bb-player-joined');
+    send(a, { type: 'bb-join', code, level: 1, skin: 'av400' });
+    const aInit = await waitFor(a, (m) => m.type === 'bb-init');
+    const notice = await joinedNotice;
+    assert.equal(notice.skin, 'av400', "a's avatar must reach b as 'av400', not silently fall back to 'default'");
+
+    // The reverse direction: a THIRD player joining after a is already established must see a's
+    // real avatar in their own bb-init roster snapshot, not just via the live broadcast above.
+    const c = await connectWs();
+    send(c, { type: 'bb-join', code, level: 1 });
+    const cInit = await waitFor(c, (m) => m.type === 'bb-init');
+    const aInRoster = cInit.players.find((p) => p.id === aInit.id);
+    assert.equal(aInRoster.skin, 'av400');
+
+    a.close(); b.close(); c.close();
+  });
+
+  test('an unrecognized skin id still falls back to default (the allowlist itself still works)', async () => {
+    const code = 'BBAVATAR2';
+    const b = await connectWs();
+    send(b, { type: 'bb-join', code, level: 1 });
+    await waitFor(b, (m) => m.type === 'bb-init');
+
+    const a = await connectWs();
+    const joinedNotice = waitFor(b, (m) => m.type === 'bb-player-joined');
+    send(a, { type: 'bb-join', code, level: 1, skin: 'not-a-real-id' });
+    const notice = await joinedNotice;
+    assert.equal(notice.skin, 'default');
+
+    a.close(); b.close();
+  });
+});
+
 describe('Block Battle 1v1 duel: challenge, accept/decline, pre-duel map vote, rounds', () => {
   // Zero coverage existed for the original challenge/accept/shoot 1v1 flow before this — every
   // prior bb test only covered the "can't challenge someone already busy" rejection, or the newer

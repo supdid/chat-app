@@ -894,6 +894,11 @@ function buildOffice() {
   const tableMat = new THREE.MeshLambertMaterial({ color: 0xdad2c4 });
   officeBox(1.6, 0.5, 1, 0, 0.25, 9.5, tableMat);
   [[-0.9, 9], [0.9, 9], [-0.9, 10], [0.9, 10]].forEach(([x, z]) => officeBox(0.35, 0.4, 0.35, x, 0.2, z, chairMat));
+  // Found by the Fight for Glory maps/audio/polish audit: same gap as buildOfficeKit's identical
+  // break room (see its own comment) — this base version's cubicles register officeOccupied (line
+  // 873 above) but the table+chairs never did, so a player could walk straight through a visually
+  // solid table that a bullet would stop dead at.
+  ['-1,9', '0,9', '-1,10', '0,10'].forEach((k) => officeOccupied.set(k, 0.5));
 }
 buildOffice();
 
@@ -1213,6 +1218,14 @@ function buildOfficeKit(group, occupiedMap, addSolid, config) {
   const tableMat = new THREE.MeshLambertMaterial({ color: 0xdad2c4 });
   kitBox(group, addSolid, 1.6, 0.5, 1, tableMat, 0, 0.25, 9.5);
   [[-0.9, 9], [0.9, 9], [-0.9, 10], [0.9, 10]].forEach(([x, z]) => kitBox(group, addSolid, 0.35, 0.4, 0.35, chairMat, x, 0.2, z));
+  // Found by the Fight for Glory maps/audio/polish audit: this break-room table+chairs (unlike
+  // every cubicle above, which registers its own occupiedMap entry) only ever called addSolid —
+  // solids blocks bullets/raycasts (see shootOnce) but occupiedMap is the separate grid that
+  // actually blocks PLAYER MOVEMENT (blockedAt/groundHeightAt) — so a player could walk straight
+  // through a visually solid table/chair set that a bullet would stop dead at. The table+chairs'
+  // combined footprint spans these 4 cells (table centered at world (0, 9.5), chairs at the four
+  // corners around it) — affects every office-family map that includes this same break room.
+  ['-1,9', '0,9', '-1,10', '0,10'].forEach((k) => occupiedMap.set(k, 0.5));
 }
 
 function buildWarehouseKit(group, occupiedMap, addSolid, config) {
@@ -1294,7 +1307,14 @@ function buildPlazaKit(group, occupiedMap, addSolid, config) {
     group.add(leaves); // canopy overhead — decorative, not a collider, same precedent as buildOffice's potted plants
     occupiedMap.set(`${i},${j}`, 1.6);
   }
-  [[-6, -6], [6, -6], [-6, 6], [6, 6]].forEach(([x, z]) => kitBox(group, addSolid, 1.4, 0.45, 0.4, benchMat, x, 0.22, z));
+  // Found by the Fight for Glory maps/audio/polish audit: these benches only ever called addSolid
+  // — no occupiedMap registration, unlike the trees just above (line 1308) and the fountain just
+  // below (line ~1317) — so a player could walk straight through a visually solid bench that a
+  // bullet would stop dead at.
+  [[-6, -6], [6, -6], [-6, 6], [6, 6]].forEach(([x, z]) => {
+    kitBox(group, addSolid, 1.4, 0.45, 0.4, benchMat, x, 0.22, z);
+    occupiedMap.set(`${Math.floor(x)},${Math.floor(z)}`, 0.45);
+  });
   const fountainMat = new THREE.MeshLambertMaterial({ color: 0x9aa4ab });
   const fountain = new THREE.Mesh(new THREE.CylinderGeometry(1.4, 1.5, 0.5, 16), fountainMat);
   fountain.position.set(0, 0.25, 0);
@@ -1325,6 +1345,13 @@ function buildGymKit(group, occupiedMap, addSolid, config) {
     const net = new THREE.Mesh(new THREE.BoxGeometry(0.05, 1, 11), netMat);
     net.position.set(0, 1.8, 0);
     group.add(net); addSolid(net);
+    // Found by the Fight for Glory maps/audio/polish audit: the posts and the full-court-width net
+    // itself only ever called addSolid (blocks bullets/raycasts) — neither registered occupiedMap
+    // (blocks player movement), so a player could walk straight through what a bullet fired across
+    // the court would stop dead at. Net spans z -5.5..5.5 at x=0 — cells -6..5 cover that whole
+    // span (and both post positions, z=-5.5/5.5, land inside it), 2.4 matches the taller posts'
+    // own height so this stays a safe/conservative blocker across the thinner net sections too.
+    for (let cz = -6; cz <= 5; cz++) occupiedMap.set(`0,${cz}`, 2.4);
   } else { // boxing
     const ropeMat = new THREE.MeshLambertMaterial({ color: 0xcc3b3b });
     const ringFloorMat = new THREE.MeshLambertMaterial({ color: 0x1e2126 });
@@ -1332,7 +1359,15 @@ function buildGymKit(group, occupiedMap, addSolid, config) {
     ring.position.set(0, 0.15, 0);
     group.add(ring); addSolid(ring);
     [[-3, -3], [3, -3], [-3, 3], [3, 3]].forEach(([x, z]) => kitBox(group, addSolid, 0.2, 1.4, 0.2, ropeMat, x, 0.9, z));
-    ['0,0', '-1,0', '0,-1', '-1,-1', '1,0', '1,-1', '0,1', '-1,1', '1,1'].forEach((k) => occupiedMap.set(k, 0.3));
+    // Found by the Fight for Glory maps/audio/polish audit: this only ever registered the CENTER
+    // 3x3 of what's visually a 6x6 raised platform (BoxGeometry(6,0.3,6) centered at the origin,
+    // i.e. cells -3..2 on both axes) — walking anywhere on the outer two-thirds of the ring (most
+    // of it, including right where the four corner rope posts stand) left the player's collision
+    // height at ground level while the raised ring mesh visually surrounded them. The 4 post cells
+    // themselves sit one cell further out again (posts are at exactly x/z = ±3, i.e. cells ±3, just
+    // past the ring floor's own -3..2 span) and get the posts' own taller height.
+    for (let i = -3; i <= 2; i++) for (let j = -3; j <= 2; j++) occupiedMap.set(`${i},${j}`, 0.3);
+    [[-3, -3], [3, -3], [-3, 3], [3, 3]].forEach(([x, z]) => occupiedMap.set(`${x},${z}`, 1.6));
   }
 }
 
@@ -1670,13 +1705,27 @@ function activateMap(mapId) {
 const mapVoteOverlay = document.getElementById('map-vote');
 const mapVoteGrid = document.getElementById('map-vote-grid');
 const mapVoteTimerEl = document.getElementById('map-vote-timer');
+const mapVoteSearchEl = document.getElementById('map-vote-search');
 let mapVoteCountdownTimer = null;
 let myMapVote = null;
 let lastMapVoteTally = {};
+let mapVoteSearchQuery = '';
+// Found by the Fight for Glory maps/audio/polish audit: with 206 named maps and only a 10s vote
+// window (BB_MATCH_VOTE_MS), finding a specific favorite by scrolling/scanning ~150px cards by
+// eye was a real repeated-every-match friction point — the weapon shop (300 weapons) and avatar
+// shop (400 avatars) both already have search boxes for catalogs of similar size; this didn't.
+mapVoteSearchEl.placeholder = `🔍 Search ${BB_MAPS.length} maps…`;
+mapVoteSearchEl.addEventListener('input', () => {
+  mapVoteSearchQuery = mapVoteSearchEl.value;
+  renderMapVoteGrid(lastMapVoteTally);
+});
+mapVoteSearchEl.addEventListener('click', (e) => e.stopPropagation());
 
 function renderMapVoteGrid(tally) {
   mapVoteGrid.innerHTML = '';
-  for (const m of BB_MAPS) {
+  const q = mapVoteSearchQuery.trim().toLowerCase();
+  const maps = q ? BB_MAPS.filter((m) => m.name.toLowerCase().includes(q)) : BB_MAPS;
+  for (const m of maps) {
     const card = document.createElement('button');
     card.type = 'button';
     card.className = 'map-vote-card' + (myMapVote === m.id ? ' picked' : '');
@@ -1708,6 +1757,8 @@ function updateMapVoteTally(tally) {
 
 function showMapVote(voteEndsAt, tally) {
   myMapVote = null;
+  mapVoteSearchQuery = ''; // fresh vote, fresh search — never reopens mid-filter from last match
+  mapVoteSearchEl.value = '';
   updateMapVoteTally(tally);
   mapVoteOverlay.classList.remove('hidden');
   if (mapVoteCountdownTimer) clearInterval(mapVoteCountdownTimer);
@@ -1859,11 +1910,51 @@ const GUN_SOUNDS = {
   shoparch_dmr:      [0.22, 600, 0.65, 140, 50, 0.2, 0.32],
   shoparch_launcher: [0.35, 400, 0.5, 90, 45, 0.3, 0.3],
   shoparch_energy:   [0.05, 1800, 0.25, 400, 900, 0.06, 0.16], // rising pitch — a charged zap, not a bang
+  // Found by the Fight for Glory maps/audio/polish audit: only 10 of the shop's 69 archetypes had
+  // a sound profile at all — everything else (59 archetypes, most of the entire weapon shop) fired
+  // in total silence, visually kicking/flashing with zero audio. These 4 cover the archetype
+  // families that don't fit any of the 10 above; ARCH_SOUND_FAMILY (below) maps every one of the
+  // 69 archKeys onto whichever of these 14 families actually fits it.
+  shoparch_suppressed: [0.06, 500, 0.18, 200, 90, 0.05, 0.1], // quiet/muffled — suppressed weapons
+  shoparch_bow:        [0.03, 3000, 0.15, 700, 200, 0.08, 0.2], // a twang/release, not a bang — bows/thrown/pneumatic weapons
+  shoparch_chainsaw:   [0.15, 2000, 0.4, 180, 160, 0.18, 0.3], // narrow, near-constant freq range reads as a buzz, not a report
+  shoparch_amr:        [0.4, 450, 0.9, 100, 25, 0.35, 0.45], // the single heaviest boom in the game — biggest anti-materiel rifles
+  shoparch_flamethrower: [0.25, 800, 0.5, 150, 130, 0.1, 0.15], // mostly noise, barely any tone — a roar/hiss, not a report
+};
+
+// Maps every one of SHOP_ARCHETYPES' 69 `key`s onto one of GUN_SOUNDS' 14 shoparch_* families —
+// grouped by how the weapon would actually sound (a suppressed pistol is quiet regardless of its
+// name containing "pistol"), not by name similarity alone. Anything accidentally left off this
+// map falls back to 'ar' in sfxShot below rather than silence, so a future archetype someone
+// forgets to add here still fires SOME sound instead of reintroducing this exact bug.
+const ARCH_SOUND_FAMILY = {
+  pistol: 'pistol', derringer: 'pistol', marksmanpistol: 'pistol',
+  suppressedpistol: 'suppressed', silencedrifle: 'suppressed',
+  railpistol: 'energy', rocketpistol: 'launcher', grenadepistol: 'launcher',
+  magnum: 'revolver', revolver: 'revolver',
+  machinepistol: 'smg', akimbo: 'smg', smg: 'smg',
+  ar: 'ar', carbine: 'ar', bullpup: 'ar', battlerifle: 'ar', burstrifle: 'ar', reconrifle: 'ar',
+  shotgun: 'shotgun', autoshotgun: 'shotgun', coachgun: 'shotgun', sawedoff: 'shotgun', trenchgun: 'shotgun',
+  lmg: 'lmg', minigun: 'lmg',
+  sniper: 'sniper', autosniper: 'sniper', boltaction: 'sniper',
+  amr: 'amr',
+  dmr: 'dmr',
+  launcher: 'launcher', grenadelauncher: 'launcher', microrocket: 'launcher', spikelauncher: 'launcher',
+  ballista: 'launcher', harpoon: 'launcher', javelin: 'launcher', torpedo: 'launcher',
+  flakcannon: 'launcher', cannon: 'launcher', warhammer: 'launcher', incendiary: 'launcher',
+  energy: 'energy', plasmarifle: 'energy', railgun: 'energy', ioncannon: 'energy', teslacoil: 'energy',
+  gravitygun: 'energy', voidrifle: 'energy', cryorifle: 'energy', gasgun: 'energy', vortexcannon: 'energy',
+  stungun: 'energy', netgun: 'energy', scrapcannon: 'energy',
+  bow: 'bow', crossbow: 'bow', slingshot: 'bow', throwingknife: 'bow', boomerang: 'bow',
+  dartrifle: 'bow', nailgun: 'bow', airrifle: 'bow', paintballgun: 'bow', spudgun: 'bow', flaregun: 'bow',
+  chainsaw: 'chainsaw',
+  flamethrower: 'flamethrower',
 };
 
 function sfxShot(type) {
   const shopW = WEAPONS[type];
-  const profile = GUN_SOUNDS[type] || (shopW && GUN_SOUNDS['shoparch_' + shopW.archKey]);
+  const profile = GUN_SOUNDS[type]
+    || (shopW && GUN_SOUNDS['shoparch_' + (ARCH_SOUND_FAMILY[shopW.archKey] || 'ar')]);
   if (!profile) return; // knife/fists and anything else with no gunshot have no entry — silent is correct, not a bug
   const [nd, nc, nv, f0, f1, td, tv] = profile;
   playNoise(nd, nc, nv);

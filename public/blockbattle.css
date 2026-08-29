@@ -1275,6 +1275,22 @@ html, body {
   font-variant-numeric: tabular-nums;
 }
 
+/* Same treatment as #skin-shop-search/#weapon-shop-search — added for the same reason once the
+   map list grew large enough (206) that scrolling by eye stopped being practical, especially
+   against the 10s vote window. */
+#map-vote-search {
+  flex-shrink: 0;
+  margin: 0.6rem 1.2rem 0;
+  padding: 0.6rem 0.9rem;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.06);
+  color: #eaf6ff;
+  font-size: 0.9rem;
+}
+#map-vote-search::placeholder { color: rgba(234, 246, 255, 0.5); }
+#map-vote-search:focus { outline: none; border-color: #2fb6ac; background: rgba(255, 255, 255, 0.1); }
+
 #map-vote-grid {
   flex: 1;
   overflow-y: auto;
