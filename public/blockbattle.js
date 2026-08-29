@@ -4010,7 +4010,12 @@ const duelOpponentName = document.getElementById('duel-opponent-name');
 const duelRoundScoreEl = document.getElementById('duel-round-score');
 const duelOpponentHealthFill = document.getElementById('duel-opponent-health-fill');
 const duelResult = document.getElementById('duel-result');
+const duelResultText = document.getElementById('duel-result-text');
+const duelRematchBtn = document.getElementById('duel-rematch-btn');
 const duelRoundBanner = document.getElementById('duel-round-banner');
+let lastDuelOpponentId = null;
+let lastDuelOpponentName = '';
+let duelResultHideTimer = null;
 const weaponHudEl = document.getElementById('weapon-hud');
 const matchHud = document.getElementById('match-hud');
 const matchHudTitle = document.getElementById('match-hud-title');
@@ -4284,17 +4289,42 @@ function endDuel(message) {
   // a reload, since it also has no close/cancel button of its own by design.
   hideMapVote();
   dueling = false;
+  // Captured before clearing myOpponentId itself — the Rematch button (below) needs to remember
+  // who that was after this function moves on. Still set even when this fires because the
+  // opponent disconnected (bb-duel-ended, "opponent left") rather than a real win/loss — clicking
+  // Rematch against someone no longer connected just gets the existing bb-challenge-failed
+  // "player not found" toast, the same graceful handling any stale challenge already gets, so
+  // there's no need to specifically detect and suppress the button for that one case.
+  lastDuelOpponentId = myOpponentId;
+  lastDuelOpponentName = myOpponentName;
   myOpponentId = null;
   duelRoundsWon = 0;
   duelRoundsLost = 0;
   duelHud.classList.add('hidden');
-  duelResult.textContent = message;
+  duelResultText.textContent = message;
+  duelRematchBtn.classList.toggle('hidden', !lastDuelOpponentId);
   duelResult.classList.remove('hidden');
-  setTimeout(() => duelResult.classList.add('hidden'), 2500);
+  clearTimeout(duelResultHideTimer);
+  // Longer than the old plain-message-only 2.5s — this now needs to stay up long enough to
+  // actually read and click Rematch, not just glance at.
+  duelResultHideTimer = setTimeout(() => duelResult.classList.add('hidden'), 5000);
   health = MAX_HEALTH;
   updateHealthBar();
   if (onlineActive) lobbyHud.classList.remove('hidden');
 }
+
+// A quick way to fight the same opponent again without hunting them back down in the Players
+// panel — same bb-challenge message and optimistic "Challenge sent" toast the normal Players-panel
+// Challenge button already uses (see renderLobbyPlayersList), so it gets the exact same server-
+// side handling (and the exact same bb-challenge-failed toast) for free if the opponent's since
+// gone or busy.
+duelRematchBtn.addEventListener('click', () => {
+  if (!lastDuelOpponentId) return;
+  clearTimeout(duelResultHideTimer);
+  duelResult.classList.add('hidden');
+  if (bbWs && bbWs.readyState === WebSocket.OPEN) bbWs.send(JSON.stringify({ type: 'bb-challenge', targetId: lastDuelOpponentId }));
+  showWaveBanner(`Challenge sent to ${lastDuelOpponentName || 'them'}`);
+});
 
 function renderMatchRoster(listEl, roster) {
   listEl.innerHTML = '';
