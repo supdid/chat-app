@@ -2284,15 +2284,19 @@ function getBbFaceTexture() {
   bbFaceTexture = new THREE.CanvasTexture(canvas);
   return bbFaceTexture;
 }
-// Character yaw convention here is local +Z = forward (see e.g. the bot facing code:
-// `bot.group.rotation.y = Math.atan2(dx, dz)`, the standard three.js "angle from +Z" form) — the
-// decal sits just past the head cube's own +Z face (half of its 0.28 width) so it doesn't z-fight.
+// Forward for this character rig is local -Z, not +Z (the atan2(dx,dz) convention bot-facing
+// code uses looked like a +Z tell but wasn't one in practice — found by the face actually showing
+// up on the back of the head instead of the front). Decal sits just past the head cube's -Z face
+// (half of its 0.28 width) so it doesn't z-fight, and is rotated 180° so its textured front side
+// — a PlaneGeometry's own front faces +Z by default — actually faces outward toward -Z instead of
+// into the head, where a MeshBasicMaterial's default single-sided face culling would hide it.
 function attachFaceDecal(headMesh) {
   const decal = new THREE.Mesh(
     new THREE.PlaneGeometry(0.24, 0.24),
     new THREE.MeshBasicMaterial({ map: getBbFaceTexture(), transparent: true, depthWrite: false })
   );
-  decal.position.z = 0.141;
+  decal.position.z = -0.141;
+  decal.rotation.y = Math.PI;
   decal.visible = false; // toggled on per-character by whichever skin/avatar is actually equipped
   // Flags this mesh's material.map as the single shared bbFaceTexture, not a uniquely-owned one —
   // removeRemotePlayer's disposal traversal (below) checks this to skip disposing it, since every
