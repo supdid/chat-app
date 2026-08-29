@@ -2013,6 +2013,12 @@ let reloadEndAt = 0;     // ms — when the current reload finishes
 let isReloading = false;
 let mouseHeld = false;   // for the hold-to-spray automatics
 let scoped = false;      // right mouse button held — only means zoom on a sniper
+// Online Play's free-roam lobby never engages pointer lock at all (see startOnlinePlay/
+// pointerlockchange below) — the cursor stays free so the Players panel/shops/leaderboard are all
+// normal-click reachable without a lock/unlock dance. Right-click-drag stands in for mouse-look
+// there instead; this tracks whether that drag is currently active. Unrelated to `scoped` (which
+// still means "right-click held" during an actual round, where the mouse IS locked as before).
+let freeRoamLookHeld = false;
 let gunKick = 0;         // 1 right after firing, easing back to 0
 let bobPhase = 0;        // viewmodel walk-bob clock, advanced by movement speed
 let muzzleT = 0;
@@ -4289,6 +4295,12 @@ function endDuel(message) {
   // a reload, since it also has no close/cancel button of its own by design.
   hideMapVote();
   dueling = false;
+  // Back to free-roam, which is deliberately unlocked (see startOnlinePlay) — release the round's
+  // lock so the cursor is free again, and stay unpaused explicitly rather than only relying on the
+  // resulting pointerlockchange event (which is async and already special-cases free-roam not to
+  // re-pause, but this matches backToModeSelect's own "don't just trust the event" precedent).
+  if (document.pointerLockElement === canvas) document.exitPointerLock();
+  paused = false;
   // Captured before clearing myOpponentId itself — the Rematch button (below) needs to remember
   // who that was after this function moves on. Still set even when this fires because the
   // opponent disconnected (bb-duel-ended, "opponent left") rather than a real win/loss — clicking
@@ -4365,6 +4377,11 @@ function endMatch(message) {
   hideMapVote();
   dueling = false;
   inMatch = false;
+  // Back to free-roam, which is deliberately unlocked (see startOnlinePlay/endDuel's own identical
+  // comment) — release the round's lock and stay unpaused explicitly rather than only trusting the
+  // resulting (async) pointerlockchange event.
+  if (document.pointerLockElement === canvas) document.exitPointerLock();
+  paused = false;
   myMatchId = null;
   myMatchSide = null;
   myMatchEliminated = false;
@@ -5012,8 +5029,14 @@ function startOnlinePlay() {
   activateMap('office');
   officeAmbient.intensity = 0.22;
   connectBb();
-  document.getElementById('hint-title').textContent = 'Click to play';
-  hint.classList.remove('hidden');
+  // Free-roam never engages pointer lock at all — no "Click to play" gate, no captured/hidden
+  // cursor. Movement/camera run live immediately (right-click-drag looks around, see the
+  // mousedown/mousemove handlers) so the Players panel/shops/leaderboard are reachable with a
+  // normal click the instant the lobby loads, not after a lock/unlock dance. A real round
+  // (bb-duel-started/bb-match-started) is the one place that still requests the lock, same as
+  // before.
+  paused = false;
+  hint.classList.add('hidden');
 }
 
 function leaveOnlineLobby() {
@@ -5365,7 +5388,12 @@ hint.addEventListener('click', () => {
 // lock), so pause/resume hangs off pointerlockchange instead of a keydown.
 document.addEventListener('pointerlockchange', () => {
   const locked = document.pointerLockElement === canvas;
-  hint.classList.toggle('hidden', locked);
+  // Free-roam is the one state that's deliberately unlocked-but-NOT-paused (see startOnlinePlay/
+  // endDuel/endMatch) — releasing the lock there (e.g. endDuel's own explicit exitPointerLock, or
+  // a stray Esc that no-ops since there was nothing locked to release) must not re-pause it or pop
+  // the "click to resume" hint back up over a screen that's supposed to just keep running.
+  const freeRoam = onlineActive && !dueling;
+  hint.classList.toggle('hidden', locked || freeRoam);
   if (locked) {
     // Resume: credit the paused time back to the wall-clock timers, so a pause
     // doesn't finish a reload (or a shot cooldown) for free.
@@ -5373,13 +5401,23 @@ document.addEventListener('pointerlockchange', () => {
     nextShotAt += pausedFor;
     reloadEndAt += pausedFor;
     paused = false;
-  } else {
+  } else if (!freeRoam) {
     paused = true;
     pausedAt = performance.now();
     keys.clear();     // Esc mid-press would otherwise leave keys stuck held
     mouseHeld = false;
     document.getElementById('hint-title').textContent = 'Paused — click to resume';
   }
+});
+// Safety net for the one case free-roam's unlocked design creates: requestPointerLockSafe() at an
+// actual round's start (bb-duel-started/bb-match-started) can get silently rejected by the
+// browser's user-gesture requirement if the player didn't click anything during the pre-fight map
+// vote (letting its timer expire instead) — a plain rejection fires pointerlockerror, not
+// pointerlockchange, so the hint would otherwise never come back to offer a manual retry click.
+document.addEventListener('pointerlockerror', () => {
+  if (onlineActive && !dueling) return; // free-roam is expected to be lock-less; nothing to recover from here
+  hint.classList.remove('hidden');
+  document.getElementById('hint-title').textContent = 'Click to look';
 });
 // The right button only counts as a scope while a sniper is actually in hand.
 function scopedNow() {
@@ -5389,15 +5427,28 @@ const scopeOverlay = document.getElementById('scope-overlay');
 let scopeShown = false; // what the overlay currently displays, to avoid per-frame DOM writes
 
 document.addEventListener('mousemove', (e) => {
-  if (document.pointerLockElement !== canvas) return;
+  // Free-roam has no pointer lock at all — movementX/Y are still populated on an ordinary
+  // (unlocked) mousemove though, just as "delta since the last event" rather than a captured
+  // total, which is exactly what's needed here too. Only actually applied while right-click-drag
+  // is held (see mousedown below), so moving the free mouse cursor around normally to click UI
+  // doesn't spin the camera.
+  const freeRoamDrag = onlineActive && !dueling && freeRoamLookHeld;
+  if (document.pointerLockElement !== canvas && !freeRoamDrag) return;
   const sens = MOUSE_SENS * (scopedNow() ? SCOPE_ZOOM : 1); // finer aim under the scope
   yaw -= e.movementX * sens;
   pitch = Math.max(-1.45, Math.min(1.45, pitch - e.movementY * sens));
 });
 // Under pointer lock, mouse events land on the canvas and bubble here.
 document.addEventListener('mousedown', (e) => {
+  // Free-roam: no lock, no shooting/scoping (matches the "lobby is free-roam only" rule just
+  // below, which stays as its own explicit check for the locked/in-round path) — right-click
+  // instead starts a look-drag. Checked and returned before the pointer-lock gate, since free-roam
+  // deliberately never holds that lock for this branch to otherwise require.
+  if (onlineActive && !dueling) {
+    if (e.button === 2) freeRoamLookHeld = true;
+    return;
+  }
   if (document.pointerLockElement !== canvas || dead) return;
-  if (onlineActive && !dueling) return; // lobby is free-roam only — no shooting/scoping until a duel starts
   if (e.button === 2) { scoped = true; return; } // hold right-click to scope
   if (e.button !== 0) return;
   mouseHeld = true; // automatics keep firing from the main loop while held
@@ -5405,10 +5456,10 @@ document.addEventListener('mousedown', (e) => {
 });
 document.addEventListener('mouseup', (e) => {
   if (e.button === 0) mouseHeld = false;
-  if (e.button === 2) scoped = false;
+  if (e.button === 2) { scoped = false; freeRoamLookHeld = false; }
 });
-document.addEventListener('contextmenu', (e) => e.preventDefault()); // right-click is the scope, not a menu
-window.addEventListener('blur', () => { mouseHeld = false; scoped = false; });
+document.addEventListener('contextmenu', (e) => e.preventDefault()); // right-click is the scope (or, in free-roam, the look-drag) — not a menu
+window.addEventListener('blur', () => { mouseHeld = false; scoped = false; freeRoamLookHeld = false; });
 
 // ---- Touch controls ----
 // Adapted from firefight.js's own touch scheme (same virtual-joystick + drag-to-look + button
