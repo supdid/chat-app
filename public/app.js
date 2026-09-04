@@ -77,6 +77,7 @@ const wordguessLink = document.getElementById('wordguess-link');
 const snakeLink = document.getElementById('snake-link');
 const g2048Link = document.getElementById('g2048-link');
 const whiteboardLink = document.getElementById('whiteboard-link');
+const flipbookLink = document.getElementById('flipbook-link');
 const micBtn = document.getElementById('mic-btn');
 const voiceClipBtn = document.getElementById('voice-clip-btn');
 const stickerBtn = document.getElementById('sticker-btn');
@@ -2526,6 +2527,7 @@ function updateGameLinks() {
   snakeLink.href = `snake.html${params}`;
   g2048Link.href = `2048.html${params}`;
   whiteboardLink.href = `whiteboard.html${params}`;
+  flipbookLink.href = `flipbook.html${params}`;
 }
 
 // --- Recent rooms (localStorage by default — this app has no stable per-person identity across

@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Flipbook · Valk</title>
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="flipbook.css">
+<link rel="manifest" href="manifest.json">
+<script>
+  (function () {
+    var saved = localStorage.getItem('valk-theme');
+    if (saved === 'light') document.documentElement.dataset.theme = 'light';
+  })();
+</script>
+<meta name="theme-color" content="#050b14">
+<link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+</head>
+<body>
+
+  <div id="topbar">
+    <a id="back-link" href="index.html">&larr; Back</a>
+    <div id="topbar-title">
+      <img src="images/logo.png" alt="Valk" class="logo-small">
+      <span>Flipbook</span>
+    </div>
+    <div id="topbar-actions">
+      <button id="theme-toggle-btn" class="icon-btn" aria-label="Toggle dark mode" type="button">🌙</button>
+      <button type="button" id="new-btn" class="icon-btn" aria-label="Start a new flipbook">🗋 New</button>
+    </div>
+  </div>
+
+  <div id="editor">
+
+    <div id="canvas-stage">
+      <canvas id="onion-canvas" width="640" height="480"></canvas>
+      <canvas id="draw-canvas" width="640" height="480"></canvas>
+      <div id="playback-overlay" class="hidden">
+        <canvas id="playback-canvas" width="640" height="480"></canvas>
+      </div>
+    </div>
+
+    <div id="tool-row">
+      <button type="button" id="pencil-btn" class="tool-btn active" aria-label="Pencil">✏️ Pencil</button>
+      <button type="button" id="eraser-btn" class="tool-btn" aria-label="Eraser">🧹 Eraser</button>
+      <input type="color" id="color-input" value="#1a1a1a" aria-label="Color">
+      <label id="size-label" class="size-label">
+        Size
+        <input type="range" id="size-input" min="1" max="40" value="4">
+      </label>
+      <button type="button" id="undo-btn" class="tool-btn" aria-label="Undo last stroke" disabled>↩️ Undo</button>
+      <button type="button" id="clear-btn" class="tool-btn" aria-label="Clear this frame">🗑️ Clear frame</button>
+      <label id="onion-label" class="onion-label">
+        <input type="checkbox" id="onion-checkbox" checked>
+        Onion skin
+      </label>
+    </div>
+
+    <div id="playback-row">
+      <button type="button" id="play-btn" class="tool-btn" aria-label="Play animation">▶️ Play</button>
+      <label id="fps-label" class="fps-label">
+        Speed
+        <input type="range" id="fps-input" min="1" max="24" value="8">
+        <span id="fps-readout">8 fps</span>
+      </label>
+      <label id="loop-label" class="loop-label">
+        <input type="checkbox" id="loop-checkbox" checked>
+        Loop
+      </label>
+      <button type="button" id="create-gif-btn" class="tool-btn primary" aria-label="Create an animated GIF from your frames">🎞️ Create GIF</button>
+    </div>
+
+    <div id="frame-row">
+      <div id="frame-strip"></div>
+      <div id="frame-actions">
+        <button type="button" id="add-frame-btn" class="tool-btn primary" aria-label="Add a new frame">➕ Add frame</button>
+        <button type="button" id="duplicate-frame-btn" class="tool-btn" aria-label="Duplicate this frame">📄 Duplicate</button>
+        <button type="button" id="move-frame-left-btn" class="tool-btn" aria-label="Move frame earlier">⬅️</button>
+        <button type="button" id="move-frame-right-btn" class="tool-btn" aria-label="Move frame later">➡️</button>
+        <button type="button" id="delete-frame-btn" class="tool-btn danger" aria-label="Delete this frame">🗑️ Delete frame</button>
+      </div>
+    </div>
+
+    <div id="render-progress" class="render-progress hidden">
+      <div class="progress-track"><div id="render-progress-fill" class="progress-fill"></div></div>
+      <p id="render-status">Rendering your animation&hellip;</p>
+    </div>
+
+    <div id="result-section" class="panel hidden">
+      <h2>Your animation</h2>
+      <img id="result-gif" alt="Your flipbook animation">
+      <div class="result-actions">
+        <button type="button" id="download-btn">⬇️ Download GIF</button>
+        <button type="button" id="send-chat-btn" class="primary hidden">💬 Send to chat</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Self-hosted (not CDN): gif.js spawns its own Worker for encoding, and browsers
+       refuse to construct a Worker from a cross-origin URL, so this pairs with
+       vendor/gifjs/gif.worker.js the same way vendor/ffmpeg/ffmpeg.js does in the
+       Video Editor — both need to be same-origin. -->
+  <script src="error-report.js"></script>
+  <script src="vendor/gifjs/gif.js"></script>
+  <script src="flipbook.js"></script>
+  <script src="update-prompt.js"></script>
+</body>
+</html>
