@@ -910,6 +910,71 @@ function buildOffice() {
 }
 buildOffice();
 
+// ---- Owner poster ----
+// A wall-mounted animated poster on the office's north wall, visible to everyone free-roaming the
+// online lobby. The real animated GIF lives at public/images/owner-poster.gif (viewable directly,
+// e.g. for sharing outside the game) but a WebGL/three.js texture can't play an animated GIF's own
+// frames — so this canvas hand-cycles through the same 40 source PNG frames (public/images/
+// owner-frames/, background-removed and composited onto white) at the same 80ms-per-frame pace the
+// gif was encoded with, which reproduces the identical animation as a live in-scene texture instead.
+const OWNER_POSTER_FRAME_COUNT = 40;
+const OWNER_POSTER_FRAME_DELAY_MS = 80;
+const ownerPosterImages = [];
+for (let i = 0; i < OWNER_POSTER_FRAME_COUNT; i++) {
+  const img = new Image();
+  img.src = `images/owner-frames/frame_${String(i).padStart(2, '0')}.png`;
+  ownerPosterImages.push(img);
+}
+const ownerPosterCanvas = document.createElement('canvas');
+ownerPosterCanvas.width = 384;
+ownerPosterCanvas.height = 512;
+const ownerPosterCtx = ownerPosterCanvas.getContext('2d');
+const ownerPosterTexture = new THREE.CanvasTexture(ownerPosterCanvas);
+let ownerPosterFrame = 0;
+function drawOwnerPosterFrame() {
+  const ctx = ownerPosterCtx;
+  const w = ownerPosterCanvas.width, h = ownerPosterCanvas.height;
+  ctx.fillStyle = '#ffffff'; // matches the solid white already baked into the source frames themselves
+  ctx.fillRect(0, 0, w, h);
+  const img = ownerPosterImages[ownerPosterFrame];
+  if (img.complete && img.naturalWidth) {
+    const areaTop = h * 0.16, areaH = h * 0.84;
+    const scale = Math.min(w / img.naturalWidth, areaH / img.naturalHeight);
+    const dw = img.naturalWidth * scale, dh = img.naturalHeight * scale;
+    ctx.drawImage(img, (w - dw) / 2, areaTop + (areaH - dh) / 2, dw, dh);
+  }
+  ctx.fillStyle = 'rgba(20,16,4,0.88)';
+  ctx.fillRect(0, 0, w, h * 0.15);
+  ctx.fillStyle = '#ffd54a';
+  ctx.font = `bold ${Math.floor(h * 0.1)}px sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('OWNER', w / 2, h * 0.075);
+  ownerPosterTexture.needsUpdate = true;
+}
+drawOwnerPosterFrame();
+setInterval(() => {
+  if (!officeGroup.visible) return; // only pay the redraw cost while the office map is actually up
+  ownerPosterFrame = (ownerPosterFrame + 1) % OWNER_POSTER_FRAME_COUNT;
+  drawOwnerPosterFrame();
+}, OWNER_POSTER_FRAME_DELAY_MS);
+// The north wall is a BoxGeometry centered at z=-(HALF_MAP+0.5) with depth 1, so its near face
+// (the one actually facing into the room) sits at z=-HALF_MAP, not at its center — mounting the
+// poster past that (more negative than -HALF_MAP) buries it inside the wall's own solid geometry,
+// which is invisible from both sides. Both meshes go just in front of that near face instead.
+const ownerPosterFrameMesh = new THREE.Mesh(
+  new THREE.PlaneGeometry(2.8, 3.67),
+  new THREE.MeshBasicMaterial({ color: 0xffd54a })
+);
+ownerPosterFrameMesh.position.set(0, 2.2, -HALF_MAP + 0.05);
+officeGroup.add(ownerPosterFrameMesh);
+const ownerPosterMesh = new THREE.Mesh(
+  new THREE.PlaneGeometry(2.6, 3.47),
+  new THREE.MeshBasicMaterial({ map: ownerPosterTexture })
+);
+ownerPosterMesh.position.set(0, 2.2, -HALF_MAP + 0.15);
+officeGroup.add(ownerPosterMesh);
+
 // ---- Hidden collectibles: Jump Shards ----
 // 9 findable shards — 5 around the always-on outdoor arena (reachable in Wave/FS), 4 around the
 // online lobby's office (reachable free-roaming before/after a duel). Purely client-side and
@@ -2259,6 +2324,19 @@ const BB_AVATARS = Array.from({ length: 400 }, (_, i) => {
   };
 });
 for (const a of BB_AVATARS) BB_SKIN_BY_ID[a.id] = a;
+
+// A single account-exclusive look (see server.js's bb-join, which force-overrides `skin` to this
+// id for one specific username regardless of what that account has actually equipped) — matched
+// by hand to a reference screenshot (dark armored figure, glowing cyan-blue eyes/energy) rather
+// than the procedural hue-sweep formula BB_AVATARS above uses. isAvatar is deliberately left
+// unset/false: that reference is a moody glowing mask, not the cheerful two-dot smile the actual
+// Roblox-style avatars get, so this skips attachFaceDecal's face entirely and lets the emissive
+// glow alone carry the look. Not part of BB_AVATARS/the shop grid — nobody else can pick this.
+BB_SKIN_BY_ID.exclusive_supdid67 = {
+  id: 'exclusive_supdid67', name: 'Storm Guardian',
+  body: 0x0a1420, limb: 0x030810, head: 0x123047,
+  glow: 0x2fd9ff,
+};
 
 // ---- Roblox-style face for avatars ----
 // One shared transparent-background texture (just two black eyes + a smile, nothing else) reused
@@ -4040,38 +4118,57 @@ const matchEliminatedBanner = document.getElementById('match-eliminated-banner')
 const bbRemotePlayers = new Map();
 let bbPlayers = []; // last-known roster snapshot for the players panel: { id, name, level, dueling }
 
+// Compact "12,345" -> "12.3K" / "1.2M" formatting for the win-streak line below — a raw
+// comma-grouped number at this tag's size/scale reads as an illegible wall of digits for anything
+// past a few thousand (this leaderboard's very first real entry is already 400,000).
+function formatBbStreakCompact(n) {
+  if (n >= 1000000) return `${(n / 1000000).toFixed(n % 1000000 === 0 ? 0 : 1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 1)}K`;
+  return String(n);
+}
+
 // Shared by both the initial draw and every glitch-flicker redraw so the "purple glitchy" look
-// (Level 100+ only) doesn't need two copies of the same drawing code.
-function drawBbNameCanvas(canvas, name, purple) {
+// (Level 100+ only) doesn't need two copies of the same drawing code. winStreak is optional —
+// omitted/0 (true for most players; this is a brand new leaderboard) renders exactly as before,
+// a single centered line; a real streak adds a second line below it instead of cramming both onto
+// one, which stayed illegible at this tag's on-screen size in an earlier version of this.
+function drawBbNameCanvas(canvas, name, purple, winStreak) {
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = purple ? 'rgba(50,8,74,0.55)' : 'rgba(0,0,0,0.5)';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.font = 'bold 30px sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   const label = String(name).slice(0, 16);
+  const hasStreak = winStreak > 0;
+  const nameY = hasStreak ? 22 : 32;
+  ctx.font = `bold ${hasStreak ? 24 : 30}px sans-serif`;
   if (purple) {
     // Cheap "glitch": two color-fringed copies jittered a few pixels off the true white text,
     // redrawn on a short random interval (not every frame) via updateRemotePlayers' glitchT timer.
     const jx = (Math.random() - 0.5) * 6, jy = (Math.random() - 0.5) * 3;
     ctx.fillStyle = '#ff2ee0';
-    ctx.fillText(label, 128 + jx, 32 + jy);
+    ctx.fillText(label, 128 + jx, nameY + jy);
     ctx.fillStyle = '#37f2ff';
-    ctx.fillText(label, 128 - jx, 32 - jy);
+    ctx.fillText(label, 128 - jx, nameY - jy);
     ctx.fillStyle = '#f4e9ff';
-    ctx.fillText(label, 128, 32);
+    ctx.fillText(label, 128, nameY);
   } else {
     ctx.fillStyle = '#fff';
-    ctx.fillText(label, 128, 32);
+    ctx.fillText(label, 128, nameY);
+  }
+  if (hasStreak) {
+    ctx.font = 'bold 18px sans-serif';
+    ctx.fillStyle = '#ffb347';
+    ctx.fillText(`🔥 ${formatBbStreakCompact(winStreak)}`, 128, 46);
   }
 }
 
-function makeBbNameSprite(name, level) {
+function makeBbNameSprite(name, level, winStreak) {
   const canvas = document.createElement('canvas');
   canvas.width = 256; canvas.height = 64;
   const purple = level >= 100;
-  drawBbNameCanvas(canvas, name, purple);
+  drawBbNameCanvas(canvas, name, purple, winStreak);
   const texture = new THREE.CanvasTexture(canvas);
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false }));
   sprite.scale.set(1.6, 0.4, 1);
@@ -4079,6 +4176,7 @@ function makeBbNameSprite(name, level) {
   sprite.userData.glitchy = purple;
   sprite.userData.canvas = canvas;
   sprite.userData.name = name;
+  sprite.userData.winStreak = winStreak;
   sprite.userData.glitchT = 0.1;
   return sprite;
 }
@@ -4086,7 +4184,7 @@ function makeBbNameSprite(name, level) {
 // id -> the level.100+ purple-glitch redraw is by far the more expensive path (a canvas redraw +
 // needsUpdate every ~0.1s per such player); everyone else's tag is drawn once and left alone.
 function redrawBbNameSprite(sprite) {
-  drawBbNameCanvas(sprite.userData.canvas, sprite.userData.name, true);
+  drawBbNameCanvas(sprite.userData.canvas, sprite.userData.name, true, sprite.userData.winStreak);
   sprite.material.map.needsUpdate = true;
 }
 
@@ -4107,7 +4205,7 @@ function spawnRemotePlayer(id, name, level, pos) {
   head.castShadow = true;
   group.add(head);
   attachFaceDecal(head).visible = !!skin.isAvatar;
-  const nameSprite = makeBbNameSprite(name, level);
+  const nameSprite = makeBbNameSprite(name, level, pos && pos.winStreak);
   group.add(nameSprite);
   const p = pos || { x: 0, y: 0, z: 0, yaw: 0 };
   group.position.set(p.x, p.y, p.z);
@@ -4168,9 +4266,15 @@ function updateRemotePlayers(dt) {
 // lazily on first use and torn down whenever a duel starts (first-person, no need to render
 // yourself) or the lobby is left entirely.
 let localAvatar = null;
+// Set from bb-init's own resolved `skin` field when the server's account-exclusive override (see
+// server.js's bb-join) means it differs from this client's own equippedSkin — null the rest of the
+// time. Deliberately NOT written into equippedSkin itself: that would silently overwrite this
+// account's real local preference/localStorage and the avatar shop's own "currently equipped"
+// state for no reason, when only the actual 3D rendering needs to reflect the override.
+let bbRenderSkinOverride = null;
 function ensureLocalAvatar() {
   if (localAvatar) return;
-  const skin = BB_SKIN_BY_ID[equippedSkin] || BB_SKIN_BY_ID.default;
+  const skin = BB_SKIN_BY_ID[bbRenderSkinOverride || equippedSkin] || BB_SKIN_BY_ID.default;
   const bodyMat = new THREE.MeshLambertMaterial({ color: skin.body });
   const limbMat = new THREE.MeshLambertMaterial({ color: skin.limb });
   const headMat = new THREE.MeshLambertMaterial({ color: skin.head });
@@ -4186,13 +4290,14 @@ function ensureLocalAvatar() {
   scene.add(group);
   localAvatar = { group, legs, arms, bodyMat, limbMat, headMat, faceDecal };
 }
-// Re-colors the already-built local avatar in place when a skin is equipped mid-session — cheaper
-// than tearing down and rebuilding the whole group, and keeps whatever walk-cycle pose it's mid-way
-// through. Guarded by the `if (localAvatar)` check at its one call site (the skin shop's Equip
-// button) since the avatar normally doesn't exist yet at that point — the skin shop only opens from
-// the mode-select screen, before Online Play has ever built one — but is harmless to call either way.
+// Re-colors the already-built local avatar in place when a skin is equipped mid-session (the skin
+// shop's own Equip button) or when bb-init reports back a server-resolved skin that differs from
+// what was assumed (the account-exclusive override case, see bbRenderSkinOverride above) — cheaper
+// than tearing down and rebuilding the whole group either way, and keeps whatever walk-cycle pose
+// it's mid-way through. Both call sites already guard with `if (localAvatar)` first, since the
+// avatar doesn't exist yet before Online Play has actually built one.
 function applyLocalAvatarSkin() {
-  const skin = BB_SKIN_BY_ID[equippedSkin] || BB_SKIN_BY_ID.default;
+  const skin = BB_SKIN_BY_ID[bbRenderSkinOverride || equippedSkin] || BB_SKIN_BY_ID.default;
   localAvatar.bodyMat.color.setHex(skin.body);
   localAvatar.limbMat.color.setHex(skin.limb);
   localAvatar.headMat.color.setHex(skin.head);
@@ -4266,7 +4371,8 @@ function renderLobbyPlayersList() {
   for (const p of bbPlayers) {
     const li = document.createElement('li');
     const nameSpan = document.createElement('span');
-    nameSpan.textContent = `${p.name}${p.level >= 100 ? ' ✨' : ''} · Lv ${p.level}`;
+    const streakText = p.winStreak > 0 ? ` · 🔥${formatBbStreakCompact(p.winStreak)}` : '';
+    nameSpan.textContent = `${p.name}${p.level >= 100 ? ' ✨' : ''} · Lv ${p.level}${streakText}`;
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'lobby-player-challenge-btn';
@@ -4408,7 +4514,15 @@ function handleBbMessage(data) {
     case 'bb-init': {
       myBbId = data.id;
       for (const p of data.players) spawnRemotePlayer(p.id, p.name, p.level, p);
-      bbPlayers = data.players.map((p) => ({ id: p.id, name: p.name, level: p.level, dueling: p.dueling }));
+      bbPlayers = data.players.map((p) => ({ id: p.id, name: p.name, level: p.level, dueling: p.dueling, winStreak: p.winStreak }));
+      // data.skin is the server's actually-resolved skin for THIS connection — normally an exact
+      // echo of equippedSkin, but the one account-exclusive override in server.js's bb-join means
+      // it can't always be assumed to match. bbRenderSkinOverride feeds ensureLocalAvatar/
+      // applyLocalAvatarSkin (below) without touching equippedSkin/localStorage itself, so the
+      // avatar shop's own "currently equipped" state and this account's real local preference stay
+      // untouched — only what actually renders in the 3D world changes.
+      bbRenderSkinOverride = data.skin && data.skin !== equippedSkin ? data.skin : null;
+      if (localAvatar) applyLocalAvatarSkin();
       lobbyPlayerCount.textContent = String(bbPlayers.length);
       renderLobbyPlayersList();
       // This connection is authoritative fresh-join state (first join OR a post-drop reconnect) —
@@ -4499,7 +4613,7 @@ function handleBbMessage(data) {
     }
     case 'bb-player-joined': {
       spawnRemotePlayer(data.id, data.name, data.level, data);
-      bbPlayers.push({ id: data.id, name: data.name, level: data.level, dueling: false });
+      bbPlayers.push({ id: data.id, name: data.name, level: data.level, dueling: false, winStreak: data.winStreak });
       lobbyPlayerCount.textContent = String(bbPlayers.length);
       renderLobbyPlayersList();
       break;

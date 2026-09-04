@@ -30,59 +30,120 @@
       <p class="subtitle">Free AI picture generation &mdash; describe anything, get a picture back.</p>
     </header>
 
-    <div id="category-row" class="category-row"></div>
-    <p id="category-hint" class="category-hint"></p>
-    <div id="quick-ideas-row" class="quick-ideas-row"></div>
-
-    <div id="meme-fields" class="meme-fields hidden">
-      <input id="meme-top-input" type="text" placeholder="Top text" maxlength="80" autocomplete="off">
-      <input id="meme-bottom-input" type="text" placeholder="Bottom text" maxlength="80" autocomplete="off">
+    <div id="mode-row" class="mode-row">
+      <button type="button" class="mode-tab active" id="mode-tab-picture" data-mode="picture">🎨 Pictures</button>
+      <button type="button" class="mode-tab" id="mode-tab-code" data-mode="code">💻 Code</button>
+      <button type="button" class="mode-tab" id="mode-tab-chat" data-mode="chat">🤖 Ask AI</button>
     </div>
 
-    <form id="generate-form" class="prompt-bar">
-      <input id="prompt-input" type="text" placeholder="A cat riding a skateboard, cartoon style" maxlength="500" autocomplete="off" required>
-      <select id="ratio-select" aria-label="Picture shape">
-        <option value="1024x1024">Square</option>
-        <option value="1024x1792">Portrait</option>
-        <option value="1792x1024">Landscape</option>
-      </select>
-      <button type="submit" id="generate-btn" class="primary">Generate</button>
-    </form>
-    <p id="studio-error" class="error hidden"></p>
+    <div id="picture-section">
+      <div id="category-row" class="category-row"></div>
+      <p id="category-hint" class="category-hint"></p>
+      <div id="quick-ideas-row" class="quick-ideas-row"></div>
 
-    <div id="result-card" class="result-card hidden">
-      <div id="result-frame" class="result-frame">
-        <img id="result-img" alt="">
-        <div id="result-loading" class="result-loading hidden">
-          <div class="loading-orbs">
-            <span class="orb orb1"></span>
-            <span class="orb orb2"></span>
-            <span class="orb orb3"></span>
+      <div id="meme-fields" class="meme-fields hidden">
+        <input id="meme-top-input" type="text" placeholder="Top text" maxlength="80" autocomplete="off">
+        <input id="meme-bottom-input" type="text" placeholder="Bottom text" maxlength="80" autocomplete="off">
+      </div>
+
+      <form id="generate-form" class="prompt-bar">
+        <input id="prompt-input" type="text" placeholder="A cat riding a skateboard, cartoon style" maxlength="500" autocomplete="off" required>
+        <select id="ratio-select" aria-label="Picture shape">
+          <option value="1024x1024">Square</option>
+          <option value="1024x1792">Portrait</option>
+          <option value="1792x1024">Landscape</option>
+        </select>
+        <label class="enhance-toggle" title="Uses AI to add extra detail to your prompt before generating — turn off for exact literal control">
+          <input type="checkbox" id="enhance-checkbox" checked>
+          <span>✨ Enhance</span>
+        </label>
+        <button type="submit" id="generate-btn" class="primary">Generate</button>
+        <button type="button" id="variations-btn">🎲 4 ideas</button>
+      </form>
+      <p id="studio-error" class="error hidden"></p>
+
+      <div id="result-card" class="result-card hidden">
+        <div id="result-frame" class="result-frame">
+          <img id="result-img" alt="">
+          <div id="result-loading" class="result-loading hidden">
+            <div class="loading-orbs">
+              <span class="orb orb1"></span>
+              <span class="orb orb2"></span>
+              <span class="orb orb3"></span>
+            </div>
+            <div class="spinner"></div>
+            <div class="progress-track"><div id="progress-fill" class="progress-fill"></div></div>
+            <p id="loading-status">🎨 Mixing colors&hellip;</p>
           </div>
-          <div class="spinner"></div>
-          <div class="progress-track"><div id="progress-fill" class="progress-fill"></div></div>
-          <p id="loading-status">🎨 Mixing colors&hellip;</p>
+        </div>
+        <p id="result-prompt" class="result-prompt"></p>
+        <div class="result-actions">
+          <button type="button" id="regenerate-btn">🎲 New version</button>
+          <button type="button" id="download-btn">⬇️ Download</button>
+          <button type="button" id="send-chat-btn" class="primary hidden">💬 Send to chat</button>
         </div>
       </div>
-      <p id="result-prompt" class="result-prompt"></p>
+
+      <div id="variations-card" class="result-card hidden">
+        <p class="result-prompt">Pick your favorite — it becomes the main picture above.</p>
+        <div id="variations-grid" class="variations-grid"></div>
+        <div id="variations-loading" class="code-loading hidden">
+          <div class="spinner"></div>
+          <p>🎲 Cooking up 4 ideas&hellip;</p>
+        </div>
+      </div>
+
+      <div id="video-note" class="video-note">
+        🎬 Free video generation isn't available yet &mdash; the reliable free options need a
+        Hugging Face account. Ask to add it if you're up for making one.
+      </div>
+
+      <div id="gallery-section" class="gallery-section hidden">
+        <div class="gallery-header">
+          <h2>Your pictures</h2>
+          <button type="button" id="clear-gallery-btn" class="link-btn">Clear all</button>
+        </div>
+        <div id="gallery-grid" class="gallery-grid"></div>
+      </div>
+    </div>
+
+    <div id="code-section" class="hidden">
+      <p class="category-hint">Describe what you want built &mdash; real Claude-generated code, not a picture of code.</p>
+      <form id="code-form" class="prompt-bar">
+        <textarea id="code-prompt-input" placeholder="A Python function that checks if a number is prime" maxlength="2000" rows="2" required></textarea>
+        <button type="submit" id="code-generate-btn" class="primary">Generate</button>
+      </form>
+      <p id="code-error" class="error hidden"></p>
+
+      <div id="code-result-card" class="result-card hidden">
+        <div id="code-loading" class="code-loading hidden">
+          <div class="spinner"></div>
+          <p>💻 Writing code&hellip;</p>
+        </div>
+        <p id="code-explanation" class="result-prompt"></p>
+        <div id="code-block-wrap" class="code-block-wrap hidden">
+          <button type="button" id="code-copy-btn" class="copy-btn">📋 Copy</button>
+          <pre id="code-output"><code id="code-output-code"></code></pre>
+        </div>
+        <div class="result-actions">
+          <button type="button" id="code-regenerate-btn">🔁 Try again</button>
+          <button type="button" id="code-send-chat-btn" class="primary hidden">💬 Send to chat</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="chat-section" class="hidden">
+      <p class="category-hint">Chat with a real AI &mdash; ask questions, brainstorm, or get help with anything.</p>
+      <div id="chat-messages" class="chat-messages"></div>
+      <p id="chat-error" class="error hidden"></p>
+      <form id="chat-form" class="prompt-bar">
+        <input id="chat-prompt-input" type="text" placeholder="Ask me anything&hellip;" maxlength="4000" autocomplete="off" required>
+        <button type="submit" id="chat-send-btn" class="primary">Send</button>
+      </form>
       <div class="result-actions">
-        <button type="button" id="regenerate-btn">🎲 New version</button>
-        <button type="button" id="download-btn">⬇️ Download</button>
-        <button type="button" id="send-chat-btn" class="primary hidden">💬 Send to chat</button>
+        <button type="button" id="chat-clear-btn">🔁 New conversation</button>
+        <button type="button" id="chat-send-room-btn" class="primary hidden">💬 Send last reply to chat</button>
       </div>
-    </div>
-
-    <div id="video-note" class="video-note">
-      🎬 Free video generation isn't available yet &mdash; the reliable free options need a
-      Hugging Face account. Ask to add it if you're up for making one.
-    </div>
-
-    <div id="gallery-section" class="gallery-section hidden">
-      <div class="gallery-header">
-        <h2>Your pictures</h2>
-        <button type="button" id="clear-gallery-btn" class="link-btn">Clear all</button>
-      </div>
-      <div id="gallery-grid" class="gallery-grid"></div>
     </div>
   </div>
 

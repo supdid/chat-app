@@ -182,6 +182,43 @@
     <div id="call-grid" class="call-grid"></div>
   </div>
 
+  <!-- Right-click context menu on a name in "Online in this room" -->
+  <div id="online-context-menu" class="friend-context-menu hidden">
+    <button id="private-call-context-btn" type="button">📞 Private call</button>
+  </div>
+
+  <!-- Incoming/outgoing private call popup: shown to the callee with Accept/Decline while
+       ringing, and to the caller as a "Calling…" status with a Cancel button. -->
+  <div id="private-call-incoming" class="menu-overlay hidden">
+    <div class="menu-panel private-call-panel">
+      <div class="call-tile-avatar private-call-avatar" id="private-call-incoming-avatar"></div>
+      <h2 id="private-call-incoming-title">Incoming call</h2>
+      <p id="private-call-incoming-sub"></p>
+      <div id="private-call-incoming-actions" class="private-call-actions">
+        <button id="private-call-decline-btn" type="button" class="call-action danger">🔴<span class="call-action-label"> Decline</span></button>
+        <button id="private-call-accept-btn" type="button" class="call-action accept">🟢<span class="call-action-label"> Accept</span></button>
+      </div>
+      <div id="private-call-outgoing-actions" class="private-call-actions hidden">
+        <button id="private-call-cancel-btn" type="button" class="call-action danger">✕<span class="call-action-label"> Cancel</span></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Active private (1:1) call screen — separate, simpler overlay than the room-wide
+       call-overlay above: exactly two tiles, no screen share/hand-raise/recording. -->
+  <div id="private-call-overlay" class="menu-overlay hidden">
+    <div class="menu-panel private-call-panel">
+      <h2>📞 Private call with <span id="private-call-peer-name"></span></h2>
+      <p id="private-call-error" class="error hidden"></p>
+      <div id="private-call-grid" class="call-grid"></div>
+      <div class="private-call-actions">
+        <button id="private-call-mic-retry-btn" class="call-action hidden" type="button" aria-label="Enable microphone">🎤<span class="call-action-label"> Enable microphone</span></button>
+        <button id="private-call-mute-btn" class="call-action hidden" type="button" aria-label="Mute microphone"><span id="private-call-mute-icon">🎤</span><span class="call-action-label"> Mute</span></button>
+        <button id="private-call-hangup-btn" class="call-action danger" type="button">📵<span class="call-action-label"> Hang up</span></button>
+      </div>
+    </div>
+  </div>
+
   <!-- Slide-out menu -->
   <div id="menu-overlay" class="menu-overlay hidden">
     <div id="menu-panel" class="menu-panel">

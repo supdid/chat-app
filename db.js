@@ -890,6 +890,14 @@ function getBbWinStreakLeaderboard(limit = 10) {
     .all(limit);
 }
 
+// One name's own best streak — used at bb-join to show it on that player's own lobby nametag
+// (best_streak, not current_streak: the nametag is a bragging-rights badge, same number the
+// leaderboard itself displays, not the live-fluctuating "how's their current run going" value).
+function getBbWinStreak(name) {
+  const row = db.prepare('SELECT best_streak FROM bb_win_streaks WHERE name = ?').get(name);
+  return row ? row.best_streak : 0;
+}
+
 function getLeaderboard(code, game, limit = 10) {
   return db
     .prepare('SELECT name, score FROM leaderboard WHERE room_code = ? AND game = ? ORDER BY score DESC LIMIT ?')
@@ -1820,6 +1828,7 @@ module.exports = {
   getLeaderboard,
   bumpBbWinStreak,
   getBbWinStreakLeaderboard,
+  getBbWinStreak,
   getFgKills,
   bumpFgKills,
   saveBlueprint,

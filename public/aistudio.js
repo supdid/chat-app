@@ -187,10 +187,20 @@ function stopLoadingAnimation(success) {
 }
 
 // --- Generation (Pollinations.ai — free, no signup, no API key) ---
+const enhanceCheckbox = document.getElementById('enhance-checkbox');
+
+// private=true keeps generations off Pollinations' own public feed (pollinations.ai/feed) —
+// people posting personal pictures through a chat app's image tool shouldn't end up there by
+// default. enhance=true runs the prompt through Pollinations' own LLM to add detail before
+// generating, which noticeably helps short/vague prompts (a beginner's "a dog" vs. a fuller
+// description) — left as an opt-out checkbox rather than always-on since it can also drift a
+// carefully-worded prompt away from exactly what was typed.
 function buildImageUrl(prompt, seed) {
   const [width, height] = ratioSelect.value.split('x');
   const encoded = encodeURIComponent(prompt);
-  return `https://image.pollinations.ai/prompt/${encoded}?width=${width}&height=${height}&seed=${seed}&nologo=true`;
+  let url = `https://image.pollinations.ai/prompt/${encoded}?width=${width}&height=${height}&seed=${seed}&nologo=true&private=true`;
+  if (enhanceCheckbox.checked) url += '&enhance=true';
+  return url;
 }
 
 // --- Meme text: classic bold white-with-black-outline captions, wrapped and
@@ -326,6 +336,19 @@ async function loadAndMaybeComposite(bgUrl, topText, bottomText) {
   }
 }
 
+// Pollinations' free/anonymous tier is a single shared queue (observed in practice: it can
+// reject a request with a transient "queue full"/402 blip even when the very next request
+// half a second later succeeds), so one silent retry after a short pause turns a lot of those
+// momentary hiccups into a normal-looking generation instead of a user-facing error.
+async function loadWithRetry(bgUrl, topText, bottomText) {
+  try {
+    return await loadAndMaybeComposite(bgUrl, topText, bottomText);
+  } catch {
+    await new Promise((r) => setTimeout(r, 1800));
+    return await loadAndMaybeComposite(bgUrl, topText, bottomText);
+  }
+}
+
 // Bumped on every generate() call *and* every gallery click (see addToGallery's click handler)
 // so a still-in-flight generate() can tell, once it finally resolves, whether the user has since
 // navigated to a different view (a gallery item) — without this, a slow Pollinations response
@@ -346,7 +369,7 @@ async function generate(prompt, seed, topText, bottomText) {
   const bgUrl = buildImageUrl(styledPrompt, seed);
 
   try {
-    const { url: finalUrl, captioned } = await loadAndMaybeComposite(bgUrl, topText, bottomText);
+    const { url: finalUrl, captioned } = await loadWithRetry(bgUrl, topText, bottomText);
     addToGallery(finalUrl, prompt);
     generateBtn.disabled = false;
     regenerateBtn.disabled = false;
@@ -422,6 +445,81 @@ regenerateBtn.addEventListener('click', () => {
   const topText = activeCategory.id === 'meme' ? memeTopInput.value.trim() : '';
   const bottomText = activeCategory.id === 'meme' ? memeBottomInput.value.trim() : '';
   generate(currentPrompt, Math.floor(Math.random() * 2 ** 31), topText, bottomText);
+});
+
+// --- 4 variations at once: same prompt/category, 4 different seeds, laid out as a pick-one
+// grid — a better starting workflow than the old one-at-a-time "🎲 New version" roulette when
+// you don't yet know which random seed will land well. ---
+const variationsBtn = document.getElementById('variations-btn');
+const variationsCard = document.getElementById('variations-card');
+const variationsGrid = document.getElementById('variations-grid');
+const variationsLoading = document.getElementById('variations-loading');
+
+variationsBtn.addEventListener('click', async () => {
+  const prompt = promptInput.value.trim();
+  if (!prompt) {
+    errorEl.textContent = 'Type something to generate pictures of.';
+    errorEl.classList.remove('hidden');
+    return;
+  }
+  errorEl.classList.add('hidden');
+  variationsBtn.disabled = true;
+  generateBtn.disabled = true;
+  variationsCard.classList.remove('hidden');
+  variationsGrid.innerHTML = '';
+  variationsLoading.classList.remove('hidden');
+  variationsCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+  const styledPrompt = `${prompt}${activeCategory.suffix}`;
+  const seeds = Array.from({ length: 4 }, () => Math.floor(Math.random() * 2 ** 31));
+  // Promise.allSettled, not Promise.all — one bad seed shouldn't fail the whole batch when the
+  // other three came back fine; still show whatever succeeded.
+  const results = await Promise.allSettled(
+    seeds.map((seed) => {
+      const url = buildImageUrl(styledPrompt, seed);
+      return loadImage(url, false).then(() => url);
+    })
+  );
+  variationsLoading.classList.add('hidden');
+
+  const okUrls = results.filter((r) => r.status === 'fulfilled').map((r) => r.value);
+  if (!okUrls.length) {
+    variationsCard.classList.add('hidden');
+    errorEl.textContent = 'Could not generate variations — the free service may be busy. Try again in a moment.';
+    errorEl.classList.remove('hidden');
+  } else {
+    for (const url of okUrls) {
+      const cell = document.createElement('div');
+      cell.className = 'variation-item';
+      const img = document.createElement('img');
+      img.src = url;
+      img.alt = prompt;
+      img.loading = 'lazy';
+      img.tabIndex = 0;
+      img.setAttribute('role', 'button');
+      const pickVariation = () => {
+        viewToken++; // invalidate any still-in-flight generate(), same reasoning as gallery items
+        currentPrompt = prompt;
+        currentUrl = url;
+        resultCard.classList.remove('hidden');
+        resultLoading.classList.add('hidden');
+        resultImg.classList.remove('hidden');
+        resultImg.src = url;
+        resultImg.alt = prompt;
+        resultPrompt.textContent = `"${prompt}"`;
+        addToGallery(url, prompt);
+        resultCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      };
+      img.addEventListener('click', pickVariation);
+      img.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pickVariation(); }
+      });
+      cell.appendChild(img);
+      variationsGrid.appendChild(cell);
+    }
+  }
+  variationsBtn.disabled = false;
+  generateBtn.disabled = false;
 });
 
 // --- Download (fetch-as-blob so it saves instead of just opening the image) ---
@@ -619,4 +717,271 @@ renderGallery();
 const GALLERY_CLAIM_SWEEP_STAGGER_MS = 700;
 loadGallery().filter((item) => !item.claimed).forEach((item, i) => {
   setTimeout(() => claimUploadUrl(item.url), i * GALLERY_CLAIM_SWEEP_STAGGER_MS);
+});
+
+// --- Mode tabs (Pictures / Code / Ask AI) ---
+const modeTabPicture = document.getElementById('mode-tab-picture');
+const modeTabCode = document.getElementById('mode-tab-code');
+const modeTabChat = document.getElementById('mode-tab-chat');
+const pictureSection = document.getElementById('picture-section');
+const codeSection = document.getElementById('code-section');
+const chatSection = document.getElementById('chat-section');
+
+function setMode(mode) {
+  modeTabPicture.classList.toggle('active', mode === 'picture');
+  modeTabCode.classList.toggle('active', mode === 'code');
+  modeTabChat.classList.toggle('active', mode === 'chat');
+  pictureSection.classList.toggle('hidden', mode !== 'picture');
+  codeSection.classList.toggle('hidden', mode !== 'code');
+  chatSection.classList.toggle('hidden', mode !== 'chat');
+}
+modeTabPicture.addEventListener('click', () => setMode('picture'));
+modeTabCode.addEventListener('click', () => setMode('code'));
+modeTabChat.addEventListener('click', () => setMode('chat'));
+
+// --- Code generation (real Claude API, server-side — see POST /generate-code in server.js) ---
+const codeForm = document.getElementById('code-form');
+const codePromptInput = document.getElementById('code-prompt-input');
+const codeGenerateBtn = document.getElementById('code-generate-btn');
+const codeErrorEl = document.getElementById('code-error');
+const codeResultCard = document.getElementById('code-result-card');
+const codeLoading = document.getElementById('code-loading');
+const codeExplanationEl = document.getElementById('code-explanation');
+const codeBlockWrap = document.getElementById('code-block-wrap');
+const codeOutputCode = document.getElementById('code-output-code');
+const codeCopyBtn = document.getElementById('code-copy-btn');
+const codeRegenerateBtn = document.getElementById('code-regenerate-btn');
+const codeSendChatBtn = document.getElementById('code-send-chat-btn');
+
+if (roomCode && myName) codeSendChatBtn.classList.remove('hidden');
+
+let currentCodeExplanation = '';
+let currentCodeLanguage = '';
+let currentCodeBody = '';
+let lastCodePrompt = '';
+
+// Claude is asked for exactly one fenced code block; this pulls it (and its language tag) out of
+// the response, keeping whatever's outside the fence as the plain-text explanation.
+function parseCodeResponse(text) {
+  const match = text.match(/```(\w*)\n?([\s\S]*?)```/);
+  if (!match) return { explanation: text.trim(), language: '', code: '' };
+  const explanation = (text.slice(0, match.index) + text.slice(match.index + match[0].length)).trim();
+  return { explanation, language: match[1] || '', code: match[2].replace(/\n$/, '') };
+}
+
+async function generateCode(prompt) {
+  lastCodePrompt = prompt;
+  codeErrorEl.classList.add('hidden');
+  codeResultCard.classList.remove('hidden');
+  codeLoading.classList.remove('hidden');
+  codeBlockWrap.classList.add('hidden');
+  codeExplanationEl.textContent = '';
+  codeSendChatBtn.classList.add('hidden');
+  if (roomCode && myName) codeSendChatBtn.classList.remove('hidden');
+  codeGenerateBtn.disabled = true;
+  codeRegenerateBtn.disabled = true;
+
+  try {
+    const res = await fetch('/generate-code', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Code generation failed');
+
+    const { explanation, language, code } = parseCodeResponse(data.text);
+    currentCodeExplanation = explanation;
+    currentCodeLanguage = language;
+    currentCodeBody = code || data.text.trim();
+    codeExplanationEl.textContent = currentCodeExplanation;
+    codeOutputCode.textContent = currentCodeBody;
+    codeOutputCode.className = language ? `language-${language}` : '';
+    codeBlockWrap.classList.remove('hidden');
+  } catch (err) {
+    codeResultCard.classList.add('hidden');
+    codeErrorEl.textContent = err.message === 'Code generation failed'
+      ? 'Could not generate code — try again in a moment.'
+      : err.message;
+    codeErrorEl.classList.remove('hidden');
+  } finally {
+    codeLoading.classList.add('hidden');
+    codeGenerateBtn.disabled = false;
+    codeRegenerateBtn.disabled = false;
+  }
+}
+
+codeForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const prompt = codePromptInput.value.trim();
+  if (!prompt) {
+    codeErrorEl.textContent = 'Describe the code you want first.';
+    codeErrorEl.classList.remove('hidden');
+    return;
+  }
+  generateCode(prompt);
+});
+
+codeRegenerateBtn.addEventListener('click', () => {
+  if (!lastCodePrompt) return;
+  generateCode(lastCodePrompt);
+});
+
+codeCopyBtn.addEventListener('click', async () => {
+  const original = codeCopyBtn.textContent;
+  try {
+    await navigator.clipboard.writeText(currentCodeBody);
+    codeCopyBtn.textContent = '✅ Copied!';
+  } catch {
+    codeCopyBtn.textContent = '❌ Failed';
+  } finally {
+    setTimeout(() => { codeCopyBtn.textContent = original; }, 1500);
+  }
+});
+
+codeSendChatBtn.addEventListener('click', async () => {
+  if (!currentCodeBody || !roomCode || !myName) return;
+  codeSendChatBtn.disabled = true;
+  const original = codeSendChatBtn.textContent;
+  // Reuses the chat's existing single-backtick code rendering (see FORMAT_RE/renderTextWithMentions
+  // in app.js) rather than inventing new chat-side markup — a leading plain-text explanation line
+  // plus one backtick-wrapped block (language tag on its own first line, same shape Claude's own
+  // fenced blocks use) renders as a real multi-line code block there.
+  const langLine = currentCodeLanguage ? `${currentCodeLanguage}\n` : '';
+  const snippet = `${currentCodeExplanation ? currentCodeExplanation + '\n' : ''}\`${langLine}${currentCodeBody}\``;
+  try {
+    const accountToken = localStorage.getItem('valk-account-token');
+    const headers = { 'Content-Type': 'application/json' };
+    if (accountToken) headers.Authorization = `Bearer ${accountToken}`;
+    const res = await fetch('/post-code', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ code: roomCode, name: myName, pin: roomPin, snippet }),
+    });
+    if (!res.ok) throw new Error();
+    codeSendChatBtn.textContent = '✅ Sent!';
+  } catch {
+    codeSendChatBtn.textContent = '❌ Failed';
+  } finally {
+    setTimeout(() => {
+      codeSendChatBtn.textContent = original;
+      codeSendChatBtn.disabled = false;
+    }, 1800);
+  }
+});
+
+// --- Ask AI: real multi-turn chat (real Claude API, server-side — see POST /chat-with-ai in
+// server.js). Stateless server-side, same as /generate-code above: the client resends the whole
+// conversation on every turn, so there's nothing to clean up if the tab is just closed. ---
+const chatForm = document.getElementById('chat-form');
+const chatPromptInput = document.getElementById('chat-prompt-input');
+const chatSendBtn = document.getElementById('chat-send-btn');
+const chatMessagesEl = document.getElementById('chat-messages');
+const chatErrorEl = document.getElementById('chat-error');
+const chatClearBtn = document.getElementById('chat-clear-btn');
+const chatSendRoomBtn = document.getElementById('chat-send-room-btn');
+
+let chatHistory = []; // [{role: 'user'|'assistant', content}] — mirrors what the server expects
+let lastAiReply = '';
+
+function renderChatMessage(role, content) {
+  const row = document.createElement('div');
+  row.className = `chat-msg ${role === 'user' ? 'chat-msg-user' : 'chat-msg-ai'}`;
+  const bubble = document.createElement('div');
+  bubble.className = 'chat-bubble';
+  bubble.textContent = content;
+  row.appendChild(bubble);
+  chatMessagesEl.appendChild(row);
+  chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+}
+
+function showTyping() {
+  const row = document.createElement('div');
+  row.className = 'chat-msg chat-msg-ai chat-typing';
+  row.id = 'chat-typing-row';
+  const bubble = document.createElement('div');
+  bubble.className = 'chat-bubble';
+  bubble.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span>';
+  row.appendChild(bubble);
+  chatMessagesEl.appendChild(row);
+  chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+}
+
+function hideTyping() {
+  const row = document.getElementById('chat-typing-row');
+  if (row) row.remove();
+}
+
+async function sendChatMessage(text) {
+  chatErrorEl.classList.add('hidden');
+  renderChatMessage('user', text);
+  chatHistory.push({ role: 'user', content: text });
+  chatPromptInput.value = '';
+  chatPromptInput.focus();
+  chatSendBtn.disabled = true;
+  showTyping();
+  try {
+    const res = await fetch('/chat-with-ai', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: chatHistory }),
+    });
+    const data = await res.json().catch(() => ({}));
+    hideTyping();
+    if (!res.ok) throw new Error(data.error || 'The AI didn’t respond — try again in a moment.');
+    chatHistory.push({ role: 'assistant', content: data.text });
+    lastAiReply = data.text;
+    renderChatMessage('assistant', data.text);
+    if (roomCode && myName) chatSendRoomBtn.classList.remove('hidden');
+  } catch (err) {
+    hideTyping();
+    chatErrorEl.textContent = err.message;
+    chatErrorEl.classList.remove('hidden');
+    // Chat is stateless server-side (see server.js's own comment on /chat-with-ai) — the
+    // client's array is the only record of the conversation, so drop the turn that failed
+    // rather than leaving it in history for a retry to silently duplicate.
+    chatHistory.pop();
+  } finally {
+    chatSendBtn.disabled = false;
+  }
+}
+
+chatForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const text = chatPromptInput.value.trim();
+  if (!text) return;
+  sendChatMessage(text);
+});
+
+chatClearBtn.addEventListener('click', () => {
+  chatHistory = [];
+  lastAiReply = '';
+  chatMessagesEl.innerHTML = '';
+  chatErrorEl.classList.add('hidden');
+  chatSendRoomBtn.classList.add('hidden');
+});
+
+chatSendRoomBtn.addEventListener('click', async () => {
+  if (!lastAiReply || !roomCode || !myName) return;
+  chatSendRoomBtn.disabled = true;
+  const original = chatSendRoomBtn.textContent;
+  try {
+    const accountToken = localStorage.getItem('valk-account-token');
+    const headers = { 'Content-Type': 'application/json' };
+    if (accountToken) headers.Authorization = `Bearer ${accountToken}`;
+    const res = await fetch('/post-ai-chat', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ code: roomCode, name: myName, pin: roomPin, text: lastAiReply }),
+    });
+    if (!res.ok) throw new Error();
+    chatSendRoomBtn.textContent = '✅ Sent!';
+  } catch {
+    chatSendRoomBtn.textContent = '❌ Failed';
+  } finally {
+    setTimeout(() => {
+      chatSendRoomBtn.textContent = original;
+      chatSendRoomBtn.disabled = false;
+    }, 1800);
+  }
 });

@@ -2236,6 +2236,224 @@ describe('voice call signaling requires the sender to actually be on the call', 
   });
 });
 
+// Registers both sides' listeners BEFORE sending the invite — the server answers the caller
+// (ringing) and the callee (incoming) from the same handler invocation, so attaching the
+// second waitFor only after awaiting the first risks it arriving with nothing listening yet
+// (the exact "two sockets, one trigger" pitfall this file's own history already documents,
+// e.g. the room-switch voice test above).
+async function inviteAndRing(host, target, toName) {
+  const ringingPromise = waitFor(host, (m) => m.type === 'private-call-ringing');
+  const incomingPromise = waitFor(target, (m) => m.type === 'private-call-incoming');
+  send(host, { type: 'private-call-invite', toName });
+  const [ringing, incoming] = await Promise.all([ringingPromise, incomingPromise]);
+  return { ringing, incoming };
+}
+
+describe('private (1:1) calls', () => {
+  test('invite reaches only the named target, with a ringing confirmation back to the caller', async () => {
+    const { ws: host, code } = await joinRoom('PcHostA');
+    const target = await joinExistingRoom('PcTargetA', code);
+    const bystander = await joinExistingRoom('PcBystanderA', code);
+
+    let bystanderSawIt = false;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'private-call-incoming') bystanderSawIt = true; };
+    bystander.on('message', h);
+
+    const { ringing, incoming } = await inviteAndRing(host, target, 'PcTargetA');
+    assert.equal(ringing.toName, 'PcTargetA');
+    assert.equal(incoming.fromName, 'PcHostA');
+    assert.equal(incoming.callId, ringing.callId);
+
+    await sleep(200);
+    bystander.off('message', h);
+    assert.equal(bystanderSawIt, false, 'a third party in the room should never be notified of someone else\'s private call');
+
+    host.close(); target.close(); bystander.close();
+  });
+
+  test('cannot call yourself or someone not currently in the room', async () => {
+    const { ws: host } = await joinRoom('PcSelfHost');
+    let sawRinging = false;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'private-call-ringing') sawRinging = true; };
+    host.on('message', h);
+    send(host, { type: 'private-call-invite', toName: 'PcSelfHost' });
+    await sleep(150);
+    send(host, { type: 'private-call-invite', toName: 'PcGhostTarget' });
+    await sleep(150);
+    host.off('message', h);
+    assert.equal(sawRinging, false);
+  });
+
+  test('a muted user cannot invite anyone to a private call', async () => {
+    const { ws: host, code } = await joinRoom('PcMuteHost');
+    const guest = await joinExistingRoom('PcMuteGuest', code);
+    await sleep(150);
+
+    send(host, { type: 'mute-user', name: 'PcMuteGuest' });
+    await waitFor(host, (m) => m.type === 'user-muted');
+    await waitFor(guest, (m) => m.type === 'user-muted');
+
+    let sawIncoming = false;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'private-call-incoming') sawIncoming = true; };
+    host.on('message', h);
+    send(guest, { type: 'private-call-invite', toName: 'PcMuteHost' });
+    await sleep(300);
+    host.off('message', h);
+    assert.equal(sawIncoming, false, 'a muted user must not be able to open a private call as a fresh unrestricted channel');
+  });
+
+  test('accept connects both sides with the right peerName/initiator roles, and signaling relays only between them', async () => {
+    const { ws: host, code } = await joinRoom('PcAcceptHost');
+    const target = await joinExistingRoom('PcAcceptTarget', code);
+    const bystander = await joinExistingRoom('PcAcceptBystander', code);
+
+    await inviteAndRing(host, target, 'PcAcceptTarget');
+
+    const hostConnectedPromise = waitFor(host, (m) => m.type === 'private-call-connected');
+    const targetConnectedPromise = waitFor(target, (m) => m.type === 'private-call-connected');
+    send(target, { type: 'private-call-accept' });
+    const hostConnected = await hostConnectedPromise;
+    const targetConnected = await targetConnectedPromise;
+    assert.equal(hostConnected.peerName, 'PcAcceptTarget');
+    assert.equal(hostConnected.initiator, true, 'the caller makes the offer');
+    assert.equal(targetConnected.peerName, 'PcAcceptHost');
+    assert.equal(targetConnected.initiator, false, 'the callee waits for the offer');
+
+    let bystanderSawSignal = false;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'private-call-signal') bystanderSawSignal = true; };
+    bystander.on('message', h);
+    const targetGotSignalPromise = waitFor(target, (m) => m.type === 'private-call-signal' && m.signal.marker === 'offer1');
+    send(host, { type: 'private-call-signal', signal: { type: 'offer', marker: 'offer1' } });
+    const targetGotSignal = await targetGotSignalPromise;
+    assert.equal(targetGotSignal.signal.marker, 'offer1');
+    await sleep(200);
+    bystander.off('message', h);
+    assert.equal(bystanderSawSignal, false, 'signaling must never reach anyone but the two call participants');
+
+    // The bystander was never a party to this call — a forged signal claiming to be them must
+    // not be relayed anywhere either (mirrors the room-wide voice-signal forgery test above).
+    let hostSawForged = false;
+    const h2 = (data) => { const m = JSON.parse(data); if (m.type === 'private-call-signal' && m.signal && m.signal.bogus) hostSawForged = true; };
+    host.on('message', h2);
+    send(bystander, { type: 'private-call-signal', signal: { type: 'offer', bogus: true } });
+    await sleep(200);
+    host.off('message', h2);
+    assert.equal(hostSawForged, false);
+
+    host.close(); target.close(); bystander.close();
+  });
+
+  test('signaling is dropped while a call is still only ringing, not yet accepted', async () => {
+    const { ws: host, code } = await joinRoom('PcRingSignalHost');
+    const target = await joinExistingRoom('PcRingSignalTarget', code);
+    await inviteAndRing(host, target, 'PcRingSignalTarget');
+
+    let targetSawSignal = false;
+    const h = (data) => { const m = JSON.parse(data); if (m.type === 'private-call-signal') targetSawSignal = true; };
+    target.on('message', h);
+    send(host, { type: 'private-call-signal', signal: { type: 'offer', early: true } });
+    await sleep(200);
+    target.off('message', h);
+    assert.equal(targetSawSignal, false, 'no signaling should relay before the callee has actually accepted');
+
+    host.close(); target.close();
+  });
+
+  test('decline tells the caller, and only the callee can decline', async () => {
+    const { ws: host, code } = await joinRoom('PcDeclineHost');
+    const target = await joinExistingRoom('PcDeclineTarget', code);
+    const bystander = await joinExistingRoom('PcDeclineBystander', code);
+    await inviteAndRing(host, target, 'PcDeclineTarget');
+
+    // The bystander was never invited into this call — declining on its behalf must have no effect.
+    send(bystander, { type: 'private-call-decline' });
+    await sleep(150);
+
+    const endedPromise = waitFor(host, (m) => m.type === 'private-call-ended');
+    send(target, { type: 'private-call-decline' });
+    const ended = await endedPromise;
+    assert.equal(ended.reason, 'declined');
+
+    host.close(); target.close(); bystander.close();
+  });
+
+  test('cancel (by the caller, before accept) tells the callee, and only the caller can cancel', async () => {
+    const { ws: host, code } = await joinRoom('PcCancelHost');
+    const target = await joinExistingRoom('PcCancelTarget', code);
+    await inviteAndRing(host, target, 'PcCancelTarget');
+
+    // The callee attempting to "cancel" (rather than decline) their own incoming call must do nothing.
+    send(target, { type: 'private-call-cancel' });
+    await sleep(150);
+
+    const endedPromise = waitFor(target, (m) => m.type === 'private-call-ended');
+    send(host, { type: 'private-call-cancel' });
+    const ended = await endedPromise;
+    assert.equal(ended.reason, 'cancelled');
+
+    host.close(); target.close();
+  });
+
+  test('hangup during an active call ends it for the other side too, from either party', async () => {
+    const { ws: host, code } = await joinRoom('PcHangupHost');
+    const target = await joinExistingRoom('PcHangupTarget', code);
+    await inviteAndRing(host, target, 'PcHangupTarget');
+    const hostConnectedPromise = waitFor(host, (m) => m.type === 'private-call-connected');
+    const targetConnectedPromise = waitFor(target, (m) => m.type === 'private-call-connected');
+    send(target, { type: 'private-call-accept' });
+    await Promise.all([hostConnectedPromise, targetConnectedPromise]);
+
+    const targetEndedPromise = waitFor(target, (m) => m.type === 'private-call-ended' && m.reason === 'ended');
+    send(host, { type: 'private-call-hangup' });
+    await targetEndedPromise;
+
+    host.close(); target.close();
+  });
+
+  test('you can\'t be invited into (or start) a second private call while already on one', async () => {
+    const { ws: host, code } = await joinRoom('PcBusyHost');
+    const target = await joinExistingRoom('PcBusyTarget', code);
+    const third = await joinExistingRoom('PcBusyThird', code);
+    await inviteAndRing(host, target, 'PcBusyTarget');
+
+    // Third party tries to invite the already-ringing target.
+    let thirdGotError = false;
+    const h1 = (data) => { const m = JSON.parse(data); if (m.type === 'error') thirdGotError = true; };
+    third.on('message', h1);
+    send(third, { type: 'private-call-invite', toName: 'PcBusyTarget' });
+    await sleep(200);
+    third.off('message', h1);
+    assert.equal(thirdGotError, true, 'inviting someone already ringing/on a call must be rejected');
+
+    // The busy caller itself tries to also invite the third party.
+    let thirdGotIncoming = false;
+    const h2 = (data) => { const m = JSON.parse(data); if (m.type === 'private-call-incoming') thirdGotIncoming = true; };
+    third.on('message', h2);
+    send(host, { type: 'private-call-invite', toName: 'PcBusyThird' });
+    await sleep(200);
+    third.off('message', h2);
+    assert.equal(thirdGotIncoming, false, 'someone already ringing another call must not be able to start a second one');
+
+    host.close(); target.close(); third.close();
+  });
+
+  test('leaving the room (or disconnecting) mid-call ends it for the other side', async () => {
+    const { ws: host, code } = await joinRoom('PcLeaveHost');
+    const target = await joinExistingRoom('PcLeaveTarget', code);
+    await inviteAndRing(host, target, 'PcLeaveTarget');
+    const hostConnectedPromise = waitFor(host, (m) => m.type === 'private-call-connected');
+    const targetConnectedPromise = waitFor(target, (m) => m.type === 'private-call-connected');
+    send(target, { type: 'private-call-accept' });
+    await Promise.all([hostConnectedPromise, targetConnectedPromise]);
+
+    const targetEndedPromise = waitFor(target, (m) => m.type === 'private-call-ended' && m.reason === 'ended');
+    host.close();
+    await targetEndedPromise;
+
+    target.close();
+  });
+});
+
 describe('whiteboard stroke sanitization', () => {
   test('out-of-range and non-finite points are dropped; valid ones survive', async () => {
     const a = await connectWs();
@@ -5237,6 +5455,84 @@ describe('Fight for Glory avatars are visible to other Online Play players', () 
     assert.equal(notice.skin, 'default');
 
     a.close(); b.close();
+  });
+});
+
+describe('Fight for Glory: account-exclusive avatar and lobby win-streak nametag', () => {
+  // Dedicated instance/port so signing up 'supdid67' here can never collide with the OTHER,
+  // unrelated 'supdid67' signup in the Scorpture-admin-gate describe block above (shared BASE_URL
+  // server, different DB) — this file's own convention for anything that needs a specific,
+  // reserved-elsewhere username.
+  let exclusiveServer;
+  before(async () => { exclusiveServer = await startTestServer({}, 3212); });
+  after(async () => { await exclusiveServer.stop(); });
+
+  test("the supdid67 account's requested skin is always overridden to its exclusive look, visible to other players too", async () => {
+    const signup = await fetch(`http://localhost:${exclusiveServer.port}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'supdid67', password: 'pass1234', email: 'exclusivetest@test.com' }),
+    }).then((r) => r.json());
+    const code = 'BBEXCLUSIVE1';
+
+    const a = await new Promise((resolve) => {
+      const ws = new WebSocket(`ws://localhost:${exclusiveServer.port}`);
+      ws.on('open', () => resolve(ws));
+    });
+    const aMsgs = [];
+    a.on('message', (d) => aMsgs.push(JSON.parse(d)));
+    send(a, { type: 'bb-join', code, level: 1, accountToken: signup.token, skin: 'av5' }); // requests a normal avatar
+    const aInit = await waitFor(a, (m) => m.type === 'bb-init');
+    assert.equal(aInit.skin, 'exclusive_supdid67', "supdid67's own bb-init must report the override, not the 'av5' they actually requested");
+
+    // A second, unrelated player must see the SAME override, not the requested av5 either.
+    const b = await new Promise((resolve) => {
+      const ws = new WebSocket(`ws://localhost:${exclusiveServer.port}`);
+      ws.on('open', () => resolve(ws));
+    });
+    const joinedNotice = waitFor(a, (m) => m.type === 'bb-player-joined');
+    send(b, { type: 'bb-join', code, level: 1 });
+    const bInit = await waitFor(b, (m) => m.type === 'bb-init');
+    const supdidInRoster = bInit.players.find((p) => p.id === aInit.id);
+    assert.equal(supdidInRoster.skin, 'exclusive_supdid67');
+
+    a.close(); b.close();
+  });
+
+  test("a recorded win streak rides bb-join's roster data for another player's lobby nametag", async () => {
+    const code = 'BBSTREAKNAMETAG1';
+    // Seeds the streak the same way a real duel win would (db.bumpBbWinStreak), rather than
+    // fighting a whole duel to completion just to prove this one field wires through correctly —
+    // the win-streak duel/match tests elsewhere already cover the streak mechanics themselves.
+    const dbPath = require('node:path').join(exclusiveServer.dir, 'valk.db');
+    const Database = require('better-sqlite3');
+    const testDb = new Database(dbPath);
+    testDb.prepare(
+      `INSERT INTO bb_win_streaks (name, current_streak, best_streak, updated_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(name) DO UPDATE SET current_streak = excluded.current_streak, best_streak = excluded.best_streak, updated_at = excluded.updated_at`
+    ).run('StreakedPlayer', 250, 250, Date.now());
+    testDb.close();
+
+    const streaked = await new Promise((resolve) => {
+      const ws = new WebSocket(`ws://localhost:${exclusiveServer.port}`);
+      ws.on('open', () => resolve(ws));
+    });
+    const signup = await fetch(`http://localhost:${exclusiveServer.port}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'StreakedPlayer', password: 'pass1234', email: 'streaknametag@test.com' }),
+    }).then((r) => r.json());
+    send(streaked, { type: 'bb-join', code, level: 1, accountToken: signup.token });
+    const streakedInit = await waitFor(streaked, (m) => m.type === 'bb-init');
+
+    const observer = await new Promise((resolve) => {
+      const ws = new WebSocket(`ws://localhost:${exclusiveServer.port}`);
+      ws.on('open', () => resolve(ws));
+    });
+    send(observer, { type: 'bb-join', code, level: 1 });
+    const observerInit = await waitFor(observer, (m) => m.type === 'bb-init');
+    const streakedInRoster = observerInit.players.find((p) => p.id === streakedInit.id);
+    assert.equal(streakedInRoster.winStreak, 250, "another player's roster view must carry this account's recorded win streak for the nametag to show it");
+
+    streaked.close(); observer.close();
   });
 });
 

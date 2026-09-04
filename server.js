@@ -10,6 +10,7 @@ const QRCode = require('qrcode');
 const webpush = require('web-push');
 const db = require('./db');
 const patcher = require('./patcher');
+const Anthropic = require('@anthropic-ai/sdk');
 
 const app = express();
 // Only trust X-Forwarded-For/X-Forwarded-Proto from a local reverse proxy (a cloudflared quick
@@ -665,6 +666,157 @@ app.post('/post-media', (req, res) => {
   res.json({ ok: true });
 });
 
+// AI Studio's "Generate code" mode — real Claude API call, text in/text out, no room/chat
+// involvement at all (that's a separate step below, /post-code, same split as image generation
+// vs. /post-image). Same "own tab, no live WebSocket session" page as the picture generator.
+app.post('/generate-code', async (req, res) => {
+  if (isGenerateCodeRateLimited(req)) return res.status(429).json({ error: 'Too many requests too quickly — slow down a bit.' });
+  const prompt = String(req.body.prompt || '').slice(0, 2000).trim();
+  if (!prompt) return res.status(400).json({ error: 'Describe what code you want first.' });
+  // Found while wiring this up: unlike what patcher.js's own identical try/catch assumes,
+  // `new Anthropic()` does NOT throw when no credentials are configured on this SDK version — it
+  // only fails later, at actual request time, with "Could not resolve authentication method" (see
+  // client.js's validateHeaders). So the missing-key case has to be detected from the real request
+  // error below, not from construction — a plain try/catch around `new Anthropic()` alone is dead
+  // code that never fires.
+  const client = new Anthropic();
+  try {
+    const message = await client.messages.create({
+      model: 'claude-opus-5',
+      max_tokens: 4096,
+      system: 'You are a helpful coding assistant embedded in a chat app called Valk. Given a request, reply with a short 1-2 sentence explanation followed by exactly one fenced code block tagged with the right language. Keep the code complete and directly usable. Do not pad the explanation or add unrelated caveats.',
+      messages: [{ role: 'user', content: prompt }],
+    });
+    const text = message.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
+    if (!text) return res.status(502).json({ error: 'Got an empty response — try rephrasing your request.' });
+    res.json({ ok: true, text });
+  } catch (err) {
+    if (/Could not resolve authentication method/i.test(err.message || '')) {
+      return res.status(503).json({ error: 'Code generation isn’t set up yet — no Anthropic API key is configured on the server.' });
+    }
+    reportError('generate-code', err, { prompt });
+    res.status(502).json({ error: 'Code generation failed — try again in a moment.' });
+  }
+});
+
+// AI Studio's "Ask AI" mode — a real multi-turn chat with Claude for general help, not just code
+// (that's /generate-code above). Stateless server-side: the client resends the whole conversation
+// each turn (same pattern most chat UIs over a plain REST endpoint use), so there's nothing to
+// clean up here if the user just closes the tab.
+app.post('/chat-with-ai', async (req, res) => {
+  if (isChatWithAiRateLimited(req)) return res.status(429).json({ error: 'Too many requests too quickly — slow down a bit.' });
+  const rawMessages = Array.isArray(req.body.messages) ? req.body.messages : [];
+  // Capped at 20 turns / 4000 chars each — generous for a real back-and-forth, tight enough that
+  // one request can't smuggle an unbounded prompt (and therefore unbounded cost) through.
+  const messages = rawMessages
+    .slice(-20)
+    .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim())
+    .map((m) => ({ role: m.role, content: m.content.slice(0, 4000) }));
+  if (!messages.length || messages[messages.length - 1].role !== 'user') {
+    return res.status(400).json({ error: 'Say something to ask the AI first.' });
+  }
+  const client = new Anthropic();
+  try {
+    const message = await client.messages.create({
+      model: 'claude-opus-5',
+      max_tokens: 2048,
+      system: 'You are a helpful, friendly assistant embedded in a chat app called Valk. Answer questions, explain things, brainstorm, or help with whatever the user asks. Keep replies conversational and to the point — this is a chat window, not a report.',
+      messages,
+    });
+    const text = message.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
+    if (!text) return res.status(502).json({ error: 'Got an empty response — try asking again.' });
+    res.json({ ok: true, text });
+  } catch (err) {
+    if (/Could not resolve authentication method/i.test(err.message || '')) {
+      return res.status(503).json({ error: 'AI chat isn’t set up yet — no Anthropic API key is configured on the server.' });
+    }
+    reportError('chat-with-ai', err, { messageCount: messages.length });
+    res.status(502).json({ error: 'The AI didn’t respond — try again in a moment.' });
+  }
+});
+
+// Lets the AI Studio page drop a generated code snippet into a room's chat, same
+// "own tab, no live WebSocket session" reasoning as /post-image just above (posting through the
+// WS join flow would spuriously fire "X joined the room" for a tab that isn't really in the room).
+app.post('/post-code', (req, res) => {
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many posts too quickly — slow down a bit.' });
+  const code = String(req.body.code || '').toUpperCase().trim();
+  const name = String(req.body.name || 'Someone').slice(0, 30).trim() || 'Someone';
+  const snippet = String(req.body.snippet || '').slice(0, 8000).trim();
+  if (!code || !snippet) return res.status(400).json({ error: 'Missing room code or code snippet' });
+  const room = rooms.get(code);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  // Same moderation-bypass concern as /post-image — this route also has no live WS session to
+  // check ban/mute status on otherwise.
+  const postCodeAccount = getAccountFromReq(req);
+  if (db.isBannedFromRoom(code, postCodeAccount ? postCodeAccount.id : null, name)) {
+    return res.status(403).json({ error: "You've been banned from this room" });
+  }
+  if (room.muted && room.muted.has(name)) {
+    return res.status(403).json({ error: 'You have been muted in this room' });
+  }
+  if (!roomPinOk(db.getRoom(code), req.body.pin)) return res.status(403).json({ error: 'Incorrect or missing room PIN' });
+
+  const entry = {
+    type: 'message',
+    id: crypto.randomUUID(),
+    name,
+    sub: null,
+    text: `💻 AI code:\n${snippet}`,
+    mediaUrl: null,
+    mediaType: null,
+    at: Date.now(),
+  };
+  room.history.push(entry);
+  if (room.history.length > HISTORY_LIMIT) room.history.shift();
+  db.insertMessage({ id: entry.id, roomCode: code, name: entry.name, text: entry.text, mediaUrl: entry.mediaUrl, mediaType: entry.mediaType, at: entry.at, accountId: postCodeAccount ? postCodeAccount.id : null });
+  db.upsertRoom(code);
+  broadcastRoom(code, entry);
+  pushNewMessage(code, entry);
+  res.json({ ok: true });
+});
+
+// AI Studio's "Ask AI" chat mode — same "own tab, no live WebSocket session" pattern as
+// /post-code just above, but posts the AI's reply as an ordinary plain-text message rather than
+// code-wrapped (a prose answer doesn't belong in a backtick block the way a code snippet does).
+app.post('/post-ai-chat', (req, res) => {
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many posts too quickly — slow down a bit.' });
+  const code = String(req.body.code || '').toUpperCase().trim();
+  const name = String(req.body.name || 'Someone').slice(0, 30).trim() || 'Someone';
+  const text = String(req.body.text || '').slice(0, 4000).trim();
+  if (!code || !text) return res.status(400).json({ error: 'Missing room code or message' });
+  const room = rooms.get(code);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  // Same moderation-bypass concern as /post-code/post-image — this route also has no live WS
+  // session to check ban/mute status on otherwise.
+  const postAiChatAccount = getAccountFromReq(req);
+  if (db.isBannedFromRoom(code, postAiChatAccount ? postAiChatAccount.id : null, name)) {
+    return res.status(403).json({ error: "You've been banned from this room" });
+  }
+  if (room.muted && room.muted.has(name)) {
+    return res.status(403).json({ error: 'You have been muted in this room' });
+  }
+  if (!roomPinOk(db.getRoom(code), req.body.pin)) return res.status(403).json({ error: 'Incorrect or missing room PIN' });
+
+  const entry = {
+    type: 'message',
+    id: crypto.randomUUID(),
+    name,
+    sub: null,
+    text: `🤖 AI:\n${text}`,
+    mediaUrl: null,
+    mediaType: null,
+    at: Date.now(),
+  };
+  room.history.push(entry);
+  if (room.history.length > HISTORY_LIMIT) room.history.shift();
+  db.insertMessage({ id: entry.id, roomCode: code, name: entry.name, text: entry.text, mediaUrl: entry.mediaUrl, mediaType: entry.mediaType, at: entry.at, accountId: postAiChatAccount ? postAiChatAccount.id : null });
+  db.upsertRoom(code);
+  broadcastRoom(code, entry);
+  pushNewMessage(code, entry);
+  res.json({ ok: true });
+});
+
 // Full-history search (unlike the 50-message in-memory window) — this is why SQLite
 // persistence was built first, since search over just the last 50 messages wouldn't
 // be very useful.
@@ -1102,6 +1254,46 @@ function isPostMediaRateLimited(req) {
   timestamps.push(now);
   postMediaRateLimits.set(ip, timestamps);
   if (postMediaRateLimits.size > 10000) postMediaRateLimits.clear();
+  return false;
+}
+
+// /generate-code hits the real Claude API (billed, unlike everything else in this file), so it
+// gets its own tighter per-IP limit rather than sharing postMediaRateLimits' generous chat-message
+// budget — same Map/filter/prune pattern as every other rate limiter here.
+const GENERATE_CODE_WINDOW_MS = 5 * 60 * 1000;
+const GENERATE_CODE_MAX = 5;
+const generateCodeRateLimits = new Map();
+function isGenerateCodeRateLimited(req) {
+  const ip = req.ip || 'unknown';
+  const now = Date.now();
+  const timestamps = (generateCodeRateLimits.get(ip) || []).filter((t) => now - t < GENERATE_CODE_WINDOW_MS);
+  if (timestamps.length >= GENERATE_CODE_MAX) {
+    generateCodeRateLimits.set(ip, timestamps);
+    return true;
+  }
+  timestamps.push(now);
+  generateCodeRateLimits.set(ip, timestamps);
+  if (generateCodeRateLimits.size > 10000) generateCodeRateLimits.clear();
+  return false;
+}
+
+// /chat-with-ai is the same billed-API concern as /generate-code above, but a real back-and-forth
+// conversation needs far more requests than one-shot code generation (one per message sent), so it
+// gets its own, more generous cap rather than sharing GENERATE_CODE_MAX.
+const CHAT_WITH_AI_WINDOW_MS = 5 * 60 * 1000;
+const CHAT_WITH_AI_MAX = 20;
+const chatWithAiRateLimits = new Map();
+function isChatWithAiRateLimited(req) {
+  const ip = req.ip || 'unknown';
+  const now = Date.now();
+  const timestamps = (chatWithAiRateLimits.get(ip) || []).filter((t) => now - t < CHAT_WITH_AI_WINDOW_MS);
+  if (timestamps.length >= CHAT_WITH_AI_MAX) {
+    chatWithAiRateLimits.set(ip, timestamps);
+    return true;
+  }
+  timestamps.push(now);
+  chatWithAiRateLimits.set(ip, timestamps);
+  if (chatWithAiRateLimits.size > 10000) chatWithAiRateLimits.clear();
   return false;
 }
 
@@ -2426,6 +2618,7 @@ const BB_MAP_IDS = [
 const BB_SKIN_IDS = [
   'default', 'khaki', 'sand', 'forest', 'rust', 'coral', 'ember', 'arctic', 'crimson', 'garnet', 'copper', 'toxic', 'shadow', 'teal', 'jade', 'indigo', 'violet', 'neon', 'plague', 'sunset', 'amber', 'royal', 'blaze', 'storm', 'solar', 'magma', 'gold', 'lagoon', 'platinum', 'steel', 'chrome', 'blood', 'ocean', 'onyx', 'inferno', 'slate', 'abyss', 'obsidian', 'aurora', 'opal', 'glacier', 'prestige', 'frostbite', 'void', 'nebula', 'ivory', 'cosmic', 'radiant', 'eclipse', 'phantom', 'starlight', 'quantum',
   ...Array.from({ length: 400 }, (_, i) => `av${i + 1}`),
+  'exclusive_supdid67', // see bb-join below — a single account-locked look, not choosable by anyone else
 ];
 const BB_MATCH_VOTE_MS = Number(process.env.BB_MATCH_VOTE_MS ?? 10000);
 // First side to win this many rounds takes the match — same "kill ends the round, respawn,
@@ -2991,6 +3184,7 @@ function leaveRoom(ws, announce = true) {
   const code = ws.room;
   if (!code) return;
   leaveVoice(ws);
+  endPrivateCallsForWs(ws);
   const room = rooms.get(code);
   if (room) {
     if (ws.accountId && ws.profile) rememberRecentAccountForName(room, ws.profile.name, ws.accountId);
@@ -3001,6 +3195,33 @@ function leaveRoom(ws, announce = true) {
     }
   }
   ws.room = null;
+}
+
+// ---- Private 1:1 calls (separate from the room-wide voice call below — invited by name,
+// not joinable by anyone else who happens to be in the room). A call only ever involves the
+// exact two ws connections captured at invite time; everything after that (accept/decline/
+// signaling/hangup) is routed purely by callId + ws identity, so it keeps working even if the
+// callee has since switched which overlay/menu they're looking at.
+const privateCalls = new Map(); // callId -> { aWs, aSub, aName, bWs, bSub, bName, status }
+const privateCallByWs = new Map(); // ws -> callId, so lookups/cleanup don't need to scan privateCalls
+
+// Tears down a call and, unless the ws that triggered this is already gone, tells the OTHER
+// side it's over — reason lets that side's client show the right copy ("declined", "cancelled",
+// or just "ended", which also covers a hangup mid-call and a participant disconnecting/leaving
+// the room entirely).
+function endPrivateCall(callId, reason, byWs) {
+  const call = privateCalls.get(callId);
+  if (!call) return;
+  privateCalls.delete(callId);
+  privateCallByWs.delete(call.aWs);
+  privateCallByWs.delete(call.bWs);
+  const other = byWs === call.aWs ? call.bWs : call.aWs;
+  if (other && other.readyState === other.OPEN) send(other, { type: 'private-call-ended', callId, reason });
+}
+
+function endPrivateCallsForWs(ws) {
+  const callId = privateCallByWs.get(ws);
+  if (callId) endPrivateCall(callId, 'ended', ws);
 }
 
 // ---- Voice call (WebRTC signaling relay only — audio itself flows peer-to-peer) ----
@@ -5030,12 +5251,31 @@ wss.on('connection', (ws, req) => {
         return;
       }
       const level = Math.max(1, Math.min(100000, Math.floor(+msg.level) || 1));
-      const skin = BB_SKIN_IDS.includes(String(msg.skin)) ? String(msg.skin) : 'default';
+      let skin = BB_SKIN_IDS.includes(String(msg.skin)) ? String(msg.skin) : 'default';
+      // One account-exclusive look, always applied server-side regardless of whatever skin/avatar
+      // that account has actually equipped locally — every OTHER skin/avatar lives entirely in
+      // localStorage (see BB_SKIN_IDS' own comment above) with no account link at all, so this is
+      // the one deliberate exception: username-gated rather than choosable through the shop.
+      // Keyed off username rather than account.id — deliberately, not the same mistake the earlier
+      // isScorptureAdmin bug made (see that fix's own comment: keyed off a self-reported username+
+      // email pair, exploitable by anyone signing up matching values). Two things make that not
+      // apply here: this app has no username-rename feature at all (grepped for one — none exists,
+      // so a username is exactly as stable as an id would be for this purpose), and this is purely
+      // cosmetic — the absolute worst case of someone somehow duplicating this exact already-taken,
+      // unique username is another glowing outfit, not the admin-access-escalation Scorpture's own
+      // bug actually risked.
+      if (account && account.username === 'supdid67') skin = 'exclusive_supdid67';
       const id = crypto.randomUUID();
       ws.bbRoom = code;
       ws.bbId = id;
+      // A general feature, not account-specific — anyone with a recorded win streak shows it next
+      // to their lobby nametag (see bb-player-joined below and getBbWinStreak's own comment); it's
+      // just that most players will have 0 (getBbWinStreak's own null-row fallback) since it's a
+      // brand new leaderboard. A snapshot taken at join time, same convention `level` above already
+      // uses — not live-updated if it changes again mid-session.
+      const winStreak = db.getBbWinStreak(name);
       const entry = {
-        id, name, level, skin, x: 0, y: 0, z: 0, yaw: 0, health: BB_MAX_HEALTH, dueling: false, opponentId: null, duelId: null, lastShotAt: 0, respawnedAt: 0,
+        id, name, level, skin, winStreak, x: 0, y: 0, z: 0, yaw: 0, health: BB_MAX_HEALTH, dueling: false, opponentId: null, duelId: null, lastShotAt: 0, respawnedAt: 0,
         // x/y/z start at the spawn default, not "position unknown" — and that default happens to
         // sit within BB_PLATE_ENTER_MAX_DIST of the two central stations (st2/st3). Without this
         // flag, bb-plate-enter's own position check (below) could be satisfied by a client that
@@ -5051,8 +5291,13 @@ wss.on('connection', (ws, req) => {
       };
       bb.players.set(ws, entry);
       const stations = Object.keys(bb.stations).map((sid) => bbStationSnapshot(bb, sid));
-      send(ws, { type: 'bb-init', id, players: [...bb.players.values()].filter((p) => p.id !== id), stations, mapId: bb.currentMapId });
-      broadcastBb(code, { type: 'bb-player-joined', id, name, level, skin, x: 0, y: 0, z: 0, yaw: 0 }, ws);
+      // Includes the resolved `skin`, not just what the client itself sent — normally an exact
+      // echo, but the one account-exclusive override above means the joining client can't always
+      // assume its own locally-equipped skin is what actually took effect (and, before this, had
+      // no way to find out — the same class of gap BB_SKIN_IDS' own earlier fix closed for OTHER
+      // players' view, just for the client's own local avatar this time).
+      send(ws, { type: 'bb-init', id, players: [...bb.players.values()].filter((p) => p.id !== id), stations, mapId: bb.currentMapId, skin });
+      broadcastBb(code, { type: 'bb-player-joined', id, name, level, skin, winStreak, x: 0, y: 0, z: 0, yaw: 0 }, ws);
       setRoomActivity(code, name, 'bb');
       return;
     }
@@ -7000,6 +7245,96 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'voice-leave') {
       leaveVoice(ws);
+      return;
+    }
+
+    if (msg.type === 'private-call-invite' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      const toName = String(msg.toName || '').trim();
+      if (!toName || toName === ws.profile.name) return;
+      const room = rooms.get(ws.room);
+      if (!room) return;
+      // Mirrors send-dm's mute check just below — a muted user can't open a fresh unrestricted
+      // channel to harass someone by voice instead of text.
+      if (room.muted && room.muted.has(ws.profile.name)) {
+        send(ws, { type: 'error', message: 'You have been muted in this room' });
+        return;
+      }
+      if (privateCallByWs.has(ws)) {
+        send(ws, { type: 'error', message: 'You are already on a private call' });
+        return;
+      }
+      const targetClient = [...room.clients].find((c) => c.profile && c.profile.name === toName);
+      if (!targetClient) {
+        send(ws, { type: 'error', message: `${toName} is not currently in this room` });
+        return;
+      }
+      if (privateCallByWs.has(targetClient)) {
+        send(ws, { type: 'error', message: `${toName} is already on a call` });
+        return;
+      }
+      const callId = crypto.randomUUID();
+      privateCalls.set(callId, {
+        aWs: ws, aSub: ws.profile.sub, aName: ws.profile.name,
+        bWs: targetClient, bSub: targetClient.profile.sub, bName: targetClient.profile.name,
+        status: 'ringing',
+      });
+      privateCallByWs.set(ws, callId);
+      privateCallByWs.set(targetClient, callId);
+      send(targetClient, { type: 'private-call-incoming', callId, fromName: ws.profile.name });
+      send(ws, { type: 'private-call-ringing', callId, toName: targetClient.profile.name });
+      return;
+    }
+
+    // accept/decline/cancel/hangup/signal all derive the call from this connection's own
+    // privateCallByWs entry rather than trusting a client-supplied callId — a ws can only ever
+    // be party to one private call at a time (enforced at invite time above), so that entry is
+    // always the unambiguous right one. This also sidesteps a real race the obvious "trust
+    // msg.callId" version would have: the caller doesn't learn its own callId until
+    // private-call-ringing comes back, so a Cancel clicked in that brief window would otherwise
+    // have no callId to send.
+    if (msg.type === 'private-call-accept') {
+      const callId = privateCallByWs.get(ws);
+      const call = callId && privateCalls.get(callId);
+      if (!call || call.bWs !== ws || call.status !== 'ringing') return;
+      call.status = 'active';
+      send(call.aWs, { type: 'private-call-connected', callId, peerName: call.bName, initiator: true });
+      send(call.bWs, { type: 'private-call-connected', callId, peerName: call.aName, initiator: false });
+      return;
+    }
+
+    if (msg.type === 'private-call-decline') {
+      const callId = privateCallByWs.get(ws);
+      const call = callId && privateCalls.get(callId);
+      if (!call || call.bWs !== ws || call.status !== 'ringing') return;
+      endPrivateCall(callId, 'declined', ws);
+      return;
+    }
+
+    if (msg.type === 'private-call-cancel') {
+      const callId = privateCallByWs.get(ws);
+      const call = callId && privateCalls.get(callId);
+      if (!call || call.aWs !== ws || call.status !== 'ringing') return;
+      endPrivateCall(callId, 'cancelled', ws);
+      return;
+    }
+
+    if (msg.type === 'private-call-hangup') {
+      const callId = privateCallByWs.get(ws);
+      if (callId) endPrivateCall(callId, 'ended', ws);
+      return;
+    }
+
+    if (msg.type === 'private-call-signal') {
+      const callId = privateCallByWs.get(ws);
+      const call = callId && privateCalls.get(callId);
+      if (!call || call.status !== 'active') return;
+      // Same rationale as voice-signal's own isStrokeRateLimited use — real ICE-candidate
+      // exchange during setup legitimately bursts past the tight chat-message gate, and this is
+      // only reachable by an already-verified participant of this exact call (the lookup above).
+      if (isStrokeRateLimited(ws)) return;
+      const other = call.aWs === ws ? call.bWs : call.aWs;
+      if (other && other.readyState === other.OPEN) send(other, { type: 'private-call-signal', callId, signal: msg.signal });
       return;
     }
 

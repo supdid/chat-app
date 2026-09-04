@@ -153,6 +153,24 @@ const friendDmCloseBtn = document.getElementById('friend-dm-close-btn');
 const friendDmTargetName = document.getElementById('friend-dm-target-name');
 const friendDmForm = document.getElementById('friend-dm-form');
 const friendDmInput = document.getElementById('friend-dm-input');
+const onlineContextMenu = document.getElementById('online-context-menu');
+const privateCallContextBtn = document.getElementById('private-call-context-btn');
+const privateCallIncomingOverlay = document.getElementById('private-call-incoming');
+const privateCallIncomingAvatar = document.getElementById('private-call-incoming-avatar');
+const privateCallIncomingTitle = document.getElementById('private-call-incoming-title');
+const privateCallIncomingSub = document.getElementById('private-call-incoming-sub');
+const privateCallIncomingActions = document.getElementById('private-call-incoming-actions');
+const privateCallOutgoingActions = document.getElementById('private-call-outgoing-actions');
+const privateCallAcceptBtn = document.getElementById('private-call-accept-btn');
+const privateCallDeclineBtn = document.getElementById('private-call-decline-btn');
+const privateCallCancelBtn = document.getElementById('private-call-cancel-btn');
+const privateCallOverlay = document.getElementById('private-call-overlay');
+const privateCallPeerNameEl = document.getElementById('private-call-peer-name');
+const privateCallErrorEl = document.getElementById('private-call-error');
+const privateCallGrid = document.getElementById('private-call-grid');
+const privateCallMicRetryBtn = document.getElementById('private-call-mic-retry-btn');
+const privateCallMuteBtn = document.getElementById('private-call-mute-btn');
+const privateCallHangupBtn = document.getElementById('private-call-hangup-btn');
 const groupsOpenBtn = document.getElementById('groups-open-btn');
 const groupsMenuBtn = document.getElementById('groups-menu-btn');
 const groupsOverlay = document.getElementById('groups-overlay');
@@ -446,6 +464,25 @@ let callRecordDest = null; // MediaStreamAudioDestinationNode mixing all call au
 let callRecordCtx = null;
 let recordedRemoteStreams = null; // Set of remote MediaStreams already mixed into the current recording — avoids double-mixing the same peer's audio if their track re-negotiates mid-recording
 let muteAllNoticeTimer = null;
+
+// --- Private (1:1) call state — separate from the room-wide voice call above: exactly one
+// RTCPeerConnection, no mesh, and only ever the two people who agreed to it (server-enforced,
+// see server.js's endPrivateCall). ---
+let privateCallId = null; // set once invited/ringing, cleared on any teardown
+let privateCallRole = null; // 'caller' | 'callee', set as soon as a callId exists
+let privateCallPeerName = null;
+let privateCallPc = null;
+let privateCallLocalStream = null;
+let privateCallAudioEl = null;
+let privateCallLocalStopDetector = null; // stop function for the local mic's speaking ring
+let privateCallStopDetector = null; // stop function for the remote peer's speaking ring
+let privateCallRingTimer = null;
+let onlineContextTargetName = null;
+
+function stopPrivateCallRing() {
+  clearInterval(privateCallRingTimer);
+  privateCallRingTimer = null;
+}
 
 // --- Dark / light theme ---
 function applyTheme(theme) {
@@ -1263,6 +1300,44 @@ function handleServerMessage(data) {
       voiceCallBanner.classList.add('hidden');
       break;
 
+    case 'private-call-ringing':
+      // Confirms our own invite went through — the popup's already showing (see
+      // privateCallContextBtn's click handler), this just reconciles the callId. Guarded on
+      // role rather than unconditionally assigning: if Cancel was clicked in the brief window
+      // before this arrived, teardownPrivateCall() already reset privateCallRole to null, and a
+      // late-arriving ringing for that already-cancelled invite must not resurrect it.
+      if (privateCallRole === 'caller') privateCallId = data.callId;
+      break;
+
+    case 'private-call-incoming':
+      if (privateCallId) {
+        // Already on/ringing a different call — the server would reject a second invite
+        // anyway (see privateCallByWs), so just let the caller's own client time out silently.
+        break;
+      }
+      privateCallId = data.callId;
+      privateCallRole = 'callee';
+      privateCallPeerName = data.fromName;
+      showIncomingCallPopup(data.fromName); // starts the repeating ring tone itself
+      break;
+
+    case 'private-call-connected':
+      privateCallPeerName = data.peerName;
+      hideCallPopup();
+      startPrivateCallMedia();
+      break;
+
+    case 'private-call-signal':
+      handlePrivateCallSignal(data.signal);
+      break;
+
+    case 'private-call-ended': {
+      const reasonText = { declined: `${privateCallPeerName || 'They'} declined the call`, cancelled: 'Call cancelled', ended: 'Call ended' }[data.reason] || 'Call ended';
+      if (privateCallId === data.callId) showAppToast(`📵 ${reasonText}`);
+      teardownPrivateCall();
+      break;
+    }
+
     case 'voice-share':
       // sharing:true is handled by the video track arriving via 'track' above;
       // sharing:false we act on directly so the tile reverts even if the
@@ -1557,7 +1632,10 @@ function renderTextWithMentions(text) {
       frag.appendChild(em);
     } else if (m[3] !== undefined) {
       const code = document.createElement('code');
-      code.className = 'inline-code';
+      // A multi-line backtick-wrapped snippet (e.g. AI Studio's "Generate code" send-to-chat) reads
+      // as a squished single line without this — `.inline-code` alone has no white-space rule, and
+      // <code> collapses newlines like any other inline element by default.
+      code.className = m[3].includes('\n') ? 'inline-code code-block' : 'inline-code';
       code.textContent = m[3];
       frag.appendChild(code);
     } else {
@@ -2113,6 +2191,7 @@ function renderOnlineList(users) {
   menuOnlineList.innerHTML = '';
   users.forEach((u) => {
     const li = document.createElement('li');
+    li.dataset.username = u.name;
     const nameWrap = document.createElement('span');
     nameWrap.className = 'online-name-wrap';
     const name = document.createElement('span');
@@ -2997,6 +3076,306 @@ friendDmForm.addEventListener('submit', (e) => {
   ws.send(JSON.stringify({ type: 'friend-dm', toUsername, text }));
   friendDmOverlay.classList.add('hidden');
   friendDmInput.value = '';
+});
+
+// --- Private (1:1) call: right-click a name in "Online in this room" for a context menu,
+// "Private call" invites just that person — unlike the room-wide voice call button, nobody
+// else can join. Reuses .friend-context-menu's positioning logic above almost verbatim. ---
+function hideOnlineContextMenu() {
+  onlineContextMenu.classList.add('hidden');
+  onlineContextTargetName = null;
+}
+
+menuOnlineList.addEventListener('contextmenu', (e) => {
+  const row = e.target.closest('li[data-username]');
+  if (!row) return;
+  e.preventDefault();
+  onlineContextTargetName = row.dataset.username;
+  const menuWidth = 200;
+  const left = Math.min(e.clientX, window.innerWidth - menuWidth);
+  onlineContextMenu.style.left = `${Math.max(4, left)}px`;
+  onlineContextMenu.style.top = `${e.clientY}px`;
+  onlineContextMenu.classList.remove('hidden');
+});
+
+document.addEventListener('click', (e) => {
+  if (!onlineContextMenu.classList.contains('hidden') && !onlineContextMenu.contains(e.target)) {
+    hideOnlineContextMenu();
+  }
+});
+
+privateCallContextBtn.addEventListener('click', () => {
+  const target = onlineContextTargetName;
+  hideOnlineContextMenu();
+  if (!target || !ws || ws.readyState !== WebSocket.OPEN) return;
+  if (privateCallId) {
+    showAppToast("You're already on a private call.");
+    return;
+  }
+  privateCallRole = 'caller';
+  privateCallPeerName = target;
+  closeMenu();
+  showOutgoingCallPopup(target);
+  ws.send(JSON.stringify({ type: 'private-call-invite', toName: target }));
+});
+
+function playRingTone() {
+  const ctx = ensureNotifyAudioCtx();
+  if (!ctx) return;
+  const t = ctx.currentTime;
+  playNotifyTone(ctx, 740, t, 0.3, 'sine', 0.18);
+  playNotifyTone(ctx, 880, t + 0.32, 0.3, 'sine', 0.18);
+}
+
+function showIncomingCallPopup(fromName) {
+  stopPrivateCallRing();
+  privateCallIncomingAvatar.style.background = avatarColor(fromName);
+  privateCallIncomingAvatar.textContent = initials(fromName);
+  privateCallIncomingTitle.textContent = 'Incoming private call';
+  privateCallIncomingSub.textContent = `${fromName} is calling you`;
+  privateCallIncomingActions.classList.remove('hidden');
+  privateCallOutgoingActions.classList.add('hidden');
+  privateCallIncomingOverlay.classList.remove('hidden');
+  playRingTone();
+  privateCallRingTimer = setInterval(playRingTone, 2500);
+  notify(`📞 ${fromName}`, 'Incoming private call');
+}
+
+function showOutgoingCallPopup(toName) {
+  stopPrivateCallRing();
+  privateCallIncomingAvatar.style.background = avatarColor(toName);
+  privateCallIncomingAvatar.textContent = initials(toName);
+  privateCallIncomingTitle.textContent = 'Calling…';
+  privateCallIncomingSub.textContent = toName;
+  privateCallIncomingActions.classList.add('hidden');
+  privateCallOutgoingActions.classList.remove('hidden');
+  privateCallIncomingOverlay.classList.remove('hidden');
+}
+
+function hideCallPopup() {
+  stopPrivateCallRing();
+  privateCallIncomingOverlay.classList.add('hidden');
+}
+
+privateCallAcceptBtn.addEventListener('click', () => {
+  if (!privateCallId || !ws || ws.readyState !== WebSocket.OPEN) return;
+  hideCallPopup();
+  ws.send(JSON.stringify({ type: 'private-call-accept' }));
+});
+
+privateCallDeclineBtn.addEventListener('click', () => {
+  if (privateCallId && ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'private-call-decline' }));
+  }
+  teardownPrivateCall();
+});
+
+privateCallCancelBtn.addEventListener('click', () => {
+  // Deliberately not gated on privateCallId being set yet — the server resolves this by ws
+  // identity (see its own comment), not by a callId we might not have learned back from
+  // private-call-ringing yet if this is clicked in that brief window right after inviting.
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'private-call-cancel' }));
+  }
+  teardownPrivateCall();
+});
+
+async function startPrivateCallMedia() {
+  privateCallOverlay.classList.remove('hidden');
+  privateCallPeerNameEl.textContent = privateCallPeerName;
+  privateCallErrorEl.classList.add('hidden');
+  privateCallMicRetryBtn.classList.add('hidden');
+  privateCallGrid.innerHTML = '';
+  const meTile = document.createElement('div');
+  meTile.className = 'call-tile';
+  meTile.id = 'private-call-tile-me';
+  const meAvatar = document.createElement('div');
+  meAvatar.className = 'call-tile-avatar';
+  meAvatar.style.background = avatarColor(myProfile.name);
+  meAvatar.textContent = initials(myProfile.name);
+  const meLabel = document.createElement('span');
+  meLabel.className = 'call-tile-name';
+  meLabel.textContent = 'You';
+  meTile.append(meAvatar, meLabel);
+  const peerTile = document.createElement('div');
+  peerTile.className = 'call-tile';
+  peerTile.id = 'private-call-tile-peer';
+  const peerAvatar = document.createElement('div');
+  peerAvatar.className = 'call-tile-avatar';
+  peerAvatar.style.background = avatarColor(privateCallPeerName);
+  peerAvatar.textContent = initials(privateCallPeerName);
+  const peerLabel = document.createElement('span');
+  peerLabel.className = 'call-tile-name';
+  peerLabel.textContent = privateCallPeerName;
+  peerTile.append(peerAvatar, peerLabel);
+  privateCallGrid.append(meTile, peerTile);
+
+  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    try {
+      privateCallLocalStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+      privateCallLocalStream = null;
+      privateCallErrorEl.textContent = micErrorMessage(err);
+      privateCallErrorEl.classList.remove('hidden');
+      privateCallMicRetryBtn.classList.remove('hidden');
+    }
+  } else {
+    privateCallLocalStream = null;
+  }
+  // The invite/accept exchange (and any WS drop/reconnect in between) can outrace the mic
+  // permission prompt — abandon a stale attempt exactly like startVoiceCall does.
+  if (!privateCallId) {
+    if (privateCallLocalStream) privateCallLocalStream.getTracks().forEach((t) => t.stop());
+    privateCallLocalStream = null;
+    return;
+  }
+  if (privateCallLocalStream) {
+    privateCallLocalStopDetector = attachSpeakingDetector(privateCallLocalStream, (speaking) => {
+      meTile.classList.toggle('speaking', speaking);
+    });
+  }
+  updatePrivateCallMuteButton();
+  createPrivatePeerConnection();
+  if (privateCallRole === 'caller') await makePrivateCallOffer();
+}
+
+function updatePrivateCallMuteButton() {
+  const track = privateCallLocalStream && privateCallLocalStream.getAudioTracks()[0];
+  privateCallMuteBtn.classList.toggle('hidden', !track);
+  if (!track) return;
+  track.enabled = true;
+  privateCallMuteBtn.classList.remove('active');
+  document.getElementById('private-call-mute-icon').textContent = '🎤';
+  privateCallMuteBtn.querySelector('.call-action-label').textContent = ' Mute';
+}
+
+privateCallMuteBtn.addEventListener('click', () => {
+  const track = privateCallLocalStream && privateCallLocalStream.getAudioTracks()[0];
+  if (!track) return;
+  track.enabled = !track.enabled;
+  privateCallMuteBtn.classList.toggle('active', !track.enabled);
+  document.getElementById('private-call-mute-icon').textContent = track.enabled ? '🎤' : '🔇';
+  privateCallMuteBtn.querySelector('.call-action-label').textContent = track.enabled ? ' Mute' : ' Unmute';
+});
+
+privateCallMicRetryBtn.addEventListener('click', async () => {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+  try {
+    privateCallLocalStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    privateCallErrorEl.classList.add('hidden');
+    privateCallMicRetryBtn.classList.add('hidden');
+    if (privateCallPc) {
+      privateCallLocalStream.getTracks().forEach((t) => privateCallPc.addTrack(t, privateCallLocalStream));
+      if (privateCallRole === 'caller') await makePrivateCallOffer();
+    }
+    updatePrivateCallMuteButton();
+  } catch (err) {
+    privateCallErrorEl.textContent = micErrorMessage(err);
+    privateCallErrorEl.classList.remove('hidden');
+  }
+});
+
+function createPrivatePeerConnection() {
+  const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  if (privateCallLocalStream) {
+    privateCallLocalStream.getTracks().forEach((track) => pc.addTrack(track, privateCallLocalStream));
+  } else {
+    pc.addTransceiver('audio', { direction: 'recvonly' });
+  }
+  pc.addEventListener('icecandidate', (e) => {
+    if (e.candidate && privateCallId && ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'private-call-signal', callId: privateCallId, signal: { type: 'ice', candidate: e.candidate } }));
+    }
+  });
+  pc.addEventListener('iceconnectionstatechange', () => {
+    if (pc.iceConnectionState === 'failed') {
+      showAppToast(`📵 Lost connection to ${privateCallPeerName || 'the call'}`);
+      teardownPrivateCall();
+      return;
+    }
+    const tile = document.getElementById('private-call-tile-peer');
+    if (tile) tile.classList.toggle('reconnecting', pc.iceConnectionState === 'disconnected');
+  });
+  pc.addEventListener('track', (e) => {
+    if (!privateCallAudioEl) {
+      privateCallAudioEl = document.createElement('audio');
+      privateCallAudioEl.autoplay = true;
+      privateCallAudioEl.playsInline = true;
+      document.body.appendChild(privateCallAudioEl);
+    }
+    privateCallAudioEl.srcObject = e.streams[0];
+    if (privateCallStopDetector) privateCallStopDetector();
+    privateCallStopDetector = attachSpeakingDetector(e.streams[0], (speaking) => {
+      const tile = document.getElementById('private-call-tile-peer');
+      if (tile) tile.classList.toggle('speaking', speaking);
+    });
+  });
+  privateCallPc = pc;
+  return pc;
+}
+
+async function makePrivateCallOffer() {
+  if (!privateCallPc || !privateCallId) return;
+  try {
+    const offer = await privateCallPc.createOffer();
+    await privateCallPc.setLocalDescription(offer);
+    ws.send(JSON.stringify({ type: 'private-call-signal', callId: privateCallId, signal: { type: 'offer', sdp: privateCallPc.localDescription } }));
+  } catch (err) {
+    reportClientError('makePrivateCallOffer failed: ' + err.message, err.stack);
+  }
+}
+
+async function handlePrivateCallSignal(signal) {
+  if (!privateCallPc) return;
+  try {
+    if (signal.type === 'offer') {
+      await privateCallPc.setRemoteDescription(signal.sdp);
+      const answer = await privateCallPc.createAnswer();
+      await privateCallPc.setLocalDescription(answer);
+      ws.send(JSON.stringify({ type: 'private-call-signal', callId: privateCallId, signal: { type: 'answer', sdp: privateCallPc.localDescription } }));
+    } else if (signal.type === 'answer') {
+      await privateCallPc.setRemoteDescription(signal.sdp);
+    } else if (signal.type === 'ice') {
+      await privateCallPc.addIceCandidate(signal.candidate);
+    }
+  } catch (err) {
+    reportClientError('handlePrivateCallSignal failed: ' + err.message, err.stack);
+  }
+}
+
+function teardownPrivateCall() {
+  hideCallPopup();
+  privateCallOverlay.classList.add('hidden');
+  if (privateCallPc) {
+    privateCallPc.close();
+    privateCallPc = null;
+  }
+  if (privateCallLocalStream) {
+    privateCallLocalStream.getTracks().forEach((t) => t.stop());
+    privateCallLocalStream = null;
+  }
+  if (privateCallLocalStopDetector) {
+    privateCallLocalStopDetector();
+    privateCallLocalStopDetector = null;
+  }
+  if (privateCallStopDetector) {
+    privateCallStopDetector();
+    privateCallStopDetector = null;
+  }
+  if (privateCallAudioEl) {
+    privateCallAudioEl.remove();
+    privateCallAudioEl = null;
+  }
+  privateCallId = null;
+  privateCallRole = null;
+  privateCallPeerName = null;
+}
+
+privateCallHangupBtn.addEventListener('click', () => {
+  if (privateCallId && ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'private-call-hangup' }));
+  }
+  teardownPrivateCall();
 });
 
 // --- Group DMs: persisted multi-person threads among friends, account-based (works across

@@ -491,3 +491,187 @@ button.link-btn {
     height: 44px;
   }
 }
+
+/* --- Mode tabs (Pictures / Code) --- */
+.mode-row {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: center;
+}
+
+.mode-tab {
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  color: var(--text-muted);
+  backdrop-filter: blur(10px);
+}
+
+.mode-tab.active {
+  background: linear-gradient(135deg, #34e89e, #3b9dff);
+  color: #04121c;
+  border-color: transparent;
+}
+
+/* --- Code generation --- */
+#code-prompt-input {
+  flex: 1 1 220px;
+  min-width: 0;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.code-loading {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.code-block-wrap {
+  position: relative;
+}
+
+#code-output {
+  margin: 0;
+  background: var(--card-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 10px;
+  padding: 1rem;
+  overflow-x: auto;
+  max-height: 50vh;
+}
+
+#code-output-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  white-space: pre;
+  color: var(--text-color);
+}
+
+.copy-btn {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.8rem;
+}
+
+/* --- Enhance toggle + variations grid (Pictures mode) --- */
+.enhance-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0 0.3rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.enhance-toggle input {
+  width: 1rem;
+  height: 1rem;
+  cursor: pointer;
+  padding: 0;
+}
+
+#variations-btn {
+  background: var(--input-bg);
+  color: var(--text-color);
+  border: 1px solid var(--input-border);
+}
+
+.variations-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.6rem;
+}
+
+.variation-item {
+  border-radius: 8px;
+  overflow: hidden;
+  aspect-ratio: 1;
+  border: 1px solid var(--panel-border);
+  cursor: pointer;
+  background: var(--card-bg);
+}
+
+.variation-item:hover {
+  filter: brightness(1.1);
+}
+
+.variation-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* --- Ask AI chat --- */
+.chat-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  max-height: 55vh;
+  overflow-y: auto;
+  padding: 0.25rem 0.1rem;
+}
+
+.chat-msg {
+  display: flex;
+  max-width: 85%;
+}
+
+.chat-msg-user {
+  align-self: flex-end;
+  justify-content: flex-end;
+}
+
+.chat-msg-ai {
+  align-self: flex-start;
+}
+
+.chat-bubble {
+  background: var(--panel-bg);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  padding: 0.6rem 0.85rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.92rem;
+}
+
+.chat-msg-user .chat-bubble {
+  background: linear-gradient(135deg, rgba(52, 232, 158, 0.35), rgba(59, 157, 255, 0.35));
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.chat-typing .chat-bubble {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.75rem 0.9rem;
+}
+
+.chat-typing .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  animation: chat-dot-bounce 1.1s ease-in-out infinite;
+}
+
+.chat-typing .dot:nth-child(2) { animation-delay: 0.15s; }
+.chat-typing .dot:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes chat-dot-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+#chat-prompt-input {
+  flex: 1 1 220px;
+  min-width: 0;
+}

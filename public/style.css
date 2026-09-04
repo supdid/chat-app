@@ -994,6 +994,14 @@ body {
   font-size: 0.85em;
 }
 
+.inline-code.code-block {
+  display: block;
+  white-space: pre;
+  overflow-x: auto;
+  padding: 0.6rem 0.7rem;
+  margin: 0.35rem 0;
+}
+
 .mention-dropdown {
   display: flex;
   flex-direction: column;
@@ -1461,6 +1469,61 @@ button.danger:hover {
 
 #friend-dm-form button {
   flex-shrink: 0;
+}
+
+/* Private (1:1) call: incoming/outgoing ring popup + the active-call panel. Both reuse
+   .menu-overlay/.menu-panel (the same right-side-drawer look every other overlay in this app
+   uses) rather than the room-wide call-overlay's docked/expand system, since a private call is
+   always exactly two people — no need for a tile grid that scales or a fullscreen toggle.
+   z-index raised above every other .menu-overlay (30) and even the room-wide .call-overlay (60)
+   — an incoming call has to be seen and acted on regardless of whatever panel (friends, groups,
+   the room menu…) happens to already be open, and the active-call panel has to stay reachable
+   (mute/hang up) the same way. Still below .app-toast (100), which is fine — a toast is a brief
+   transient notice, not something that needs to stay clickable underneath it. */
+#private-call-incoming,
+#private-call-overlay {
+  z-index: 90;
+}
+
+.private-call-panel {
+  align-items: center;
+  text-align: center;
+  justify-content: center;
+}
+
+.private-call-avatar {
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.private-call-actions {
+  display: flex;
+  gap: 0.6rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.call-action.accept {
+  background: #2e9e4a;
+  color: white;
+}
+
+.call-action.accept:hover {
+  filter: brightness(1.1);
+}
+
+#private-call-grid.call-grid {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+}
+
+#private-call-grid .call-tile {
+  width: 90px;
+  height: 90px;
+  border-radius: 50%;
 }
 
 .search-result-text {
