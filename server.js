@@ -3202,16 +3202,23 @@ function leaveRoom(ws, announce = true) {
 // exact two ws connections captured at invite time; everything after that (accept/decline/
 // signaling/hangup) is routed purely by callId + ws identity, so it keeps working even if the
 // callee has since switched which overlay/menu they're looking at.
-const privateCalls = new Map(); // callId -> { aWs, aSub, aName, bWs, bSub, bName, status }
+const privateCalls = new Map(); // callId -> { aWs, aSub, aName, bWs, bSub, bName, status, ringTimer }
 const privateCallByWs = new Map(); // ws -> callId, so lookups/cleanup don't need to scan privateCalls
+// An invite with nobody home otherwise rings forever: the callee's popup plays a repeating tone
+// with no client-side timeout of its own, and the caller can't start any other call in the
+// meantime (blocked by the privateCallByWs check at invite time) until they notice and hit
+// Cancel themselves. Auto-ending an unanswered ring after a normal phone-call-length wait avoids
+// relying on either side to notice and act.
+const PRIVATE_CALL_RING_TIMEOUT_MS = Number(process.env.PRIVATE_CALL_RING_TIMEOUT_MS ?? 45 * 1000);
 
 // Tears down a call and, unless the ws that triggered this is already gone, tells the OTHER
 // side it's over — reason lets that side's client show the right copy ("declined", "cancelled",
-// or just "ended", which also covers a hangup mid-call and a participant disconnecting/leaving
-// the room entirely).
+// "timeout" for an unanswered ring, or just "ended", which also covers a hangup mid-call and a
+// participant disconnecting/leaving the room entirely).
 function endPrivateCall(callId, reason, byWs) {
   const call = privateCalls.get(callId);
   if (!call) return;
+  clearTimeout(call.ringTimer);
   privateCalls.delete(callId);
   privateCallByWs.delete(call.aWs);
   privateCallByWs.delete(call.bWs);
@@ -7274,10 +7281,14 @@ wss.on('connection', (ws, req) => {
         return;
       }
       const callId = crypto.randomUUID();
+      const ringTimer = setTimeout(() => {
+        const call = privateCalls.get(callId);
+        if (call && call.status === 'ringing') endPrivateCall(callId, 'timeout', call.aWs);
+      }, PRIVATE_CALL_RING_TIMEOUT_MS);
       privateCalls.set(callId, {
         aWs: ws, aSub: ws.profile.sub, aName: ws.profile.name,
         bWs: targetClient, bSub: targetClient.profile.sub, bName: targetClient.profile.name,
-        status: 'ringing',
+        status: 'ringing', ringTimer,
       });
       privateCallByWs.set(ws, callId);
       privateCallByWs.set(targetClient, callId);

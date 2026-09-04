@@ -2452,6 +2452,93 @@ describe('private (1:1) calls', () => {
 
     target.close();
   });
+
+  // Dedicated instance with PRIVATE_CALL_RING_TIMEOUT_MS shrunk via env override, same reasoning
+  // as HEARTBEAT_INTERVAL_MS's own dedicated instance above — an unanswered ring used to have no
+  // timeout at all, leaving the callee's popup ringing forever and blocking the caller from
+  // starting any other call until they noticed and hit Cancel themselves.
+  describe('unanswered ring times out on its own', () => {
+    let ringTimeoutServer;
+    before(async () => {
+      ringTimeoutServer = await startTestServer({ PRIVATE_CALL_RING_TIMEOUT_MS: '200' }, 3221);
+    });
+    after(async () => { await ringTimeoutServer.stop(); });
+
+    function rtConnect() {
+      return new Promise((resolve) => {
+        const ws = new WebSocket(`ws://localhost:${ringTimeoutServer.port}`);
+        ws.on('open', () => resolve(ws));
+      });
+    }
+    async function rtJoinRoom(username) {
+      const ws = await rtConnect();
+      send(ws, { type: 'join-server', username });
+      await waitFor(ws, (m) => m.type === 'joined-server');
+      send(ws, { type: 'create-room' });
+      const room = await waitFor(ws, (m) => m.type === 'joined-room');
+      return { ws, code: room.code };
+    }
+    async function rtJoinExistingRoom(username, code) {
+      const ws = await rtConnect();
+      send(ws, { type: 'join-server', username });
+      await waitFor(ws, (m) => m.type === 'joined-server');
+      send(ws, { type: 'join-room', code });
+      await waitFor(ws, (m) => m.type === 'joined-room');
+      return ws;
+    }
+
+    test('an unanswered invite auto-ends with reason "timeout", freeing the caller to call someone else', async () => {
+      const { ws: host, code } = await rtJoinRoom('PcTimeoutHost');
+      const target = await rtJoinExistingRoom('PcTimeoutTarget', code);
+      const third = await rtJoinExistingRoom('PcTimeoutThird', code);
+
+      const ringingPromise = waitFor(host, (m) => m.type === 'private-call-ringing');
+      const incomingPromise = waitFor(target, (m) => m.type === 'private-call-incoming');
+      send(host, { type: 'private-call-invite', toName: 'PcTimeoutTarget' });
+      await Promise.all([ringingPromise, incomingPromise]);
+
+      const hostEndedPromise = waitFor(host, (m) => m.type === 'private-call-ended');
+      const targetEndedPromise = waitFor(target, (m) => m.type === 'private-call-ended');
+      const [hostEnded, targetEnded] = await Promise.all([hostEndedPromise, targetEndedPromise]);
+      assert.equal(hostEnded.reason, 'timeout');
+      assert.equal(targetEnded.reason, 'timeout');
+
+      // Both sides must be fully freed up: the caller can start a new call, and the never-answered
+      // callee is invitable again by someone else.
+      const newRingingPromise = waitFor(host, (m) => m.type === 'private-call-ringing');
+      send(host, { type: 'private-call-invite', toName: 'PcTimeoutThird' });
+      await newRingingPromise;
+
+      const targetIncomingAgainPromise = waitFor(target, (m) => m.type === 'private-call-incoming');
+      send(third, { type: 'private-call-invite', toName: 'PcTimeoutTarget' });
+      await targetIncomingAgainPromise;
+
+      host.close(); target.close(); third.close();
+    });
+
+    test('accepting before the timeout fires cancels it — an answered call must not be auto-ended later', async () => {
+      const { ws: host, code } = await rtJoinRoom('PcNoTimeoutHost');
+      const target = await rtJoinExistingRoom('PcNoTimeoutTarget', code);
+
+      const ringingPromise = waitFor(host, (m) => m.type === 'private-call-ringing');
+      const incomingPromise = waitFor(target, (m) => m.type === 'private-call-incoming');
+      send(host, { type: 'private-call-invite', toName: 'PcNoTimeoutTarget' });
+      await Promise.all([ringingPromise, incomingPromise]);
+
+      const hostConnectedPromise = waitFor(host, (m) => m.type === 'private-call-connected');
+      send(target, { type: 'private-call-accept' });
+      await hostConnectedPromise;
+
+      let endedAfterAccept = false;
+      const h = (data) => { const m = JSON.parse(data); if (m.type === 'private-call-ended') endedAfterAccept = true; };
+      host.on('message', h);
+      await sleep(400); // well past the 200ms ring timeout — the accepted call must survive it
+      host.off('message', h);
+      assert.equal(endedAfterAccept, false, 'an already-accepted call must not be torn down by the ring timer it left behind');
+
+      host.close(); target.close();
+    });
+  });
 });
 
 describe('whiteboard stroke sanitization', () => {

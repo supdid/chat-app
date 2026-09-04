@@ -1332,7 +1332,7 @@ function handleServerMessage(data) {
       break;
 
     case 'private-call-ended': {
-      const reasonText = { declined: `${privateCallPeerName || 'They'} declined the call`, cancelled: 'Call cancelled', ended: 'Call ended' }[data.reason] || 'Call ended';
+      const reasonText = { declined: `${privateCallPeerName || 'They'} declined the call`, cancelled: 'Call cancelled', timeout: 'No answer', ended: 'Call ended' }[data.reason] || 'Call ended';
       if (privateCallId === data.callId) showAppToast(`📵 ${reasonText}`);
       teardownPrivateCall();
       break;
