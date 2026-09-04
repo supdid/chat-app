@@ -3211,10 +3211,14 @@ const privateCallByWs = new Map(); // ws -> callId, so lookups/cleanup don't nee
 // relying on either side to notice and act.
 const PRIVATE_CALL_RING_TIMEOUT_MS = Number(process.env.PRIVATE_CALL_RING_TIMEOUT_MS ?? 45 * 1000);
 
-// Tears down a call and, unless the ws that triggered this is already gone, tells the OTHER
-// side it's over — reason lets that side's client show the right copy ("declined", "cancelled",
-// "timeout" for an unanswered ring, or just "ended", which also covers a hangup mid-call and a
-// participant disconnecting/leaving the room entirely).
+// Tears down a call and tells whoever doesn't already know it's over — reason lets the
+// recipient's client show the right copy ("declined", "cancelled", "timeout" for an unanswered
+// ring, or just "ended", which also covers a hangup mid-call and a participant
+// disconnecting/leaving the room entirely). byWs is the connection that performed the action
+// (decline/cancel/hangup/leave/disconnect) — that side already knows locally, so only the OTHER
+// side needs the push. A server-initiated end has no such actor (an unanswered ring timing out
+// leaves both the caller's "ringing" screen and the callee's "incoming call" popup equally
+// stale) — pass byWs as null for that case and both sides get notified.
 function endPrivateCall(callId, reason, byWs) {
   const call = privateCalls.get(callId);
   if (!call) return;
@@ -3222,8 +3226,10 @@ function endPrivateCall(callId, reason, byWs) {
   privateCalls.delete(callId);
   privateCallByWs.delete(call.aWs);
   privateCallByWs.delete(call.bWs);
-  const other = byWs === call.aWs ? call.bWs : call.aWs;
-  if (other && other.readyState === other.OPEN) send(other, { type: 'private-call-ended', callId, reason });
+  const recipients = byWs ? [byWs === call.aWs ? call.bWs : call.aWs] : [call.aWs, call.bWs];
+  for (const r of recipients) {
+    if (r && r.readyState === r.OPEN) send(r, { type: 'private-call-ended', callId, reason });
+  }
 }
 
 function endPrivateCallsForWs(ws) {
@@ -7283,7 +7289,7 @@ wss.on('connection', (ws, req) => {
       const callId = crypto.randomUUID();
       const ringTimer = setTimeout(() => {
         const call = privateCalls.get(callId);
-        if (call && call.status === 'ringing') endPrivateCall(callId, 'timeout', call.aWs);
+        if (call && call.status === 'ringing') endPrivateCall(callId, 'timeout', null);
       }, PRIVATE_CALL_RING_TIMEOUT_MS);
       privateCalls.set(callId, {
         aWs: ws, aSub: ws.profile.sub, aName: ws.profile.name,

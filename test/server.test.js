@@ -2491,6 +2491,12 @@ describe('private (1:1) calls', () => {
       const { ws: host, code } = await rtJoinRoom('PcTimeoutHost');
       const target = await rtJoinExistingRoom('PcTimeoutTarget', code);
       const third = await rtJoinExistingRoom('PcTimeoutThird', code);
+      // Separate from `third`: `third` is left mid-ring (invited by host, below, but never
+      // accepted/declined) to prove host's own invite goes through — reusing it to also invite
+      // target would trip the server's own "already on a call" guard (a real, separately-tested
+      // invariant, see "you can't be invited into (or start) a second private call while already
+      // on one" above), which isn't what this assertion is checking.
+      const fourth = await rtJoinExistingRoom('PcTimeoutFourth', code);
 
       const ringingPromise = waitFor(host, (m) => m.type === 'private-call-ringing');
       const incomingPromise = waitFor(target, (m) => m.type === 'private-call-incoming');
@@ -2510,10 +2516,10 @@ describe('private (1:1) calls', () => {
       await newRingingPromise;
 
       const targetIncomingAgainPromise = waitFor(target, (m) => m.type === 'private-call-incoming');
-      send(third, { type: 'private-call-invite', toName: 'PcTimeoutTarget' });
+      send(fourth, { type: 'private-call-invite', toName: 'PcTimeoutTarget' });
       await targetIncomingAgainPromise;
 
-      host.close(); target.close(); third.close();
+      host.close(); target.close(); third.close(); fourth.close();
     });
 
     test('accepting before the timeout fires cancels it — an answered call must not be auto-ended later', async () => {
