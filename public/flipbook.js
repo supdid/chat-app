@@ -91,8 +91,21 @@ let tool = 'pencil';
 let undoStack = [];
 const UNDO_LIMIT = 20;
 
+let saveProjectTimer = null;
 function saveProject() {
+  clearTimeout(saveProjectTimer);
+  saveProjectTimer = null;
   try { localStorage.setItem(SAVE_KEY, JSON.stringify({ frames, currentFrameIndex })); } catch {}
+}
+
+// Re-serializing every frame's full base64 PNG on every single stroke (saveCurrentFrameCanvas
+// fires on each pointerup/undo/clear) is wasted work once a project has more than a few frames —
+// coalesce those into one write shortly after drawing pauses. Anything that isn't a
+// mid-drawing autosave (switching frames, add/delete/reorder, New) still calls saveProject()
+// directly for an immediate, un-debounced write.
+function saveProjectDebounced() {
+  clearTimeout(saveProjectTimer);
+  saveProjectTimer = setTimeout(saveProject, 500);
 }
 
 function loadProject() {
@@ -131,10 +144,16 @@ async function renderOnionSkin() {
 
 function saveCurrentFrameCanvas() {
   frames[currentFrameIndex].dataUrl = drawCanvas.toDataURL('image/png');
-  saveProject();
+  saveProjectDebounced();
 }
 
 // --- Frame strip UI ---
+function updateFrameActionButtons() {
+  deleteFrameBtn.disabled = frames.length <= 1;
+  moveFrameLeftBtn.disabled = currentFrameIndex === 0;
+  moveFrameRightBtn.disabled = currentFrameIndex === frames.length - 1;
+}
+
 function renderFrameStrip() {
   frameStripEl.innerHTML = '';
   frames.forEach((frame, i) => {
@@ -152,32 +171,39 @@ function renderFrameStrip() {
     btn.addEventListener('click', () => selectFrame(i));
     frameStripEl.appendChild(btn);
   });
-  deleteFrameBtn.disabled = frames.length <= 1;
-  moveFrameLeftBtn.disabled = currentFrameIndex === 0;
-  moveFrameRightBtn.disabled = currentFrameIndex === frames.length - 1;
+  updateFrameActionButtons();
 }
 
-async function selectFrame(index) {
+// Cheaper than renderFrameStrip() for a plain selection change (no frame added/removed/moved) —
+// re-decoding and re-appending every thumbnail just to shift which one has the "selected" border
+// gets expensive once a project has many frames.
+function updateFrameStripSelection() {
+  frameStripEl.querySelectorAll('.frame-thumb').forEach((el, i) => {
+    el.classList.toggle('selected', i === currentFrameIndex);
+  });
+  updateFrameActionButtons();
+}
+
+async function selectFrame(index, { rebuildStrip = false } = {}) {
   if (index < 0 || index >= frames.length || index === currentFrameIndex) return;
   currentFrameIndex = index;
   undoStack = [];
   updateUndoBtn();
   await renderCurrentFrame();
-  renderFrameStrip();
+  if (rebuildStrip) renderFrameStrip();
+  else updateFrameStripSelection();
   saveProject();
 }
 
 // --- Frame actions ---
 addFrameBtn.addEventListener('click', async () => {
   frames.splice(currentFrameIndex + 1, 0, { dataUrl: BLANK_FRAME });
-  await selectFrame(currentFrameIndex + 1);
-  renderFrameStrip();
+  await selectFrame(currentFrameIndex + 1, { rebuildStrip: true });
 });
 
 duplicateFrameBtn.addEventListener('click', async () => {
   frames.splice(currentFrameIndex + 1, 0, { dataUrl: frames[currentFrameIndex].dataUrl });
-  await selectFrame(currentFrameIndex + 1);
-  renderFrameStrip();
+  await selectFrame(currentFrameIndex + 1, { rebuildStrip: true });
 });
 
 moveFrameLeftBtn.addEventListener('click', async () => {
@@ -185,6 +211,8 @@ moveFrameLeftBtn.addEventListener('click', async () => {
   const i = currentFrameIndex;
   [frames[i - 1], frames[i]] = [frames[i], frames[i - 1]];
   currentFrameIndex = i - 1;
+  undoStack = [];
+  updateUndoBtn();
   await renderCurrentFrame();
   renderFrameStrip();
   saveProject();
@@ -195,6 +223,8 @@ moveFrameRightBtn.addEventListener('click', async () => {
   const i = currentFrameIndex;
   [frames[i], frames[i + 1]] = [frames[i + 1], frames[i]];
   currentFrameIndex = i + 1;
+  undoStack = [];
+  updateUndoBtn();
   await renderCurrentFrame();
   renderFrameStrip();
   saveProject();
