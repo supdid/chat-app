@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Stick Fighter · Valk</title>
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="stickfighter.css">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#071018">
+<link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+</head>
+<body>
+
+  <a id="back-link" href="index.html">&larr; Back to chat</a>
+
+  <div id="menu">
+    <div class="panel">
+      <h1>Stick Fighter</h1>
+      <p class="tagline">A one-on-one stick-figure brawl. Beat an opponent and a tougher one steps up — see how many rounds in a row you can survive.</p>
+      <button id="start-btn" class="primary">Start Fighting</button>
+      <ul class="controls-list" id="controls-list-desktop">
+        <li><strong>A / D</strong> or <strong>← / →</strong> — move</li>
+        <li><strong>W</strong> or <strong>Space</strong> — jump</li>
+        <li><strong>J</strong> — punch (fast, short range)</li>
+        <li><strong>K</strong> — kick (slower, longer range, hits harder)</li>
+        <li><strong>L</strong> (hold) — block, cuts incoming damage a lot but you can't attack</li>
+      </ul>
+      <ul class="controls-list hidden" id="controls-list-touch">
+        <li>The joystick on the left moves and jumps (drag up)</li>
+        <li>👊 punches, 🦵 kicks, 🛡️ (hold) blocks</li>
+      </ul>
+    </div>
+  </div>
+
+  <div id="hud" class="hidden">
+    <div id="hud-top">
+      <div id="streak-label">Streak: 0</div>
+      <div id="best-label">Best: 0</div>
+      <button id="sound-toggle-btn" class="icon-btn" aria-label="Toggle sound">🔊</button>
+      <button id="leaderboard-btn" class="icon-btn" aria-label="Leaderboard">🏆</button>
+    </div>
+    <div id="hp-row">
+      <div class="hp-block">
+        <span class="hp-name" id="player-name-label">You</span>
+        <div class="hp-bar"><div id="player-hp-fill" class="hp-fill player"></div></div>
+      </div>
+      <div id="vs-label">VS</div>
+      <div class="hp-block">
+        <span class="hp-name" id="opponent-name-label">Opponent</span>
+        <div class="hp-bar"><div id="opponent-hp-fill" class="hp-fill opponent"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="leaderboard-overlay" class="hidden">
+    <div class="panel">
+      <div class="panel-header">
+        <h2>🏆 Leaderboard</h2>
+        <button id="leaderboard-close-btn" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+      <ul id="leaderboard-list" class="controls-list"></ul>
+    </div>
+  </div>
+
+  <div id="gameover-overlay" class="hidden">
+    <div class="panel">
+      <h2 id="gameover-text">Knocked out!</h2>
+      <p id="gameover-sub" class="tagline"></p>
+      <button id="restart-btn" class="primary">Fight Again</button>
+    </div>
+  </div>
+
+  <canvas id="game-canvas" class="hidden"></canvas>
+
+  <div id="touch-controls" class="hidden">
+    <div id="touch-joystick"><div id="touch-joystick-knob"></div></div>
+    <button id="touch-punch" class="touch-btn" aria-label="Punch">👊</button>
+    <button id="touch-kick" class="touch-btn" aria-label="Kick">🦵</button>
+    <button id="touch-block" class="touch-btn" aria-label="Block">🛡️</button>
+  </div>
+
+  <script src="error-report.js"></script>
+  <script src="stickfighter.js"></script>
+  <script src="update-prompt.js"></script>
+</body>
+</html>

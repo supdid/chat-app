@@ -2933,13 +2933,13 @@ function leaveBb(ws) {
 // since the server already knows every duel/match outcome, so it gets its own dedicated
 // bb-winstreak-leaderboard request/response instead of riding this generic protocol.
 const ARCADE_LEADERBOARD_KEY = {
-  snake: 'snake', '2048': 'g2048', fighterplane: 'fighterplane',
+  snake: 'snake', '2048': 'g2048', fighterplane: 'fighterplane', stickfighter: 'stickfighter',
   bbwave: 'bbwave', bbfs: 'bbfs', bboneshot: 'bboneshot', bbheadhunter: 'bbheadhunter',
   bbjuggernaut: 'bbjuggernaut', bbberserker: 'bbberserker', bbvampire: 'bbvampire', bbswarm: 'bbswarm',
   bblevel: 'bblevel', bbplaytime: 'bbplaytime',
 };
 const ARCADE_ACTIVITY_CODE = {
-  snake: 'sk', '2048': 'tf', fighterplane: 'fp',
+  snake: 'sk', '2048': 'tf', fighterplane: 'fp', stickfighter: 'sf',
   bbwave: 'bb', bbfs: 'bb', bboneshot: 'bb', bbheadhunter: 'bb',
   bbjuggernaut: 'bb', bbberserker: 'bb', bbvampire: 'bb', bbswarm: 'bb',
   bblevel: 'bb', bbplaytime: 'bb',

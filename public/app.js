@@ -66,6 +66,7 @@ const buildcraftLink = document.getElementById('buildcraft-link');
 const geometrywaveLink = document.getElementById('geometrywave-link');
 const seincejumpLink = document.getElementById('seincejump-link');
 const fighterplaneLink = document.getElementById('fighterplane-link');
+const stickfighterLink = document.getElementById('stickfighter-link');
 const firefightLink = document.getElementById('firefight-link');
 const blockbattleLink = document.getElementById('blockbattle-link');
 const pictionaryLink = document.getElementById('pictionary-link');
@@ -271,7 +272,7 @@ let activeReactionPopover = null;
 
 // --- Minigame activity badges ---
 const roomActivity = new Map(); // name -> game code ('bc'|'gw'|'dg')
-const ACTIVITY_BADGES = { bc: '🏝️', gw: '🔺', dg: '🖍️', wb: '🖌️', tv: '❓', tt: '⭕', ch: '♟️', hm: '🪢', sk: '🐍', tf: '🔢', fp: '🛩️', sw: '🕸️', fg: '🔫', wg: '🟩' };
+const ACTIVITY_BADGES = { bc: '🏝️', gw: '🔺', dg: '🖍️', wb: '🖌️', tv: '❓', tt: '⭕', ch: '♟️', hm: '🪢', sk: '🐍', tf: '🔢', fp: '🛩️', sw: '🕸️', fg: '🔫', wg: '🟩', sf: '🥊' };
 let lastRoomUsers = [];
 // Found by the room-chat client-side correctness audit: tracks the single currently-open message
 // edit form ({ messageId, restore }), so starting a second edit can auto-cancel the first instead
@@ -2516,6 +2517,7 @@ function updateGameLinks() {
   geometrywaveLink.href = `geometrywave.html${params}`;
   seincejumpLink.href = `seince-jump.html${params}`;
   fighterplaneLink.href = `fighterplane.html${params}`;
+  stickfighterLink.href = `stickfighter.html${params}`;
   firefightLink.href = `firefight.html${params}`;
   blockbattleLink.href = `blockbattle.html${params}`;
   pictionaryLink.href = `pictionary.html${params}`;
