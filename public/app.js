@@ -79,6 +79,7 @@ const snakeLink = document.getElementById('snake-link');
 const g2048Link = document.getElementById('g2048-link');
 const whiteboardLink = document.getElementById('whiteboard-link');
 const flipbookLink = document.getElementById('flipbook-link');
+const helloLink = document.getElementById('hello-link');
 const micBtn = document.getElementById('mic-btn');
 const voiceClipBtn = document.getElementById('voice-clip-btn');
 const stickerBtn = document.getElementById('sticker-btn');
@@ -272,7 +273,7 @@ let activeReactionPopover = null;
 
 // --- Minigame activity badges ---
 const roomActivity = new Map(); // name -> game code ('bc'|'gw'|'dg')
-const ACTIVITY_BADGES = { bc: '🏝️', gw: '🔺', dg: '🖍️', wb: '🖌️', tv: '❓', tt: '⭕', ch: '♟️', hm: '🪢', sk: '🐍', tf: '🔢', fp: '🛩️', sw: '🕸️', fg: '🔫', wg: '🟩', sf: '🥊' };
+const ACTIVITY_BADGES = { bc: '🏝️', gw: '🔺', dg: '🖍️', wb: '🖌️', tv: '❓', tt: '⭕', ch: '♟️', hm: '🪢', sk: '🐍', tf: '🔢', fp: '🛩️', sw: '🕸️', fg: '🔫', wg: '🟩', sf: '🥊', he: '👋' };
 let lastRoomUsers = [];
 // Found by the room-chat client-side correctness audit: tracks the single currently-open message
 // edit form ({ messageId, restore }), so starting a second edit can auto-cancel the first instead
@@ -2530,6 +2531,7 @@ function updateGameLinks() {
   g2048Link.href = `2048.html${params}`;
   whiteboardLink.href = `whiteboard.html${params}`;
   flipbookLink.href = `flipbook.html${params}`;
+  helloLink.href = `hello.html${params}`;
 }
 
 // --- Recent rooms (localStorage by default — this app has no stable per-person identity across
