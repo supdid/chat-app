@@ -2324,6 +2324,9 @@ app.post('/api/scorpture/turn-credentials', async (req, res) => {
 // LIVE badge, viewer count and live chat all just work. HLS paths are keyed by account id and
 // served by username, never by stream key, so watching can't leak the key.
 const RTMP_PORT = Number(process.env.RTMP_PORT ?? 1935);
+// Address OBS should connect to when it isn't on this machine. Defaults to the first non-loopback
+// IPv4 (a LAN address at home, the public IP on a cloud server); override if that guess is wrong.
+const RTMP_PUBLIC_HOST = process.env.RTMP_PUBLIC_HOST || '';
 const HLS_ROOT = path.join(__dirname, 'live-hls');
 const obsSessions = new Map(); // rtmp session id -> { accountId, ffmpeg }
 
@@ -2351,7 +2354,7 @@ app.get('/api/scorpture/stream-key', (req, res) => {
     streamKey: info.key,
     title: info.title,
     rtmpEnabled: RTMP_PORT > 0,
-    serverUrl: `rtmp://${lanAddress()}:${RTMP_PORT}/live`,
+    serverUrl: `rtmp://${RTMP_PUBLIC_HOST || lanAddress()}:${RTMP_PORT}/live`,
     localServerUrl: `rtmp://localhost:${RTMP_PORT}/live`,
     obsLive: !!(stream && stream.obs),
   });

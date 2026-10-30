@@ -1598,6 +1598,9 @@ async function renderStreamKeyPage() {
     return;
   }
   if (myToken !== routeToken) return;
+  // Opened on the machine Valk runs on (localhost) → OBS is probably on it too; opened through a
+  // real domain → OBS has to reach the server's public address instead.
+  const onValkMachine = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
   appEl.innerHTML = `
     <div class="stream-key-page">
       <h1>🎛️ Stream with OBS Studio</h1>
@@ -1610,10 +1613,12 @@ async function renderStreamKeyPage() {
         </div>
         <label>Server</label>
         <div class="stream-key-row">
-          <input id="obs-server-input" type="text" readonly value="${escapeHtml(info.localServerUrl)}">
+          <input id="obs-server-input" type="text" readonly value="${escapeHtml(onValkMachine ? info.localServerUrl : info.serverUrl)}">
           <button class="pill-btn copy-btn" data-copy="obs-server-input">Copy</button>
         </div>
-        <p class="stream-key-hint">Use <code>${escapeHtml(info.localServerUrl)}</code> if OBS is on this same computer, or <code>${escapeHtml(info.serverUrl)}</code> from another computer on the same Wi-Fi.</p>
+        <p class="stream-key-hint">${onValkMachine
+          ? `Use <code>${escapeHtml(info.localServerUrl)}</code> if OBS is on this same computer, or <code>${escapeHtml(info.serverUrl)}</code> from another computer on the same Wi-Fi.`
+          : 'Paste this into OBS on any computer.'}</p>
         <label>Stream key <span class="stream-key-warn">— keep this secret!</span></label>
         <div class="stream-key-row">
           <input id="obs-key-input" type="password" readonly value="${escapeHtml(info.streamKey)}">
