@@ -578,7 +578,18 @@ async function renderChannel(username) {
         ` : ''}
       </div>
       <div>
-        <div class="channel-header-name">${escapeHtml(channel.username)}${verifiedBadgeHtml(channel.verified)}${channel.live ? ' <span class="live-dot">🔴 LIVE</span>' : ''}</div>
+        <div class="channel-header-name-row" id="channel-username-view">
+          <span class="channel-header-name">${escapeHtml(channel.username)}${verifiedBadgeHtml(channel.verified)}${channel.live ? ' <span class="live-dot">🔴 LIVE</span>' : ''}</span>
+          ${channel.isOwner ? `<button id="edit-username-btn" class="pill-btn small" type="button" title="Change username">✏️</button>` : ''}
+        </div>
+        ${channel.isOwner ? `
+          <form id="channel-username-edit" class="channel-username-edit hidden">
+            <input id="channel-username-input" type="text" maxlength="20" pattern="[a-zA-Z0-9_]{3,20}" value="${escapeHtml(channel.username)}">
+            <button type="submit" class="pill-btn small">Save</button>
+            <button type="button" id="cancel-username-btn" class="pill-btn ghost small">Cancel</button>
+          </form>
+          <div class="channel-username-error hidden" id="channel-username-error"></div>
+        ` : ''}
         <div class="channel-header-subs" id="channel-sub-count">${formatCount(channel.subscriberCount)} subscribers</div>
       </div>
       ${channel.isOwner ? `<a href="#/stream-key" class="pill-btn" style="margin-left:auto">🎛️ OBS stream key</a><a href="#/overlays" class="pill-btn">⚙️ Stream overlays</a>` : `<button id="channel-subscribe-btn" class="pill-btn subscribe-btn${channel.subscribed ? ' subscribed' : ''}" style="margin-left:auto">${channel.subscribed ? 'Subscribed' : 'Subscribe'}</button>`}
@@ -671,6 +682,46 @@ async function renderChannel(username) {
         viewEl.classList.remove('hidden');
       } catch (err) {
         showToast(err.message);
+      }
+    });
+  }
+
+  const editUsernameBtn = document.getElementById('edit-username-btn');
+  if (editUsernameBtn) {
+    const viewEl = document.getElementById('channel-username-view');
+    const formEl = document.getElementById('channel-username-edit');
+    const input = document.getElementById('channel-username-input');
+    const errorEl = document.getElementById('channel-username-error');
+    const closeEdit = () => {
+      formEl.classList.add('hidden');
+      viewEl.classList.remove('hidden');
+      errorEl.classList.add('hidden');
+    };
+    editUsernameBtn.addEventListener('click', () => {
+      viewEl.classList.add('hidden');
+      formEl.classList.remove('hidden');
+      input.value = channel.username;
+      input.focus();
+      input.select();
+    });
+    document.getElementById('cancel-username-btn').addEventListener('click', closeEdit);
+    formEl.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const newUsername = input.value.trim();
+      errorEl.classList.add('hidden');
+      if (newUsername === channel.username) { closeEdit(); return; }
+      try {
+        const result = await api('/account/username', { method: 'POST', body: JSON.stringify({ username: newUsername }) });
+        // Same rename this account's main-page account settings does (see app.js's
+        // accountUsernameForm handler) — keep localStorage's cached username in sync so the
+        // main chat page picks up the new name without waiting on its own /auth/me refetch.
+        try { localStorage.setItem('valk-account-username', result.username); } catch {}
+        if (currentAccount) { currentAccount.username = result.username; renderAccountArea(); }
+        showToast(`✏️ Username changed to ${result.username}`);
+        location.hash = `#/channel?u=${encodeURIComponent(result.username)}`;
+      } catch (err) {
+        errorEl.textContent = err.message;
+        errorEl.classList.remove('hidden');
       }
     });
   }
@@ -1512,57 +1563,6 @@ function renderWatchLive(username) {
   enableLiveChat();
 }
 
-// ---- Live chat — a single floating box fixed to the screen (#live-chat-widget in videos.html,
-// wired once below), not something baked into the watch-live page or the Go Live dialog. Its
-// availability tracks whichever of broadcastState/watchState is active — see enableLiveChat/
-// disableLiveChat, called from startGoLive/endGoLive and renderWatchLive/stopWatching.
-
-function enableLiveChat() {
-  liveChatMessagesEl.innerHTML = '';
-  liveChatToggleBtn.classList.remove('hidden');
-  liveChatWidget.classList.remove('hidden');
-  liveChatInput.placeholder = currentAccount ? 'Say something…' : 'Sign in to chat';
-}
-
-function disableLiveChat() {
-  liveChatToggleBtn.classList.add('hidden');
-  liveChatWidget.classList.add('hidden');
-}
-
-liveChatToggleBtn.addEventListener('click', () => liveChatWidget.classList.toggle('hidden'));
-liveChatWidgetCloseBtn.addEventListener('click', () => liveChatWidget.classList.add('hidden'));
-
-// Whichever live chat is currently active — watching someone else's stream (watchState) takes
-// precedence since you can't watch your own stream in the same tab you're broadcasting from
-// (see the comment above renderWatchLive's own-stream branch), so the two states are already mutually exclusive; this
-// just picks whichever one is actually set.
-function currentLiveChatUsername() {
-  if (watchState) return watchState.username;
-  if (broadcastState && currentAccount) return currentAccount.username;
-  return null;
-}
-
-// Opens the chat in a genuine separate OS browser window (not another in-page widget) so it can
-// be dragged/resized independently of this tab — including down to something tiny, the way
-// Twitch's "pop out chat" works. Same-origin, so it shares localStorage (account token) with
-// this tab automatically; only the streamer's username needs to cross via the URL.
-liveChatPopoutBtn.addEventListener('click', () => {
-  const username = currentLiveChatUsername();
-  if (!username) return;
-  window.open(
-    `livechat.html?u=${encodeURIComponent(username)}`,
-    `valk-livechat-${username}`,
-    'width=320,height=420,resizable=yes'
-  );
-});
-
-// Drag the chat box anywhere on screen by its header — starts pinned bottom-right (via CSS), but
-// the first drag switches it to explicit left/top positioning so it can go wherever you drop it.
-// Clamped to the viewport so it can never end up dragged fully off-screen and unreachable.
-function makeDraggable(handleEl, widgetEl) {
-  let dragging = false, offsetX = 0, offsetY = 0;
-
-  function start(clientX, clientY) {
 function playHlsStream(url) {
   const player = document.getElementById('live-player');
   if (!player || !watchState) return;
@@ -1663,6 +1663,57 @@ async function renderStreamKeyPage() {
   });
 }
 
+// ---- Live chat — a single floating box fixed to the screen (#live-chat-widget in videos.html,
+// wired once below), not something baked into the watch-live page or the Go Live dialog. Its
+// availability tracks whichever of broadcastState/watchState is active — see enableLiveChat/
+// disableLiveChat, called from startGoLive/endGoLive and renderWatchLive/stopWatching.
+
+function enableLiveChat() {
+  liveChatMessagesEl.innerHTML = '';
+  liveChatToggleBtn.classList.remove('hidden');
+  liveChatWidget.classList.remove('hidden');
+  liveChatInput.placeholder = currentAccount ? 'Say something…' : 'Sign in to chat';
+}
+
+function disableLiveChat() {
+  liveChatToggleBtn.classList.add('hidden');
+  liveChatWidget.classList.add('hidden');
+}
+
+liveChatToggleBtn.addEventListener('click', () => liveChatWidget.classList.toggle('hidden'));
+liveChatWidgetCloseBtn.addEventListener('click', () => liveChatWidget.classList.add('hidden'));
+
+// Whichever live chat is currently active — watching someone else's stream (watchState) takes
+// precedence since you can't watch your own stream in the same tab you're broadcasting from
+// (see the comment above renderWatchLive's own-stream branch), so the two states are already mutually exclusive; this
+// just picks whichever one is actually set.
+function currentLiveChatUsername() {
+  if (watchState) return watchState.username;
+  if (broadcastState && currentAccount) return currentAccount.username;
+  return null;
+}
+
+// Opens the chat in a genuine separate OS browser window (not another in-page widget) so it can
+// be dragged/resized independently of this tab — including down to something tiny, the way
+// Twitch's "pop out chat" works. Same-origin, so it shares localStorage (account token) with
+// this tab automatically; only the streamer's username needs to cross via the URL.
+liveChatPopoutBtn.addEventListener('click', () => {
+  const username = currentLiveChatUsername();
+  if (!username) return;
+  window.open(
+    `livechat.html?u=${encodeURIComponent(username)}`,
+    `valk-livechat-${username}`,
+    'width=320,height=420,resizable=yes'
+  );
+});
+
+// Drag the chat box anywhere on screen by its header — starts pinned bottom-right (via CSS), but
+// the first drag switches it to explicit left/top positioning so it can go wherever you drop it.
+// Clamped to the viewport so it can never end up dragged fully off-screen and unreachable.
+function makeDraggable(handleEl, widgetEl) {
+  let dragging = false, offsetX = 0, offsetY = 0;
+
+  function start(clientX, clientY) {
     dragging = true;
     const rect = widgetEl.getBoundingClientRect();
     offsetX = clientX - rect.left;
@@ -1737,6 +1788,10 @@ function handleWatchAck(data) {
   if (!data.live) {
     watchState.pc.close();
     watchState = null;
+  } else if (data.obs) {
+    // OBS stream — no WebRTC peer on the other end, play the server's HLS feed instead.
+    watchState.pc.close();
+    playHlsStream(data.hlsUrl);
   }
   const titleEl = document.getElementById('live-title');
   if (!titleEl) return;
@@ -1788,10 +1843,6 @@ async function handleSignal(data) {
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         wsSend({ type: 'scorpture-signal', signal: { kind: 'answer', sdp: pc.localDescription.sdp } });
-  } else if (data.obs) {
-    // OBS stream — no WebRTC peer on the other end, play the server's HLS feed instead.
-    watchState.pc.close();
-    playHlsStream(data.hlsUrl);
       } else if (data.signal.kind === 'ice') {
         queueOrAddIceCandidate(pc, data.signal.candidate);
       }
@@ -1820,6 +1871,7 @@ function stopWatching() {
   if (!watchState) return;
   wsSend({ type: 'scorpture-leave-live' });
   watchState.pc.close();
+  if (watchState.hls) watchState.hls.destroy();
   watchState = null;
   if (!broadcastState) disableLiveChat();
 }
@@ -1847,6 +1899,8 @@ function hideGoLiveModal() {
   if (broadcastState) showLiveMiniWidget();
 }
 
+document.getElementById('golive-obs-link').addEventListener('click', () => hideGoLiveModal());
+
 function showLiveMiniWidget() {
   if (!broadcastState) return;
   liveMiniVideo.srcObject = broadcastState.localStream;
@@ -1871,7 +1925,6 @@ goLiveBtn.addEventListener('click', () => {
   goLiveModal.classList.remove('hidden');
 });
 
-  if (watchState.hls) watchState.hls.destroy();
 goLiveCloseBtn.addEventListener('click', hideGoLiveModal);
 
 liveMiniExpandBtn.addEventListener('click', () => {
@@ -1899,8 +1952,6 @@ const scorptureAdminModal = document.getElementById('scorpture-admin-modal');
 const scorptureAdminCloseBtn = document.getElementById('scorpture-admin-close-btn');
 const scorptureAdminBonusInput = document.getElementById('scorpture-admin-bonus-input');
 const scorptureAdminStatusEl = document.getElementById('scorpture-admin-status');
-document.getElementById('golive-obs-link').addEventListener('click', () => hideGoLiveModal());
-
 const scorptureAdminSaveBtn = document.getElementById('scorpture-admin-save-btn');
 
 logoLink.addEventListener('contextmenu', async (e) => {
