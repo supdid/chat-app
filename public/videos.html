@@ -84,7 +84,7 @@
           <button id="golive-camera-btn" class="pill-btn">📷 Camera</button>
           <button id="golive-screen-btn" class="pill-btn">🖥️ Share screen</button>
         </div>
-        <p class="hint" id="golive-obs-hint">Want to use OBS Studio instead? <a href="#/stream-key" id="golive-obs-link">Get your stream key →</a></p>
+        <p class="hint" id="golive-obs-hint">Want to use OBS Studio instead? <a href="#/stream-key" id="golive-obs-link" class="open-stream-key">Get your stream key →</a></p>
         <div id="golive-status"></div>
         <div id="golive-live-controls" class="hidden">
           <span id="golive-viewer-count">0 watching</span>
@@ -94,6 +94,16 @@
         </div>
         <p class="hint">Chat is available as a floating box on screen — see the 💬 button once you're live.</p>
       </div>
+    </div>
+  </div>
+
+  <div id="streamkey-modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2>🎛️ Your OBS stream key</h2>
+        <button id="streamkey-close-btn" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+      <div id="streamkey-modal-body" class="streamkey-modal-body"></div>
     </div>
   </div>
 

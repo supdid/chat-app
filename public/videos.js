@@ -592,7 +592,7 @@ async function renderChannel(username) {
         ` : ''}
         <div class="channel-header-subs" id="channel-sub-count">${formatCount(channel.subscriberCount)} subscribers</div>
       </div>
-      ${channel.isOwner ? `<a href="#/stream-key" class="pill-btn" style="margin-left:auto">🎛️ OBS stream key</a><a href="#/overlays" class="pill-btn">⚙️ Stream overlays</a>` : `<button id="channel-subscribe-btn" class="pill-btn subscribe-btn${channel.subscribed ? ' subscribed' : ''}" style="margin-left:auto">${channel.subscribed ? 'Subscribed' : 'Subscribe'}</button>`}
+      ${channel.isOwner ? `<a href="#/stream-key" class="pill-btn open-stream-key" style="margin-left:auto">🎛️ OBS stream key</a><a href="#/overlays" class="pill-btn">⚙️ Stream overlays</a>` : `<button id="channel-subscribe-btn" class="pill-btn subscribe-btn${channel.subscribed ? ' subscribed' : ''}" style="margin-left:auto">${channel.subscribed ? 'Subscribed' : 'Subscribe'}</button>`}
     </div>
     ${channel.isOwner || channel.description ? `
       <div class="channel-description" id="channel-description-wrap">
@@ -1667,6 +1667,70 @@ async function renderStreamKeyPage() {
     } catch (err) { alert(err.message); }
   });
 }
+
+// ---------- OBS stream key pop-up — the quick way to grab your key: opens straight from the
+// channel page's "OBS stream key" button (or the Go Live dialog's link) with the key already
+// visible, then dismiss it. The full #/stream-key page (setup steps, title) is still a link away.
+const streamKeyModal = document.getElementById('streamkey-modal');
+const streamKeyModalBody = document.getElementById('streamkey-modal-body');
+
+function closeStreamKeyModal() {
+  streamKeyModal.classList.add('hidden');
+  streamKeyModalBody.innerHTML = ''; // don't leave the key sitting in the page once dismissed
+}
+
+async function openStreamKeyModal() {
+  if (!currentAccount && getToken()) await refreshAccount();
+  if (!requireAccount()) return;
+  streamKeyModalBody.innerHTML = '<p class="stream-key-hint">Loading…</p>';
+  streamKeyModal.classList.remove('hidden');
+  let info;
+  try {
+    info = await api('/api/scorpture/stream-key');
+  } catch (err) {
+    streamKeyModalBody.innerHTML = `<p class="stream-key-hint">${escapeHtml(err.message)}</p>`;
+    return;
+  }
+  if (streamKeyModal.classList.contains('hidden')) return; // dismissed while loading
+  const onValkMachine = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+  streamKeyModalBody.innerHTML = `
+    <label>Server</label>
+    <div class="stream-key-row">
+      <input id="popup-server-input" type="text" readonly value="${escapeHtml(onValkMachine ? info.localServerUrl : info.serverUrl)}">
+      <button class="pill-btn popup-copy-btn" data-copy="popup-server-input">Copy</button>
+    </div>
+    <label>Stream key <span class="stream-key-warn">— keep this secret!</span></label>
+    <div class="stream-key-row">
+      <input id="popup-key-input" type="text" readonly value="${escapeHtml(info.streamKey)}">
+      <button class="pill-btn popup-copy-btn" data-copy="popup-key-input">Copy</button>
+    </div>
+    <p class="stream-key-hint">In OBS: Settings → Stream → Service: <b>Custom...</b> → paste both → OK → Start Streaming.</p>
+    <div class="stream-key-row">
+      <button id="popup-done-btn" class="pill-btn">Done</button>
+      <a href="#/stream-key" id="popup-more-link" class="pill-btn ghost">More settings &amp; help</a>
+    </div>
+  `;
+  streamKeyModalBody.querySelectorAll('.popup-copy-btn').forEach((btn) => btn.addEventListener('click', async () => {
+    const input = document.getElementById(btn.dataset.copy);
+    try { await navigator.clipboard.writeText(input.value); } catch { input.select(); document.execCommand('copy'); }
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+  }));
+  document.getElementById('popup-done-btn').addEventListener('click', closeStreamKeyModal);
+  document.getElementById('popup-more-link').addEventListener('click', closeStreamKeyModal);
+}
+
+document.addEventListener('click', (e) => {
+  const link = e.target.closest('.open-stream-key');
+  if (!link) return;
+  e.preventDefault();
+  openStreamKeyModal();
+});
+document.getElementById('streamkey-close-btn').addEventListener('click', closeStreamKeyModal);
+streamKeyModal.addEventListener('click', (e) => { if (e.target === streamKeyModal) closeStreamKeyModal(); });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !streamKeyModal.classList.contains('hidden')) closeStreamKeyModal();
+});
 
 // ---- Live chat — a single floating box fixed to the screen (#live-chat-widget in videos.html,
 // wired once below), not something baked into the watch-live page or the Go Live dialog. Its
