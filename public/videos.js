@@ -202,6 +202,7 @@ async function route() {
   if (name === 'live') return renderLive();
   if (name === 'watch-live') return renderWatchLive(params.get('u'));
   if (name === 'overlays') return renderOverlaysPage();
+  if (name === 'stream-key') return renderStreamKeyPage();
   if (name === 'subscriptions') return renderSubscriptionsFeed();
   return renderHome('', params.get('category') || '');
 }
@@ -580,7 +581,7 @@ async function renderChannel(username) {
         <div class="channel-header-name">${escapeHtml(channel.username)}${verifiedBadgeHtml(channel.verified)}${channel.live ? ' <span class="live-dot">🔴 LIVE</span>' : ''}</div>
         <div class="channel-header-subs" id="channel-sub-count">${formatCount(channel.subscriberCount)} subscribers</div>
       </div>
-      ${channel.isOwner ? `<a href="#/overlays" class="pill-btn" style="margin-left:auto">⚙️ Stream overlays</a>` : `<button id="channel-subscribe-btn" class="pill-btn subscribe-btn${channel.subscribed ? ' subscribed' : ''}" style="margin-left:auto">${channel.subscribed ? 'Subscribed' : 'Subscribe'}</button>`}
+      ${channel.isOwner ? `<a href="#/stream-key" class="pill-btn" style="margin-left:auto">🎛️ OBS stream key</a><a href="#/overlays" class="pill-btn">⚙️ Stream overlays</a>` : `<button id="channel-subscribe-btn" class="pill-btn subscribe-btn${channel.subscribed ? ' subscribed' : ''}" style="margin-left:auto">${channel.subscribed ? 'Subscribed' : 'Subscribe'}</button>`}
     </div>
     ${channel.isOwner || channel.description ? `
       <div class="channel-description" id="channel-description-wrap">
@@ -1562,6 +1563,106 @@ function makeDraggable(handleEl, widgetEl) {
   let dragging = false, offsetX = 0, offsetY = 0;
 
   function start(clientX, clientY) {
+function playHlsStream(url) {
+  const player = document.getElementById('live-player');
+  if (!player || !watchState) return;
+  if (window.Hls && Hls.isSupported()) {
+    const hls = new Hls({ liveSyncDurationCount: 2, manifestLoadingMaxRetry: 10, levelLoadingMaxRetry: 10, fragLoadingMaxRetry: 10 });
+    watchState.hls = hls;
+    hls.loadSource(url);
+    hls.attachMedia(player);
+    hls.on(Hls.Events.ERROR, (_e, info) => {
+      if (!info.fatal) return;
+      if (info.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
+      else if (info.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+    });
+  } else {
+    player.src = url; // Safari plays HLS natively
+  }
+  player.play().catch(() => {});
+}
+
+// ---------- OBS stream key page (#/stream-key) ----------
+async function renderStreamKeyPage() {
+  const myToken = routeToken;
+  // Opened directly (e.g. a bookmarked link), the page's initial refreshAccount() may not have
+  // finished yet — wait for it instead of bouncing a signed-in user back to home.
+  if (!currentAccount && getToken()) await refreshAccount();
+  if (myToken !== routeToken) return;
+  if (!requireAccount()) { location.hash = '#/'; return; }
+  let info;
+  try {
+    info = await api('/api/scorpture/stream-key');
+  } catch (err) {
+    appEl.innerHTML = `<p class="stream-key-hint">${escapeHtml(err.message)}</p>`;
+    return;
+  }
+  if (myToken !== routeToken) return;
+  appEl.innerHTML = `
+    <div class="stream-key-page">
+      <h1>🎛️ Stream with OBS Studio</h1>
+      <p class="stream-key-status">${info.obsLive ? '🔴 You are live from OBS right now!' : 'Not streaming from OBS right now.'}</p>
+      <div class="stream-key-card">
+        <label>Stream title (shown to viewers)</label>
+        <div class="stream-key-row">
+          <input id="obs-title-input" type="text" maxlength="100" placeholder="What are you streaming?" value="${escapeHtml(info.title)}">
+          <button id="obs-title-save" class="pill-btn">Save</button>
+        </div>
+        <label>Server</label>
+        <div class="stream-key-row">
+          <input id="obs-server-input" type="text" readonly value="${escapeHtml(info.localServerUrl)}">
+          <button class="pill-btn copy-btn" data-copy="obs-server-input">Copy</button>
+        </div>
+        <p class="stream-key-hint">Use <code>${escapeHtml(info.localServerUrl)}</code> if OBS is on this same computer, or <code>${escapeHtml(info.serverUrl)}</code> from another computer on the same Wi-Fi.</p>
+        <label>Stream key <span class="stream-key-warn">— keep this secret!</span></label>
+        <div class="stream-key-row">
+          <input id="obs-key-input" type="password" readonly value="${escapeHtml(info.streamKey)}">
+          <button id="obs-key-show" class="pill-btn ghost">Show</button>
+          <button class="pill-btn copy-btn" data-copy="obs-key-input">Copy</button>
+        </div>
+        <button id="obs-key-reset" class="pill-btn ghost danger-text">🔄 Reset stream key</button>
+      </div>
+      <div class="stream-key-card">
+        <h2>How to set up OBS</h2>
+        <ol class="stream-key-steps">
+          <li>Open OBS Studio → <b>Settings</b> → <b>Stream</b>.</li>
+          <li>Set <b>Service</b> to <b>Custom...</b></li>
+          <li>Paste the <b>Server</b> and <b>Stream Key</b> from above, then click OK.</li>
+          <li>Click <b>Start Streaming</b>. In a few seconds your channel shows 🔴 LIVE.</li>
+          <li>Click <b>Stop Streaming</b> in OBS to end it.</li>
+        </ol>
+        <p class="stream-key-hint">Tip: in OBS Settings → Output, keep the encoder on x264 (or a hardware H.264 encoder) and audio on AAC — those are the defaults.</p>
+        ${info.obsLive ? `<a class="pill-btn" href="#/watch-live?u=${encodeURIComponent(currentAccount.username)}">Watch your stream + chat</a>` : ''}
+      </div>
+    </div>
+  `;
+  appEl.querySelectorAll('.copy-btn').forEach((btn) => btn.addEventListener('click', async () => {
+    const input = document.getElementById(btn.dataset.copy);
+    try { await navigator.clipboard.writeText(input.value); } catch { input.type = 'text'; input.select(); document.execCommand('copy'); }
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+  }));
+  document.getElementById('obs-key-show').addEventListener('click', (e) => {
+    const input = document.getElementById('obs-key-input');
+    input.type = input.type === 'password' ? 'text' : 'password';
+    e.target.textContent = input.type === 'password' ? 'Show' : 'Hide';
+  });
+  document.getElementById('obs-key-reset').addEventListener('click', async () => {
+    if (!confirm('Make a new stream key? The old one stops working right away (and ends a stream using it).')) return;
+    try {
+      const r = await api('/api/scorpture/stream-key/reset', { method: 'POST' });
+      document.getElementById('obs-key-input').value = r.streamKey;
+    } catch (err) { alert(err.message); }
+  });
+  document.getElementById('obs-title-save').addEventListener('click', async (e) => {
+    try {
+      await api('/api/scorpture/stream-key/title', { method: 'POST', body: JSON.stringify({ title: document.getElementById('obs-title-input').value }) });
+      e.target.textContent = 'Saved!';
+      setTimeout(() => { e.target.textContent = 'Save'; }, 1500);
+    } catch (err) { alert(err.message); }
+  });
+}
+
     dragging = true;
     const rect = widgetEl.getBoundingClientRect();
     offsetX = clientX - rect.left;
@@ -1687,6 +1788,10 @@ async function handleSignal(data) {
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         wsSend({ type: 'scorpture-signal', signal: { kind: 'answer', sdp: pc.localDescription.sdp } });
+  } else if (data.obs) {
+    // OBS stream — no WebRTC peer on the other end, play the server's HLS feed instead.
+    watchState.pc.close();
+    playHlsStream(data.hlsUrl);
       } else if (data.signal.kind === 'ice') {
         queueOrAddIceCandidate(pc, data.signal.candidate);
       }
@@ -1766,6 +1871,7 @@ goLiveBtn.addEventListener('click', () => {
   goLiveModal.classList.remove('hidden');
 });
 
+  if (watchState.hls) watchState.hls.destroy();
 goLiveCloseBtn.addEventListener('click', hideGoLiveModal);
 
 liveMiniExpandBtn.addEventListener('click', () => {
@@ -1793,6 +1899,8 @@ const scorptureAdminModal = document.getElementById('scorpture-admin-modal');
 const scorptureAdminCloseBtn = document.getElementById('scorpture-admin-close-btn');
 const scorptureAdminBonusInput = document.getElementById('scorpture-admin-bonus-input');
 const scorptureAdminStatusEl = document.getElementById('scorpture-admin-status');
+document.getElementById('golive-obs-link').addEventListener('click', () => hideGoLiveModal());
+
 const scorptureAdminSaveBtn = document.getElementById('scorpture-admin-save-btn');
 
 logoLink.addEventListener('contextmenu', async (e) => {
