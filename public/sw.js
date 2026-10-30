@@ -1,6 +1,6 @@
 // Bump this on every deploy. Changing it is what makes the browser see sw.js as a new file, which
 // is what puts a worker into the "waiting" state and raises the update screen (see update-prompt.js).
-const CACHE_NAME = 'valk-cache-v257';
+const CACHE_NAME = 'valk-cache-v256';
 const APP_SHELL = [
   '/',
   '/index.html',
@@ -106,7 +106,7 @@ self.addEventListener('push', (event) => {
       icon: '/images/icon-192.png',
       badge: '/images/icon-192.png',
       tag: data.roomCode || 'valk',
-      data: { roomCode: data.roomCode || null, url: typeof data.url === 'string' && data.url.startsWith('/') ? data.url : null },
+      data: { roomCode: data.roomCode || null },
     })
   );
 });
@@ -116,8 +116,7 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const roomCode = event.notification.data && event.notification.data.roomCode;
-  const pageUrl = event.notification.data && event.notification.data.url;
-  const url = roomCode ? `/?room=${encodeURIComponent(roomCode)}` : pageUrl || '/';
+  const url = roomCode ? `/?room=${encodeURIComponent(roomCode)}` : '/';
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
       for (const client of list) {

@@ -1067,13 +1067,6 @@ function handleServerMessage(data) {
       notify(`${data.from} sent you a DM`, data.text);
       break;
 
-    case 'valkmail-new':
-      showAppToast(`📬 New ValkMail from ${data.from}: ${data.subject}`);
-      playNotifySound();
-      notify(`📬 ValkMail from ${data.from}`, data.subject);
-      refreshValkmailBadge();
-      break;
-
     case 'friend-dm-sent':
       showAppToast(`💬 DM sent to ${data.toUsername}`);
       break;
@@ -5250,23 +5243,7 @@ if (SpeechRecognitionCtor) {
 }
 
 // --- Menu ---
-// Unread ValkMail count next to the menu's ValkMail link — refreshed whenever the menu opens.
-const valkmailUnreadBadge = document.getElementById('valkmail-unread-badge');
-async function refreshValkmailBadge() {
-  const token = localStorage.getItem(ACCOUNT_TOKEN_KEY);
-  if (!token) { valkmailUnreadBadge.classList.add('hidden'); return; }
-  try {
-    const res = await fetch('/api/valkmail/unread', { headers: { Authorization: `Bearer ${token}` } });
-    const { unread } = await res.json();
-    valkmailUnreadBadge.textContent = unread;
-    valkmailUnreadBadge.classList.toggle('hidden', !unread);
-  } catch {}
-}
-
-menuBtn.addEventListener('click', () => {
-  menuOverlay.classList.remove('hidden');
-  refreshValkmailBadge();
-});
+menuBtn.addEventListener('click', () => menuOverlay.classList.remove('hidden'));
 menuCloseBtn.addEventListener('click', closeMenu);
 menuOverlay.addEventListener('click', (e) => {
   if (e.target === menuOverlay) closeMenu();
