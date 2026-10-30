@@ -2210,3 +2210,13 @@ button.danger:hover {
     left: max(0.75rem, env(safe-area-inset-left));
   }
 }
+
+.menu-unread-badge {
+  background: #ffd166;
+  color: #1a1200;
+  border-radius: 999px;
+  padding: 0 0.45rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  margin-left: 0.3rem;
+}
