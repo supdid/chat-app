@@ -1124,6 +1124,232 @@ function getAccountFromReq(req) {
   return db.getSessionAccount(token) || null;
 }
 
+// ---- Premium plans ----
+// No real payments yet: a plan only ever gets turned on from the admin panel (/admin/premium/*).
+// premium.html shows these same numbers, fetched from /api/premium/tiers, so this object is the
+// single place to change a price or a perk. Higher tiers include everything below them.
+const TIERS = {
+  hobbyist: {
+    name: 'Hobbyist', badge: '🥉', monthly: 10, annual: 96,
+    roomCapacity: 50, galleryLimit: 150, extraShapes: true, hd: false, batchSize: 4,
+    nameColor: true, bubbleThemes: false, rainbowName: false,
+    permanentRooms: false, animatedWallpaper: false, roomExport: false,
+  },
+  power: {
+    name: 'Power Creator', badge: '🥈', monthly: 30, annual: 288,
+    roomCapacity: 100, galleryLimit: 500, extraShapes: true, hd: true, batchSize: 4,
+    nameColor: true, bubbleThemes: true, rainbowName: false,
+    permanentRooms: true, animatedWallpaper: true, roomExport: true,
+  },
+  studio: {
+    name: 'Studio', badge: '🥇', monthly: 60, annual: 576,
+    roomCapacity: 250, galleryLimit: 2000, extraShapes: true, hd: true, batchSize: 6,
+    nameColor: true, bubbleThemes: true, rainbowName: true,
+    permanentRooms: true, animatedWallpaper: true, roomExport: true,
+  },
+};
+const FREE_PERKS = {
+  name: 'Free', badge: '', monthly: 0, annual: 0,
+  roomCapacity: Number(process.env.FREE_ROOM_CAPACITY ?? 30), galleryLimit: 40, extraShapes: false, hd: false, batchSize: 4,
+  nameColor: false, bubbleThemes: false, rainbowName: false,
+  permanentRooms: false, animatedWallpaper: false, roomExport: false,
+};
+const NAME_COLORS = ['gold', 'rose', 'sky', 'mint', 'violet', 'flame', 'rainbow'];
+const BUBBLE_THEMES = ['galaxy', 'sunset', 'ocean', 'neon', 'candy'];
+const PERMANENT_TIERS = Object.keys(TIERS).filter((t) => TIERS[t].permanentRooms);
+
+function perksFor(accountId) {
+  const p = db.getActivePremium(accountId);
+  return p && TIERS[p.tier] ? TIERS[p.tier] : FREE_PERKS;
+}
+
+// Drops any cosmetic the tier doesn't include, e.g. after an admin downgrades someone.
+function allowedCosmetics(perks, nameColor, bubble) {
+  let color = NAME_COLORS.includes(nameColor) ? nameColor : null;
+  if (!perks.nameColor || (color === 'rainbow' && !perks.rainbowName)) color = null;
+  const theme = perks.bubbleThemes && BUBBLE_THEMES.includes(bubble) ? bubble : null;
+  return { nameColor: color, bubble: theme };
+}
+
+app.get('/api/premium/tiers', (req, res) => {
+  res.json({ tiers: TIERS, free: FREE_PERKS, nameColors: NAME_COLORS, bubbleThemes: BUBBLE_THEMES, payments: false });
+});
+
+app.get('/api/premium/me', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.json({ signedIn: false, tier: null, perks: FREE_PERKS });
+  const p = db.getActivePremium(account.id);
+  res.json({
+    signedIn: true,
+    username: account.username,
+    tier: p ? p.tier : null,
+    until: p ? p.until : null,
+    perks: perksFor(account.id),
+    nameColor: account.premium_name_color || null,
+    bubble: account.premium_bubble || null,
+  });
+});
+
+app.post('/api/premium/cosmetics', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Sign in first' });
+  const perks = perksFor(account.id);
+  if (!perks.nameColor) return res.status(403).json({ error: 'Name colors come with any Premium plan' });
+  const body = req.body || {};
+  const wanted = { nameColor: body.nameColor || null, bubble: body.bubble || null };
+  const ok = allowedCosmetics(perks, wanted.nameColor, wanted.bubble);
+  if (wanted.nameColor && ok.nameColor !== wanted.nameColor) return res.status(403).json({ error: 'That name color needs a higher plan' });
+  if (wanted.bubble && ok.bubble !== wanted.bubble) return res.status(403).json({ error: 'Bubble themes come with Power Creator and Studio' });
+  db.setPremiumCosmetics(account.id, ok.nameColor, ok.bubble);
+  res.json({ ok: true, ...ok });
+});
+
+app.get('/admin/premium', requireAdmin, (req, res) => {
+  res.json({ accounts: db.listPremiumAccounts(), tiers: Object.keys(TIERS) });
+});
+
+app.post('/admin/premium/grant', requireAdmin, (req, res) => {
+  const body = req.body || {};
+  const account = db.getAccountByUsername(String(body.username || '').trim());
+  if (!account) return res.status(404).json({ error: 'No account with that username' });
+  const tier = String(body.tier || '');
+  if (!TIERS[tier]) return res.status(400).json({ error: 'Unknown plan' });
+  const days = Number(body.days) || 0; // 0 = no end date
+  if (days < 0 || days > 3650) return res.status(400).json({ error: 'Days must be 0–3650' });
+  const until = days ? Date.now() + days * 24 * 60 * 60 * 1000 : null;
+  db.setPremium(account.id, tier, until);
+  const ok = allowedCosmetics(TIERS[tier], account.premium_name_color, account.premium_bubble);
+  db.setPremiumCosmetics(account.id, ok.nameColor, ok.bubble);
+  console.log(`[premium] ${account.username} -> ${tier}${until ? ` until ${new Date(until).toISOString()}` : ' (no end date)'}`);
+  res.json({ ok: true, username: account.username, tier, until });
+});
+
+app.post('/admin/premium/revoke', requireAdmin, (req, res) => {
+  const account = db.getAccountByUsername(String((req.body || {}).username || '').trim());
+  if (!account) return res.status(404).json({ error: 'No account with that username' });
+  db.setPremium(account.id, null, null);
+  console.log(`[premium] ${account.username} -> free`);
+  res.json({ ok: true });
+});
+
+// Power Creator/Studio room hosts can download the room's whole history as a .zip: a readable
+// transcript.html, messages.json, and every uploaded file the room's messages point at.
+const EXPORT_MEDIA_MAX_BYTES = 500 * 1024 * 1024;
+app.get('/api/rooms/:code/export', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Sign in first' });
+  const code = String(req.params.code || '').toUpperCase();
+  const dbRoom = db.getRoom(code);
+  if (!dbRoom) return res.status(404).json({ error: 'Room not found' });
+  if (dbRoom.host_account_id !== account.id) return res.status(403).json({ error: 'Only the room host can export it' });
+  if (!perksFor(account.id).roomExport) return res.status(403).json({ error: 'Room export comes with Power Creator and Studio' });
+  try {
+    const messages = db.getAllRoomMessages(code);
+    const files = [];
+    let mediaBytes = 0;
+    const skipped = [];
+    const seen = new Set();
+    for (const m of messages) {
+      const url = m.mediaUrl;
+      if (!url || !url.startsWith('/uploads/') || seen.has(url)) continue;
+      seen.add(url);
+      const filePath = path.join(__dirname, 'public', url);
+      if (!filePath.startsWith(path.join(__dirname, 'public/uploads') + path.sep)) continue;
+      let stat;
+      try { stat = fs.statSync(filePath); } catch { continue; }
+      if (mediaBytes + stat.size > EXPORT_MEDIA_MAX_BYTES) { skipped.push(url); continue; }
+      mediaBytes += stat.size;
+      files.push({ name: `media/${path.basename(filePath)}`, data: fs.readFileSync(filePath) });
+    }
+    const roomTitle = dbRoom.name || code;
+    const mediaLink = (url) => (seen.has(url) && !skipped.includes(url) ? `media/${path.basename(url)}` : url);
+    const rows = messages.map((m) => {
+      const when = new Date(m.at).toLocaleString('en-US');
+      let body = escapeHtmlServer(m.text || '');
+      if (m.mediaUrl) {
+        const href = escapeHtmlServer(mediaLink(m.mediaUrl));
+        body += m.mediaType === 'image' ? `<br><img src="${href}" alt="">` : `<br><a href="${href}">${escapeHtmlServer(m.mediaType || 'file')}</a>`;
+      }
+      return `<div class="m"><b>${escapeHtmlServer(m.name)}</b> <small>${when}</small><div>${body}</div></div>`;
+    }).join('\n');
+    const html = `<!doctype html><meta charset="utf-8"><title>${escapeHtmlServer(roomTitle)} — Valk export</title>
+<style>body{font-family:sans-serif;max-width:760px;margin:24px auto;padding:0 16px;background:#0b1520;color:#eaf6ff}.m{padding:8px 0;border-bottom:1px solid #223}small{color:#8fa7bd}img{max-width:100%;border-radius:8px;margin-top:4px}a{color:#7cc4ff}</style>
+<h1>${escapeHtmlServer(roomTitle)}</h1><p>Room ${code} · ${messages.length} messages · exported ${new Date().toLocaleString('en-US')}</p>
+${skipped.length ? `<p>${skipped.length} large file(s) were left out to keep the download under 500MB.</p>` : ''}
+${rows}`;
+    files.unshift(
+      { name: 'transcript.html', data: Buffer.from(html) },
+      { name: 'messages.json', data: Buffer.from(JSON.stringify({ room: code, name: dbRoom.name || null, exportedAt: Date.now(), messages }, null, 2)) },
+    );
+    const zip = buildZip(files);
+    res.set('Content-Type', 'application/zip');
+    res.set('Content-Disposition', `attachment; filename="valk-room-${code}.zip"`);
+    res.send(zip);
+  } catch (err) {
+    reportError('server', err, { path: req.path, method: req.method });
+    res.status(500).json({ error: 'Export failed' });
+  }
+});
+
+function escapeHtmlServer(s) {
+  return String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// Minimal store-only (uncompressed) .zip writer — media is already compressed, and this avoids a
+// new dependency. Node 18 has no zlib.crc32, hence the table.
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(buf) {
+  let c = 0xffffffff;
+  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+function buildZip(files) {
+  const parts = [];
+  const central = [];
+  let offset = 0;
+  for (const f of files) {
+    const name = Buffer.from(f.name);
+    const crc = crc32(f.data);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0x0800, 6); // UTF-8 names
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(f.data.length, 18);
+    local.writeUInt32LE(f.data.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    parts.push(local, name, f.data);
+    const cen = Buffer.alloc(46);
+    cen.writeUInt32LE(0x02014b50, 0);
+    cen.writeUInt16LE(20, 4);
+    cen.writeUInt16LE(20, 6);
+    cen.writeUInt16LE(0x0800, 8);
+    cen.writeUInt32LE(crc, 16);
+    cen.writeUInt32LE(f.data.length, 20);
+    cen.writeUInt32LE(f.data.length, 24);
+    cen.writeUInt16LE(name.length, 28);
+    cen.writeUInt32LE(offset, 42);
+    central.push(cen, name);
+    offset += 30 + name.length + f.data.length;
+  }
+  const centralSize = central.reduce((n, b) => n + b.length, 0);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(files.length, 8);
+  end.writeUInt16LE(files.length, 10);
+  end.writeUInt32LE(centralSize, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...parts, ...central, end]);
+}
+
 app.get('/push/vapid-public-key', (req, res) => {
   res.json({ publicKey: vapidKeys.publicKey });
 });
@@ -3507,6 +3733,7 @@ function roomUsers(code) {
     avatarUrl: c.profile.avatarUrl,
     status: c.profile.status,
     muted: !!(room.muted && room.muted.has(c.profile.name)),
+    flair: db.accountFlair(c.accountId),
   }));
 }
 
@@ -7150,6 +7377,17 @@ wss.on('connection', (ws, req) => {
       // ever sending leave-room first left the OLD room's client/voice entries permanently
       // orphaned. Skipped when it's the same room (a real client re-requesting full state, e.g.
       // after navigating to a minigame and back — that's an intentional, harmless no-op re-join).
+      // Room size limit follows the host's plan (FREE_PERKS.roomCapacity for a free host). Someone
+      // already in the room under this name is a reconnect, not a new seat, so never blocked.
+      const liveRoom = rooms.get(code);
+      if (liveRoom && ws.room !== code) {
+        const cap = perksFor(dbRoom && dbRoom.host_account_id).roomCapacity;
+        const alreadyHere = [...liveRoom.clients].some((c) => c.profile && c.profile.name === ws.profile.name);
+        if (!alreadyHere && liveRoom.clients.size >= cap) {
+          send(ws, { type: 'join-error', message: `This room is full (${cap} people max). The host can raise the limit with Valk Premium.`, roomFull: true });
+          return;
+        }
+      }
       if (ws.room && ws.room !== code) leaveRoom(ws);
       const room = getOrCreateRoom(code);
       // Room-scoped features (kick/mute-by-name, DMs, read receipts, push-suppression-by-name)
@@ -7352,6 +7590,12 @@ wss.on('connection', (ws, req) => {
       // could set any external URL, loaded as a real background-image for every room member.
       const rawUrl = typeof msg.url === 'string' ? msg.url.slice(0, 500) : null;
       const url = rawUrl && rawUrl.startsWith('/uploads/') ? rawUrl : null;
+      // GIF and video wallpapers are a Power Creator/Studio perk — checked against the host's own
+      // account, since only the host can set one.
+      if (url && /\.(gif|mp4|webm|mov|ogv)$/i.test(url) && !perksFor(ws.accountId).animatedWallpaper) {
+        send(ws, { type: 'premium-required', message: 'Animated and video wallpapers come with Power Creator and Studio.' });
+        return;
+      }
       claimUpload(url);
       db.setWallpaper(ws.room, url);
       broadcastRoom(ws.room, { type: 'wallpaper-updated', url });
@@ -7871,6 +8115,7 @@ wss.on('connection', (ws, req) => {
         mediaType,
         replyPreview,
         at: Date.now(),
+        flair: db.accountFlair(ws.accountId),
       };
       room.history.push(entry);
       if (room.history.length > HISTORY_LIMIT) room.history.shift();
@@ -8097,7 +8342,7 @@ function deleteUploadFile(mediaUrl) {
 
 function cleanupInactiveRooms() {
   const cutoff = Date.now() - ROOM_RETENTION_MS;
-  const codes = db.getInactiveRoomCodes(cutoff);
+  const codes = db.getInactiveRoomCodes(cutoff, PERMANENT_TIERS);
   let filesDeleted = 0;
   for (const code of codes) {
     for (const url of db.getRoomMediaUrls(code)) {

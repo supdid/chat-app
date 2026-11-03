@@ -20,6 +20,25 @@ themeToggleBtn.addEventListener('click', () => {
   applyTheme(next);
 });
 
+// --- Valk Premium perks (see TIERS in server.js): extra shapes, HD, bigger gallery, bigger batch.
+// Locked options stay visible with a ⭐ so free users can see what Premium adds.
+let studioPerks = { extraShapes: false, hd: false, galleryLimit: 40, batchSize: 4 };
+async function loadStudioPerks() {
+  try {
+    const token = localStorage.getItem('valk-account-token');
+    const res = await fetch('/api/premium/me', { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    if (res.ok) studioPerks = (await res.json()).perks || studioPerks;
+  } catch {}
+  for (const opt of ratioSelect.querySelectorAll('option[data-premium]')) {
+    opt.disabled = !studioPerks.extraShapes;
+    opt.textContent = opt.textContent.replace(/ \(Premium\)$/, '') + (studioPerks.extraShapes ? '' : ' (Premium)');
+  }
+  hdCheckbox.disabled = !studioPerks.hd;
+  document.getElementById('hd-toggle').classList.toggle('locked', !studioPerks.hd);
+  GALLERY_LIMIT = studioPerks.galleryLimit || 40;
+  variationsBtn.textContent = `🎲 ${studioPerks.batchSize || 4} ideas`;
+}
+
 // --- Carry the room/name from the chat page so "Send to chat" knows where to post ---
 const params = new URLSearchParams(location.search);
 const roomCode = params.get('room');
@@ -195,8 +214,15 @@ const enhanceCheckbox = document.getElementById('enhance-checkbox');
 // generating, which noticeably helps short/vague prompts (a beginner's "a dog" vs. a fuller
 // description) — left as an opt-out checkbox rather than always-on since it can also drift a
 // carefully-worded prompt away from exactly what was typed.
+const hdCheckbox = document.getElementById('hd-checkbox');
 function buildImageUrl(prompt, seed) {
-  const [width, height] = ratioSelect.value.split('x');
+  let [width, height] = ratioSelect.value.split('x').map(Number);
+  // HD (Power Creator/Studio): scale up so the long side is 2048px.
+  if (hdCheckbox.checked && studioPerks.hd) {
+    const scale = 2048 / Math.max(width, height);
+    width = Math.round(width * scale);
+    height = Math.round(height * scale);
+  }
   const encoded = encodeURIComponent(prompt);
   let url = `https://image.pollinations.ai/prompt/${encoded}?width=${width}&height=${height}&seed=${seed}&nologo=true&private=true`;
   if (enhanceCheckbox.checked) url += '&enhance=true';
@@ -471,7 +497,7 @@ variationsBtn.addEventListener('click', async () => {
   variationsCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
   const styledPrompt = `${prompt}${activeCategory.suffix}`;
-  const seeds = Array.from({ length: 4 }, () => Math.floor(Math.random() * 2 ** 31));
+  const seeds = Array.from({ length: studioPerks.batchSize || 4 }, () => Math.floor(Math.random() * 2 ** 31));
   // Promise.allSettled, not Promise.all — one bad seed shouldn't fail the whole batch when the
   // other three came back fine; still show whatever succeeded.
   const results = await Promise.allSettled(
@@ -569,7 +595,7 @@ sendChatBtn.addEventListener('click', async () => {
 
 // --- Gallery (kept in localStorage, per-browser) ---
 const GALLERY_KEY = 'valk-ai-gallery';
-const GALLERY_LIMIT = 40;
+let GALLERY_LIMIT = 40; // raised by the account's Premium plan, see loadStudioPerks
 
 function loadGallery() {
   try {
@@ -705,6 +731,7 @@ clearGalleryBtn.addEventListener('click', () => {
 });
 
 renderGallery();
+loadStudioPerks();
 // A one-time retry sweep for the whole gallery, on page load only — not on every renderGallery()
 // call (regenerating an image, removing an item, etc. all call renderGallery() far more often
 // than that). Each item was already claimed the moment it was added (see addToGallery), so this

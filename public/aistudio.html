@@ -21,6 +21,7 @@
 <body>
 
   <a id="back-link" href="index.html">&larr; Back to chat</a>
+  <a id="premium-link" href="premium.html" class="premium-studio-link">⭐ Premium</a>
   <button id="theme-toggle-btn" class="theme-toggle" aria-label="Toggle dark mode" type="button">🌙</button>
 
   <div id="studio">
@@ -52,7 +53,16 @@
           <option value="1024x1024">Square</option>
           <option value="1024x1792">Portrait</option>
           <option value="1792x1024">Landscape</option>
+          <option value="1792x768" data-premium="1">⭐ Ultra-wide 21:9</option>
+          <option value="1008x1792" data-premium="1">⭐ Story 9:16</option>
+          <option value="1024x1280" data-premium="1">⭐ Post 4:5</option>
+          <option value="1536x1024" data-premium="1">⭐ Photo 3:2</option>
+          <option value="1792x600" data-premium="1">⭐ Banner 3:1</option>
         </select>
+        <label class="enhance-toggle" id="hd-toggle" title="HD: generates at up to 2048px — Power Creator and Studio">
+          <input type="checkbox" id="hd-checkbox">
+          <span>⭐ HD</span>
+        </label>
         <label class="enhance-toggle" title="Uses AI to add extra detail to your prompt before generating — turn off for exact literal control">
           <input type="checkbox" id="enhance-checkbox" checked>
           <span>✨ Enhance</span>

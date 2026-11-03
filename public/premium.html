@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Valk Premium</title>
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="premium.css">
+<link rel="manifest" href="manifest.json">
+<script>
+  (function () {
+    var saved = localStorage.getItem('valk-theme');
+    if (saved === 'light') document.documentElement.dataset.theme = 'light';
+  })();
+</script>
+<meta name="theme-color" content="#050b14">
+<link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+</head>
+<body>
+  <a id="back-link" href="index.html">&larr; Back to Valk</a>
+
+  <main id="premium">
+    <header class="hero">
+      <img src="images/logo.png" alt="Valk" class="logo">
+      <h1>Valk Premium</h1>
+      <p class="tagline">Bigger rooms, flashier chat, and more power in AI Studio.</p>
+      <div id="my-plan" class="my-plan hidden"></div>
+      <div class="billing-toggle" role="group" aria-label="Billing period">
+        <button type="button" id="bill-monthly" class="active">Monthly</button>
+        <button type="button" id="bill-annual">Yearly <span class="save">save 20%</span></button>
+      </div>
+    </header>
+
+    <section id="tier-cards" class="tier-cards"></section>
+
+    <p class="notice">💳 Online payment isn't switched on yet. To get a plan, ask the Valk admin and they'll turn it on for your account.</p>
+
+    <section id="cosmetics" class="panel hidden">
+      <h2>Your look</h2>
+      <p class="muted">Pick how your name and messages look to everyone in chat.</p>
+      <h3>Name color</h3>
+      <div id="color-options" class="option-row"></div>
+      <h3>Chat bubble theme <span id="bubble-lock" class="lock hidden">Power Creator+</span></h3>
+      <div id="bubble-options" class="option-row"></div>
+      <div class="preview-wrap">
+        <div class="preview-label">Preview</div>
+        <div id="preview-bubble" class="preview-bubble">
+          <span id="preview-name" class="preview-name"></span>
+          <span class="preview-text">hey everyone 👋</span>
+        </div>
+      </div>
+      <button type="button" id="save-cosmetics" class="primary">Save</button>
+      <span id="save-status" class="muted"></span>
+    </section>
+
+    <section class="panel">
+      <h2>Compare plans</h2>
+      <div class="table-scroll">
+        <table id="compare-table"></table>
+      </div>
+    </section>
+  </main>
+
+  <script src="premium.js"></script>
+</body>
+</html>

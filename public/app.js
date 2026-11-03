@@ -117,6 +117,8 @@ const wallpaperRow = document.getElementById('wallpaper-row');
 const wallpaperFileInput = document.getElementById('wallpaper-file-input');
 const wallpaperSetBtn = document.getElementById('wallpaper-set-btn');
 const wallpaperClearBtn = document.getElementById('wallpaper-clear-btn');
+const roomExportBtn = document.getElementById('room-export-btn');
+const premiumLink = document.getElementById('premium-link');
 const bansRow = document.getElementById('bans-row');
 const manageBansBtn = document.getElementById('manage-bans-btn');
 const bansListEl = document.getElementById('bans-list');
@@ -249,6 +251,43 @@ let isHost = false;
 let pendingJoinPin = '';
 let currentRoomPin = '';
 let appToastTimeout = null;
+
+// --- Premium flair: badge + name color + bubble theme (see TIERS in server.js). ---
+const PREMIUM_BADGES = { hobbyist: '🥉', power: '🥈', studio: '🥇' };
+const PREMIUM_NAMES = { hobbyist: 'Hobbyist', power: 'Power Creator', studio: 'Studio' };
+function makeFlairName(name, flair) {
+  const wrap = document.createElement('span');
+  wrap.className = 'flair-name' + (flair && flair.nameColor ? ` name-${flair.nameColor}` : '');
+  if (flair && PREMIUM_BADGES[flair.tier]) {
+    const badge = document.createElement('span');
+    badge.className = 'premium-badge';
+    badge.textContent = PREMIUM_BADGES[flair.tier];
+    badge.title = `Valk Premium — ${PREMIUM_NAMES[flair.tier]}`;
+    wrap.appendChild(badge);
+  }
+  wrap.appendChild(document.createTextNode(name));
+  return wrap;
+}
+
+// This user's own plan — only widens what the UI offers; the server checks every perk itself.
+let myPremium = null;
+async function refreshMyPremium() {
+  myPremium = null;
+  if (accountToken) {
+    try {
+      const res = await fetch('/api/premium/me', { headers: { Authorization: `Bearer ${accountToken}` } });
+      if (res.ok) myPremium = await res.json();
+    } catch {}
+  }
+  const perks = myPremium && myPremium.perks;
+  wallpaperFileInput.accept = perks && perks.animatedWallpaper ? 'image/*,video/mp4,video/webm' : 'image/*';
+  wallpaperSetBtn.textContent = perks && perks.animatedWallpaper
+    ? '🖼️ Set room wallpaper — picture, GIF or video (host only)'
+    : '🖼️ Set room wallpaper (host only)';
+  premiumLink.textContent = myPremium && myPremium.tier
+    ? `${PREMIUM_BADGES[myPremium.tier]} Your ${PREMIUM_NAMES[myPremium.tier]} plan`
+    : '⭐ Valk Premium';
+}
 
 function showAppToast(msg) {
   appToastEl.textContent = msg;
@@ -1027,6 +1066,10 @@ function handleServerMessage(data) {
         : 'No PIN set — enter one to require it';
       break;
 
+    case 'premium-required':
+      showAppToast(`⭐ ${data.message}`);
+      break;
+
     case 'wallpaper-updated':
       applyWallpaper(data.url);
       showAppToast(data.url ? '🖼️ Wallpaper updated' : '🚫 Wallpaper cleared');
@@ -1222,7 +1265,7 @@ function handleServerMessage(data) {
         if (urlMatch) renderLinkPreview(bubble, trimTrailingUrlPunctuation(urlMatch[0]));
       }
       const metaEl = bubble && bubble.querySelector('.meta');
-      if (metaEl && !metaEl.textContent.includes('edited')) metaEl.textContent += ' · edited';
+      if (metaEl && !metaEl.textContent.includes('edited')) metaEl.appendChild(document.createTextNode(' · edited'));
       break;
     }
 
@@ -1509,8 +1552,9 @@ function renderMessage(data, opts = {}) {
   bubble.className = 'bubble';
   const meta = document.createElement('span');
   meta.className = 'meta';
-  meta.textContent = `${data.name} · ${time}${data.edited ? ' · edited' : ''}`;
+  meta.append(makeFlairName(data.name, data.flair), document.createTextNode(` · ${time}${data.edited ? ' · edited' : ''}`));
   bubble.appendChild(meta);
+  if (data.flair && data.flair.bubble) bubble.classList.add(`bubble-${data.flair.bubble}`);
 
   if (data.deleted) {
     el.dataset.deleted = '1'; // see the message-edited handler's own comment on why this matters
@@ -2204,9 +2248,7 @@ function renderOnlineList(users) {
     li.dataset.username = u.name;
     const nameWrap = document.createElement('span');
     nameWrap.className = 'online-name-wrap';
-    const name = document.createElement('span');
-    name.textContent = u.name;
-    nameWrap.appendChild(name);
+    nameWrap.appendChild(makeFlairName(u.name, u.flair));
     if (u.status) {
       const status = document.createElement('span');
       status.className = 'status-text';
@@ -2630,6 +2672,7 @@ function renderAccountState() {
     accountPanel.classList.remove('hidden');
     if (!usernameInput.value) usernameInput.value = accountUsername;
   }
+  refreshMyPremium();
 }
 
 accountToggleBtn.addEventListener('click', () => {
@@ -3623,8 +3666,36 @@ roomPinForm.addEventListener('submit', (e) => {
 });
 
 // --- Room wallpaper (host only) — reuses the same /upload endpoint media messages already use. ---
+// Video wallpapers (Power Creator/Studio) play in a muted looping <video> layered behind the
+// message list; GIFs work as a normal background-image.
+const WALLPAPER_VIDEO_RE = /\.(mp4|webm|mov|ogv)$/i;
+let wallpaperVideo = null;
+function positionWallpaperVideo() {
+  if (!wallpaperVideo) return;
+  const parent = messagesEl.parentElement;
+  if (getComputedStyle(parent).position === 'static') parent.style.position = 'relative';
+  Object.assign(wallpaperVideo.style, {
+    top: `${messagesEl.offsetTop}px`,
+    left: `${messagesEl.offsetLeft}px`,
+    width: `${messagesEl.offsetWidth}px`,
+    height: `${messagesEl.offsetHeight}px`,
+  });
+}
+if (window.ResizeObserver) new ResizeObserver(positionWallpaperVideo).observe(messagesEl);
 function applyWallpaper(url) {
-  if (url) {
+  if (wallpaperVideo) { wallpaperVideo.remove(); wallpaperVideo = null; }
+  messagesEl.classList.remove('has-video-wallpaper');
+  if (url && WALLPAPER_VIDEO_RE.test(url)) {
+    wallpaperVideo = document.createElement('video');
+    wallpaperVideo.className = 'wallpaper-video';
+    Object.assign(wallpaperVideo, { src: url, muted: true, loop: true, autoplay: true, playsInline: true });
+    wallpaperVideo.setAttribute('aria-hidden', 'true');
+    messagesEl.parentElement.insertBefore(wallpaperVideo, messagesEl);
+    messagesEl.classList.add('has-video-wallpaper');
+    positionWallpaperVideo();
+    messagesEl.style.backgroundImage = '';
+    wallpaperVideo.play().catch(() => {});
+  } else if (url) {
     messagesEl.style.backgroundImage = `linear-gradient(rgba(0,0,0,0.35), rgba(0,0,0,0.35)), url("${url}")`;
     messagesEl.style.backgroundSize = 'cover';
     messagesEl.style.backgroundPosition = 'center';
@@ -3650,8 +3721,14 @@ wallpaperFileInput.addEventListener('change', async () => {
   // their click had registered, was still uploading, or had failed. `accept="image/*"` on the file
   // input is only a picker HINT, not enforcement (many OS pickers let it be bypassed), so this
   // client-side check is the first real gate, not just the server's.
-  if (!file.type.startsWith('image/')) {
-    showAppToast('Wallpaper must be an image file');
+  const animatedOk = !!(myPremium && myPremium.perks && myPremium.perks.animatedWallpaper);
+  const isVideo = file.type.startsWith('video/');
+  if (!file.type.startsWith('image/') && !(isVideo && animatedOk)) {
+    showAppToast(isVideo ? '⭐ Video wallpapers come with Power Creator and Studio' : 'Wallpaper must be an image file');
+    return;
+  }
+  if (!animatedOk && file.type === 'image/gif') {
+    showAppToast('⭐ Animated GIF wallpapers come with Power Creator and Studio');
     return;
   }
   if (file.size > WALLPAPER_MAX_BYTES) {
@@ -3670,6 +3747,39 @@ wallpaperFileInput.addEventListener('change', async () => {
     ws.send(JSON.stringify({ type: 'set-wallpaper', url: data.url }));
   } catch {
     showAppToast('Wallpaper upload failed');
+  }
+});
+
+// Power Creator/Studio hosts: download the whole room (transcript + media) as a .zip.
+roomExportBtn.addEventListener('click', async () => {
+  if (!currentRoomCode) return;
+  if (!accountToken) { showAppToast('Sign in to an account to export rooms'); return; }
+  if (!(myPremium && myPremium.perks && myPremium.perks.roomExport)) {
+    showAppToast('⭐ Room export comes with Power Creator and Studio');
+    return;
+  }
+  roomExportBtn.disabled = true;
+  showAppToast('📦 Preparing your export…');
+  try {
+    const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoomCode)}/export`, { headers: { Authorization: `Bearer ${accountToken}` } });
+    if (!res.ok) {
+      let msg = 'Export failed';
+      try { msg = (await res.json()).error || msg; } catch {}
+      showAppToast(msg);
+      return;
+    }
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `valk-room-${currentRoomCode}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  } catch {
+    showAppToast('Export failed — check your connection');
+  } finally {
+    roomExportBtn.disabled = false;
   }
 });
 

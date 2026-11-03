@@ -6760,3 +6760,133 @@ describe('push subscription endpoint validation', () => {
     assert.equal(res.status, 400);
   });
 });
+
+describe('premium plans', () => {
+  const json = { 'Content-Type': 'application/json' };
+  async function signup(username) {
+    const r = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: json,
+      body: JSON.stringify({ username, password: 'pass1234', email: `${username.toLowerCase()}@test.com` }),
+    }).then((res) => res.json());
+    return r.token;
+  }
+  function adminKeyNow() {
+    return JSON.parse(fs.readFileSync(path.join(server.dir, 'admin-key.json'), 'utf8')).key;
+  }
+  async function grant(username, tier, days = 0) {
+    return fetch(`${BASE_URL}/admin/premium/grant`, {
+      method: 'POST', headers: { ...json, ...adminAuth(adminKeyNow()) }, body: JSON.stringify({ username, tier, days }),
+    });
+  }
+
+  test('admin grant/revoke changes /api/premium/me, and grant needs the admin key', async () => {
+    const token = await signup('PremGrant');
+    const noKey = await fetch(`${BASE_URL}/admin/premium/grant`, { method: 'POST', headers: json, body: JSON.stringify({ username: 'PremGrant', tier: 'studio' }) });
+    assert.equal(noKey.status, 401);
+    let me = await fetch(`${BASE_URL}/api/premium/me`, { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json());
+    assert.equal(me.tier, null);
+    assert.equal(me.perks.roomCapacity, 30);
+    assert.equal((await grant('PremGrant', 'power', 30)).status, 200);
+    me = await fetch(`${BASE_URL}/api/premium/me`, { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json());
+    assert.equal(me.tier, 'power');
+    assert.ok(me.until > Date.now());
+    assert.equal(me.perks.animatedWallpaper, true);
+    const list = await fetch(`${BASE_URL}/admin/premium`, { headers: adminAuth(adminKeyNow()) }).then((r) => r.json());
+    assert.ok(list.accounts.some((a) => a.username === 'PremGrant' && a.premium_tier === 'power'));
+    const revoke = await fetch(`${BASE_URL}/admin/premium/revoke`, { method: 'POST', headers: { ...json, ...adminAuth(adminKeyNow()) }, body: JSON.stringify({ username: 'PremGrant' }) });
+    assert.equal(revoke.status, 200);
+    me = await fetch(`${BASE_URL}/api/premium/me`, { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json());
+    assert.equal(me.tier, null);
+  });
+
+  test('cosmetics are gated by tier and show up as flair on messages and in the user list', async () => {
+    const token = await signup('PremFlair');
+    const save = (body) => fetch(`${BASE_URL}/api/premium/cosmetics`, {
+      method: 'POST', headers: { ...json, Authorization: `Bearer ${token}` }, body: JSON.stringify(body),
+    });
+    assert.equal((await save({ nameColor: 'gold' })).status, 403, 'free account cannot pick a name color');
+    await grant('PremFlair', 'hobbyist');
+    assert.equal((await save({ nameColor: 'rainbow' })).status, 403, 'rainbow is Studio-only');
+    assert.equal((await save({ nameColor: 'gold', bubble: 'neon' })).status, 403, 'bubbles are Power+');
+    assert.equal((await save({ nameColor: 'gold' })).status, 200);
+
+    const ws = await joinAsAccount('PremFlair', token);
+    send(ws, { type: 'create-room' });
+    const joined = await waitFor(ws, (m) => m.type === 'joined-room');
+    send(ws, { type: 'message', text: 'shiny' });
+    const msg = await waitFor(ws, (m) => m.type === 'message' && m.text === 'shiny');
+    assert.deepEqual(msg.flair, { tier: 'hobbyist', nameColor: 'gold', bubble: null });
+
+    const other = await joinExistingRoom('PremViewer', joined.code);
+    send(other, { type: 'join-room', code: joined.code });
+    const again = await waitFor(other, (m) => m.type === 'joined-room');
+    const fromHistory = again.messages.find((m) => m.text === 'shiny');
+    assert.equal(fromHistory.flair.nameColor, 'gold', 'flair survives in room history');
+    assert.equal(again.users.find((u) => u.name === 'PremFlair').flair.tier, 'hobbyist');
+    ws.close();
+    other.close();
+  });
+
+  test('animated wallpapers need Power Creator; export needs Power Creator and the host account', async () => {
+    const token = await signup('PremHost');
+    const ws = await joinAsAccount('PremHost', token);
+    send(ws, { type: 'create-room' });
+    const { code } = await waitFor(ws, (m) => m.type === 'joined-room');
+
+    send(ws, { type: 'set-wallpaper', url: '/uploads/fake.mp4' });
+    const blocked = await waitFor(ws, (m) => m.type === 'premium-required');
+    assert.match(blocked.message, /Power Creator/);
+    const exportUrl = `${BASE_URL}/api/rooms/${code}/export`;
+    assert.equal((await fetch(exportUrl, { headers: { Authorization: `Bearer ${token}` } })).status, 403);
+
+    await grant('PremHost', 'power');
+    send(ws, { type: 'set-wallpaper', url: '/uploads/fake.mp4' });
+    const updated = await waitFor(ws, (m) => m.type === 'wallpaper-updated');
+    assert.equal(updated.url, '/uploads/fake.mp4');
+
+    send(ws, { type: 'message', text: 'for the archive' });
+    await waitFor(ws, (m) => m.type === 'message' && m.text === 'for the archive');
+    const res = await fetch(exportUrl, { headers: { Authorization: `Bearer ${token}` } });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('content-type'), 'application/zip');
+    const zip = Buffer.from(await res.arrayBuffer());
+    assert.equal(zip.readUInt32LE(0), 0x04034b50, 'starts with a zip local file header');
+    assert.ok(zip.includes(Buffer.from('transcript.html')));
+    assert.ok(zip.includes(Buffer.from('for the archive')));
+
+    const strangerToken = await signup('PremStranger');
+    await grant('PremStranger', 'studio');
+    assert.equal((await fetch(exportUrl, { headers: { Authorization: `Bearer ${strangerToken}` } })).status, 403, 'only the host can export');
+    ws.close();
+  });
+
+  test('room capacity follows the host plan', async () => {
+    const capServer = await startTestServer({ FREE_ROOM_CAPACITY: '2' }, 3214);
+    const open = () => new Promise((resolve) => { const w = new WebSocket('ws://localhost:3214'); w.on('open', () => resolve(w)); });
+    try {
+      const host = await open();
+      send(host, { type: 'join-server', username: 'CapHost' });
+      await waitFor(host, (m) => m.type === 'joined-server');
+      send(host, { type: 'create-room' });
+      const { code } = await waitFor(host, (m) => m.type === 'joined-room');
+      const join = async (name) => {
+        const w = await open();
+        send(w, { type: 'join-server', username: name });
+        await waitFor(w, (m) => m.type === 'joined-server');
+        send(w, { type: 'join-room', code });
+        return { w, reply: await waitFor(w, (m) => m.type === 'joined-room' || m.type === 'join-error') };
+      };
+      const second = await join('CapTwo');
+      assert.equal(second.reply.type, 'joined-room');
+      const third = await join('CapThree');
+      assert.equal(third.reply.type, 'join-error');
+      assert.equal(third.reply.roomFull, true);
+      // Rejoining under a name already in the room is a reconnect, not a new seat.
+      const again = await join('CapTwo');
+      assert.equal(again.reply.type, 'joined-room');
+      for (const w of [host, second.w, third.w, again.w]) w.close();
+    } finally {
+      await capServer.stop();
+    }
+  });
+});

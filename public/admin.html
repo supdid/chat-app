@@ -38,6 +38,22 @@
       <button class="approve" id="cleanup-btn" type="button">Run cleanup now</button>
       <span id="cleanup-result" class="meta"></span>
     </div>
+    <h2>Valk Premium</h2>
+    <div class="card">
+      <div class="meta">Online payment isn't switched on — plans only start when you turn them on here. Days = 0 means no end date.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <input id="premium-username" placeholder="Account username" aria-label="Account username" style="flex:2;min-width:160px;">
+        <select id="premium-tier" aria-label="Plan" style="background:#12141a;color:#e8e8e8;border:1px solid #2c313c;border-radius:6px;padding:8px;">
+          <option value="hobbyist">🥉 Hobbyist ($10)</option>
+          <option value="power">🥈 Power Creator ($30)</option>
+          <option value="studio">🥇 Studio ($60)</option>
+        </select>
+        <input id="premium-days" type="number" min="0" max="3650" value="30" aria-label="Days" style="width:90px;">
+        <button class="approve" id="premium-grant-btn" type="button">Turn on plan</button>
+      </div>
+      <p id="premium-status" class="meta"></p>
+      <div id="premium-list"></div>
+    </div>
     <h2>Notifications</h2>
     <div class="card">
       <div class="meta">Get pushed to this device the moment a new report is filed, instead of only seeing it here.</div>
@@ -87,6 +103,7 @@ async function tryLoad() {
   document.getElementById('key-gate').style.display = 'none';
   document.getElementById('panel').style.display = 'block';
   refresh();
+  loadPremium();
   return true;
 }
 
@@ -106,6 +123,67 @@ document.getElementById('forget-key-btn').addEventListener('click', () => {
   document.getElementById('panel').style.display = 'none';
   document.getElementById('key-gate').style.display = 'block';
   document.getElementById('key-input').value = '';
+});
+
+// --- Valk Premium ---
+const TIER_LABELS = { hobbyist: '🥉 Hobbyist', power: '🥈 Power Creator', studio: '🥇 Studio' };
+async function premiumPost(url, body) {
+  try {
+    const res = await fetch(url, { method: 'POST', headers: headers(), body: JSON.stringify(body) });
+    let data = {};
+    try { data = await res.json(); } catch {}
+    return { ok: res.ok, data };
+  } catch {
+    return { ok: false, data: { error: 'Network error — check your connection and try again' } };
+  }
+}
+
+async function loadPremium() {
+  const listEl = document.getElementById('premium-list');
+  let accounts;
+  try {
+    const res = await fetch('/admin/premium', { headers: headers() });
+    if (!res.ok) throw new Error();
+    ({ accounts } = await res.json());
+  } catch {
+    listEl.innerHTML = '<p class="empty">Could not load Premium accounts.</p>';
+    return;
+  }
+  listEl.innerHTML = accounts.length ? '' : '<p class="empty">Nobody has a plan yet.</p>';
+  for (const a of accounts) {
+    const expired = a.premium_until && a.premium_until <= Date.now();
+    const row = document.createElement('div');
+    row.className = 'meta';
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:8px;color:#e8e8e8;font-size:13px;';
+    row.innerHTML = `<span style="flex:1"><strong>${esc(a.username)}</strong> — ${TIER_LABELS[a.premium_tier] || esc(a.premium_tier)}
+      <span style="color:#8a8f99">${a.premium_until ? (expired ? '(expired ' : '(until ') + new Date(a.premium_until).toLocaleDateString() + ')' : '(no end date)'}</span></span>
+      <button class="reject" type="button">Remove</button>`;
+    row.querySelector('button').addEventListener('click', async (e) => {
+      if (!confirm(`Remove ${a.username}'s plan?`)) return;
+      e.target.disabled = true;
+      const { ok, data } = await premiumPost('/admin/premium/revoke', { username: a.username });
+      if (!ok) { alert(data.error || 'Failed'); e.target.disabled = false; return; }
+      loadPremium();
+    });
+    listEl.appendChild(row);
+  }
+}
+
+document.getElementById('premium-grant-btn').addEventListener('click', async (e) => {
+  const statusEl = document.getElementById('premium-status');
+  const username = document.getElementById('premium-username').value.trim();
+  if (!username) { statusEl.textContent = 'Type a username first.'; return; }
+  e.target.disabled = true;
+  const { ok, data } = await premiumPost('/admin/premium/grant', {
+    username,
+    tier: document.getElementById('premium-tier').value,
+    days: Number(document.getElementById('premium-days').value) || 0,
+  });
+  e.target.disabled = false;
+  statusEl.textContent = ok
+    ? `✓ ${data.username} is now on ${TIER_LABELS[data.tier]}${data.until ? ` until ${new Date(data.until).toLocaleDateString()}` : ''}.`
+    : (data.error || 'Failed');
+  if (ok) loadPremium();
 });
 
 function esc(s) {

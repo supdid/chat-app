@@ -445,6 +445,13 @@ ensureColumn('accounts', 'scorpture_avatar_url', 'TEXT');
 ensureColumn('accounts', 'scorpture_description', 'TEXT');
 ensureColumn('accounts', 'scorpture_bonus_subscribers', 'INTEGER DEFAULT 0');
 ensureColumn('accounts', 'scorpture_overlay_json', 'TEXT');
+// Premium plan (see TIERS in server.js). No real billing yet — only the admin panel sets these.
+// premium_until NULL = no end date. Cosmetics are stored even if the plan lapses, so re-upgrading
+// brings back what the user picked; accountFlair below only shows them while the plan is active.
+ensureColumn('accounts', 'premium_tier', 'TEXT');
+ensureColumn('accounts', 'premium_until', 'INTEGER');
+ensureColumn('accounts', 'premium_name_color', 'TEXT');
+ensureColumn('accounts', 'premium_bubble', 'TEXT');
 ensureColumn('scorpture_comments', 'edited', 'INTEGER DEFAULT 0');
 ensureColumn('dms', 'from_account_id', 'TEXT');
 ensureColumn('dms', 'to_account_id', 'TEXT');
@@ -512,6 +519,37 @@ function upsertRoom(code, name) {
       now
     );
   }
+}
+
+// ---- Premium ----
+
+// The account's tier if it's still active, else null — every perk check goes through this so an
+// expired plan stops working everywhere at once without a sweep job.
+function getActivePremium(accountId) {
+  if (!accountId) return null;
+  const row = db.prepare('SELECT premium_tier, premium_until, premium_name_color, premium_bubble FROM accounts WHERE id = ?').get(accountId);
+  if (!row || !row.premium_tier) return null;
+  if (row.premium_until && row.premium_until <= Date.now()) return null;
+  return { tier: row.premium_tier, until: row.premium_until || null, nameColor: row.premium_name_color || null, bubble: row.premium_bubble || null };
+}
+
+function setPremium(accountId, tier, until) {
+  db.prepare('UPDATE accounts SET premium_tier = ?, premium_until = ? WHERE id = ?').run(tier, until || null, accountId);
+}
+
+function setPremiumCosmetics(accountId, nameColor, bubble) {
+  db.prepare('UPDATE accounts SET premium_name_color = ?, premium_bubble = ? WHERE id = ?').run(nameColor || null, bubble || null, accountId);
+}
+
+function listPremiumAccounts() {
+  return db.prepare('SELECT id, username, email, premium_tier, premium_until FROM accounts WHERE premium_tier IS NOT NULL ORDER BY username COLLATE NOCASE').all();
+}
+
+// What other people see next to a premium user's name. Kept tiny (it rides on every message).
+function accountFlair(accountId) {
+  const p = getActivePremium(accountId);
+  if (!p) return null;
+  return { tier: p.tier, nameColor: p.nameColor, bubble: p.bubble };
 }
 
 function getRoom(code) {
@@ -653,6 +691,7 @@ function rowToHistoryEntry(r) {
     at: r.at,
     edited: !!r.edited,
     deleted: !!r.deleted,
+    flair: r.account_id ? accountFlair(r.account_id) : null,
   };
 }
 
@@ -1746,9 +1785,19 @@ function getPendingPatchProposals() {
 // get purged the very next sweep even though it might be in active use — require the
 // timestamp to also be *plausible* (after this app could possibly have existed), not just old.
 const MIN_PLAUSIBLE_ROOM_TS = 1700000000000; // 2023-11-14 — long before this app existed
-function getInactiveRoomCodes(cutoffTs) {
-  return db.prepare('SELECT code FROM rooms WHERE last_active_at < ? AND last_active_at > ?')
-    .all(cutoffTs, MIN_PLAUSIBLE_ROOM_TS).map((r) => r.code);
+// Rooms hosted by an account on an active permanent-rooms plan are skipped entirely.
+function getInactiveRoomCodes(cutoffTs, permanentTiers = []) {
+  const tierList = permanentTiers.map(() => '?').join(',') || "''";
+  return db.prepare(
+    `SELECT code FROM rooms WHERE last_active_at < ? AND last_active_at > ?
+     AND NOT EXISTS (SELECT 1 FROM accounts a WHERE a.id = rooms.host_account_id
+       AND a.premium_tier IN (${tierList}) AND (a.premium_until IS NULL OR a.premium_until > ?))`
+  ).all(cutoffTs, MIN_PLAUSIBLE_ROOM_TS, ...permanentTiers, Date.now()).map((r) => r.code);
+}
+
+function getAllRoomMessages(code) {
+  return db.prepare('SELECT * FROM messages WHERE room_code = ? AND (deleted IS NULL OR deleted = 0) ORDER BY at ASC, rowid ASC')
+    .all(code).map(rowToHistoryEntry);
 }
 
 function getRoomMediaUrls(code) {
@@ -2064,6 +2113,12 @@ function getAccountByStreamKey(key) {
 }
 
 module.exports = {
+  getActivePremium,
+  setPremium,
+  setPremiumCosmetics,
+  listPremiumAccounts,
+  accountFlair,
+  getAllRoomMessages,
   createCommunity,
   getCommunityByName,
   getCommunity,
