@@ -71,13 +71,65 @@ function renderCards() {
       btn.disabled = true;
     } else {
       btn.textContent = `Get ${t.name}`;
-      btn.addEventListener('click', () => {
-        alert(me && me.signedIn
-          ? `Online payment isn't switched on yet.\n\nAsk the Valk admin to turn on ${t.name} for your account "${me.username}".`
-          : 'Sign in to a Valk account first (from the chat page), then ask the Valk admin to turn on a plan for you.');
-      });
+      btn.addEventListener('click', () => startCheckout(key, btn));
     }
     wrap.appendChild(card);
+  }
+}
+
+async function startCheckout(tier, btn) {
+  const t = catalog.tiers[tier];
+  if (!me || !me.signedIn) {
+    alert('Sign in to a Valk account first (from the chat page), then come back here.');
+    return;
+  }
+  if (!catalog.payments) {
+    alert(`Online payment isn't switched on yet.\n\nAsk the Valk admin to turn on ${t.name} for your account "${me.username}".`);
+    return;
+  }
+  btn.disabled = true;
+  const oldText = btn.textContent;
+  btn.textContent = 'Opening checkout…';
+  try {
+    const res = await fetch('/api/premium/checkout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders },
+      body: JSON.stringify({ tier, billing }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.url) {
+      location.href = data.url; // Stripe's own secure page — card details never touch Valk
+      return;
+    }
+    alert(data.error || 'Could not start checkout');
+  } catch {
+    alert('Could not reach the server — check your connection');
+  }
+  btn.disabled = false;
+  btn.textContent = oldText;
+}
+
+document.getElementById('manage-billing').addEventListener('click', async (e) => {
+  e.target.disabled = true;
+  try {
+    const res = await fetch('/api/premium/portal', { method: 'POST', headers: authHeaders });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.url) { location.href = data.url; return; }
+    alert(data.error || 'Could not open the billing page');
+  } catch {
+    alert('Could not reach the server — check your connection');
+  }
+  e.target.disabled = false;
+});
+
+function renderPayNotice() {
+  const el = document.getElementById('pay-notice');
+  el.innerHTML = '';
+  if (catalog.payments) {
+    el.append('🔒 Payments are handled securely by Stripe. Cancel anytime. Under 18? Ask a parent before buying. By subscribing you agree to the ');
+    el.append(Object.assign(document.createElement('a'), { href: 'terms.html', textContent: 'Terms' }), '.');
+  } else {
+    el.textContent = "💳 Online payment isn't switched on yet. To get a plan, ask the Valk admin and they'll turn it on for your account.";
   }
 }
 
@@ -121,6 +173,46 @@ function renderMyPlan() {
   const until = me.until ? ` until ${new Date(me.until).toLocaleDateString()}` : '';
   el.textContent = `${t.badge} You're on ${t.name}${until}`;
   el.classList.remove('hidden');
+}
+
+function renderManage() {
+  document.getElementById('manage-billing').classList.toggle('hidden', !(me && me.canManageBilling));
+}
+
+// Back from Stripe: the plan turns on when Stripe's webhook reaches the server, usually within a
+// few seconds, so check a few times before giving up.
+async function handleCheckoutReturn() {
+  const result = new URLSearchParams(location.search).get('checkout');
+  if (!result) return;
+  history.replaceState(null, '', 'premium.html');
+  const banner = document.getElementById('checkout-banner');
+  banner.classList.remove('hidden');
+  if (result === 'cancel') {
+    banner.textContent = 'Checkout cancelled — you were not charged.';
+    return;
+  }
+  banner.textContent = '🎉 Payment received! Turning on your plan…';
+  for (let i = 0; i < 10 && !(me && me.tier); i++) {
+    await new Promise((r) => setTimeout(r, 2000));
+    try { me = await (await fetch('/api/premium/me', { headers: authHeaders })).json(); } catch {}
+  }
+  if (me && me.tier) {
+    banner.textContent = `🎉 Thank you! You're now on ${catalog.tiers[me.tier].name}.`;
+    pickedColor = me.nameColor || null;
+    pickedBubble = me.bubble || null;
+    renderAll();
+  } else {
+    banner.textContent = "Payment received — your plan is taking a little longer than usual to turn on. Refresh in a minute; if it's still not on, contact the Valk admin.";
+  }
+}
+
+function renderAll() {
+  renderMyPlan();
+  renderManage();
+  renderPayNotice();
+  renderCards();
+  renderTable();
+  renderCosmetics();
 }
 
 function renderCosmetics() {
@@ -205,8 +297,6 @@ for (const [id, mode] of [['bill-monthly', 'monthly'], ['bill-annual', 'annual']
   }
   pickedColor = me.nameColor || null;
   pickedBubble = me.bubble || null;
-  renderMyPlan();
-  renderCards();
-  renderTable();
-  renderCosmetics();
+  renderAll();
+  handleCheckoutReturn();
 })();

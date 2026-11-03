@@ -6890,3 +6890,134 @@ describe('premium plans', () => {
     }
   });
 });
+
+describe('stripe payments', () => {
+  const json = { 'Content-Type': 'application/json' };
+  const WEBHOOK_SECRET = 'whsec_testsecret';
+  const PORT = 3217;
+  const base = `http://localhost:${PORT}`;
+  let payServer;
+  let fakeStripe;
+  const stripeCalls = [];
+
+  before(async () => {
+    const http = require('node:http');
+    fakeStripe = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (d) => { body += d; });
+      req.on('end', () => {
+        const params = new URLSearchParams(body);
+        stripeCalls.push({ path: req.url, auth: req.headers.authorization, params });
+        res.setHeader('Content-Type', 'application/json');
+        if (req.url === '/v1/customers') return res.end(JSON.stringify({ id: 'cus_test1' }));
+        if (req.url === '/v1/checkout/sessions') return res.end(JSON.stringify({ id: 'cs_1', url: 'https://checkout.stripe.test/cs_1' }));
+        if (req.url === '/v1/billing_portal/sessions') return res.end(JSON.stringify({ url: 'https://billing.stripe.test/p1' }));
+        res.statusCode = 404;
+        res.end('{}');
+      });
+    });
+    await new Promise((r) => fakeStripe.listen(3216, r));
+    payServer = await startTestServer({
+      STRIPE_SECRET_KEY: 'sk_test_fake',
+      STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      STRIPE_API_BASE: 'http://localhost:3216',
+    }, PORT);
+  });
+  after(async () => {
+    await payServer.stop();
+    await new Promise((r) => fakeStripe.close(r));
+  });
+
+  async function signupAt(url, username) {
+    return (await fetch(`${url}/auth/signup`, {
+      method: 'POST', headers: json,
+      body: JSON.stringify({ username, password: 'pass1234', email: `${username.toLowerCase()}@test.com` }),
+    }).then((r) => r.json())).token;
+  }
+  function webhook(event, { secret = WEBHOOK_SECRET, t = Math.floor(Date.now() / 1000) } = {}) {
+    const payload = JSON.stringify(event);
+    const sig = require('node:crypto').createHmac('sha256', secret).update(`${t}.${payload}`).digest('hex');
+    return fetch(`${base}/stripe/webhook`, { method: 'POST', headers: { ...json, 'Stripe-Signature': `t=${t},v1=${sig}` }, body: payload });
+  }
+  const me = (token) => fetch(`${base}/api/premium/me`, { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json());
+
+  test('without keys, checkout is switched off', async () => {
+    const tiers = await fetch(`${BASE_URL}/api/premium/tiers`).then((r) => r.json());
+    assert.equal(tiers.payments, false);
+    const token = await signupAt(BASE_URL, 'PayNoKeys');
+    const res = await fetch(`${BASE_URL}/api/premium/checkout`, { method: 'POST', headers: { ...json, Authorization: `Bearer ${token}` }, body: JSON.stringify({ tier: 'power' }) });
+    assert.equal(res.status, 503);
+  });
+
+  test('checkout sends the right price to Stripe and returns its URL', async () => {
+    const tiers = await fetch(`${base}/api/premium/tiers`).then((r) => r.json());
+    assert.equal(tiers.payments, true);
+    const token = await signupAt(base, 'PayBuyer');
+    const res = await fetch(`${base}/api/premium/checkout`, {
+      method: 'POST', headers: { ...json, Authorization: `Bearer ${token}` }, body: JSON.stringify({ tier: 'power', billing: 'annual' }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).url, 'https://checkout.stripe.test/cs_1');
+    const call = stripeCalls.find((c) => c.path === '/v1/checkout/sessions');
+    assert.equal(call.auth, 'Bearer sk_test_fake');
+    assert.equal(call.params.get('mode'), 'subscription');
+    assert.equal(call.params.get('customer'), 'cus_test1');
+    assert.equal(call.params.get('line_items[0][price_data][unit_amount]'), '28800');
+    assert.equal(call.params.get('line_items[0][price_data][recurring][interval]'), 'year');
+    assert.equal(call.params.get('subscription_data[metadata][tier]'), 'power');
+    assert.match(call.params.get('success_url'), /premium\.html\?checkout=success$/);
+  });
+
+  test('webhooks need a valid, fresh signature', async () => {
+    const event = { type: 'customer.subscription.created', data: { object: {} } };
+    assert.equal((await webhook(event, { secret: 'whsec_wrong' })).status, 400);
+    assert.equal((await webhook(event, { t: Math.floor(Date.now() / 1000) - 3600 })).status, 400, 'old timestamp rejected');
+    assert.equal((await fetch(`${base}/stripe/webhook`, { method: 'POST', body: '{}' })).status, 400, 'no signature');
+  });
+
+  test('subscription events turn the plan on, renew it, and cancelling ends it', async () => {
+    const token = await signupAt(base, 'PaySubber');
+    // The account id comes back from Stripe the way checkout sent it: client_reference_id/metadata.
+    await fetch(`${base}/api/premium/checkout`, { method: 'POST', headers: { ...json, Authorization: `Bearer ${token}` }, body: JSON.stringify({ tier: 'studio' }) });
+    const call = stripeCalls.filter((c) => c.path === '/v1/checkout/sessions').pop();
+    const acct = call.params.get('client_reference_id');
+    assert.ok(acct);
+    const periodEnd = Math.floor(Date.now() / 1000) + 30 * 86400;
+    const sub = { id: 'sub_1', customer: 'cus_test1', status: 'active', current_period_end: periodEnd, metadata: { account_id: acct, tier: 'studio' } };
+    assert.equal((await webhook({ type: 'customer.subscription.created', data: { object: sub } })).status, 200);
+    let m = await me(token);
+    assert.equal(m.tier, 'studio');
+    assert.equal(m.source, 'stripe');
+    assert.equal(m.canManageBilling, true);
+    assert.ok(m.until > periodEnd * 1000, 'includes a grace period past the paid-through date');
+
+    // Already paying -> a second checkout is refused (would double-charge).
+    const again = await fetch(`${base}/api/premium/checkout`, { method: 'POST', headers: { ...json, Authorization: `Bearer ${token}` }, body: JSON.stringify({ tier: 'power' }) });
+    assert.equal(again.status, 409);
+
+    const portal = await fetch(`${base}/api/premium/portal`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+    assert.equal((await portal.json()).url, 'https://billing.stripe.test/p1');
+
+    // Newer Stripe API: period end lives on the item.
+    const renewed = { ...sub, current_period_end: undefined, items: { data: [{ current_period_end: periodEnd + 30 * 86400 }] } };
+    await webhook({ type: 'customer.subscription.updated', data: { object: renewed } });
+    m = await me(token);
+    assert.ok(m.until > (periodEnd + 30 * 86400) * 1000);
+
+    await webhook({ type: 'customer.subscription.deleted', data: { object: { ...sub, status: 'canceled' } } });
+    m = await me(token);
+    assert.equal(m.tier, null);
+  });
+
+  test('a cancelled Stripe subscription never removes an admin-given plan', async () => {
+    const token = await signupAt(base, 'PayGifted');
+    await fetch(`${base}/api/premium/checkout`, { method: 'POST', headers: { ...json, Authorization: `Bearer ${token}` }, body: JSON.stringify({ tier: 'hobbyist' }) });
+    const acct = stripeCalls.filter((c) => c.path === '/v1/checkout/sessions').pop().params.get('client_reference_id');
+    const key = JSON.parse(fs.readFileSync(path.join(payServer.dir, 'admin-key.json'), 'utf8')).key;
+    await fetch(`${base}/admin/premium/grant`, { method: 'POST', headers: { ...json, ...adminAuth(key) }, body: JSON.stringify({ username: 'PayGifted', tier: 'power' }) });
+    await webhook({ type: 'customer.subscription.deleted', data: { object: { id: 'sub_old', customer: 'cus_x', status: 'canceled', metadata: { account_id: acct, tier: 'hobbyist' } } } });
+    const m = await me(token);
+    assert.equal(m.tier, 'power');
+    assert.equal(m.source, 'admin');
+  });
+});

@@ -452,6 +452,11 @@ ensureColumn('accounts', 'premium_tier', 'TEXT');
 ensureColumn('accounts', 'premium_until', 'INTEGER');
 ensureColumn('accounts', 'premium_name_color', 'TEXT');
 ensureColumn('accounts', 'premium_bubble', 'TEXT');
+// 'admin' (turned on from the admin panel) or 'stripe' (a paid subscription). A cancelled Stripe
+// subscription only ever ends a plan Stripe itself started, never an admin-granted one.
+ensureColumn('accounts', 'premium_source', 'TEXT');
+ensureColumn('accounts', 'stripe_customer_id', 'TEXT');
+ensureColumn('accounts', 'stripe_subscription_id', 'TEXT');
 ensureColumn('scorpture_comments', 'edited', 'INTEGER DEFAULT 0');
 ensureColumn('dms', 'from_account_id', 'TEXT');
 ensureColumn('dms', 'to_account_id', 'TEXT');
@@ -533,8 +538,21 @@ function getActivePremium(accountId) {
   return { tier: row.premium_tier, until: row.premium_until || null, nameColor: row.premium_name_color || null, bubble: row.premium_bubble || null };
 }
 
-function setPremium(accountId, tier, until) {
-  db.prepare('UPDATE accounts SET premium_tier = ?, premium_until = ? WHERE id = ?').run(tier, until || null, accountId);
+function setPremium(accountId, tier, until, source = 'admin') {
+  db.prepare('UPDATE accounts SET premium_tier = ?, premium_until = ?, premium_source = ? WHERE id = ?')
+    .run(tier, until || null, tier ? source : null, accountId);
+}
+
+function setStripeCustomer(accountId, customerId) {
+  db.prepare('UPDATE accounts SET stripe_customer_id = ? WHERE id = ?').run(customerId, accountId);
+}
+
+function setStripeSubscription(accountId, subscriptionId) {
+  db.prepare('UPDATE accounts SET stripe_subscription_id = ? WHERE id = ?').run(subscriptionId || null, accountId);
+}
+
+function getAccountByStripeCustomer(customerId) {
+  return db.prepare('SELECT * FROM accounts WHERE stripe_customer_id = ?').get(customerId) || null;
 }
 
 function setPremiumCosmetics(accountId, nameColor, bubble) {
@@ -542,7 +560,7 @@ function setPremiumCosmetics(accountId, nameColor, bubble) {
 }
 
 function listPremiumAccounts() {
-  return db.prepare('SELECT id, username, email, premium_tier, premium_until FROM accounts WHERE premium_tier IS NOT NULL ORDER BY username COLLATE NOCASE').all();
+  return db.prepare('SELECT id, username, email, premium_tier, premium_until, premium_source FROM accounts WHERE premium_tier IS NOT NULL ORDER BY username COLLATE NOCASE').all();
 }
 
 // What other people see next to a premium user's name. Kept tiny (it rides on every message).
@@ -2116,6 +2134,9 @@ module.exports = {
   getActivePremium,
   setPremium,
   setPremiumCosmetics,
+  setStripeCustomer,
+  setStripeSubscription,
+  getAccountByStripeCustomer,
   listPremiumAccounts,
   accountFlair,
   getAllRoomMessages,

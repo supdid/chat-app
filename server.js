@@ -88,7 +88,10 @@ setInterval(() => {
 }, HEARTBEAT_INTERVAL_MS);
 // Registered this early so every route below — including the self-healing routes, which are
 // defined before the rest of the app's routes — can read req.body on POST requests.
-app.use(express.json());
+// /stripe/webhook is the one exception: Stripe's signature check needs the exact raw bytes it
+// sent, so that route reads its own body with express.raw (see the Stripe section below).
+const jsonBodyParser = express.json();
+app.use((req, res, next) => (req.path === '/stripe/webhook' ? next() : jsonBodyParser(req, res, next)));
 
 // ---- Push notifications (real OS/browser push, delivered even with the tab/app closed —
 // unlike the in-tab `Notification` API, which only fires while a page is open). Keys are
@@ -290,6 +293,24 @@ if (fs.existsSync(GOOGLE_CONFIG_PATH)) {
   fs.writeFileSync(GOOGLE_CONFIG_PATH, JSON.stringify(googleConfig, null, 2));
   console.log(`No Google sign-in configured — add your OAuth Client ID to ${GOOGLE_CONFIG_PATH} and restart to enable it.`);
 }
+// ---- Stripe (real Premium payments) — same "config file next to server.js" pattern as Google
+// sign-in above. Until secretKey + webhookSecret are filled in, payments stay switched off and
+// premium.html falls back to "ask the admin". Env vars override the file (the test suite uses them).
+const STRIPE_CONFIG_PATH = path.join(__dirname, 'stripe-config.json');
+let stripeConfig = { secretKey: '', webhookSecret: '', publicBaseUrl: '', supportEmail: '' };
+if (fs.existsSync(STRIPE_CONFIG_PATH)) {
+  stripeConfig = { ...stripeConfig, ...JSON.parse(fs.readFileSync(STRIPE_CONFIG_PATH, 'utf8')) };
+} else {
+  fs.writeFileSync(STRIPE_CONFIG_PATH, JSON.stringify(stripeConfig, null, 2));
+}
+if (process.env.STRIPE_SECRET_KEY) stripeConfig.secretKey = process.env.STRIPE_SECRET_KEY;
+if (process.env.STRIPE_WEBHOOK_SECRET) stripeConfig.webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+const STRIPE_API_BASE = process.env.STRIPE_API_BASE || 'https://api.stripe.com';
+const stripeReady = !!(stripeConfig.secretKey && stripeConfig.webhookSecret);
+console.log(stripeReady
+  ? `Stripe payments ON (${stripeConfig.secretKey.startsWith('sk_live_') ? 'LIVE — real money' : 'test mode'}).`
+  : `Stripe payments off — fill in ${STRIPE_CONFIG_PATH} and restart to turn them on.`);
+
 const { OAuth2Client } = require('google-auth-library');
 const googleClient = googleConfig.clientId ? new OAuth2Client(googleConfig.clientId) : null;
 
@@ -1172,7 +1193,7 @@ function allowedCosmetics(perks, nameColor, bubble) {
 }
 
 app.get('/api/premium/tiers', (req, res) => {
-  res.json({ tiers: TIERS, free: FREE_PERKS, nameColors: NAME_COLORS, bubbleThemes: BUBBLE_THEMES, payments: false });
+  res.json({ tiers: TIERS, free: FREE_PERKS, nameColors: NAME_COLORS, bubbleThemes: BUBBLE_THEMES, payments: stripeReady, supportEmail: stripeConfig.supportEmail || null });
 });
 
 app.get('/api/premium/me', (req, res) => {
@@ -1187,7 +1208,191 @@ app.get('/api/premium/me', (req, res) => {
     perks: perksFor(account.id),
     nameColor: account.premium_name_color || null,
     bubble: account.premium_bubble || null,
+    source: p ? account.premium_source || 'admin' : null,
+    // Anyone who's ever paid can open Stripe's page to see receipts, cancel, or update their card.
+    canManageBilling: stripeReady && !!account.stripe_customer_id,
   });
+});
+
+// ---- Stripe checkout / billing portal / webhook ----
+// Talks to Stripe's REST API directly with fetch (form-encoded, like Stripe's own docs' curl
+// examples) instead of adding the stripe npm package. Prices are sent inline as price_data, so
+// there's nothing to set up in the Stripe dashboard first — TIERS above stays the one price list.
+function stripeForm(obj, prefix = '', out = new URLSearchParams()) {
+  for (const [k, v] of Object.entries(obj)) {
+    if (v === undefined || v === null) continue;
+    const key = prefix ? `${prefix}[${k}]` : k;
+    if (typeof v === 'object') stripeForm(v, key, out);
+    else out.append(key, String(v));
+  }
+  return out;
+}
+
+async function stripeRequest(method, endpoint, params) {
+  const res = await fetch(`${STRIPE_API_BASE}${endpoint}`, {
+    method,
+    headers: { Authorization: `Bearer ${stripeConfig.secretKey}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params ? stripeForm(params).toString() : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`Stripe ${endpoint} failed (${res.status}): ${data.error && data.error.message}`);
+  return data;
+}
+
+// Where Stripe sends people back to. publicBaseUrl in stripe-config.json wins (set it to
+// https://valk.chat on the server); otherwise built from the request, which is right for localhost.
+function publicBaseUrl(req) {
+  if (stripeConfig.publicBaseUrl) return stripeConfig.publicBaseUrl.replace(/\/$/, '');
+  return `${req.protocol}://${req.get('host')}`;
+}
+
+async function ensureStripeCustomer(account) {
+  if (account.stripe_customer_id) return account.stripe_customer_id;
+  const customer = await stripeRequest('POST', '/v1/customers', {
+    email: account.email || undefined,
+    name: account.username,
+    metadata: { account_id: account.id, username: account.username },
+  });
+  db.setStripeCustomer(account.id, customer.id);
+  return customer.id;
+}
+
+app.post('/api/premium/checkout', async (req, res) => {
+  if (!stripeReady) return res.status(503).json({ error: "Online payment isn't switched on yet" });
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Sign in to a Valk account first' });
+  const body = req.body || {};
+  const tier = String(body.tier || '');
+  const billing = body.billing === 'annual' ? 'annual' : 'monthly';
+  if (!TIERS[tier]) return res.status(400).json({ error: 'Unknown plan' });
+  const current = db.getActivePremium(account.id);
+  // Two live subscriptions would charge twice. Switching plans = cancel in the billing page, then
+  // pick the new one (the old plan keeps working until its paid time runs out either way).
+  if (current && account.premium_source === 'stripe' && account.stripe_subscription_id) {
+    return res.status(409).json({ error: 'You already have a paid plan. Use "Manage subscription" to cancel it before picking a different one.' });
+  }
+  try {
+    const customer = await ensureStripeCustomer(account);
+    const t = TIERS[tier];
+    const base = publicBaseUrl(req);
+    const meta = { account_id: account.id, tier };
+    const session = await stripeRequest('POST', '/v1/checkout/sessions', {
+      mode: 'subscription',
+      customer,
+      client_reference_id: account.id,
+      line_items: { 0: {
+        quantity: 1,
+        price_data: {
+          currency: 'usd',
+          unit_amount: Math.round((billing === 'annual' ? t.annual : t.monthly) * 100),
+          recurring: { interval: billing === 'annual' ? 'year' : 'month' },
+          product_data: { name: `Valk ${t.name} (${billing === 'annual' ? 'yearly' : 'monthly'})` },
+        },
+      } },
+      metadata: meta,
+      subscription_data: { metadata: meta },
+      success_url: `${base}/premium.html?checkout=success`,
+      cancel_url: `${base}/premium.html?checkout=cancel`,
+    });
+    res.json({ url: session.url });
+  } catch (err) {
+    reportError('server', err, { path: req.path, method: req.method });
+    res.status(502).json({ error: 'Could not start checkout — try again in a moment' });
+  }
+});
+
+app.post('/api/premium/portal', async (req, res) => {
+  if (!stripeReady) return res.status(503).json({ error: "Online payment isn't switched on yet" });
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Sign in first' });
+  if (!account.stripe_customer_id) return res.status(404).json({ error: "You haven't paid for a plan yet" });
+  try {
+    const session = await stripeRequest('POST', '/v1/billing_portal/sessions', {
+      customer: account.stripe_customer_id,
+      return_url: `${publicBaseUrl(req)}/premium.html`,
+    });
+    res.json({ url: session.url });
+  } catch (err) {
+    reportError('server', err, { path: req.path, method: req.method });
+    res.status(502).json({ error: 'Could not open the billing page — try again in a moment' });
+  }
+});
+
+// Stripe-Signature is "t=<unix time>,v1=<hex hmac>[,v1=...]": an HMAC-SHA256 of "<t>.<raw body>"
+// keyed with the webhook signing secret. The 5-minute window stops an old captured event being
+// replayed later.
+function verifyStripeSignature(rawBody, header, secret, toleranceSec = 300) {
+  if (!header || !secret) return false;
+  let timestamp = null;
+  const sigs = [];
+  for (const piece of String(header).split(',')) {
+    const [k, v] = piece.split('=');
+    if (k === 't') timestamp = Number(v);
+    if (k === 'v1' && v) sigs.push(v);
+  }
+  if (!timestamp || !sigs.length) return false;
+  if (Math.abs(Date.now() / 1000 - timestamp) > toleranceSec) return false;
+  const expected = crypto.createHmac('sha256', secret).update(`${timestamp}.`).update(rawBody).digest();
+  return sigs.some((s) => {
+    const got = Buffer.from(s, 'hex');
+    return got.length === expected.length && crypto.timingSafeEqual(got, expected);
+  });
+}
+
+// A few days past the paid-through date, so a renewal that's a little late (card retry, webhook
+// delay) doesn't flicker someone's plan off. Stripe sends subscription.updated on every renewal,
+// which pushes this forward again.
+const STRIPE_GRACE_MS = 3 * 24 * 60 * 60 * 1000;
+
+function applyStripeSubscription(sub, eventType) {
+  const meta = sub.metadata || {};
+  const account = (meta.account_id && db.getAccountById(meta.account_id)) || db.getAccountByStripeCustomer(sub.customer);
+  if (!account) {
+    console.log(`[stripe] ${eventType} for unknown customer ${sub.customer} — ignored`);
+    return;
+  }
+  if (!account.stripe_customer_id && sub.customer) db.setStripeCustomer(account.id, sub.customer);
+  const tier = TIERS[meta.tier] ? meta.tier : null;
+  const live = ['active', 'trialing', 'past_due'].includes(sub.status) && eventType !== 'customer.subscription.deleted';
+  if (live && tier) {
+    // current_period_end moved onto the subscription item in newer Stripe API versions.
+    const periodEnd = sub.current_period_end || (sub.items && sub.items.data && sub.items.data[0] && sub.items.data[0].current_period_end);
+    const until = periodEnd ? periodEnd * 1000 + STRIPE_GRACE_MS : null;
+    db.setPremium(account.id, tier, until, 'stripe');
+    db.setStripeSubscription(account.id, sub.id);
+    const ok = allowedCosmetics(TIERS[tier], account.premium_name_color, account.premium_bubble);
+    db.setPremiumCosmetics(account.id, ok.nameColor, ok.bubble);
+    console.log(`[stripe] ${account.username} -> ${tier} (${sub.status})`);
+  } else if (account.stripe_subscription_id === sub.id || !account.stripe_subscription_id) {
+    if (account.premium_source === 'stripe') {
+      db.setPremium(account.id, null, null);
+      console.log(`[stripe] ${account.username} -> free (${sub.status})`);
+    }
+    db.setStripeSubscription(account.id, null);
+  }
+}
+
+app.post('/stripe/webhook', express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
+  if (!stripeReady) return res.status(503).send('Stripe not configured');
+  const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.from('');
+  if (!verifyStripeSignature(raw, req.get('stripe-signature'), stripeConfig.webhookSecret)) {
+    return res.status(400).send('Bad signature');
+  }
+  let event;
+  try { event = JSON.parse(raw.toString('utf8')); } catch { return res.status(400).send('Bad JSON'); }
+  try {
+    const obj = event.data && event.data.object;
+    if (event.type === 'checkout.session.completed' && obj && obj.client_reference_id && obj.customer) {
+      const account = db.getAccountById(obj.client_reference_id);
+      if (account && !account.stripe_customer_id) db.setStripeCustomer(account.id, obj.customer);
+    } else if (/^customer\.subscription\.(created|updated|deleted)$/.test(event.type) && obj) {
+      applyStripeSubscription(obj, event.type);
+    }
+  } catch (err) {
+    reportError('server', err, { path: req.path, method: req.method, stripeEvent: event.type });
+    return res.status(500).send('Handler error'); // Stripe retries on non-2xx
+  }
+  res.json({ received: true });
 });
 
 app.post('/api/premium/cosmetics', (req, res) => {
@@ -1217,7 +1422,7 @@ app.post('/admin/premium/grant', requireAdmin, (req, res) => {
   const days = Number(body.days) || 0; // 0 = no end date
   if (days < 0 || days > 3650) return res.status(400).json({ error: 'Days must be 0–3650' });
   const until = days ? Date.now() + days * 24 * 60 * 60 * 1000 : null;
-  db.setPremium(account.id, tier, until);
+  db.setPremium(account.id, tier, until, 'admin');
   const ok = allowedCosmetics(TIERS[tier], account.premium_name_color, account.premium_bubble);
   db.setPremiumCosmetics(account.id, ok.nameColor, ok.bubble);
   console.log(`[premium] ${account.username} -> ${tier}${until ? ` until ${new Date(until).toISOString()}` : ' (no end date)'}`);

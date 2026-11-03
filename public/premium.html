@@ -24,7 +24,9 @@
       <img src="images/logo.png" alt="Valk" class="logo">
       <h1>Valk Premium</h1>
       <p class="tagline">Bigger rooms, flashier chat, and more power in AI Studio.</p>
+      <div id="checkout-banner" class="checkout-banner hidden"></div>
       <div id="my-plan" class="my-plan hidden"></div>
+      <button type="button" id="manage-billing" class="manage-btn hidden">💳 Manage subscription</button>
       <div class="billing-toggle" role="group" aria-label="Billing period">
         <button type="button" id="bill-monthly" class="active">Monthly</button>
         <button type="button" id="bill-annual">Yearly <span class="save">save 20%</span></button>
@@ -33,7 +35,7 @@
 
     <section id="tier-cards" class="tier-cards"></section>
 
-    <p class="notice">💳 Online payment isn't switched on yet. To get a plan, ask the Valk admin and they'll turn it on for your account.</p>
+    <p id="pay-notice" class="notice"></p>
 
     <section id="cosmetics" class="panel hidden">
       <h2>Your look</h2>
@@ -59,6 +61,9 @@
         <table id="compare-table"></table>
       </div>
     </section>
+    <footer class="legal-links">
+      <a href="terms.html">Terms of Service</a> · <a href="refunds.html">Refund policy</a>
+    </footer>
   </main>
 
   <script src="premium.js"></script>

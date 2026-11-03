@@ -40,7 +40,7 @@
     </div>
     <h2>Valk Premium</h2>
     <div class="card">
-      <div class="meta">Online payment isn't switched on — plans only start when you turn them on here. Days = 0 means no end date.</div>
+      <div class="meta">Turn a plan on for free (gifts, testing, friends). Paid plans from Stripe show up here on their own. Days = 0 means no end date.</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
         <input id="premium-username" placeholder="Account username" aria-label="Account username" style="flex:2;min-width:160px;">
         <select id="premium-tier" aria-label="Plan" style="background:#12141a;color:#e8e8e8;border:1px solid #2c313c;border-radius:6px;padding:8px;">
@@ -155,11 +155,15 @@ async function loadPremium() {
     const row = document.createElement('div');
     row.className = 'meta';
     row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:8px;color:#e8e8e8;font-size:13px;';
-    row.innerHTML = `<span style="flex:1"><strong>${esc(a.username)}</strong> — ${TIER_LABELS[a.premium_tier] || esc(a.premium_tier)}
+    const paid = a.premium_source === 'stripe';
+    row.innerHTML = `<span style="flex:1"><strong>${esc(a.username)}</strong> — ${TIER_LABELS[a.premium_tier] || esc(a.premium_tier)} ${paid ? '💳 paid' : '🎁 given'}
       <span style="color:#8a8f99">${a.premium_until ? (expired ? '(expired ' : '(until ') + new Date(a.premium_until).toLocaleDateString() + ')' : '(no end date)'}</span></span>
       <button class="reject" type="button">Remove</button>`;
     row.querySelector('button').addEventListener('click', async (e) => {
-      if (!confirm(`Remove ${a.username}'s plan?`)) return;
+      const warning = paid
+        ? `${a.username} PAYS for this plan through Stripe. Removing it here does NOT stop their card being charged — cancel or refund it in the Stripe dashboard instead.\n\nRemove it here anyway?`
+        : `Remove ${a.username}'s plan?`;
+      if (!confirm(warning)) return;
       e.target.disabled = true;
       const { ok, data } = await premiumPost('/admin/premium/revoke', { username: a.username });
       if (!ok) { alert(data.error || 'Failed'); e.target.disabled = false; return; }
