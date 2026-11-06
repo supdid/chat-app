@@ -7467,7 +7467,7 @@ describe('profile cards + badges (2026-11-06)', () => {
 });
 
 describe('word filter (2026-11-06)', () => {
-  test('host turns on the filter; bad words and host words become stars, normal words are untouched', async () => {
+  test('host turns on the filter; bad words and host words become dots, normal words are untouched', async () => {
     const { ws: host, code } = await joinRoom('FilterHost');
     const member = await joinExistingRoom('FilterMember', code);
     send(member, { type: 'set-word-filter', useDefault: true, words: ['banana'] });
@@ -7478,12 +7478,12 @@ describe('word filter (2026-11-06)', () => {
 
     send(member, { type: 'message', text: 'what the fuck, I love BANANA in class' });
     const m = await waitFor(host, (x) => x.type === 'message' && x.name === 'FilterMember');
-    assert.equal(m.text, 'what the ****, I love ****** in class');
+    assert.equal(m.text, 'what the ••••, I love •••••• in class');
 
     // Edits are filtered too.
     send(member, { type: 'edit-message', messageId: m.id, text: 'shit assignment' });
     const edited = await waitFor(host, (x) => x.type === 'message-edited' && x.messageId === m.id);
-    assert.equal(edited.text, '**** assignment');
+    assert.equal(edited.text, '•••• assignment');
 
     await sleep(1100);
     send(host, { type: 'set-word-filter', useDefault: false, words: [] });

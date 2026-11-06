@@ -3396,7 +3396,7 @@ const INVITE_USE_OPTIONS = [0, 1, 5, 25, 100];
 const REMINDERS_MAX = 25;
 const REMINDER_MAX_MS = 30 * 24 * 60 * 60 * 1000;
 
-// ---- Word filter. Matched words are replaced with stars before a message is saved or sent.
+// ---- Word filter. Matched words are replaced with dots before a message is saved or sent.
 // The built-in list is whole words (plus common endings) so ordinary words like "class" or
 // "assignment" are never caught.
 const DEFAULT_FILTER_WORDS = [
@@ -3425,7 +3425,8 @@ function roomFilterRegex(dbRoom) {
 function applyWordFilter(dbRoom, text) {
   const re = roomFilterRegex(dbRoom);
   if (!re || !text) return text;
-  return text.replace(re, (w) => '*'.repeat([...w].length));
+  // Dots, not asterisks: "****" would be read as **bold** markdown and vanish.
+  return text.replace(re, (w) => '•'.repeat([...w].length));
 }
 const ROOM_EVENTS_MAX = 20;
 const EVENT_MAX_AHEAD_MS = 366 * 24 * 60 * 60 * 1000;
