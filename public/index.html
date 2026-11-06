@@ -364,6 +364,7 @@
       <button id="gallery-btn" class="menu-link" type="button">🖼️ Media gallery</button>
       <button id="poll-btn" class="menu-link" type="button">📊 Create a poll</button>
       <button id="events-btn" class="menu-link" type="button">📅 Events</button>
+      <button id="dnd-btn" class="menu-link" type="button">🔕 Do Not Disturb</button>
       <button id="saved-btn" class="menu-link" type="button">🔖 Saved messages</button>
       <button id="qr-btn" class="menu-link" type="button">📱 Room QR code</button>
       <button id="export-link" class="menu-link" type="button">📥 Export chat history</button>
@@ -526,6 +527,32 @@
         <input id="dm-input" type="text" placeholder="Message…" maxlength="2000" autocomplete="off">
         <button type="submit">Send</button>
       </form>
+    </div>
+  </div>
+
+  <!-- Do Not Disturb -->
+  <div id="dnd-overlay" class="menu-overlay hidden">
+    <div class="menu-panel">
+      <div class="menu-header">
+        <h2>🔕 Do Not Disturb</h2>
+        <button id="dnd-close-btn" class="icon-btn" aria-label="Close Do Not Disturb">✕</button>
+      </div>
+      <p id="dnd-status" class="dnd-status"></p>
+      <h3>Pause notifications</h3>
+      <div class="dnd-quick">
+        <button type="button" class="small-btn" data-dnd-hours="1">1 hour</button>
+        <button type="button" class="small-btn" data-dnd-hours="4">4 hours</button>
+        <button type="button" class="small-btn" data-dnd-morning="1">Until 7 AM</button>
+        <button type="button" class="small-btn danger" id="dnd-off-btn">Turn off</button>
+      </div>
+      <h3>Every day</h3>
+      <form id="dnd-schedule-form" class="dnd-schedule-form">
+        <label class="word-filter-check"><input type="checkbox" id="dnd-schedule-on"> Quiet hours</label>
+        <label>From <input type="time" id="dnd-start" value="22:00"></label>
+        <label>to <input type="time" id="dnd-end" value="07:00"></label>
+        <button type="submit">Save quiet hours</button>
+      </form>
+      <p class="search-status">No sounds or notifications while it's on — messages still arrive. Signed in, it applies to all your devices.</p>
     </div>
   </div>
 

@@ -381,6 +381,15 @@ db.exec(`
     created_at INTEGER
   );
   CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(due_at);
+  -- Do Not Disturb. key = 'acct:<account id>' (all of an account's devices) or 'ep:<push endpoint>'
+  -- (one device, for people without an account). Schedule times are minutes after midnight in tz.
+  CREATE TABLE IF NOT EXISTS dnd_settings (
+    key TEXT PRIMARY KEY,
+    until INTEGER,
+    sched_start INTEGER,
+    sched_end INTEGER,
+    tz TEXT
+  );
   CREATE TABLE IF NOT EXISTS direct_message_reads (
     account_id TEXT,
     other_account_id TEXT,
@@ -884,6 +893,26 @@ const expireRoomMessages = db.transaction((code, before) => {
   return rows.map((r) => ({ id: r.id, mediaUrl: r.media_url }));
 });
 
+function getAllDndSettings() {
+  return db.prepare('SELECT * FROM dnd_settings').all();
+}
+
+function saveDndSetting(key, s) {
+  if (!s) {
+    db.prepare('DELETE FROM dnd_settings WHERE key = ?').run(key);
+    return;
+  }
+  db.prepare(
+    `INSERT INTO dnd_settings (key, until, sched_start, sched_end, tz) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET until = excluded.until, sched_start = excluded.sched_start, sched_end = excluded.sched_end, tz = excluded.tz`
+  ).run(key, s.until || 0, s.schedStart ?? null, s.schedEnd ?? null, s.tz || null);
+}
+
+function getPushSubscriptionAccountId(endpoint) {
+  const row = db.prepare('SELECT account_id FROM push_subscriptions WHERE endpoint = ?').get(endpoint);
+  return row ? row.account_id || null : null;
+}
+
 function setWordFilter(code, useDefault, words) {
   db.prepare('UPDATE rooms SET filter_default = ?, filter_words = ? WHERE code = ?').run(useDefault ? 1 : 0, JSON.stringify(words || []), code);
 }
@@ -1376,7 +1405,7 @@ function getPushSubscriptionsForAccount(accountId) {
   return db
     .prepare('SELECT endpoint, subscription_json FROM push_subscriptions WHERE account_id = ?')
     .all(accountId)
-    .map((r) => ({ endpoint: r.endpoint, subscription: JSON.parse(r.subscription_json) }));
+    .map((r) => ({ endpoint: r.endpoint, accountId, subscription: JSON.parse(r.subscription_json) }));
 }
 
 // ---- Accounts (optional — the app still works entirely name-only without one; an account just
@@ -2534,6 +2563,9 @@ function getAccountByStreamKey(key) {
 }
 
 module.exports = {
+  getAllDndSettings,
+  saveDndSetting,
+  getPushSubscriptionAccountId,
   setDisappearAfter,
   getRoomsWithDisappearing,
   expireRoomMessages,

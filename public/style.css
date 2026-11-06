@@ -2324,6 +2324,23 @@ button.danger:hover {
   font-family: monospace;
 }
 
+.dnd-status {
+  font-weight: 600;
+}
+
+.dnd-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.dnd-schedule-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .word-filter-form {
   display: flex;
   flex-direction: column;

@@ -130,7 +130,38 @@ function hideSpoilers(text) {
   return typeof text === 'string' ? text.replace(/\|\|([\s\S]+?)\|\|/g, '▒▒▒▒') : text;
 }
 
+// ---- Do Not Disturb (see dnd_settings in db.js). Kept in memory; checked before every push.
+const dndSettings = new Map();
+function loadDndSettings() {
+  for (const r of db.getAllDndSettings()) {
+    dndSettings.set(r.key, { until: r.until || 0, schedStart: r.sched_start, schedEnd: r.sched_end, tz: r.tz });
+  }
+}
+function minutesNowInTz(tz, now) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz || 'UTC', hour: 'numeric', minute: 'numeric', hourCycle: 'h23' }).formatToParts(new Date(now));
+    const h = +parts.find((p) => p.type === 'hour').value;
+    const m = +parts.find((p) => p.type === 'minute').value;
+    return h * 60 + m;
+  } catch {
+    return null;
+  }
+}
+function isDndActive(s, now = Date.now()) {
+  if (!s) return false;
+  if (s.until && s.until > now) return true;
+  if (s.schedStart == null || s.schedEnd == null || s.schedStart === s.schedEnd) return false;
+  const mins = minutesNowInTz(s.tz, now);
+  if (mins == null) return false;
+  return s.schedStart < s.schedEnd ? mins >= s.schedStart && mins < s.schedEnd : mins >= s.schedStart || mins < s.schedEnd;
+}
+function isPushMuted(sub) {
+  if (isDndActive(dndSettings.get(`ep:${sub.endpoint}`))) return true;
+  return !!sub.accountId && isDndActive(dndSettings.get(`acct:${sub.accountId}`));
+}
+
 function sendPushToSubs(subs, payload, onGone = (endpoint) => db.removePushSubscription(endpoint)) {
+  subs = subs.filter((sub) => !isPushMuted(sub));
   let obj = payload;
   if (typeof payload === 'string') { try { obj = JSON.parse(payload); } catch { obj = null; } }
   if (obj && typeof obj === 'object') obj = { ...obj, body: hideSpoilers(obj.body), title: hideSpoilers(obj.title) };
@@ -1999,6 +2030,42 @@ app.get('/api/gifs/search', async (req, res) => {
   } catch {
     res.status(502).json({ error: 'GIF search is having trouble right now' });
   }
+});
+
+// Do Not Disturb settings: saved on the account when signed in (every device), otherwise on this
+// device's push endpoint.
+function dndKeyForReq(req, endpoint) {
+  const account = getAccountFromReq(req);
+  if (account) return `acct:${account.id}`;
+  if (typeof endpoint === 'string' && endpoint.startsWith('https://') && endpoint.length < 1000) return `ep:${endpoint}`;
+  return null;
+}
+
+app.get('/dnd', (req, res) => {
+  const key = dndKeyForReq(req, req.query.endpoint);
+  if (!key) return res.json({ settings: null, active: false });
+  const s = dndSettings.get(key) || null;
+  res.json({ settings: s, active: isDndActive(s) });
+});
+
+app.post('/dnd', (req, res) => {
+  if (isFriendsActionRateLimited(req)) return res.status(429).json({ error: 'Too many attempts — try again in a minute' });
+  const key = dndKeyForReq(req, req.body.endpoint);
+  if (!key) return res.status(400).json({ error: 'Turn on notifications or sign in first' });
+  const until = Number(req.body.until) || 0;
+  const mins = (v) => (v === null || v === undefined || v === '' ? null : Number.isInteger(+v) && +v >= 0 && +v < 1440 ? +v : NaN);
+  const schedStart = mins(req.body.schedStart);
+  const schedEnd = mins(req.body.schedEnd);
+  if (Number.isNaN(schedStart) || Number.isNaN(schedEnd) || until < 0 || until > Date.now() + 31 * 24 * 60 * 60 * 1000) {
+    return res.status(400).json({ error: 'Invalid Do Not Disturb settings' });
+  }
+  const tz = String(req.body.tz || 'UTC').slice(0, 64);
+  if (minutesNowInTz(tz, Date.now()) == null) return res.status(400).json({ error: 'Unknown time zone' });
+  const s = { until: until > Date.now() ? until : 0, schedStart, schedEnd, tz };
+  const empty = !s.until && (schedStart == null || schedEnd == null);
+  if (empty) dndSettings.delete(key); else dndSettings.set(key, s);
+  db.saveDndSetting(key, empty ? null : s);
+  res.json({ settings: empty ? null : s, active: isDndActive(s) });
 });
 
 // Saved (🔖) messages, synced per account. The client sends its own snapshot of the message.
@@ -9058,6 +9125,7 @@ function cleanupInactiveRooms() {
 }
 
 setTimeout(cleanupInactiveRooms, 30 * 1000); // shortly after boot, not instantly — let startup settle first
+loadDndSettings();
 setInterval(cleanupInactiveRooms, CLEANUP_INTERVAL_MS);
 
 // Event reminders: "starts in 15 minutes" and "starting now", live to everyone in the room and as a

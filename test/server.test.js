@@ -7577,3 +7577,30 @@ describe('disappearing messages (2026-11-06)', () => {
     }
   });
 });
+
+describe('Do Not Disturb (2026-11-06)', () => {
+  test('saved per account, validated, and turned off again', async () => {
+    const acct = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'DndUser', password: 'pass1234', email: 'dnd@test.com' }),
+    }).then((r) => r.json());
+    const h = { 'Content-Type': 'application/json', Authorization: `Bearer ${acct.token}` };
+    const until = Date.now() + 60 * 60 * 1000;
+    const on = await fetch(`${BASE_URL}/dnd`, { method: 'POST', headers: h, body: JSON.stringify({ until, tz: 'America/Los_Angeles' }) }).then((r) => r.json());
+    assert.equal(on.active, true);
+    const got = await fetch(`${BASE_URL}/dnd`, { headers: h }).then((r) => r.json());
+    assert.equal(got.settings.until, until);
+
+    // All-day quiet hours (00:00-23:59) are active right now in any time zone.
+    const sched = await fetch(`${BASE_URL}/dnd`, { method: 'POST', headers: h, body: JSON.stringify({ schedStart: 0, schedEnd: 1439, tz: 'UTC' }) }).then((r) => r.json());
+    assert.equal(sched.active, true);
+
+    assert.equal((await fetch(`${BASE_URL}/dnd`, { method: 'POST', headers: h, body: JSON.stringify({ schedStart: 5000, schedEnd: 10, tz: 'UTC' }) })).status, 400);
+    assert.equal((await fetch(`${BASE_URL}/dnd`, { method: 'POST', headers: h, body: JSON.stringify({ until, tz: 'Not/AZone' }) })).status, 400);
+    assert.equal((await fetch(`${BASE_URL}/dnd`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ until }) })).status, 400, 'no account and no device endpoint');
+
+    const off = await fetch(`${BASE_URL}/dnd`, { method: 'POST', headers: h, body: JSON.stringify({}) }).then((r) => r.json());
+    assert.equal(off.settings, null);
+    assert.equal(off.active, false);
+  });
+});

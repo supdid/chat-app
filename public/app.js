@@ -2787,6 +2787,7 @@ async function unlinkPushFromAccount() {
 }
 
 function notify(name, text, options = {}) {
+  if (isLocalDndActive()) return;
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   // Only interrupt with an OS notification when the tab isn't already being looked at — the
   // message is already visible live in the DOM otherwise, so a popup on top would just be noise.
@@ -2850,6 +2851,7 @@ const NOTIFY_SOUNDS = {
 };
 
 function playNotifySound() {
+  if (isLocalDndActive()) return;
   const fn = NOTIFY_SOUNDS[notifySoundChoice];
   if (!fn) return; // 'none' (or anything unrecognized) stays silent
   const ctx = ensureNotifyAudioCtx();
@@ -6913,3 +6915,141 @@ profileCardOverlay.addEventListener('click', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !profileCardOverlay.classList.contains('hidden')) closeProfileCard();
 });
+
+// --- Do Not Disturb ---
+const DND_KEY = 'valk-dnd';
+let dndSettings = null;
+try { dndSettings = JSON.parse(localStorage.getItem(DND_KEY) || 'null'); } catch {}
+
+function isLocalDndActive(now = Date.now()) {
+  const s = dndSettings;
+  if (!s) return false;
+  if (s.until && s.until > now) return true;
+  if (s.schedStart == null || s.schedEnd == null || s.schedStart === s.schedEnd) return false;
+  const d = new Date(now);
+  const mins = d.getHours() * 60 + d.getMinutes();
+  return s.schedStart < s.schedEnd ? mins >= s.schedStart && mins < s.schedEnd : mins >= s.schedStart || mins < s.schedEnd;
+}
+
+const dndBtn = document.getElementById('dnd-btn');
+const dndOverlay = document.getElementById('dnd-overlay');
+const dndCloseBtn = document.getElementById('dnd-close-btn');
+const dndStatusEl = document.getElementById('dnd-status');
+const dndScheduleForm = document.getElementById('dnd-schedule-form');
+const dndScheduleOn = document.getElementById('dnd-schedule-on');
+const dndStart = document.getElementById('dnd-start');
+const dndEnd = document.getElementById('dnd-end');
+
+const toHHMM = (mins) => `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`;
+const fromHHMM = (v) => { const [h, m] = String(v || '').split(':').map(Number); return Number.isFinite(h) && Number.isFinite(m) ? h * 60 + m : null; };
+
+function renderDnd() {
+  const s = dndSettings;
+  const active = isLocalDndActive();
+  let text = 'Off — notifications are on';
+  if (s && s.until && s.until > Date.now()) text = `On until ${new Date(s.until).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}`;
+  else if (active) text = 'On — quiet hours';
+  if (s && s.schedStart != null && s.schedEnd != null) text += ` · Quiet hours ${toHHMM(s.schedStart)}–${toHHMM(s.schedEnd)} every day`;
+  dndStatusEl.textContent = text;
+  dndBtn.textContent = active ? '🔕 Do Not Disturb (on)' : '🔕 Do Not Disturb';
+  dndScheduleOn.checked = !!(s && s.schedStart != null && s.schedEnd != null);
+  if (s && s.schedStart != null) dndStart.value = toHHMM(s.schedStart);
+  if (s && s.schedEnd != null) dndEnd.value = toHHMM(s.schedEnd);
+}
+
+async function currentPushEndpoint() {
+  try {
+    if (!('serviceWorker' in navigator)) return null;
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    return sub ? sub.endpoint : null;
+  } catch {
+    return null;
+  }
+}
+
+async function saveDnd(next) {
+  const body = {
+    endpoint: await currentPushEndpoint(),
+    until: next.until || 0,
+    schedStart: next.schedStart ?? null,
+    schedEnd: next.schedEnd ?? null,
+    tz: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+  };
+  dndSettings = (body.until || (body.schedStart != null && body.schedEnd != null)) ? body : null;
+  try { localStorage.setItem(DND_KEY, JSON.stringify(dndSettings)); } catch {}
+  renderDnd();
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (accountToken) headers.Authorization = `Bearer ${accountToken}`;
+    const res = await fetch('/dnd', { method: 'POST', headers, body: JSON.stringify(body) });
+    if (!res.ok && (accountToken || body.endpoint)) {
+      const out = await res.json().catch(() => ({}));
+      showAppToast(out.error || "Couldn't save Do Not Disturb on the server — it still works in this tab");
+    }
+  } catch {
+    /* offline: the local copy still silences this tab */
+  }
+}
+
+async function loadDndFromServer() {
+  try {
+    const endpoint = await currentPushEndpoint();
+    const headers = accountToken ? { Authorization: `Bearer ${accountToken}` } : {};
+    const res = await fetch(`/dnd${endpoint ? `?endpoint=${encodeURIComponent(endpoint)}` : ''}`, { headers });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!accountToken && !endpoint) return;
+    dndSettings = data.settings;
+    try { localStorage.setItem(DND_KEY, JSON.stringify(dndSettings)); } catch {}
+    renderDnd();
+  } catch {}
+}
+
+const keepSchedule = () => (dndSettings && dndSettings.schedStart != null ? { schedStart: dndSettings.schedStart, schedEnd: dndSettings.schedEnd } : {});
+
+dndBtn.addEventListener('click', () => {
+  closeMenu();
+  renderDnd();
+  dndOverlay.classList.remove('hidden');
+});
+dndCloseBtn.addEventListener('click', () => dndOverlay.classList.add('hidden'));
+dndOverlay.addEventListener('click', (e) => {
+  if (e.target === dndOverlay) dndOverlay.classList.add('hidden');
+  const hoursBtn = e.target.closest('[data-dnd-hours]');
+  if (hoursBtn) {
+    saveDnd({ ...keepSchedule(), until: Date.now() + Number(hoursBtn.dataset.dndHours) * 60 * 60 * 1000 });
+    showAppToast(`🔕 Notifications paused for ${hoursBtn.textContent}`);
+  }
+  if (e.target.closest('[data-dnd-morning]')) {
+    const d = new Date();
+    if (d.getHours() >= 7) d.setDate(d.getDate() + 1);
+    d.setHours(7, 0, 0, 0);
+    saveDnd({ ...keepSchedule(), until: d.getTime() });
+    showAppToast('🔕 Notifications paused until 7 AM');
+  }
+});
+document.getElementById('dnd-off-btn').addEventListener('click', () => {
+  saveDnd({});
+  showAppToast('🔔 Notifications are back on');
+});
+dndScheduleForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const until = dndSettings && dndSettings.until > Date.now() ? dndSettings.until : 0;
+  if (dndScheduleOn.checked) {
+    const schedStart = fromHHMM(dndStart.value);
+    const schedEnd = fromHHMM(dndEnd.value);
+    if (schedStart == null || schedEnd == null) return;
+    saveDnd({ until, schedStart, schedEnd });
+    showAppToast(`🔕 Quiet hours saved: ${dndStart.value}–${dndEnd.value}`);
+  } else {
+    saveDnd({ until });
+    showAppToast('Quiet hours turned off');
+  }
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !dndOverlay.classList.contains('hidden')) dndOverlay.classList.add('hidden');
+});
+renderDnd();
+loadDndFromServer();
+setInterval(renderDnd, 60 * 1000);
