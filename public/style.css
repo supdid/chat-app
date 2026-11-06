@@ -2324,6 +2324,20 @@ button.danger:hover {
   font-family: monospace;
 }
 
+.word-filter-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0.4rem 0;
+}
+
+.word-filter-check {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+}
+
 .slow-mode-row {
   display: flex;
   align-items: center;

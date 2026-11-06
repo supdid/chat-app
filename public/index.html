@@ -286,6 +286,14 @@
         <button id="wallpaper-clear-btn" class="menu-link hidden" type="button">🚫 Clear room wallpaper</button>
         <button id="room-export-btn" class="menu-link" type="button">📦 Export this room as a .zip (Power Creator+)</button>
       </div>
+      <div id="word-filter-row" class="hidden">
+        <button id="word-filter-toggle-btn" class="menu-link" type="button">🚫 Word filter (host only)</button>
+        <form id="word-filter-form" class="word-filter-form hidden">
+          <label class="word-filter-check"><input type="checkbox" id="word-filter-default"> Hide common bad words</label>
+          <textarea id="word-filter-words" placeholder="Extra words to hide, separated by commas" rows="2" maxlength="4000"></textarea>
+          <button type="submit">Save word filter</button>
+        </form>
+      </div>
       <div id="room-emojis-row" class="hidden">
         <button id="room-emojis-toggle-btn" class="menu-link" type="button">😀 Room emojis (host only)</button>
         <div id="room-emojis-manager" class="room-emojis-manager hidden">

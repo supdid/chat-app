@@ -7465,3 +7465,32 @@ describe('profile cards + badges (2026-11-06)', () => {
     guestHost.close(); aWs.close(); bWs.close();
   });
 });
+
+describe('word filter (2026-11-06)', () => {
+  test('host turns on the filter; bad words and host words become stars, normal words are untouched', async () => {
+    const { ws: host, code } = await joinRoom('FilterHost');
+    const member = await joinExistingRoom('FilterMember', code);
+    send(member, { type: 'set-word-filter', useDefault: true, words: ['banana'] });
+    await sleep(200);
+    const settings = waitFor(host, (m) => m.type === 'word-filter-settings');
+    send(host, { type: 'set-word-filter', useDefault: true, words: ['Banana', 'banana'] });
+    assert.deepEqual((await settings).words, ['banana']);
+
+    send(member, { type: 'message', text: 'what the fuck, I love BANANA in class' });
+    const m = await waitFor(host, (x) => x.type === 'message' && x.name === 'FilterMember');
+    assert.equal(m.text, 'what the ****, I love ****** in class');
+
+    // Edits are filtered too.
+    send(member, { type: 'edit-message', messageId: m.id, text: 'shit assignment' });
+    const edited = await waitFor(host, (x) => x.type === 'message-edited' && x.messageId === m.id);
+    assert.equal(edited.text, '**** assignment');
+
+    await sleep(1100);
+    send(host, { type: 'set-word-filter', useDefault: false, words: [] });
+    await waitFor(host, (x) => x.type === 'word-filter-settings');
+    send(member, { type: 'message', text: 'banana is fine now' });
+    const free = await waitFor(host, (x) => x.type === 'message' && x.text.startsWith('banana'));
+    assert.equal(free.text, 'banana is fine now');
+    host.close(); member.close();
+  });
+});

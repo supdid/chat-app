@@ -249,6 +249,11 @@ const mentionDropdownEl = document.getElementById('mention-dropdown');
 const pinnedBannerEl = document.getElementById('pinned-banner');
 const announcementBannerEl = document.getElementById('announcement-banner');
 const announcementForm = document.getElementById('announcement-form');
+const wordFilterRow = document.getElementById('word-filter-row');
+const wordFilterToggleBtn = document.getElementById('word-filter-toggle-btn');
+const wordFilterForm = document.getElementById('word-filter-form');
+const wordFilterDefault = document.getElementById('word-filter-default');
+const wordFilterWords = document.getElementById('word-filter-words');
 const roomEmojisRow = document.getElementById('room-emojis-row');
 const roomEmojisToggleBtn = document.getElementById('room-emojis-toggle-btn');
 const roomEmojisManager = document.getElementById('room-emojis-manager');
@@ -1019,6 +1024,8 @@ function handleServerMessage(data) {
       announcementInput.value = currentAnnouncement || '';
       slowModeRow.classList.toggle('hidden', !isHost);
       roomEmojisRow.classList.toggle('hidden', !isHost);
+      wordFilterRow.classList.toggle('hidden', !isHost);
+      applyWordFilterSettings(data.wordFilter || {});
       setRoomEmojis(data.emojis || []);
       setRoomEvents(data.events || []);
       slowModeReadyAt = 0;
@@ -1385,6 +1392,14 @@ function handleServerMessage(data) {
       if (ev && myProfile && ev.going.includes(myProfile.name)) notify('📅 Event reminder', msgText);
       break;
     }
+
+    case 'word-filter-settings':
+      applyWordFilterSettings(data);
+      break;
+
+    case 'word-filter-updated':
+      showAppToast(data.useDefault || data.count ? `🚫 ${data.by} updated this room's word filter` : `🚫 ${data.by} turned off this room's word filter`);
+      break;
 
     case 'room-emojis-updated':
       setRoomEmojis(data.emojis || []);
@@ -4169,6 +4184,19 @@ eventCreateForm.addEventListener('submit', (e) => {
   eventDescInput.value = '';
   eventTimeInput.value = '';
   showAppToast('📅 Event scheduled');
+});
+
+function applyWordFilterSettings(f) {
+  wordFilterDefault.checked = !!f.useDefault;
+  wordFilterWords.value = Array.isArray(f.words) ? f.words.join(', ') : '';
+}
+
+wordFilterToggleBtn.addEventListener('click', () => wordFilterForm.classList.toggle('hidden'));
+wordFilterForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const words = wordFilterWords.value.split(/[,\n]/).map((w) => w.trim()).filter(Boolean);
+  ws.send(JSON.stringify({ type: 'set-word-filter', useDefault: wordFilterDefault.checked, words }));
 });
 
 function setRoomEmojis(list) {

@@ -180,6 +180,10 @@ ensureColumn('bc_overrides', 'updated_at', 'INTEGER');
 ensureColumn('leaderboard', 'owner_account_id', 'TEXT');
 // Host-set slow mode: minimum seconds between messages per person (0 = off).
 ensureColumn('rooms', 'slow_mode', 'INTEGER DEFAULT 0');
+// Host word filter: filter_default = use the built-in bad-word list; filter_words = JSON array of
+// the host's own extra words.
+ensureColumn('rooms', 'filter_default', 'INTEGER DEFAULT 0');
+ensureColumn('rooms', 'filter_words', 'TEXT');
 
 // One-time migration: pins used to be single-pin-per-room (PK: room_code) — multi-pin needs a
 // composite PK (room_code, message_id) instead, which ALTER TABLE can't change in place.
@@ -809,6 +813,10 @@ function getAccountBadges(accountId) {
   if (account.created_at && Date.now() - account.created_at >= 30 * 24 * 60 * 60 * 1000) earned.add('regular');
   if (getActivePremium(accountId)) earned.add('supporter');
   return BADGES.filter((b) => earned.has(b.id));
+}
+
+function setWordFilter(code, useDefault, words) {
+  db.prepare('UPDATE rooms SET filter_default = ?, filter_words = ? WHERE code = ?').run(useDefault ? 1 : 0, JSON.stringify(words || []), code);
 }
 
 function setSlowMode(code, seconds) {
@@ -2457,6 +2465,7 @@ function getAccountByStreamKey(key) {
 }
 
 module.exports = {
+  setWordFilter,
   BADGES,
   getAccountBadges,
   getAccountIdForNameInRoom,

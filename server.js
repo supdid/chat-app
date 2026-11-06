@@ -3312,6 +3312,38 @@ function sendGroupDm(groupId, fromAccountId, fromName, text, excludeWs) {
 }
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I
 const SLOW_MODE_OPTIONS = [0, 5, 10, 30, 60, 120];
+
+// ---- Word filter. Matched words are replaced with stars before a message is saved or sent.
+// The built-in list is whole words (plus common endings) so ordinary words like "class" or
+// "assignment" are never caught.
+const DEFAULT_FILTER_WORDS = [
+  'fuck', 'fucker', 'fucking', 'fucked', 'fuckin', 'motherfucker', 'shit', 'shitty', 'bullshit',
+  'bitch', 'bitches', 'asshole', 'assholes', 'bastard', 'dick', 'dickhead', 'cunt', 'pussy',
+  'cock', 'whore', 'slut', 'wanker', 'twat', 'prick', 'damn', 'goddamn', 'crap', 'piss',
+  'pissed', 'retard', 'retarded', 'stfu', 'wtf', 'fck', 'fuk', 'sh1t', 'b1tch', 'a55hole',
+];
+const filterRegexCache = new Map(); // room code -> { key, re }
+function escapeRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+function roomFilterRegex(dbRoom) {
+  if (!dbRoom) return null;
+  let extra = [];
+  try { extra = JSON.parse(dbRoom.filter_words || '[]'); } catch {}
+  const words = [...(dbRoom.filter_default ? DEFAULT_FILTER_WORDS : []), ...extra].filter(Boolean);
+  if (!words.length) return null;
+  const key = `${dbRoom.filter_default ? 1 : 0}|${dbRoom.filter_words || ''}`;
+  const cached = filterRegexCache.get(dbRoom.code);
+  if (cached && cached.key === key) return cached.re;
+  const re = new RegExp(`(?<![\\p{L}\\p{N}])(?:${words.map(escapeRegex).join('|')})(?![\\p{L}\\p{N}])`, 'giu');
+  filterRegexCache.set(dbRoom.code, { key, re });
+  return re;
+}
+function applyWordFilter(dbRoom, text) {
+  const re = roomFilterRegex(dbRoom);
+  if (!re || !text) return text;
+  return text.replace(re, (w) => '*'.repeat([...w].length));
+}
 const ROOM_EVENTS_MAX = 20;
 const EVENT_MAX_AHEAD_MS = 366 * 24 * 60 * 60 * 1000;
 const ROOM_EMOJI_MAX = 50;
@@ -7763,7 +7795,7 @@ wss.on('connection', (ws, req) => {
       rooms.set(code, { history: [], clients: new Set([ws]) });
       ws.room = code;
       ws.roomActiveAt = Date.now();
-      send(ws, { type: 'joined-room', code, messages: [], users: roomUsers(code), name: null, reactions: [], pins: [], activity: [], isHost: true, announcement: null, wallpaperUrl: null, pinRequired: false, slowMode: 0, emojis: [], events: [] });
+      send(ws, { type: 'joined-room', code, messages: [], users: roomUsers(code), name: null, reactions: [], pins: [], activity: [], isHost: true, announcement: null, wallpaperUrl: null, pinRequired: false, slowMode: 0, emojis: [], events: [], wordFilter: { useDefault: false, words: [] } });
       return;
     }
 
@@ -7867,6 +7899,9 @@ wss.on('connection', (ws, req) => {
         slowMode: dbRoom ? dbRoom.slow_mode || 0 : 0,
         emojis: db.getRoomEmojis(code),
         events: db.getUpcomingRoomEvents(code),
+        wordFilter: dbRoom && isRoomHost({ host_name: hostName, host_account_id: hostAccountId }, ws)
+          ? { useDefault: !!dbRoom.filter_default, words: (() => { try { return JSON.parse(dbRoom.filter_words || '[]'); } catch { return []; } })() }
+          : { useDefault: !!(dbRoom && dbRoom.filter_default) },
         // Found by the room-settings/menu-panel correctness audit: the host-only PIN form gave no
         // indication whether a PIN was currently even set — always the same blank field/placeholder
         // regardless of actual state, only discoverable by trying to (re)join blind. Never sends
@@ -8168,6 +8203,18 @@ wss.on('connection', (ws, req) => {
       if (!isRoomHost(dbRoom, ws)) return;
       db.removeRoomEmoji(ws.room, String(msg.name || ''));
       broadcastRoom(ws.room, { type: 'room-emojis-updated', emojis: db.getRoomEmojis(ws.room) });
+      return;
+    }
+
+    if (msg.type === 'set-word-filter' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      const dbRoom = db.getRoom(ws.room);
+      if (!isRoomHost(dbRoom, ws)) return;
+      const raw = Array.isArray(msg.words) ? msg.words : String(msg.words || '').split(/[,\n]/);
+      const words = [...new Set(raw.map((w) => String(w || '').trim().toLowerCase().slice(0, 30)).filter(Boolean))].slice(0, 200);
+      db.setWordFilter(ws.room, !!msg.useDefault, words);
+      broadcastRoom(ws.room, { type: 'word-filter-updated', useDefault: !!msg.useDefault, count: words.length, by: ws.profile.name });
+      send(ws, { type: 'word-filter-settings', useDefault: !!msg.useDefault, words });
       return;
     }
 
@@ -8685,6 +8732,7 @@ wss.on('connection', (ws, req) => {
         : null);
       if (!text && !(mediaUrl && mediaType)) return;
       if (mediaType === 'poll' && !isValidPollText(text)) return;
+      const filteredText = mediaType === 'poll' ? text : applyWordFilter(slowRoom, text);
       // Claimed only after both rejections above — a raw WS client sending a real /uploads/
       // mediaUrl alongside an empty text and an invalid/missing mediaType used to get this file
       // claimed here and then the whole message silently dropped by the very next line, leaving a
@@ -8708,7 +8756,7 @@ wss.on('connection', (ws, req) => {
         id: crypto.randomUUID(),
         name: ws.profile.name,
         sub: ws.profile.sub,
-        text,
+        text: filteredText,
         mediaUrl,
         mediaType,
         replyPreview,
@@ -8740,7 +8788,7 @@ wss.on('connection', (ws, req) => {
         return;
       }
       const messageId = String(msg.messageId || '');
-      const text = String(msg.text || '').slice(0, 2000).trim();
+      const text = applyWordFilter(db.getRoom(ws.room), String(msg.text || '').slice(0, 2000).trim());
       if (!messageId || !text) return;
       const target = db.getMessage(messageId);
       // Polls store structured JSON in `text` (see isValidPollText) — editing was never a
