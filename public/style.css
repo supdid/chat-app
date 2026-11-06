@@ -2166,6 +2166,14 @@ button.danger:hover {
 #group-dm-form input,
 #friend-dm-form input {
   flex: 1;
+  min-width: 0;
+  width: auto;
+}
+
+#dm-form button,
+#group-dm-form button,
+#friend-dm-form button {
+  flex: 0 0 auto;
 }
 
 #friend-dm-messages {
