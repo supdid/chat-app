@@ -2056,6 +2056,7 @@ app.post('/friends/request', (req, res) => {
     return res.json({ status: 'accepted' });
   }
   db.upsertFriendRequest(account.id, target.id);
+  notifyFriendRequest(account, target.id);
   res.json({ status: 'pending' });
 });
 
@@ -2633,17 +2634,18 @@ function evictAccountFromRoomSessions(targetAccountId, roomCode) {
   }
 }
 
-// Online = has any live connection at all; roomCode/roomName come from whichever of those
-// connections happens to be in a room (picking the first is fine — in practice one account is
-// only ever actually chatting in one room at a time, extra tabs are usually just idle).
+// Online = has any live connection at all; roomCode/roomName come from the room tab the person
+// most recently joined/typed/chatted in (roomActiveAt). Picking the first room-bearing connection
+// in Set order used to show a stale idle tab's room when someone had two rooms open.
 function getAccountPresence(accountId) {
   const set = accountConnections.get(accountId);
   if (!set || set.size === 0) return { online: false, roomCode: null, roomName: null };
   let roomCode = null;
+  let bestAt = -1;
   for (const c of set) {
-    if (c.room) {
+    if (c.room && (c.roomActiveAt || 0) > bestAt) {
       roomCode = c.room;
-      break;
+      bestAt = c.roomActiveAt || 0;
     }
   }
   const dbRoom = roomCode ? db.getRoom(roomCode) : null;
@@ -3149,6 +3151,18 @@ app.delete('/api/valkmail/:id', (req, res) => {
 // (accountConnections) and, since the ask is to notify them "if they are offline or online",
 // unconditionally via real push too — unlike pushNewMessage's room broadcasts above, this never
 // skips someone just because they're currently connected.
+// Friend requests used to land silently — nothing told the recipient until they happened to open
+// the Friends panel. Same live-tab + real-push pair as friend DMs below.
+function notifyFriendRequest(fromAccount, targetAccountId) {
+  const live = JSON.stringify({ type: 'friend-request', from: fromAccount.username });
+  for (const c of accountConnections.get(targetAccountId) || []) if (c.readyState === c.OPEN) c.send(live);
+  sendPushToSubs(db.getPushSubscriptionsForAccount(targetAccountId), {
+    title: `👋 ${fromAccount.username} sent you a friend request`,
+    body: 'Tap to accept or decline',
+    url: '/?open=friends',
+  });
+}
+
 function sendFriendDm(fromName, targetAccountId, text) {
   const livePayload = JSON.stringify({ type: 'friend-dm', from: fromName, text, at: Date.now() });
   const liveConnections = accountConnections.get(targetAccountId);
@@ -3157,7 +3171,7 @@ function sendFriendDm(fromName, targetAccountId, text) {
       if (c.readyState === c.OPEN) c.send(livePayload);
     }
   }
-  sendPushToSubs(db.getPushSubscriptionsForAccount(targetAccountId), { title: `${fromName} sent you a DM`, body: text, friendDm: true, fromUsername: fromName });
+  sendPushToSubs(db.getPushSubscriptionsForAccount(targetAccountId), { title: `${fromName} sent you a DM`, body: text, friendDm: true, fromUsername: fromName, url: `/?open=friends&dmFrom=${encodeURIComponent(fromName)}&dmText=${encodeURIComponent(String(text).slice(0, 500))}` });
 }
 
 // Group DMs are persisted (unlike friend-dm above) since membership needs to survive everyone
@@ -3182,7 +3196,7 @@ function sendGroupDm(groupId, fromAccountId, fromName, text, excludeWs) {
       }
     }
     if (accountId === fromAccountId) continue;
-    sendPushToSubs(db.getPushSubscriptionsForAccount(accountId), { title: `${fromName} (group)`, body: text, groupDm: true, groupId });
+    sendPushToSubs(db.getPushSubscriptionsForAccount(accountId), { title: `${fromName} (group)`, body: text, groupDm: true, groupId, url: `/?open=group&id=${encodeURIComponent(groupId)}` });
   }
 }
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I
@@ -7549,6 +7563,7 @@ wss.on('connection', (ws, req) => {
       db.setRoomHostIfUnset(code, ws.profile.name, ws.accountId || null);
       rooms.set(code, { history: [], clients: new Set([ws]) });
       ws.room = code;
+      ws.roomActiveAt = Date.now();
       send(ws, { type: 'joined-room', code, messages: [], users: roomUsers(code), name: null, reactions: [], pins: [], activity: [], isHost: true, announcement: null, wallpaperUrl: null, pinRequired: false });
       return;
     }
@@ -7612,6 +7627,7 @@ wss.on('connection', (ws, req) => {
       }
       room.clients.add(ws);
       ws.room = code;
+      ws.roomActiveAt = Date.now();
       // Rooms created before this feature existed have no host_name yet — the first person
       // to (re)join effectively becomes the host rather than leaving the room host-less forever.
       // hostName/hostAccountId track whichever values are now actually true in the DB, since
@@ -8264,6 +8280,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'message' && ws.room) {
+      ws.roomActiveAt = Date.now();
       const room = rooms.get(ws.room);
       if (!room) return;
       if (room.muted && room.muted.has(ws.profile.name)) {
@@ -8448,6 +8465,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'typing' && ws.room) {
+      ws.roomActiveAt = Date.now();
       // The real client already self-throttles to one 'typing' send per 2s (see app.js), but
       // unlike every other message-creation path in this app, this handler had zero server-side
       // rate limiting of its own — a raw WS client ignoring that throttle could flood every other

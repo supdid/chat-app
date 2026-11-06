@@ -771,6 +771,11 @@ function handleServerMessage(data) {
         renderRecentRooms();
         showScreen(roomSelectScreen);
       }
+      if (pendingOpenUrl) {
+        const openUrl = pendingOpenUrl;
+        pendingOpenUrl = null;
+        handleOpenRequest(openUrl);
+      }
       break;
 
     case 'error':
@@ -1117,6 +1122,13 @@ function handleServerMessage(data) {
       refreshValkmailBadge();
       break;
 
+    case 'friend-request':
+      showAppToast(`👋 ${data.from} sent you a friend request — open Friends to accept`);
+      playNotifySound();
+      notify(`👋 ${data.from} sent you a friend request`, 'Open Friends to accept or decline');
+      if (!friendsOverlay.classList.contains('hidden')) loadFriends();
+      break;
+
     case 'friend-dm-sent':
       showAppToast(`💬 DM sent to ${data.toUsername}`);
       break;
@@ -1124,6 +1136,14 @@ function handleServerMessage(data) {
     case 'group-dm-threads':
       lastLoadedThreads = data.threads;
       renderGroupThreads(data.threads);
+      if (currentGroupDmId && groupDmTitleEl.textContent === 'Group') {
+        const t = data.threads.find((th) => th.id === currentGroupDmId);
+        if (t) {
+          currentGroupDmMemberNames = t.members.map((m) => m.username);
+          groupDmTitleEl.textContent = groupThreadLabel(t);
+          groupDmMembersEl.textContent = currentGroupDmMemberNames.length ? `With ${currentGroupDmMemberNames.join(', ')}` : '';
+        }
+      }
       break;
 
     case 'group-dm-created':
@@ -5867,6 +5887,38 @@ callExpandBtn.addEventListener('click', () => setCallExpanded(!callOverlay.class
 // name-entry screen. Reuses the exact reconnect path already wired for 'joined-server'
 // (currentRoomCode set -> auto join-room), so no new server logic is needed.
 const rejoinParams = new URLSearchParams(location.search);
+
+// --- Notification deep links: "/?open=friends" / "/?open=group&id=..." ---
+// Set by friend-request / friend-DM / group-DM push notifications (server.js). On a fresh page
+// load it waits for 'joined-server' (needs a live socket + account); an already-open tab gets it
+// from the service worker via postMessage instead of a reload, so it doesn't lose its room.
+let pendingOpenUrl = rejoinParams.get('open') ? location.search : null;
+if (pendingOpenUrl) history.replaceState(null, '', location.pathname);
+
+function handleOpenRequest(url) {
+  let params;
+  try { params = new URLSearchParams(new URL(url, location.origin).search); } catch { return; }
+  const what = params.get('open');
+  if (what === 'friends') {
+    openFriendsPanel();
+    const dmFrom = params.get('dmFrom');
+    if (dmFrom) showAppToast(`💬 ${dmFrom}: ${params.get('dmText') || ''}`);
+  } else if (what === 'group' && params.get('id')) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) { pendingOpenUrl = url; return; }
+    const id = params.get('id');
+    const thread = (lastLoadedThreads || []).find((t) => t.id === id);
+    openGroupDm(id, thread);
+    if (!thread) loadGroupThreads();
+  }
+}
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    if (!e.data || e.data.type !== 'valk-open' || typeof e.data.url !== 'string') return;
+    if (myProfile && ws && ws.readyState === WebSocket.OPEN) handleOpenRequest(e.data.url);
+    else pendingOpenUrl = e.data.url;
+  });
+}
 const rejoinRoom = rejoinParams.get('room');
 const rejoinName = rejoinParams.get('name');
 if (rejoinRoom) {

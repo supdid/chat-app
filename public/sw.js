@@ -1,6 +1,6 @@
 // Bump this on every deploy. Changing it is what makes the browser see sw.js as a new file, which
 // is what puts a worker into the "waiting" state and raises the update screen (see update-prompt.js).
-const CACHE_NAME = 'valk-cache-v260';
+const CACHE_NAME = 'valk-cache-v261';
 const APP_SHELL = [
   '/',
   '/index.html',
@@ -132,6 +132,13 @@ self.addEventListener('notificationclick', (event) => {
           // type:'window') triggers the same fresh page load app.js's own rejoinRoom URL-param
           // handling already reacts to on a normal navigation, so this reuses that existing
           // auto-rejoin path rather than needing any new client-side logic.
+          // Friends / group-DM notifications (url "/?open=...") open a panel *inside* the app.
+          // Navigating would reload the tab and drop whatever room it's in, so hand an already-
+          // open tab the request instead and just bring it to the front.
+          if (!roomCode && url.startsWith('/?open=') && 'postMessage' in client) {
+            client.postMessage({ type: 'valk-open', url });
+            return client.focus();
+          }
           if ('navigate' in client) return client.navigate(url).then((c) => c && c.focus());
           return client.focus();
         }

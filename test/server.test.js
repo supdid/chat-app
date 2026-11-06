@@ -7021,3 +7021,51 @@ describe('stripe payments', () => {
     assert.equal(m.source, 'admin');
   });
 });
+
+describe('friend notifications + presence (2026-11-05)', () => {
+  const signup = async (username, email) => fetch(`${BASE_URL}/auth/signup`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password: 'pass1234', email }),
+  }).then((r) => r.json());
+  const friendReq = (token, username) => fetch(`${BASE_URL}/friends/request`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ username }),
+  });
+
+  test('a friend request shows up live in the recipient\'s open tab', async () => {
+    const a = await signup('NotifReqA', 'notifreqa@test.com');
+    const b = await signup('NotifReqB', 'notifreqb@test.com');
+    const bWs = await joinAsAccount('NotifReqB', b.token);
+    const live = waitFor(bWs, (m) => m.type === 'friend-request');
+    const res = await friendReq(a.token, 'NotifReqB');
+    assert.equal(res.status, 200);
+    const msg = await live;
+    assert.equal(msg.from, 'NotifReqA');
+    bWs.close();
+  });
+
+  test('friends list shows the room the friend most recently joined or chatted in', async () => {
+    const a = await signup('PresA', 'presa@test.com');
+    const b = await signup('PresB', 'presb@test.com');
+    await friendReq(a.token, 'PresB');
+    await fetch(`${BASE_URL}/friends/accept`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${b.token}` },
+      body: JSON.stringify({ username: 'PresA' }),
+    });
+    const room1 = await joinRoom('Room1Host');
+    const room2 = await joinRoom('Room2Host');
+    const roomOf = async () => {
+      const p = await fetch(`${BASE_URL}/friends/presence`, { headers: { Authorization: `Bearer ${b.token}` } }).then((r) => r.json());
+      return p.presence.find((x) => x.username === 'PresA').roomCode;
+    };
+    const tab1 = await joinAsAccount('PresA', a.token, room1.code);
+    await sleep(5);
+    const tab2 = await joinAsAccount('PresA', a.token, room2.code);
+    assert.equal(await roomOf(), room2.code, 'newest room tab should win over the older one');
+    await sleep(5);
+    send(tab1, { type: 'message', text: 'back in room 1' });
+    await waitFor(tab1, (m) => m.type === 'message' && m.text === 'back in room 1');
+    assert.equal(await roomOf(), room1.code, 'chatting in a tab makes it the current room');
+    tab1.close(); tab2.close(); room1.ws.close(); room2.ws.close();
+  });
+});
