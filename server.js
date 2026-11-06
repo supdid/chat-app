@@ -1938,6 +1938,44 @@ app.get('/account/recent-rooms', (req, res) => {
   res.json({ rooms: db.getAccountRecentRooms(account.id) });
 });
 
+// Saved (🔖) messages, synced per account. The client sends its own snapshot of the message.
+app.get('/account/saved-messages', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  res.json({ messages: db.getAccountSavedMessages(account.id) });
+});
+
+app.post('/account/saved-messages', (req, res) => {
+  if (isFriendsActionRateLimited(req)) return res.status(429).json({ error: 'Too many attempts — try again in a minute' });
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  const m = req.body || {};
+  const id = String(m.id || '').slice(0, 100);
+  if (!id) return res.status(400).json({ error: 'Missing message id' });
+  const mediaType = ['video', 'image', 'audio', 'poll'].includes(m.mediaType) ? m.mediaType : null;
+  const mediaUrl = typeof m.mediaUrl === 'string' && (m.mediaUrl.startsWith('/') || m.mediaUrl.startsWith('https://')) ? m.mediaUrl.slice(0, 500) : null;
+  const savedAt = Number.isFinite(+m.savedAt) ? Math.min(+m.savedAt, Date.now()) : Date.now();
+  const snapshot = {
+    id,
+    name: String(m.name || '').slice(0, 60),
+    text: String(m.text || '').slice(0, 2000),
+    mediaUrl,
+    mediaType,
+    at: Number.isFinite(+m.at) ? +m.at : null,
+    roomCode: m.roomCode ? String(m.roomCode).slice(0, 20) : null,
+    savedAt,
+  };
+  db.saveAccountMessage(account.id, id, JSON.stringify(snapshot), savedAt);
+  res.json({ ok: true });
+});
+
+app.delete('/account/saved-messages/:id', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  db.unsaveAccountMessage(account.id, String(req.params.id));
+  res.json({ ok: true });
+});
+
 app.post('/account/recent-rooms', (req, res) => {
   const account = getAccountFromReq(req);
   if (!account) return res.status(401).json({ error: 'Not signed in' });

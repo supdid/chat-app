@@ -7190,3 +7190,23 @@ describe('slow mode (2026-11-05)', () => {
     host.close(); member.close(); if (late) late.close();
   });
 });
+
+describe('saved messages sync to the account (2026-11-05)', () => {
+  test('save, list from another "device", and unsave', async () => {
+    const acct = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'SaverAcct', password: 'pass1234', email: 'saver@test.com' }),
+    }).then((r) => r.json());
+    const h = { 'Content-Type': 'application/json', Authorization: `Bearer ${acct.token}` };
+    const save = (m) => fetch(`${BASE_URL}/account/saved-messages`, { method: 'POST', headers: h, body: JSON.stringify(m) });
+    assert.equal((await save({ id: 'm1', name: 'Bob', text: 'remember this', at: 1, roomCode: 'ABC', savedAt: 100 })).status, 200);
+    await save({ id: 'm2', name: 'Amy', text: 'and this', mediaUrl: 'javascript:alert(1)', mediaType: 'image', at: 2, savedAt: 200 });
+    const list = await fetch(`${BASE_URL}/account/saved-messages`, { headers: h }).then((r) => r.json());
+    assert.deepEqual(list.messages.map((m) => m.id), ['m2', 'm1'], 'newest save first');
+    assert.equal(list.messages[0].mediaUrl, null, 'unsafe media URLs are dropped');
+    await fetch(`${BASE_URL}/account/saved-messages/m1`, { method: 'DELETE', headers: h });
+    const after = await fetch(`${BASE_URL}/account/saved-messages`, { headers: h }).then((r) => r.json());
+    assert.deepEqual(after.messages.map((m) => m.id), ['m2']);
+    assert.equal((await fetch(`${BASE_URL}/account/saved-messages`)).status, 401);
+  });
+});

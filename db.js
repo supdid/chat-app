@@ -317,6 +317,16 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_direct_messages_pair ON direct_messages(pair_key, at);
   CREATE INDEX IF NOT EXISTS idx_direct_messages_to ON direct_messages(to_account_id, at);
+  -- Saved (bookmarked) chat messages, synced to the account so they follow you across devices.
+  -- data = the client's own snapshot JSON (name/text/media/room), so a save survives the original
+  -- message being deleted.
+  CREATE TABLE IF NOT EXISTS account_saved_messages (
+    account_id TEXT,
+    message_id TEXT,
+    data TEXT,
+    saved_at INTEGER,
+    PRIMARY KEY (account_id, message_id)
+  );
   CREATE TABLE IF NOT EXISTS direct_message_reads (
     account_id TEXT,
     other_account_id TEXT,
@@ -1343,6 +1353,32 @@ function getDirectMessages(accountA, accountB, limit = 100) {
     .reverse();
 }
 
+const SAVED_MESSAGES_MAX = 200;
+
+function getAccountSavedMessages(accountId) {
+  return db
+    .prepare('SELECT data FROM account_saved_messages WHERE account_id = ? ORDER BY saved_at DESC LIMIT ?')
+    .all(accountId, SAVED_MESSAGES_MAX)
+    .map((r) => { try { return JSON.parse(r.data); } catch { return null; } })
+    .filter(Boolean);
+}
+
+function saveAccountMessage(accountId, messageId, data, savedAt) {
+  db.prepare(
+    `INSERT INTO account_saved_messages (account_id, message_id, data, saved_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(account_id, message_id) DO UPDATE SET data = excluded.data`
+  ).run(accountId, messageId, data, savedAt);
+  // Keep only the newest SAVED_MESSAGES_MAX per account.
+  db.prepare(
+    `DELETE FROM account_saved_messages WHERE account_id = ? AND message_id NOT IN (
+       SELECT message_id FROM account_saved_messages WHERE account_id = ? ORDER BY saved_at DESC LIMIT ?)`
+  ).run(accountId, accountId, SAVED_MESSAGES_MAX);
+}
+
+function unsaveAccountMessage(accountId, messageId) {
+  db.prepare('DELETE FROM account_saved_messages WHERE account_id = ? AND message_id = ?').run(accountId, messageId);
+}
+
 function markDirectMessagesRead(accountId, otherAccountId) {
   db.prepare(
     `INSERT INTO direct_message_reads (account_id, other_account_id, read_at) VALUES (?, ?, ?)
@@ -2223,6 +2259,9 @@ function getAccountByStreamKey(key) {
 }
 
 module.exports = {
+  getAccountSavedMessages,
+  saveAccountMessage,
+  unsaveAccountMessage,
   setSlowMode,
   insertDirectMessage,
   getDirectMessages,

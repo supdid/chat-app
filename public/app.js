@@ -366,6 +366,7 @@ function toggleSaveMessage(data) {
     });
     savedMessages = savedMessages.slice(0, 200);
   }
+  syncSavedChangeToAccount(idx !== -1 ? { removedId: data.id } : { added: savedMessages[0] });
   // A throw here (Safari private browsing, a storage-blocking extension) previously aborted the
   // rest of this function too, leaving the save-button icon stuck showing the OLD state even
   // though savedMessages had already been mutated in memory above.
@@ -373,6 +374,42 @@ function toggleSaveMessage(data) {
   document.querySelectorAll(`[data-message-id="${CSS.escape(data.id)}"] .save-btn`).forEach((btn) => {
     btn.classList.toggle('saved', isSaved(data.id));
   });
+}
+
+// Signed in: every save/unsave also goes to the account so the list follows you to other devices.
+function syncSavedChangeToAccount({ added, removedId }) {
+  if (!accountToken) return;
+  const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${accountToken}` };
+  const req = removedId
+    ? fetch(`/account/saved-messages/${encodeURIComponent(removedId)}`, { method: 'DELETE', headers })
+    : fetch('/account/saved-messages', { method: 'POST', headers, body: JSON.stringify(added) });
+  req.catch(() => { /* best-effort — the local copy is already updated */ });
+}
+
+// On sign-in / page load: upload anything saved on this device that the account doesn't have yet,
+// then take the account's list as the truth.
+async function syncSavedMessagesFromAccount() {
+  if (!accountToken) return;
+  const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${accountToken}` };
+  try {
+    const res = await fetch('/account/saved-messages', { headers });
+    if (!res.ok) return;
+    const data = await res.json();
+    const onServer = new Set(data.messages.map((m) => m.id));
+    const localOnly = savedMessages.filter((m) => m && m.id && !onServer.has(m.id));
+    for (const m of localOnly) {
+      await fetch('/account/saved-messages', { method: 'POST', headers, body: JSON.stringify(m) }).catch(() => {});
+    }
+    savedMessages = [...data.messages, ...localOnly].sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0)).slice(0, 200);
+    try { localStorage.setItem(SAVED_KEY, JSON.stringify(savedMessages)); } catch {}
+    document.querySelectorAll('[data-message-id]').forEach((el) => {
+      const btn = el.querySelector('.save-btn');
+      if (btn) btn.classList.toggle('saved', isSaved(el.dataset.messageId));
+    });
+    if (!savedOverlay.classList.contains('hidden')) renderSavedList();
+  } catch {
+    /* offline — keep the local list */
+  }
 }
 
 function renderSavedList() {
@@ -2783,6 +2820,7 @@ async function finishAccountSignIn(data) {
   subscribeToPush();
   await pushLocalRecentRoomsToAccount();
   syncRecentRoomsFromAccount();
+  syncSavedMessagesFromAccount();
 }
 
 async function handleAccountAuth(path) {
@@ -2974,6 +3012,7 @@ async function syncRecentRoomsFromAccount() {
 
 renderAccountState();
 if (accountToken) syncRecentRoomsFromAccount();
+if (accountToken) syncSavedMessagesFromAccount();
 
 // Sign-in/out only fires this in *other* tabs (the tab that made the change already updated
 // its own in-memory state directly) — without it, a second open tab keeps showing "signed in"
@@ -2984,6 +3023,7 @@ window.addEventListener('storage', (e) => {
   accountUsername = localStorage.getItem(ACCOUNT_USERNAME_KEY) || null;
   renderAccountState();
   if (accountToken) syncRecentRoomsFromAccount();
+  if (accountToken) syncSavedMessagesFromAccount();
 });
 
 // --- Friends (account-only) ---
