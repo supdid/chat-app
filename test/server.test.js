@@ -7317,3 +7317,57 @@ describe('room events (2026-11-05)', () => {
     }
   });
 });
+
+describe('GIF search + GIF messages (2026-11-05)', () => {
+  test('off without a key; with a key, search goes through the server and a GIF message carries a GIPHY URL built from the id', async () => {
+    assert.deepEqual(await fetch(`${BASE_URL}/api/gifs/status`).then((r) => r.json()), { enabled: false });
+    assert.equal((await fetch(`${BASE_URL}/api/gifs/search?q=cat`)).status, 503);
+
+    // Fake GIPHY.
+    const http = require('http');
+    let seenQuery = null;
+    const fake = http.createServer((req, res) => {
+      seenQuery = new URL(req.url, 'http://x');
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ data: [
+        { id: 'abcDEF123', title: 'cat', images: { fixed_width_small: { url: 'https://media2.giphy.com/media/abcDEF123/100w.gif', width: '100', height: '80' } } },
+        { id: '../evil', images: {} },
+        { id: 'ghiJKL456', images: { fixed_width_small: { url: 'https://evil.example/tracker.gif' } } },
+      ] }));
+    });
+    await new Promise((r) => fake.listen(3232, r));
+    const gifServer = await startTestServer({ GIPHY_API_KEY: 'test-key', GIPHY_API_BASE: 'http://localhost:3232' }, 3233);
+    try {
+      const base = `http://localhost:${gifServer.port}`;
+      assert.deepEqual(await fetch(`${base}/api/gifs/status`).then((r) => r.json()), { enabled: true });
+      const result = await fetch(`${base}/api/gifs/search?q=cat`).then((r) => r.json());
+      assert.equal(seenQuery.pathname, '/v1/gifs/search');
+      assert.equal(seenQuery.searchParams.get('rating'), 'pg');
+      assert.deepEqual(result.gifs.map((g) => g.id), ['abcDEF123', 'ghiJKL456'], 'bad ids are dropped');
+      assert.equal(result.gifs[1].preview, 'https://media.giphy.com/media/ghiJKL456/giphy.gif', 'non-GIPHY preview URLs are replaced');
+
+      const ws = new WebSocket(`ws://localhost:${gifServer.port}`);
+      await new Promise((r) => ws.on('open', r));
+      send(ws, { type: 'join-server', username: 'GifSender' });
+      await waitFor(ws, (m) => m.type === 'joined-server');
+      send(ws, { type: 'create-room' });
+      await waitFor(ws, (m) => m.type === 'joined-room');
+      send(ws, { type: 'message', gifId: 'abcDEF123', mediaType: 'image' });
+      const msg = await waitFor(ws, (m) => m.type === 'message');
+      assert.equal(msg.mediaUrl, 'https://media.giphy.com/media/abcDEF123/giphy.gif');
+      assert.equal(msg.mediaType, 'image');
+      // A raw external URL is still refused.
+      let leaked = false;
+      const h = (d) => { const m = JSON.parse(d); if (m.type === 'message' && m.mediaUrl === 'https://evil.example/x.gif') leaked = true; };
+      ws.on('message', h);
+      send(ws, { type: 'message', mediaUrl: 'https://evil.example/x.gif', mediaType: 'image' });
+      await sleep(300);
+      ws.off('message', h);
+      assert.equal(leaked, false);
+      ws.close();
+    } finally {
+      await gifServer.stop();
+      fake.close();
+    }
+  });
+});

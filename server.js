@@ -311,6 +311,22 @@ console.log(stripeReady
   ? `Stripe payments ON (${stripeConfig.secretKey.startsWith('sk_live_') ? 'LIVE — real money' : 'test mode'}).`
   : `Stripe payments off — fill in ${STRIPE_CONFIG_PATH} and restart to turn them on.`);
 
+// ---- GIF search (GIPHY). Off until a free API key from developers.giphy.com is put in
+// gif-config.json (or GIPHY_API_KEY). The key stays on the server; the app searches through
+// /api/gifs/*. Messages only ever carry a GIPHY id, and the server builds the media URL.
+const GIF_CONFIG_PATH = path.join(__dirname, 'gif-config.json');
+let gifConfig = { giphyApiKey: '' };
+if (fs.existsSync(GIF_CONFIG_PATH)) {
+  try { gifConfig = { ...gifConfig, ...JSON.parse(fs.readFileSync(GIF_CONFIG_PATH, 'utf8')) }; } catch {}
+} else {
+  try { fs.writeFileSync(GIF_CONFIG_PATH, JSON.stringify(gifConfig, null, 2)); } catch {}
+}
+if (process.env.GIPHY_API_KEY) gifConfig.giphyApiKey = process.env.GIPHY_API_KEY;
+const GIPHY_API_BASE = process.env.GIPHY_API_BASE || 'https://api.giphy.com';
+const GIF_ID_RE = /^[A-Za-z0-9]{5,40}$/;
+const gifUrlForId = (id) => `https://media.giphy.com/media/${id}/giphy.gif`;
+console.log(gifConfig.giphyApiKey ? 'GIF search ON (GIPHY).' : `GIF search off — put a GIPHY API key in ${GIF_CONFIG_PATH} and restart to turn it on.`);
+
 const { OAuth2Client } = require('google-auth-library');
 const googleClient = googleConfig.clientId ? new OAuth2Client(googleConfig.clientId) : null;
 
@@ -1936,6 +1952,45 @@ app.get('/account/recent-rooms', (req, res) => {
   const account = getAccountFromReq(req);
   if (!account) return res.status(401).json({ error: 'Not signed in' });
   res.json({ rooms: db.getAccountRecentRooms(account.id) });
+});
+
+const gifSearchRateLimits = new Map();
+function isGifSearchRateLimited(req) {
+  const ip = req.ip || 'unknown';
+  const now = Date.now();
+  const recent = (gifSearchRateLimits.get(ip) || []).filter((t) => now - t < 60 * 1000);
+  recent.push(now);
+  gifSearchRateLimits.set(ip, recent);
+  if (gifSearchRateLimits.size > 10000) gifSearchRateLimits.clear();
+  return recent.length > 40;
+}
+
+app.get('/api/gifs/status', (req, res) => {
+  res.json({ enabled: !!gifConfig.giphyApiKey });
+});
+
+// ?q= searches; no q = trending. Returns [{ id, preview, width, height }].
+app.get('/api/gifs/search', async (req, res) => {
+  if (!gifConfig.giphyApiKey) return res.status(503).json({ error: 'GIFs are not set up on this server yet' });
+  if (isGifSearchRateLimited(req)) return res.status(429).json({ error: 'Too many searches — wait a moment' });
+  const q = String(req.query.q || '').slice(0, 50).trim();
+  const params = new URLSearchParams({ api_key: gifConfig.giphyApiKey, limit: '24', rating: 'pg', bundle: 'messaging_non_clips' });
+  if (q) { params.set('q', q); params.set('lang', 'en'); }
+  try {
+    const r = await fetch(`${GIPHY_API_BASE}/v1/gifs/${q ? 'search' : 'trending'}?${params}`, { signal: AbortSignal.timeout(8000) });
+    if (!r.ok) return res.status(502).json({ error: 'GIF search is having trouble right now' });
+    const data = await r.json();
+    const gifs = (Array.isArray(data.data) ? data.data : [])
+      .filter((g) => g && GIF_ID_RE.test(String(g.id)))
+      .map((g) => {
+        const img = (g.images && (g.images.fixed_width_small || g.images.fixed_width || g.images.downsized)) || {};
+        const preview = typeof img.url === 'string' && /^https:\/\/media\d?\.giphy\.com\//.test(img.url) ? img.url : gifUrlForId(g.id);
+        return { id: g.id, preview, width: +img.width || 100, height: +img.height || 100, title: String(g.title || '').slice(0, 100) };
+      });
+    res.json({ gifs });
+  } catch {
+    res.status(502).json({ error: 'GIF search is having trouble right now' });
+  }
 });
 
 // Saved (🔖) messages, synced per account. The client sends its own snapshot of the message.
@@ -8506,7 +8561,9 @@ wss.on('connection', (ws, req) => {
         room.slowLast.set(slowKey, Date.now());
       }
       const text = String(msg.text || '').slice(0, 2000).trim();
-      const mediaType = ['video', 'image', 'audio', 'poll'].includes(msg.mediaType) ? msg.mediaType : null;
+      // A GIF from the GIF picker arrives as just its GIPHY id; the URL is built here.
+      const gifUrl = typeof msg.gifId === 'string' && GIF_ID_RE.test(msg.gifId) ? gifUrlForId(msg.gifId) : null;
+      const mediaType = gifUrl ? 'image' : ['video', 'image', 'audio', 'poll'].includes(msg.mediaType) ? msg.mediaType : null;
       // Every other "attach media" path in this app (post-image, post-media, scorpture uploads)
       // requires a real /uploads/ URL — this was the one place that didn't, letting any user post
       // an arbitrary external URL that auto-loads (mediaType 'video'/'image'/'audio') in every
@@ -8518,9 +8575,9 @@ wss.on('connection', (ws, req) => {
       // the sender. STICKER_URLS (built from the real files on disk, see above) is the same kind
       // of known-safe exception the AI Studio pollinations.ai host gets in /post-image, just for a
       // fixed local file set instead of a fixed external host.
-      const mediaUrl = typeof msg.mediaUrl === 'string' && (mediaType === 'poll' ? msg.mediaUrl === 'poll' : (msg.mediaUrl.startsWith('/uploads/') || STICKER_URLS.has(msg.mediaUrl)))
+      const mediaUrl = gifUrl || (typeof msg.mediaUrl === 'string' && (mediaType === 'poll' ? msg.mediaUrl === 'poll' : (msg.mediaUrl.startsWith('/uploads/') || STICKER_URLS.has(msg.mediaUrl)))
         ? msg.mediaUrl
-        : null;
+        : null);
       if (!text && !(mediaUrl && mediaType)) return;
       if (mediaType === 'poll' && !isValidPollText(text)) return;
       // Claimed only after both rejections above — a raw WS client sending a real /uploads/

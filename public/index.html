@@ -133,6 +133,11 @@
     <div id="reply-preview" class="reply-preview hidden"></div>
 
     <div id="sticker-picker" class="sticker-picker hidden"></div>
+    <div id="gif-picker" class="gif-picker hidden">
+      <input id="gif-search-input" type="search" placeholder="Search GIFs…" maxlength="50" autocomplete="off">
+      <div id="gif-results" class="gif-results"></div>
+      <p class="gif-attribution">Powered by GIPHY</p>
+    </div>
 
     <div id="mention-dropdown" class="mention-dropdown hidden"></div>
 
@@ -141,6 +146,7 @@
       <button type="button" id="attach-btn" class="icon-btn" aria-label="Attach photo or video">📎</button>
       <input type="file" id="file-input" accept="image/*,video/*" class="hidden">
       <button type="button" id="sticker-btn" class="icon-btn" aria-label="Send a sticker">🙂</button>
+      <button type="button" id="gif-btn" class="icon-btn gif-btn hidden" aria-label="Send a GIF">GIF</button>
       <button type="button" id="voice-clip-btn" class="icon-btn hidden" aria-label="Record a voice message">🎙️</button>
       <button type="button" id="mic-btn" class="icon-btn hidden" aria-label="Speak your message">🎤</button>
       <input id="message-input" type="text" placeholder="Type a message..." maxlength="2000" autocomplete="off">

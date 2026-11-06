@@ -84,6 +84,10 @@ const micBtn = document.getElementById('mic-btn');
 const voiceClipBtn = document.getElementById('voice-clip-btn');
 const stickerBtn = document.getElementById('sticker-btn');
 const stickerPicker = document.getElementById('sticker-picker');
+const gifBtn = document.getElementById('gif-btn');
+const gifPicker = document.getElementById('gif-picker');
+const gifSearchInput = document.getElementById('gif-search-input');
+const gifResults = document.getElementById('gif-results');
 const worldwideBadge = document.getElementById('worldwide-badge');
 const worldwideCountEl = document.getElementById('worldwide-count');
 const headerWorldwideEl = document.getElementById('header-worldwide');
@@ -975,6 +979,7 @@ function handleServerMessage(data) {
       // across a room switch/reconnect, a stray click on a still-visible sticker would fire the
       // send handler against whatever room the composer now actually posts to.
       if (stickerPicker) stickerPicker.classList.add('hidden');
+      if (gifPicker) gifPicker.classList.add('hidden');
       seedReactions(data.reactions);
       // read_receipts was being persisted server-side on every real read event but never sent
       // back on join — found by a read-receipt-integrity audit. Without this, a client
@@ -2247,6 +2252,14 @@ function setReplyingTo(data) {
 // bar entirely and leave it stuck on the composer.
 function sendMediaMessage(mediaUrl, mediaType) {
   const payload = { type: 'message', mediaUrl, mediaType };
+  if (replyingTo) payload.replyTo = replyingTo.id;
+  ws.send(JSON.stringify(payload));
+  clearReplyingTo();
+}
+
+// GIFs from the GIF picker: only the GIPHY id is sent; the server builds the media URL.
+function sendGifMessage(gifId) {
+  const payload = { type: 'message', gifId, mediaType: 'image' };
   if (replyingTo) payload.replyTo = replyingTo.id;
   ws.send(JSON.stringify(payload));
   clearReplyingTo();
@@ -6435,3 +6448,72 @@ window.addEventListener('unhandledrejection', (e) => {
   const reason = e.reason;
   reportClientError(reason && reason.message ? reason.message : String(reason), reason && reason.stack);
 });
+
+// --- GIF picker (GIPHY via the server's /api/gifs/*; hidden unless the server has a key) ---
+(function initGifPicker() {
+  if (!gifBtn) return;
+  fetch('/api/gifs/status').then((r) => r.json()).then((d) => {
+    if (d && d.enabled) gifBtn.classList.remove('hidden');
+  }).catch(() => {});
+
+  let searchTimer = null;
+  let searchSeq = 0;
+
+  async function loadGifs(q) {
+    const seq = ++searchSeq;
+    gifResults.innerHTML = '<p class="search-status">Loading…</p>';
+    try {
+      const res = await fetch(`/api/gifs/search${q ? `?q=${encodeURIComponent(q)}` : ''}`);
+      const data = await res.json();
+      if (seq !== searchSeq) return; // a newer search already replaced this one
+      if (!res.ok) throw new Error(data.error || 'GIF search failed');
+      gifResults.innerHTML = '';
+      if (!data.gifs.length) {
+        gifResults.innerHTML = '<p class="search-status">No GIFs found.</p>';
+        return;
+      }
+      for (const g of data.gifs) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.title = g.title || 'GIF';
+        const img = document.createElement('img');
+        img.src = g.preview;
+        img.alt = g.title || 'GIF';
+        img.loading = 'lazy';
+        btn.appendChild(img);
+        btn.addEventListener('click', () => {
+          if (!ws || ws.readyState !== WebSocket.OPEN) {
+            showAppToast("Not connected — your GIF wasn't sent.");
+            return;
+          }
+          sendGifMessage(g.id);
+          gifPicker.classList.add('hidden');
+        });
+        gifResults.appendChild(btn);
+      }
+    } catch (err) {
+      if (seq === searchSeq) gifResults.innerHTML = `<p class="search-status">${escapeHtml(err.message || 'GIF search failed')}</p>`;
+    }
+  }
+
+  gifBtn.addEventListener('click', () => {
+    const opening = gifPicker.classList.contains('hidden');
+    gifPicker.classList.toggle('hidden', !opening);
+    if (stickerPicker) stickerPicker.classList.add('hidden');
+    if (opening) {
+      gifSearchInput.value = '';
+      loadGifs('');
+      gifSearchInput.focus();
+    }
+  });
+  if (stickerPicker) {
+    document.getElementById('sticker-btn').addEventListener('click', () => gifPicker.classList.add('hidden'));
+  }
+  gifSearchInput.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => loadGifs(gifSearchInput.value.trim()), 400);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !gifPicker.classList.contains('hidden')) gifPicker.classList.add('hidden');
+  });
+})();
