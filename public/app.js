@@ -158,6 +158,8 @@ const friendDmCloseBtn = document.getElementById('friend-dm-close-btn');
 const friendDmTargetName = document.getElementById('friend-dm-target-name');
 const friendDmForm = document.getElementById('friend-dm-form');
 const friendDmInput = document.getElementById('friend-dm-input');
+const friendDmMessagesEl = document.getElementById('friend-dm-messages');
+let currentFriendDmUsername = null;
 const onlineContextMenu = document.getElementById('online-context-menu');
 const privateCallContextBtn = document.getElementById('private-call-context-btn');
 const privateCallIncomingOverlay = document.getElementById('private-call-incoming');
@@ -1110,9 +1112,28 @@ function handleServerMessage(data) {
     // now) — the server also always fires a real push notification alongside this, per the
     // "notified whether online or offline" ask, so offline devices still get it.
     case 'friend-dm':
-      showAppToast(`💬 ${data.from} sent you a DM: ${data.text}`);
-      playNotifySound();
-      notify(`${data.from} sent you a DM`, data.text);
+      if (isFriendDmOpenWith(data.fromUsername)) {
+        renderFriendDmMessage(data);
+        ws.send(JSON.stringify({ type: 'friend-dm-read', withUsername: data.fromUsername }));
+        if (document.hidden) notify(`${data.from} sent you a DM`, data.text);
+      } else {
+        showAppToast(`💬 ${data.from} sent you a DM: ${data.text}`);
+        playNotifySound();
+        notify(`${data.from} sent you a DM`, data.text);
+        if (!friendsOverlay.classList.contains('hidden')) loadFriends();
+      }
+      break;
+
+    case 'friend-dm-history':
+      if (isFriendDmOpenWith(data.withUsername)) {
+        friendDmTargetName.textContent = data.withUsername;
+        friendDmMessagesEl.innerHTML = '';
+        if (!data.messages.length) {
+          friendDmMessagesEl.innerHTML = `<p class="search-status">${data.isFriend ? 'No messages yet — say hi!' : 'You can only send messages to friends.'}</p>`;
+        } else {
+          data.messages.forEach(renderFriendDmMessage);
+        }
+      }
       break;
 
     case 'valkmail-new':
@@ -1130,7 +1151,8 @@ function handleServerMessage(data) {
       break;
 
     case 'friend-dm-sent':
-      showAppToast(`💬 DM sent to ${data.toUsername}`);
+      if (data.message && isFriendDmOpenWith(data.toUsername)) renderFriendDmMessage(data.message);
+      else showAppToast(`💬 DM sent to ${data.toUsername}`);
       break;
 
     case 'group-dm-threads':
@@ -2960,7 +2982,9 @@ function friendRow(username, actions, presence) {
   const buttonsHtml = actions
     .map((a) => {
       const roomAttr = a.roomCode ? ` data-room-code="${escapeHtml(a.roomCode)}"` : '';
-      return `<button type="button" class="friend-action-btn${a.danger ? ' danger' : ''}" data-action="${a.action}" data-username="${escapeHtml(username)}"${roomAttr}>${a.label}</button>`;
+      const titleAttr = a.title ? ` title="${escapeHtml(a.title)}" aria-label="${escapeHtml(a.title)}"` : '';
+      const badge = a.unread ? `<span class="unread-badge">${a.unread > 99 ? '99+' : a.unread}</span>` : '';
+      return `<button type="button" class="friend-action-btn${a.danger ? ' danger' : ''}" data-action="${a.action}" data-username="${escapeHtml(username)}"${roomAttr}${titleAttr}>${a.label}${badge}</button>`;
     })
     .join('');
   const dotHtml = presence
@@ -3016,7 +3040,7 @@ function renderFriends(data) {
   friendsListEl.innerHTML = '';
   friendsEmptyMsg.classList.toggle('hidden', data.friends.length !== 0);
   data.friends.forEach((f) => {
-    const actions = [];
+    const actions = [{ action: 'dm', label: '💬', unread: f.unreadDms || 0, title: `Message ${f.username}` }];
     if (f.online && f.roomCode) actions.push({ action: 'join', label: 'Join', roomCode: f.roomCode });
     actions.push({ action: 'remove', label: 'Remove', danger: true });
     actions.push({ action: 'block', label: 'Block', danger: true });
@@ -3107,6 +3131,10 @@ friendAddForm.addEventListener('submit', (e) => {
       joinFriendRoom(btn.dataset.roomCode);
       return;
     }
+    if (btn.dataset.action === 'dm') {
+      openFriendDm(btn.dataset.username);
+      return;
+    }
     friendAction(btn.dataset.action, btn.dataset.username);
   });
 });
@@ -3141,27 +3169,76 @@ document.addEventListener('click', (e) => {
 friendDmContextBtn.addEventListener('click', () => {
   const target = friendContextTarget;
   hideFriendContextMenu();
-  if (!target) return;
-  friendDmTargetName.textContent = target;
-  friendDmForm.dataset.username = target;
-  friendDmInput.value = '';
-  friendDmOverlay.classList.remove('hidden');
-  friendDmInput.focus();
+  if (target) openFriendDm(target);
 });
 
-friendDmCloseBtn.addEventListener('click', () => friendDmOverlay.classList.add('hidden'));
+// Saved 1-on-1 chat with a friend: loads the history from the server (which also marks it read).
+function openFriendDm(username) {
+  if (!username) return;
+  if (!accountToken) {
+    showAppToast('Sign in to message friends');
+    return;
+  }
+  currentFriendDmUsername = username;
+  friendDmTargetName.textContent = username;
+  friendDmForm.dataset.username = username;
+  friendDmInput.value = '';
+  friendDmMessagesEl.innerHTML = '<p class="search-status">Loading…</p>';
+  friendDmOverlay.classList.remove('hidden');
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'get-friend-dm-history', withUsername: username }));
+  friendDmInput.focus();
+}
+
+function closeFriendDm() {
+  friendDmOverlay.classList.add('hidden');
+  currentFriendDmUsername = null;
+  if (!friendsOverlay.classList.contains('hidden')) loadFriends();
+}
+
+function isFriendDmOpenWith(username) {
+  return !!currentFriendDmUsername && !friendDmOverlay.classList.contains('hidden')
+    && !!username && currentFriendDmUsername.toLowerCase() === String(username).toLowerCase();
+}
+
+function renderFriendDmMessage(m) {
+  const empty = friendDmMessagesEl.querySelector('.search-status');
+  if (empty) empty.remove();
+  if (m.id && friendDmMessagesEl.querySelector(`[data-dm-id="${CSS.escape(m.id)}"]`)) return;
+  const own = !!accountUsername && m.fromUsername && m.fromUsername.toLowerCase() === accountUsername.toLowerCase();
+  const el = document.createElement('div');
+  el.className = 'thread-message' + (own ? ' own' : '');
+  if (m.id) el.dataset.dmId = m.id;
+  const meta = document.createElement('span');
+  meta.className = 'meta';
+  const d = new Date(m.at);
+  const sameDay = d.toDateString() === new Date().toDateString();
+  const when = sameDay ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  meta.textContent = `${own ? 'You' : m.fromUsername || '?'} · ${when}`;
+  el.appendChild(meta);
+  const text = document.createElement('div');
+  text.appendChild(renderTextWithMentions(m.text));
+  el.appendChild(text);
+  friendDmMessagesEl.appendChild(el);
+  friendDmMessagesEl.scrollTop = friendDmMessagesEl.scrollHeight;
+}
+
+friendDmCloseBtn.addEventListener('click', closeFriendDm);
 friendDmOverlay.addEventListener('click', (e) => {
-  if (e.target === friendDmOverlay) friendDmOverlay.classList.add('hidden');
+  if (e.target === friendDmOverlay) closeFriendDm();
 });
 
 friendDmForm.addEventListener('submit', (e) => {
   e.preventDefault();
   const toUsername = friendDmForm.dataset.username;
   const text = friendDmInput.value.trim();
-  if (!toUsername || !text || !ws || ws.readyState !== WebSocket.OPEN) return;
+  if (!toUsername || !text) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    showAppToast("Not connected — your message wasn't sent.");
+    return;
+  }
   ws.send(JSON.stringify({ type: 'friend-dm', toUsername, text }));
-  friendDmOverlay.classList.add('hidden');
   friendDmInput.value = '';
+  friendDmInput.focus();
 });
 
 // --- Private (1:1) call: right-click a name in "Online in this room" for a context menu,
@@ -5909,7 +5986,10 @@ function handleOpenRequest(url) {
   let params;
   try { params = new URLSearchParams(new URL(url, location.origin).search); } catch { return; }
   const what = params.get('open');
-  if (what === 'friends') {
+  if (what === 'dm' && params.get('with')) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) { pendingOpenUrl = url; return; }
+    openFriendDm(params.get('with'));
+  } else if (what === 'friends') {
     openFriendsPanel();
     const dmFrom = params.get('dmFrom');
     if (dmFrom) showAppToast(`💬 ${dmFrom}: ${params.get('dmText') || ''}`);

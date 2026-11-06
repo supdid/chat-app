@@ -2027,14 +2027,35 @@ button.danger:hover {
   color: rgba(4, 18, 28, 0.7);
 }
 
-#dm-form {
+#dm-form,
+#group-dm-form,
+#friend-dm-form {
   display: flex;
   gap: 0.5rem;
   margin-top: 0.6rem;
 }
 
-#dm-form input {
+#dm-form input,
+#group-dm-form input,
+#friend-dm-form input {
   flex: 1;
+}
+
+#friend-dm-messages {
+  max-height: 55vh;
+}
+
+.friend-action-btn .unread-badge {
+  display: inline-block;
+  min-width: 1.1rem;
+  padding: 0 0.3rem;
+  margin-left: 0.25rem;
+  border-radius: 999px;
+  background: #ff4d6d;
+  color: #fff;
+  font-size: 0.7rem;
+  line-height: 1.1rem;
+  text-align: center;
 }
 
 .reply-count-btn {

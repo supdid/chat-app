@@ -396,14 +396,15 @@
 
   <!-- Compose a private DM to a friend -->
   <div id="friend-dm-overlay" class="menu-overlay hidden">
-    <div class="menu-panel dm-compose-panel">
+    <div class="menu-panel">
       <div class="menu-header">
-        <h2>DM <span id="friend-dm-target-name"></span></h2>
+        <h2>💬 <span id="friend-dm-target-name"></span></h2>
         <button id="friend-dm-close-btn" class="icon-btn" aria-label="Close">✕</button>
       </div>
-      <form id="friend-dm-form" class="rename-room-form">
-        <input id="friend-dm-input" type="text" placeholder="Type a message…" maxlength="500" autocomplete="off">
-        <button type="submit">Send private DM</button>
+      <div id="friend-dm-messages" class="dm-messages"></div>
+      <form id="friend-dm-form">
+        <input id="friend-dm-input" type="text" placeholder="Message…" maxlength="500" autocomplete="off">
+        <button type="submit">Send</button>
       </form>
     </div>
   </div>

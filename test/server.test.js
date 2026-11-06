@@ -7097,3 +7097,58 @@ describe('leaderboards are tied to accounts (2026-11-05)', () => {
     owner.close(); faker.close();
   });
 });
+
+describe('saved 1-on-1 friend DMs (2026-11-05)', () => {
+  test('DMs are saved, show up in history for both sides, and count as unread until opened', async () => {
+    const signup = async (username, email) => fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password: 'pass1234', email }),
+    }).then((r) => r.json());
+    const a = await signup('SaveDmA', 'savedma@test.com');
+    const b = await signup('SaveDmB', 'savedmb@test.com');
+    await fetch(`${BASE_URL}/friends/request`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${a.token}` }, body: JSON.stringify({ username: 'SaveDmB' }) });
+    await fetch(`${BASE_URL}/friends/accept`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${b.token}` }, body: JSON.stringify({ username: 'SaveDmA' }) });
+
+    const aWs = await joinAsAccount('SaveDmA', a.token);
+    const sent = waitFor(aWs, (m) => m.type === 'friend-dm-sent' && m.message && m.message.text === 'first');
+    send(aWs, { type: 'friend-dm', toUsername: 'SaveDmB', text: 'first' });
+    const s1 = await sent;
+    assert.equal(s1.message.fromUsername, 'SaveDmA');
+    send(aWs, { type: 'friend-dm', toUsername: 'SaveDmB', text: 'second' });
+    await waitFor(aWs, (m) => m.type === 'friend-dm-sent' && m.message && m.message.text === 'second');
+
+    // B was offline the whole time — the messages are still there, and unread.
+    const friendsB = await fetch(`${BASE_URL}/friends`, { headers: { Authorization: `Bearer ${b.token}` } }).then((r) => r.json());
+    assert.equal(friendsB.friends.find((f) => f.username === 'SaveDmA').unreadDms, 2);
+
+    const bWs = await joinAsAccount('SaveDmB', b.token);
+    send(bWs, { type: 'get-friend-dm-history', withUsername: 'SaveDmA' });
+    const hist = await waitFor(bWs, (m) => m.type === 'friend-dm-history');
+    assert.deepEqual(hist.messages.map((m) => m.text), ['first', 'second']);
+    assert.equal(hist.messages[0].fromUsername, 'SaveDmA');
+    assert.equal(hist.isFriend, true);
+
+    const friendsB2 = await fetch(`${BASE_URL}/friends`, { headers: { Authorization: `Bearer ${b.token}` } }).then((r) => r.json());
+    assert.equal(friendsB2.friends.find((f) => f.username === 'SaveDmA').unreadDms, 0, 'opening the chat marks it read');
+
+    // A's own history shows the same conversation.
+    send(aWs, { type: 'get-friend-dm-history', withUsername: 'SaveDmB' });
+    const histA = await waitFor(aWs, (m) => m.type === 'friend-dm-history');
+    assert.equal(histA.messages.length, 2);
+    aWs.close(); bWs.close();
+  });
+
+  test('a stranger cannot read someone else\'s DM history', async () => {
+    const signup = async (username, email) => fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password: 'pass1234', email }),
+    }).then((r) => r.json());
+    const c = await signup('SaveDmSnoop', 'savedmsnoop@test.com');
+    const cWs = await joinAsAccount('SaveDmSnoop', c.token);
+    send(cWs, { type: 'get-friend-dm-history', withUsername: 'SaveDmA' });
+    const hist = await waitFor(cWs, (m) => m.type === 'friend-dm-history');
+    assert.equal(hist.messages.length, 0, 'only the snoop own (empty) conversation with A is visible');
+    assert.equal(hist.isFriend, false);
+    cWs.close();
+  });
+});

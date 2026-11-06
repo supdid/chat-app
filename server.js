@@ -2010,8 +2010,9 @@ app.get('/friends', (req, res) => {
   if (isFriendsActionRateLimited(req)) return res.status(429).json({ error: 'Too many attempts — try again in a minute' });
   const account = getAccountFromReq(req);
   if (!account) return res.status(401).json({ error: 'Not signed in' });
+  const unread = db.getDirectMessageUnreadCounts(account.id);
   res.json({
-    friends: db.getFriends(account.id),
+    friends: db.getFriends(account.id).map((f) => ({ ...f, unreadDms: unread[f.accountId] || 0 })),
     incoming: db.getIncomingFriendRequests(account.id),
     outgoing: db.getOutgoingFriendRequests(account.id),
     blocked: db.getBlockedUsers(account.id),
@@ -3146,11 +3147,6 @@ app.delete('/api/valkmail/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-// Friend DMs are deliberately not persisted anywhere (no thread/inbox to load later) — this is
-// a one-shot "poke" a friend with a message, delivered live to any open tab/device they have
-// (accountConnections) and, since the ask is to notify them "if they are offline or online",
-// unconditionally via real push too — unlike pushNewMessage's room broadcasts above, this never
-// skips someone just because they're currently connected.
 // Friend requests used to land silently — nothing told the recipient until they happened to open
 // the Friends panel. Same live-tab + real-push pair as friend DMs below.
 function notifyFriendRequest(fromAccount, targetAccountId) {
@@ -3163,18 +3159,32 @@ function notifyFriendRequest(fromAccount, targetAccountId) {
   });
 }
 
-function sendFriendDm(fromName, targetAccountId, text) {
-  const livePayload = JSON.stringify({ type: 'friend-dm', from: fromName, text, at: Date.now() });
-  const liveConnections = accountConnections.get(targetAccountId);
-  if (liveConnections) {
-    for (const c of liveConnections) {
-      if (c.readyState === c.OPEN) c.send(livePayload);
-    }
+// Friend DMs are saved (direct_messages) so each friend pair has a real chat history, and are
+// delivered live to every open tab of the recipient plus unconditionally as a real push (the
+// original ask was to notify them "if they are offline or online").
+function sendFriendDm(fromWs, fromAccount, targetAccount, text) {
+  const fromName = fromWs.profile.name;
+  const message = { id: crypto.randomUUID(), fromUsername: fromAccount.username, toUsername: targetAccount.username, text, at: Date.now() };
+  db.insertDirectMessage({ id: message.id, fromAccountId: fromAccount.id, toAccountId: targetAccount.id, text, at: message.at });
+  const livePayload = JSON.stringify({ type: 'friend-dm', from: fromName, ...message });
+  for (const c of accountConnections.get(targetAccount.id) || []) {
+    if (c.readyState === c.OPEN) c.send(livePayload);
   }
-  sendPushToSubs(db.getPushSubscriptionsForAccount(targetAccountId), { title: `${fromName} sent you a DM`, body: text, friendDm: true, fromUsername: fromName, url: `/?open=friends&dmFrom=${encodeURIComponent(fromName)}&dmText=${encodeURIComponent(String(text).slice(0, 500))}` });
+  // Every one of the sender's own tabs (not just the one that sent it) shows it in an open chat.
+  const sentPayload = JSON.stringify({ type: 'friend-dm-sent', toUsername: targetAccount.username, message });
+  for (const c of accountConnections.get(fromAccount.id) || []) {
+    if (c.readyState === c.OPEN) c.send(sentPayload);
+  }
+  sendPushToSubs(db.getPushSubscriptionsForAccount(targetAccount.id), {
+    title: `${fromName} sent you a DM`,
+    body: text,
+    friendDm: true,
+    fromUsername: fromAccount.username,
+    url: `/?open=dm&with=${encodeURIComponent(fromAccount.username)}`,
+  });
 }
 
-// Group DMs are persisted (unlike friend-dm above) since membership needs to survive everyone
+// Group DMs are persisted (like friend-dm above) since membership needs to survive everyone
 // being offline. Delivery still reuses the same two-part pattern: live push over accountConnections
 // for anyone currently connected, plus unconditional real push so offline members get notified too.
 function sendGroupDm(groupId, fromAccountId, fromName, text, excludeWs) {
@@ -7380,8 +7390,31 @@ wss.on('connection', (ws, req) => {
         send(ws, { type: 'error', message: 'You are sending messages too fast — slow down a bit.' });
         return;
       }
-      sendFriendDm(ws.profile.name, targetAccount.id, text);
-      send(ws, { type: 'friend-dm-sent', toUsername });
+      const fromAccount = db.getAccountById(ws.accountId);
+      if (!fromAccount) return;
+      sendFriendDm(ws, fromAccount, targetAccount, text);
+      return;
+    }
+
+    // Saved 1-on-1 chat history with a friend (also marks it read).
+    if (msg.type === 'get-friend-dm-history' || msg.type === 'friend-dm-read') {
+      if (!ws.accountId) return;
+      const other = db.getAccountByUsername(String(msg.withUsername || '').trim());
+      if (!other || other.id === ws.accountId) return;
+      if (db.isBlockedBetween(ws.accountId, other.id)) {
+        send(ws, { type: 'error', message: "You can't message this user" });
+        return;
+      }
+      db.markDirectMessagesRead(ws.accountId, other.id);
+      if (msg.type === 'get-friend-dm-history') {
+        const friendship = db.getFriendshipBetween(ws.accountId, other.id);
+        send(ws, {
+          type: 'friend-dm-history',
+          withUsername: other.username,
+          isFriend: !!(friendship && friendship.status === 'accepted'),
+          messages: db.getDirectMessages(ws.accountId, other.id, 100),
+        });
+      }
       return;
     }
 

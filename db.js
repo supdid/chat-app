@@ -303,6 +303,25 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_group_dm_messages_group ON group_dm_messages(group_id, at);
 
+  -- Saved 1-on-1 friend DMs (friend DMs used to be fire-and-forget pokes with no history).
+  -- pair_key = the two account ids sorted and joined, so either side finds the same conversation.
+  CREATE TABLE IF NOT EXISTS direct_messages (
+    id TEXT PRIMARY KEY,
+    pair_key TEXT,
+    from_account_id TEXT,
+    to_account_id TEXT,
+    text TEXT,
+    at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_direct_messages_pair ON direct_messages(pair_key, at);
+  CREATE INDEX IF NOT EXISTS idx_direct_messages_to ON direct_messages(to_account_id, at);
+  CREATE TABLE IF NOT EXISTS direct_message_reads (
+    account_id TEXT,
+    other_account_id TEXT,
+    read_at INTEGER,
+    PRIMARY KEY (account_id, other_account_id)
+  );
+
   CREATE TABLE IF NOT EXISTS error_reports (
     id TEXT PRIMARY KEY,
     source TEXT,
@@ -1295,6 +1314,51 @@ function unblock(blockerId, blockedId) {
   );
 }
 
+// ---- Saved 1-on-1 friend DMs ----
+function dmPairKey(a, b) {
+  return a < b ? `${a}:${b}` : `${b}:${a}`;
+}
+
+function insertDirectMessage({ id, fromAccountId, toAccountId, text, at }) {
+  db.prepare(
+    'INSERT INTO direct_messages (id, pair_key, from_account_id, to_account_id, text, at) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(id, dmPairKey(fromAccountId, toAccountId), fromAccountId, toAccountId, text, at);
+}
+
+// Oldest-first, newest `limit` messages, with the sender's current username.
+function getDirectMessages(accountA, accountB, limit = 100) {
+  return db
+    .prepare(
+      `SELECT d.id, d.text, d.at, a.username AS fromUsername FROM direct_messages d
+       LEFT JOIN accounts a ON a.id = d.from_account_id
+       WHERE d.pair_key = ? ORDER BY d.at DESC LIMIT ?`
+    )
+    .all(dmPairKey(accountA, accountB), limit)
+    .reverse();
+}
+
+function markDirectMessagesRead(accountId, otherAccountId) {
+  db.prepare(
+    `INSERT INTO direct_message_reads (account_id, other_account_id, read_at) VALUES (?, ?, ?)
+     ON CONFLICT(account_id, other_account_id) DO UPDATE SET read_at = excluded.read_at`
+  ).run(accountId, otherAccountId, Date.now());
+}
+
+// { otherAccountId: unreadCount } for every conversation with messages this account hasn't read.
+function getDirectMessageUnreadCounts(accountId) {
+  const rows = db
+    .prepare(
+      `SELECT d.from_account_id AS other, COUNT(*) AS n FROM direct_messages d
+       LEFT JOIN direct_message_reads r ON r.account_id = ? AND r.other_account_id = d.from_account_id
+       WHERE d.to_account_id = ? AND d.at > COALESCE(r.read_at, 0)
+       GROUP BY d.from_account_id`
+    )
+    .all(accountId, accountId);
+  const out = {};
+  for (const r of rows) out[r.other] = r.n;
+  return out;
+}
+
 function getFriends(accountId) {
   return db
     .prepare(
@@ -2153,6 +2217,10 @@ function getAccountByStreamKey(key) {
 }
 
 module.exports = {
+  insertDirectMessage,
+  getDirectMessages,
+  markDirectMessagesRead,
+  getDirectMessageUnreadCounts,
   getActivePremium,
   setPremium,
   setPremiumCosmetics,
