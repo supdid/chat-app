@@ -3312,6 +3312,8 @@ function sendGroupDm(groupId, fromAccountId, fromName, text, excludeWs) {
 }
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I
 const SLOW_MODE_OPTIONS = [0, 5, 10, 30, 60, 120];
+const REMINDERS_MAX = 25;
+const REMINDER_MAX_MS = 30 * 24 * 60 * 60 * 1000;
 
 // ---- Word filter. Matched words are replaced with stars before a message is saved or sent.
 // The built-in list is whole words (plus common endings) so ordinary words like "class" or
@@ -8206,6 +8208,39 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    // /remind: personal reminders, delivered even if the tab was closed (push).
+    if ((msg.type === 'set-reminder' || msg.type === 'list-reminders' || msg.type === 'clear-reminders') && ws.profile) {
+      if (isWsMsgRateLimited(ws)) {
+        send(ws, { type: 'error', message: 'Slow down a bit.' });
+        return;
+      }
+      if (!ws.accountId && !ws.room) {
+        send(ws, { type: 'error', message: 'Join a room or sign in to use reminders' });
+        return;
+      }
+      const owner = [ws.accountId || null, ws.profile.name, ws.room || null];
+      if (msg.type === 'set-reminder') {
+        const text = String(msg.text || '').slice(0, 200).trim();
+        const inMs = Math.floor(Number(msg.inMs));
+        if (!text || !Number.isFinite(inMs) || inMs < 10 * 1000 || inMs > REMINDER_MAX_MS) {
+          send(ws, { type: 'error', message: 'Reminders can be from 10 seconds to 30 days away' });
+          return;
+        }
+        if (db.listReminders(...owner).length >= REMINDERS_MAX) {
+          send(ws, { type: 'error', message: `You already have ${REMINDERS_MAX} reminders — /reminders clear to remove them` });
+          return;
+        }
+        const r = { id: crypto.randomUUID(), accountId: owner[0], name: owner[1], roomCode: owner[2], text, dueAt: Date.now() + inMs, createdAt: Date.now() };
+        db.insertReminder(r);
+        send(ws, { type: 'reminder-set', text, dueAt: r.dueAt });
+      } else if (msg.type === 'list-reminders') {
+        send(ws, { type: 'reminders-list', reminders: db.listReminders(...owner) });
+      } else {
+        send(ws, { type: 'reminders-cleared', count: db.clearReminders(...owner) });
+      }
+      return;
+    }
+
     if (msg.type === 'set-word-filter' && ws.room) {
       if (isWsMsgRateLimited(ws)) return;
       const dbRoom = db.getRoom(ws.room);
@@ -9032,6 +9067,26 @@ function sendDueEventReminders() {
   }
 }
 setInterval(sendDueEventReminders, Number(process.env.EVENT_REMINDER_INTERVAL_MS) || 30 * 1000);
+
+function sendDueReminders() {
+  for (const r of db.takeDueReminders(Date.now())) {
+    const live = JSON.stringify({ type: 'reminder', text: r.text, createdAt: r.created_at });
+    let subs;
+    if (r.account_id) {
+      for (const c of accountConnections.get(r.account_id) || []) if (c.readyState === c.OPEN) c.send(live);
+      subs = db.getPushSubscriptionsForAccount(r.account_id);
+    } else {
+      const room = rooms.get(r.room_code);
+      for (const c of room ? room.clients : []) {
+        if (c.profile && c.profile.name === r.name && c.readyState === c.OPEN) c.send(live);
+      }
+      subs = db.getPushSubscriptionsForRoom(r.room_code).filter((s) => s.name === r.name);
+    }
+    // Always push too: the person may have the tab open but be looking elsewhere.
+    sendPushToSubs(subs, { title: '⏰ Reminder', body: r.text, ...(r.room_code && !r.account_id ? { roomCode: r.room_code } : {}) });
+  }
+}
+setInterval(sendDueReminders, Number(process.env.REMINDER_INTERVAL_MS) || 15 * 1000);
 
 // See pendingUploads/claimUpload near the /upload route above for why this exists. Generous grace
 // period — real flows (AI Studio's caption-then-upload-then-post, the video editor's "send to

@@ -7494,3 +7494,39 @@ describe('word filter (2026-11-06)', () => {
     host.close(); member.close();
   });
 });
+
+describe('/remind reminders (2026-11-06)', () => {
+  test('set, list, deliver live, and clear', async () => {
+    const remServer = await startTestServer({ REMINDER_INTERVAL_MS: '200' }, 3234);
+    try {
+      const ws = new WebSocket(`ws://localhost:${remServer.port}`);
+      await new Promise((r) => ws.on('open', r));
+      send(ws, { type: 'join-server', username: 'Reminded' });
+      await waitFor(ws, (m) => m.type === 'joined-server');
+      send(ws, { type: 'create-room' });
+      await waitFor(ws, (m) => m.type === 'joined-room');
+
+      const bad = waitFor(ws, (m) => m.type === 'error');
+      send(ws, { type: 'set-reminder', text: 'x', inMs: 1000 });
+      assert.match((await bad).message, /10 seconds/);
+
+      send(ws, { type: 'set-reminder', text: 'feed the dog', inMs: 10 * 1000 });
+      const set = await waitFor(ws, (m) => m.type === 'reminder-set');
+      assert.equal(set.text, 'feed the dog');
+      send(ws, { type: 'set-reminder', text: 'later thing', inMs: 60 * 60 * 1000 });
+      await waitFor(ws, (m) => m.type === 'reminder-set' && m.text === 'later thing');
+      send(ws, { type: 'list-reminders' });
+      const list = await waitFor(ws, (m) => m.type === 'reminders-list');
+      assert.deepEqual(list.reminders.map((r) => r.text), ['feed the dog', 'later thing']);
+
+      const fired = await waitFor(ws, (m) => m.type === 'reminder', 15000);
+      assert.equal(fired.text, 'feed the dog');
+
+      send(ws, { type: 'clear-reminders' });
+      assert.equal((await waitFor(ws, (m) => m.type === 'reminders-cleared')).count, 1);
+      ws.close();
+    } finally {
+      await remServer.stop();
+    }
+  });
+});

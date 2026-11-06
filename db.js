@@ -368,6 +368,17 @@ db.exec(`
     read_at INTEGER,
     PRIMARY KEY (group_id, account_id)
   );
+  -- /remind reminders. account_id for signed-in people, else delivered by name in room_code.
+  CREATE TABLE IF NOT EXISTS reminders (
+    id TEXT PRIMARY KEY,
+    account_id TEXT,
+    name TEXT,
+    room_code TEXT,
+    text TEXT,
+    due_at INTEGER,
+    created_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(due_at);
   CREATE TABLE IF NOT EXISTS direct_message_reads (
     account_id TEXT,
     other_account_id TEXT,
@@ -813,6 +824,36 @@ function getAccountBadges(accountId) {
   if (account.created_at && Date.now() - account.created_at >= 30 * 24 * 60 * 60 * 1000) earned.add('regular');
   if (getActivePremium(accountId)) earned.add('supporter');
   return BADGES.filter((b) => earned.has(b.id));
+}
+
+// ---- /remind reminders ----
+function reminderOwnerWhere(accountId, name, roomCode) {
+  return accountId
+    ? { sql: 'account_id = ?', args: [accountId] }
+    : { sql: 'account_id IS NULL AND name = ? AND room_code = ?', args: [name, roomCode] };
+}
+
+function insertReminder(r) {
+  db.prepare(
+    'INSERT INTO reminders (id, account_id, name, room_code, text, due_at, created_at) VALUES (@id, @accountId, @name, @roomCode, @text, @dueAt, @createdAt)'
+  ).run(r);
+}
+
+function listReminders(accountId, name, roomCode) {
+  const w = reminderOwnerWhere(accountId, name, roomCode);
+  return db.prepare(`SELECT id, text, due_at AS dueAt FROM reminders WHERE ${w.sql} ORDER BY due_at ASC`).all(...w.args);
+}
+
+function clearReminders(accountId, name, roomCode) {
+  const w = reminderOwnerWhere(accountId, name, roomCode);
+  return db.prepare(`DELETE FROM reminders WHERE ${w.sql}`).run(...w.args).changes;
+}
+
+function takeDueReminders(now) {
+  const due = db.prepare('SELECT * FROM reminders WHERE due_at <= ? ORDER BY due_at ASC LIMIT 200').all(now);
+  const del = db.prepare('DELETE FROM reminders WHERE id = ?');
+  for (const r of due) del.run(r.id);
+  return due;
 }
 
 function setWordFilter(code, useDefault, words) {
@@ -2465,6 +2506,10 @@ function getAccountByStreamKey(key) {
 }
 
 module.exports = {
+  insertReminder,
+  listReminders,
+  clearReminders,
+  takeDueReminders,
   setWordFilter,
   BADGES,
   getAccountBadges,

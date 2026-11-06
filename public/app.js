@@ -1372,6 +1372,28 @@ function handleServerMessage(data) {
       if (groupsOverlay && !groupsOverlay.classList.contains('hidden')) loadGroupThreads();
       break;
 
+    case 'reminder-set':
+      showAppToast(`⏰ Got it — I'll remind you at ${formatReminderDue(data.dueAt)}: ${data.text}`);
+      break;
+
+    case 'reminders-list':
+      if (!data.reminders.length) showAppToast('⏰ No reminders. Try /remind 10m feed the dog');
+      else renderSystem({ text: `⏰ Your reminders (only you can see this): ${data.reminders.map((r) => `${formatReminderDue(r.dueAt)} — ${r.text}`).join(' · ')}` });
+      break;
+
+    case 'reminders-cleared':
+      showAppToast(`⏰ Cleared ${data.count} reminder${data.count === 1 ? '' : 's'}`);
+      break;
+
+    case 'reminder':
+      showAppToast(`⏰ Reminder: ${data.text}`);
+      playNotifySound();
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && (document.hidden || !document.hasFocus())) {
+        new Notification('⏰ Reminder', { body: hideSpoilerText(data.text) });
+      }
+      renderSystem({ text: `⏰ Reminder (only you can see this): ${data.text}` });
+      break;
+
     case 'profile-card':
       renderProfileCard(data);
       break;
@@ -5740,6 +5762,44 @@ joinRoomForm.addEventListener('submit', (e) => {
 // Resolved locally (no server round-trip needed) then sent as a normal chat message, so the
 // result persists/broadcasts/exports exactly like anything else typed in the box. Unrecognized
 // "/word" text is left alone and sent as-is rather than treated as an error.
+// /remind 10m feed the dog · /remind 2 hours homework · /reminders · /reminders clear
+// Private to you (never posted in the room); the server holds the reminder so it still arrives
+// as a notification if the tab is closed.
+const REMIND_UNITS = { s: 1000, m: 60 * 1000, h: 60 * 60 * 1000, d: 24 * 60 * 60 * 1000 };
+function parseRemindCommand(text) {
+  const m = text.match(/^\/remind(?:me)?\s+(?:in\s+)?(\d+(?:\.\d+)?)\s*(s|secs?|seconds?|m|mins?|minutes?|h|hrs?|hours?|d|days?)\b\s*(?:to\s+)?(.*)$/i);
+  if (!m) return null;
+  const unit = m[2][0].toLowerCase();
+  return { inMs: Math.round(parseFloat(m[1]) * REMIND_UNITS[unit]), text: m[3].trim() || 'Reminder!' };
+}
+
+function handleReminderCommand(raw) {
+  if (/^\/reminders\s+clear\s*$/i.test(raw)) {
+    ws.send(JSON.stringify({ type: 'clear-reminders' }));
+    return true;
+  }
+  if (/^\/reminders\s*$/i.test(raw)) {
+    ws.send(JSON.stringify({ type: 'list-reminders' }));
+    return true;
+  }
+  if (/^\/remind(me)?\b/i.test(raw)) {
+    const r = parseRemindCommand(raw);
+    if (!r) {
+      showAppToast('Try: /remind 10m feed the dog  (s, m, h or d)');
+      return true;
+    }
+    ws.send(JSON.stringify({ type: 'set-reminder', text: r.text, inMs: r.inMs }));
+    return true;
+  }
+  return false;
+}
+
+function formatReminderDue(ts) {
+  const d = new Date(ts);
+  const sameDay = d.toDateString() === new Date().toDateString();
+  return sameDay ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : d.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
 function resolveSlashCommand(text) {
   const rollMatch = text.match(/^\/roll(?:\s+(\d*)d(\d+))?\s*$/i);
   if (rollMatch) {
@@ -5771,6 +5831,10 @@ messageForm.addEventListener('submit', (e) => {
   // specific failed send unmissable too.
   if (ws.readyState !== WebSocket.OPEN) {
     showAppToast("Not connected — your message wasn't sent. It'll stay in the box until you're back online.");
+    return;
+  }
+  if (handleReminderCommand(raw)) {
+    messageInput.value = '';
     return;
   }
   if (roomSlowMode && !isHost && Date.now() < slowModeReadyAt) {
