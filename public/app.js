@@ -331,7 +331,7 @@ async function refreshMyPremium() {
 }
 
 function showAppToast(msg) {
-  appToastEl.textContent = msg;
+  appToastEl.textContent = hideSpoilerText(msg);
   appToastEl.classList.add('show');
   clearTimeout(appToastTimeout);
   appToastTimeout = setTimeout(() => appToastEl.classList.remove('show'), 3200);
@@ -1419,7 +1419,7 @@ function handleServerMessage(data) {
       if (bubble && !bubble.querySelector('.media')) {
         const oldCard = bubble.querySelector('.link-preview-card');
         if (oldCard) oldCard.remove();
-        const urlMatch = data.text.match(/https?:\/\/[^\s<]+/i);
+        const urlMatch = data.text.includes('||') ? null : data.text.match(/https?:\/\/[^\s<]+/i);
         if (urlMatch) renderLinkPreview(bubble, trimTrailingUrlPunctuation(urlMatch[0]));
       }
       const metaEl = bubble && bubble.querySelector('.meta');
@@ -1781,7 +1781,7 @@ function renderMessage(data, opts = {}) {
     text.appendChild(renderTextWithMentions(data.text));
     bubble.appendChild(text);
     if (!data.mediaUrl) {
-      const urlMatch = data.text.match(/https?:\/\/[^\s<]+/i);
+      const urlMatch = data.text.includes('||') ? null : data.text.match(/https?:\/\/[^\s<]+/i);
       if (urlMatch) renderLinkPreview(bubble, trimTrailingUrlPunctuation(urlMatch[0]));
     }
   }
@@ -1825,7 +1825,11 @@ function messageHasMention(text, name) {
 // Single left-to-right pass handling **bold**, *italic*, `code`, and @mentions (including the
 // special @everyone) together, so e.g. "**@everyone**" or "`@name`" don't fight each other over
 // the same text. Bold is checked before italic so "**x**" isn't consumed as "*" + "*x*" + "*".
-const FORMAT_RE = /\*\*(.+?)\*\*|\*(.+?)\*|`([^`]+?)`|:([a-z0-9_]{2,20}):|@(\S+)/g;
+const FORMAT_RE = /\*\*(.+?)\*\*|\*(.+?)\*|`([^`]+?)`|:([a-z0-9_]{2,20}):|@(\S+)|\|\|(.+?)\|\|/g;
+
+function hideSpoilerText(text) {
+  return typeof text === 'string' ? text.replace(/\|\|([\s\S]+?)\|\|/g, '▒▒▒▒') : text;
+}
 
 function makeCustomEmojiImg(name) {
   const img = document.createElement('img');
@@ -1859,6 +1863,23 @@ function renderTextWithMentions(text) {
       code.className = m[3].includes('\n') ? 'inline-code code-block' : 'inline-code';
       code.textContent = m[3];
       frag.appendChild(code);
+    } else if (m[6] !== undefined) {
+      // ||spoiler||: blurred until tapped.
+      const spoiler = document.createElement('span');
+      spoiler.className = 'spoiler';
+      spoiler.textContent = m[6];
+      spoiler.tabIndex = 0;
+      spoiler.setAttribute('role', 'button');
+      spoiler.setAttribute('aria-label', 'Spoiler — tap to reveal');
+      const reveal = (e) => {
+        e.stopPropagation();
+        spoiler.classList.add('revealed');
+        spoiler.removeAttribute('role');
+        spoiler.removeAttribute('aria-label');
+      };
+      spoiler.addEventListener('click', reveal);
+      spoiler.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') reveal(e); });
+      frag.appendChild(spoiler);
     } else if (m[4] !== undefined) {
       if (roomEmojis.has(m[4])) frag.appendChild(makeCustomEmojiImg(m[4]));
       else frag.appendChild(document.createTextNode(m[0]));
@@ -2665,7 +2686,7 @@ function notify(name, text, options = {}) {
   // Only interrupt with an OS notification when the tab isn't already being looked at — the
   // message is already visible live in the DOM otherwise, so a popup on top would just be noise.
   if (!document.hidden && document.hasFocus()) return;
-  const n = new Notification(name, { body: text });
+  const n = new Notification(hideSpoilerText(name), { body: hideSpoilerText(text) });
   if (options.messageId) {
     n.onclick = () => {
       window.focus();

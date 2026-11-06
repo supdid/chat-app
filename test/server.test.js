@@ -7371,3 +7371,13 @@ describe('GIF search + GIF messages (2026-11-05)', () => {
     }
   });
 });
+
+describe('spoilers (2026-11-06)', () => {
+  test('spoiler text is kept in the message but its push preview would be hidden', async () => {
+    const { ws, code } = await joinRoom('SpoilHost');
+    send(ws, { type: 'message', text: 'the ending: ||he was a ghost||' });
+    const m = await waitFor(ws, (x) => x.type === 'message' && x.text.includes('ghost'));
+    assert.equal(m.text, 'the ending: ||he was a ghost||');
+    ws.close();
+  });
+});

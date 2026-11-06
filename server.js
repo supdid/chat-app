@@ -125,8 +125,16 @@ function isValidPushEndpoint(endpoint) {
 // every call site that needed it over many sessions — extracted once. onGone defaults to the
 // regular per-device subscription table; the admin-notifications path is the one caller that
 // passes a different one (db.removeAdminPushSubscription).
+// ||spoiler|| text is never shown in a notification preview.
+function hideSpoilers(text) {
+  return typeof text === 'string' ? text.replace(/\|\|([\s\S]+?)\|\|/g, '▒▒▒▒') : text;
+}
+
 function sendPushToSubs(subs, payload, onGone = (endpoint) => db.removePushSubscription(endpoint)) {
-  const body = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  let obj = payload;
+  if (typeof payload === 'string') { try { obj = JSON.parse(payload); } catch { obj = null; } }
+  if (obj && typeof obj === 'object') obj = { ...obj, body: hideSpoilers(obj.body), title: hideSpoilers(obj.title) };
+  const body = obj && typeof obj === 'object' ? JSON.stringify(obj) : payload;
   for (const sub of subs) {
     webpush.sendNotification(sub.subscription, body).catch((err) => {
       if (err.statusCode === 404 || err.statusCode === 410) onGone(sub.endpoint);

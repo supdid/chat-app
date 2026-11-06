@@ -2180,6 +2180,23 @@ button.danger:hover {
   max-height: 55vh;
 }
 
+.spoiler {
+  background: var(--text-subtle, #888);
+  color: transparent;
+  border-radius: 4px;
+  padding: 0 0.2em;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s, color 0.15s;
+}
+
+.spoiler.revealed {
+  background: rgba(127, 127, 127, 0.2);
+  color: inherit;
+  cursor: text;
+  user-select: text;
+}
+
 .custom-emoji {
   height: 1.6em;
   width: auto;
