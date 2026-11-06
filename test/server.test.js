@@ -7604,3 +7604,49 @@ describe('Do Not Disturb (2026-11-06)', () => {
     assert.equal(off.active, false);
   });
 });
+
+describe('invite links (2026-11-06)', () => {
+  test('an invite skips the PIN, respects its use limit, and lets the same person back in', async () => {
+    const { ws: host, code } = await joinRoom('InvHost');
+    send(host, { type: 'set-room-pin', pin: '4321' });
+    await sleep(300);
+
+    const created = waitFor(host, (m) => m.type === 'invites-list' && m.created);
+    send(host, { type: 'create-invite', expiresIn: 86400, maxUses: 1 });
+    const inv = (await created).invites[0];
+    assert.match(inv.token, /^[a-f0-9]{24}$/);
+
+    const join = async (name, payload) => {
+      const ws = await connectWs();
+      send(ws, { type: 'join-server', username: name });
+      await waitFor(ws, (m) => m.type === 'joined-server');
+      send(ws, { type: 'join-room', ...payload });
+      const res = await waitFor(ws, (m) => m.type === 'joined-room' || m.type === 'join-error');
+      return { ws, res };
+    };
+    const noPin = await join('InvNoPin', { code });
+    assert.equal(noPin.res.type, 'join-error', 'the PIN still protects the room');
+
+    const guest = await join('InvGuest', { invite: inv.token });
+    assert.equal(guest.res.type, 'joined-room');
+    assert.equal(guest.res.code, code);
+    assert.equal(guest.res.invitePass, inv.token);
+
+    const second = await join('InvSecond', { invite: inv.token });
+    assert.equal(second.res.type, 'join-error', 'single-use link is used up');
+    assert.match(second.res.message, /expired or has been used up/);
+
+    // The original invitee can come back (e.g. reconnect) using the pass as their PIN.
+    guest.ws.close();
+    await sleep(100);
+    const back = await join('InvGuest', { code, pin: inv.token });
+    assert.equal(back.res.type, 'joined-room');
+
+    // Non-hosts can't make invites.
+    send(back.ws, { type: 'create-invite', expiresIn: 0, maxUses: 0 });
+    await sleep(300);
+    send(host, { type: 'list-invites' });
+    assert.equal((await waitFor(host, (m) => m.type === 'invites-list')).invites.length, 1);
+    host.close(); noPin.ws.close(); second.ws.close(); back.ws.close();
+  });
+});

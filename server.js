@@ -610,8 +610,18 @@ app.use(express.static(path.join(__dirname, 'public')));
 // HTTP routes (below) could read or post into a PIN-protected room without ever supplying it.
 // Shared here so all four check it the same way join-room already does (join-room itself was
 // switched to call this too — see its own comment — so the check now has exactly one implementation).
+const INVITE_TOKEN_RE = /^[a-f0-9]{24}$/;
+function inviteIsLive(inv, now = Date.now()) {
+  return !!inv && (!inv.expires_at || inv.expires_at > now);
+}
+
 function roomPinOk(dbRoom, suppliedPin) {
   if (!dbRoom || !dbRoom.pin_required) return true;
+  // Someone who came in through an invite link uses the invite token in place of the PIN.
+  if (typeof suppliedPin === 'string' && INVITE_TOKEN_RE.test(suppliedPin)) {
+    const inv = db.getRoomInvite(suppliedPin);
+    if (inviteIsLive(inv) && inv.room_code === dbRoom.code) return true;
+  }
   // Same reasoning as verifyPassword/requireAdmin's use of timingSafeEqual — a naive === here would
   // let a remote attacker's response-time samples leak how many leading characters of a guessed PIN
   // were correct. Lower-severity than those two (this feature is explicitly documented elsewhere as
@@ -3380,6 +3390,9 @@ function sendGroupDm(groupId, fromAccountId, fromName, text, excludeWs) {
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I
 const SLOW_MODE_OPTIONS = [0, 5, 10, 30, 60, 120];
 const DISAPPEAR_OPTIONS = [0, 60 * 60, 24 * 60 * 60, 7 * 24 * 60 * 60];
+const INVITES_MAX = 20;
+const INVITE_EXPIRY_OPTIONS = [0, 60 * 60, 24 * 60 * 60, 7 * 24 * 60 * 60];
+const INVITE_USE_OPTIONS = [0, 1, 5, 25, 100];
 const REMINDERS_MAX = 25;
 const REMINDER_MAX_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -7871,7 +7884,24 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'join-room') {
       if (isWsMsgRateLimited(ws)) return; // see bc-join's comment on this same guard
-      const code = String(msg.code || '').toUpperCase().trim();
+      let code = String(msg.code || '').toUpperCase().trim();
+      // Invite link (?invite=token), or a returning invitee whose saved "PIN" is the token.
+      let viaInvite = null;
+      let inviteWho = null;
+      const inviteToken = typeof msg.invite === 'string' && msg.invite ? msg.invite
+        : (typeof msg.pin === 'string' && INVITE_TOKEN_RE.test(msg.pin) ? msg.pin : null);
+      if (inviteToken) {
+        const inv = INVITE_TOKEN_RE.test(inviteToken) ? db.getRoomInvite(inviteToken) : null;
+        inviteWho = ws.accountId ? `acct:${ws.accountId}` : `name:${ws.profile.name}`;
+        const already = inv && db.hasRedeemedInvite(inv.token, inviteWho);
+        if (inviteIsLive(inv) && (already || !inv.max_uses || inv.uses < inv.max_uses)) {
+          viaInvite = inv;
+          code = inv.room_code;
+        } else if (msg.invite) {
+          send(ws, { type: 'join-error', message: 'This invite link has expired or has been used up. Ask for a new one.' });
+          return;
+        }
+      }
       // One fetch, reused below — this used to call db.getRoom(code) three separate times for
       // the same code within one handler (existence check, this assignment, and again just to
       // read host_name near the end). Each is a cheap PK point-lookup so the cost was never high,
@@ -7887,7 +7917,7 @@ wss.on('connection', (ws, req) => {
       }
       // A lightweight join gate, not real security (no accounts here to hash a PIN against) —
       // just enough to keep a room from being joined by anyone who guesses/finds the 5-char code.
-      if (dbRoom && dbRoom.pin_required) {
+      if (dbRoom && dbRoom.pin_required && !viaInvite) {
         const suppliedPin = String(msg.pin || '').trim();
         if (!roomPinOk(dbRoom, suppliedPin)) {
           send(ws, { type: 'join-error', message: suppliedPin ? 'Incorrect PIN' : 'This room requires a PIN', pinRequired: true });
@@ -7909,6 +7939,7 @@ wss.on('connection', (ws, req) => {
           return;
         }
       }
+      if (viaInvite) db.redeemRoomInvite(viaInvite.token, inviteWho);
       if (ws.room && ws.room !== code) leaveRoom(ws);
       const room = getOrCreateRoom(code);
       // Room-scoped features (kick/mute-by-name, DMs, read receipts, push-suppression-by-name)
@@ -7977,6 +8008,7 @@ wss.on('connection', (ws, req) => {
         // indication whether a PIN was currently even set — always the same blank field/placeholder
         // regardless of actual state, only discoverable by trying to (re)join blind. Never sends
         // the PIN itself, just whether one is required, same boolean roomPinOk already checks.
+        invitePass: viaInvite ? viaInvite.token : null,
         pinRequired: !!(dbRoom && dbRoom.pin_required),
         voiceCallActive: !!(room.voice && room.voice.size > 0),
       });
@@ -8307,6 +8339,31 @@ wss.on('connection', (ws, req) => {
       } else {
         send(ws, { type: 'reminders-cleared', count: db.clearReminders(...owner) });
       }
+      return;
+    }
+
+    // Invite links (host only).
+    if ((msg.type === 'create-invite' || msg.type === 'list-invites' || msg.type === 'delete-invite') && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      const dbRoom = db.getRoom(ws.room);
+      if (!isRoomHost(dbRoom, ws)) return;
+      if (msg.type === 'create-invite') {
+        const live = db.listRoomInvites(ws.room).filter((i) => !i.expiresAt || i.expiresAt > Date.now());
+        if (live.length >= INVITES_MAX) {
+          send(ws, { type: 'error', message: `This room already has ${INVITES_MAX} active invite links — delete one first` });
+          return;
+        }
+        const expiresIn = INVITE_EXPIRY_OPTIONS.includes(+msg.expiresIn) ? +msg.expiresIn : 24 * 60 * 60;
+        const maxUses = INVITE_USE_OPTIONS.includes(+msg.maxUses) ? +msg.maxUses : 0;
+        db.createRoomInvite({
+          token: crypto.randomBytes(12).toString('hex'), roomCode: ws.room, createdBy: ws.profile.name,
+          createdAt: Date.now(), expiresAt: expiresIn ? Date.now() + expiresIn * 1000 : null, maxUses,
+        });
+      } else if (msg.type === 'delete-invite') {
+        const inv = db.getRoomInvite(String(msg.token || ''));
+        if (inv && inv.room_code === ws.room) db.deleteRoomInvite(inv.token);
+      }
+      send(ws, { type: 'invites-list', invites: db.listRoomInvites(ws.room), created: msg.type === 'create-invite' });
       return;
     }
 

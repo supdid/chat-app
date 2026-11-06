@@ -2341,6 +2341,43 @@ button.danger:hover {
   gap: 0.5rem;
 }
 
+.invite-create-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.4rem 0;
+  font-size: 0.85rem;
+}
+
+.invites-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.4rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.invites-list li {
+  border: 1px solid var(--header-border);
+  border-radius: 8px;
+  padding: 0.4rem 0.5rem;
+  font-size: 0.8rem;
+}
+
+.invite-link-text {
+  display: block;
+  font-family: monospace;
+  word-break: break-all;
+}
+
+.invite-actions {
+  display: flex;
+  gap: 0.3rem;
+  margin-top: 0.3rem;
+}
+
 .word-filter-form {
   display: flex;
   flex-direction: column;

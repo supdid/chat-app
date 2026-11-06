@@ -390,6 +390,23 @@ db.exec(`
     sched_end INTEGER,
     tz TEXT
   );
+  -- Invite links: let people into a room without its PIN; can expire and/or have a use limit.
+  CREATE TABLE IF NOT EXISTS room_invites (
+    token TEXT PRIMARY KEY,
+    room_code TEXT,
+    created_by TEXT,
+    created_at INTEGER,
+    expires_at INTEGER,
+    max_uses INTEGER,
+    uses INTEGER DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS idx_room_invites_room ON room_invites(room_code);
+  CREATE TABLE IF NOT EXISTS room_invite_uses (
+    token TEXT,
+    who TEXT,
+    at INTEGER,
+    PRIMARY KEY (token, who)
+  );
   CREATE TABLE IF NOT EXISTS direct_message_reads (
     account_id TEXT,
     other_account_id TEXT,
@@ -912,6 +929,37 @@ function getPushSubscriptionAccountId(endpoint) {
   const row = db.prepare('SELECT account_id FROM push_subscriptions WHERE endpoint = ?').get(endpoint);
   return row ? row.account_id || null : null;
 }
+
+// ---- Room invite links ----
+function createRoomInvite(inv) {
+  db.prepare(
+    'INSERT INTO room_invites (token, room_code, created_by, created_at, expires_at, max_uses, uses) VALUES (@token, @roomCode, @createdBy, @createdAt, @expiresAt, @maxUses, 0)'
+  ).run(inv);
+}
+
+function getRoomInvite(token) {
+  return db.prepare('SELECT * FROM room_invites WHERE token = ?').get(token) || null;
+}
+
+function listRoomInvites(code) {
+  return db
+    .prepare('SELECT token, created_by AS createdBy, created_at AS createdAt, expires_at AS expiresAt, max_uses AS maxUses, uses FROM room_invites WHERE room_code = ? ORDER BY created_at DESC')
+    .all(code);
+}
+
+function deleteRoomInvite(token) {
+  db.prepare('DELETE FROM room_invite_uses WHERE token = ?').run(token);
+  db.prepare('DELETE FROM room_invites WHERE token = ?').run(token);
+}
+
+function hasRedeemedInvite(token, who) {
+  return !!db.prepare('SELECT 1 FROM room_invite_uses WHERE token = ? AND who = ?').get(token, who);
+}
+
+const redeemRoomInvite = db.transaction((token, who) => {
+  const r = db.prepare('INSERT OR IGNORE INTO room_invite_uses (token, who, at) VALUES (?, ?, ?)').run(token, who, Date.now());
+  if (r.changes) db.prepare('UPDATE room_invites SET uses = uses + 1 WHERE token = ?').run(token);
+});
 
 function setWordFilter(code, useDefault, words) {
   db.prepare('UPDATE rooms SET filter_default = ?, filter_words = ? WHERE code = ?').run(useDefault ? 1 : 0, JSON.stringify(words || []), code);
@@ -2281,6 +2329,8 @@ const deleteRoomCascade = db.transaction((code) => {
   db.prepare('DELETE FROM bc_claims WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM leaderboard WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM room_emojis WHERE room_code = ?').run(code);
+  db.prepare('DELETE FROM room_invite_uses WHERE token IN (SELECT token FROM room_invites WHERE room_code = ?)').run(code);
+  db.prepare('DELETE FROM room_invites WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM room_event_rsvps WHERE event_id IN (SELECT id FROM room_events WHERE room_code = ?)').run(code);
   db.prepare('DELETE FROM room_events WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM bc_blueprints WHERE room_code = ?').run(code);
@@ -2563,6 +2613,12 @@ function getAccountByStreamKey(key) {
 }
 
 module.exports = {
+  createRoomInvite,
+  getRoomInvite,
+  listRoomInvites,
+  deleteRoomInvite,
+  hasRedeemedInvite,
+  redeemRoomInvite,
   getAllDndSettings,
   saveDndSetting,
   getPushSubscriptionAccountId,

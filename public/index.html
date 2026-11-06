@@ -294,6 +294,33 @@
           <option value="604800">After 7 days</option>
         </select>
       </label>
+      <div id="invites-row" class="hidden">
+        <button id="invites-toggle-btn" class="menu-link" type="button">🔗 Invite links (host only)</button>
+        <div id="invites-manager" class="invites-manager hidden">
+          <form id="invite-create-form" class="invite-create-form">
+            <label>Expires
+              <select id="invite-expiry">
+                <option value="3600">in 1 hour</option>
+                <option value="86400" selected>in 1 day</option>
+                <option value="604800">in 7 days</option>
+                <option value="0">never</option>
+              </select>
+            </label>
+            <label>Uses
+              <select id="invite-uses">
+                <option value="1">1 person</option>
+                <option value="5">5 people</option>
+                <option value="25">25 people</option>
+                <option value="100">100 people</option>
+                <option value="0" selected>no limit</option>
+              </select>
+            </label>
+            <button type="submit">Create link</button>
+          </form>
+          <p class="search-status">Invite links skip the room PIN. Bans still apply.</p>
+          <ul id="invites-list" class="invites-list"></ul>
+        </div>
+      </div>
       <div id="word-filter-row" class="hidden">
         <button id="word-filter-toggle-btn" class="menu-link" type="button">🚫 Word filter (host only)</button>
         <form id="word-filter-form" class="word-filter-form hidden">

@@ -252,6 +252,13 @@ const announcementForm = document.getElementById('announcement-form');
 const disappearRow = document.getElementById('disappear-row');
 const disappearSelect = document.getElementById('disappear-select');
 const DISAPPEAR_LABELS = { 3600: '1 hour', 86400: '24 hours', 604800: '7 days' };
+const invitesRow = document.getElementById('invites-row');
+const invitesToggleBtn = document.getElementById('invites-toggle-btn');
+const invitesManager = document.getElementById('invites-manager');
+const inviteCreateForm = document.getElementById('invite-create-form');
+const inviteExpiry = document.getElementById('invite-expiry');
+const inviteUses = document.getElementById('invite-uses');
+const invitesListEl = document.getElementById('invites-list');
 const wordFilterRow = document.getElementById('word-filter-row');
 const wordFilterToggleBtn = document.getElementById('word-filter-toggle-btn');
 const wordFilterForm = document.getElementById('word-filter-form');
@@ -860,7 +867,10 @@ function handleServerMessage(data) {
       welcomeTextEl.textContent = `Hey, ${myProfile.name}`;
       requestNotificationPermission();
       if (accountToken) subscribeToPush();
-      if (currentRoomCode) {
+      if (pendingInviteToken) {
+        pendingJoinPin = '';
+        ws.send(JSON.stringify({ type: 'join-room', invite: pendingInviteToken }));
+      } else if (currentRoomCode) {
         pendingJoinPin = '';
         ws.send(JSON.stringify({ type: 'join-room', code: currentRoomCode }));
       } else {
@@ -943,8 +953,9 @@ function handleServerMessage(data) {
       currentRoomCode = data.code;
       currentRoomName = data.name || null;
       isHost = !!data.isHost;
-      currentRoomPin = pendingJoinPin;
+      currentRoomPin = data.invitePass || pendingJoinPin;
       pendingJoinPin = '';
+      pendingInviteToken = null;
       roomPinInput.classList.add('hidden');
       roomPinInput.value = '';
       messagesEl.innerHTML = '';
@@ -1029,6 +1040,8 @@ function handleServerMessage(data) {
       roomEmojisRow.classList.toggle('hidden', !isHost);
       wordFilterRow.classList.toggle('hidden', !isHost);
       disappearRow.classList.toggle('hidden', !isHost);
+      invitesRow.classList.toggle('hidden', !isHost);
+      invitesManager.classList.add('hidden');
       disappearSelect.value = String(data.disappearAfter || 0);
       pendingDisappearNotice = data.disappearAfter || 0;
       applyWordFilterSettings(data.wordFilter || {});
@@ -1091,6 +1104,7 @@ function handleServerMessage(data) {
         usernameInput.select();
         break;
       }
+      pendingInviteToken = null;
       currentRoomCode = null;
       roomErrorEl.textContent = data.message;
       roomErrorEl.classList.remove('hidden');
@@ -1421,6 +1435,11 @@ function handleServerMessage(data) {
       if (ev && myProfile && ev.going.includes(myProfile.name)) notify('📅 Event reminder', msgText);
       break;
     }
+
+    case 'invites-list':
+      renderInvites(data.invites || []);
+      if (data.created && data.invites && data.invites[0]) copyInviteLink(data.invites[0].token);
+      break;
 
     case 'disappearing-updated':
       disappearSelect.value = String(data.seconds || 0);
@@ -6618,6 +6637,81 @@ callExpandBtn.addEventListener('click', () => setCallExpanded(!callOverlay.class
 // name-entry screen. Reuses the exact reconnect path already wired for 'joined-server'
 // (currentRoomCode set -> auto join-room), so no new server logic is needed.
 const rejoinParams = new URLSearchParams(location.search);
+
+// --- Invite links: /?invite=<token> joins that room (skipping its PIN) once you've picked a name.
+let pendingInviteToken = /^[a-f0-9]{24}$/.test(rejoinParams.get('invite') || '') ? rejoinParams.get('invite') : null;
+if (pendingInviteToken) {
+  history.replaceState(null, '', location.pathname);
+  const sub = document.querySelector('#login-screen .subtitle');
+  if (sub) sub.textContent = "You've been invited to a room — pick a name to join";
+}
+
+function inviteUrl(token) {
+  return `${location.origin}/?invite=${token}`;
+}
+
+async function copyInviteLink(token) {
+  try {
+    await navigator.clipboard.writeText(inviteUrl(token));
+    showAppToast('🔗 Invite link copied');
+  } catch {
+    showAppToast('🔗 Invite link created — copy it from the list');
+  }
+}
+
+function renderInvites(list) {
+  invitesListEl.innerHTML = '';
+  const now = Date.now();
+  if (!list.length) {
+    const li = document.createElement('li');
+    li.className = 'search-status';
+    li.textContent = 'No invite links yet.';
+    invitesListEl.appendChild(li);
+    return;
+  }
+  for (const inv of list) {
+    const li = document.createElement('li');
+    const expired = inv.expiresAt && inv.expiresAt <= now;
+    const usedUp = inv.maxUses && inv.uses >= inv.maxUses;
+    const link = document.createElement('span');
+    link.className = 'invite-link-text';
+    link.textContent = inviteUrl(inv.token);
+    const info = document.createElement('span');
+    info.className = 'event-going';
+    const uses = inv.maxUses ? `${inv.uses}/${inv.maxUses} used` : `${inv.uses} used`;
+    const exp = expired ? 'expired' : usedUp ? 'used up' : inv.expiresAt ? `expires ${new Date(inv.expiresAt).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}` : 'never expires';
+    info.textContent = `${uses} · ${exp}`;
+    const actions = document.createElement('div');
+    actions.className = 'invite-actions';
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'small-btn';
+    copy.textContent = 'Copy';
+    copy.disabled = !!(expired || usedUp);
+    copy.addEventListener('click', () => copyInviteLink(inv.token));
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'small-btn danger';
+    del.textContent = 'Delete';
+    del.addEventListener('click', () => {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'delete-invite', token: inv.token }));
+    });
+    actions.append(copy, del);
+    li.append(link, info, actions);
+    invitesListEl.appendChild(li);
+  }
+}
+
+invitesToggleBtn.addEventListener('click', () => {
+  const opening = invitesManager.classList.contains('hidden');
+  invitesManager.classList.toggle('hidden', !opening);
+  if (opening && ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'list-invites' }));
+});
+inviteCreateForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'create-invite', expiresIn: Number(inviteExpiry.value), maxUses: Number(inviteUses.value) }));
+});
 
 // --- Notification deep links: "/?open=friends" / "/?open=group&id=..." ---
 // Set by friend-request / friend-DM / group-DM push notifications (server.js). On a fresh page
