@@ -3210,6 +3210,7 @@ function sendGroupDm(groupId, fromAccountId, fromName, text, excludeWs) {
   }
 }
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I
+const SLOW_MODE_OPTIONS = [0, 5, 10, 30, 60, 120];
 const HISTORY_LIMIT = 50;
 const MAX_GAME_PLAYERS = 20;
 const MAX_SCORPTURE_VIEWERS = 500;
@@ -7604,7 +7605,7 @@ wss.on('connection', (ws, req) => {
       rooms.set(code, { history: [], clients: new Set([ws]) });
       ws.room = code;
       ws.roomActiveAt = Date.now();
-      send(ws, { type: 'joined-room', code, messages: [], users: roomUsers(code), name: null, reactions: [], pins: [], activity: [], isHost: true, announcement: null, wallpaperUrl: null, pinRequired: false });
+      send(ws, { type: 'joined-room', code, messages: [], users: roomUsers(code), name: null, reactions: [], pins: [], activity: [], isHost: true, announcement: null, wallpaperUrl: null, pinRequired: false, slowMode: 0 });
       return;
     }
 
@@ -7705,6 +7706,7 @@ wss.on('connection', (ws, req) => {
         isHost: isRoomHost({ host_name: hostName, host_account_id: hostAccountId }, ws),
         announcement: dbRoom ? dbRoom.announcement : null,
         wallpaperUrl: dbRoom ? dbRoom.wallpaper_url : null,
+        slowMode: dbRoom ? dbRoom.slow_mode || 0 : 0,
         // Found by the room-settings/menu-panel correctness audit: the host-only PIN form gave no
         // indication whether a PIN was currently even set — always the same blank field/placeholder
         // regardless of actual state, only discoverable by trying to (re)join blind. Never sends
@@ -7860,6 +7862,18 @@ wss.on('connection', (ws, req) => {
       claimUpload(url);
       db.setWallpaper(ws.room, url);
       broadcastRoom(ws.room, { type: 'wallpaper-updated', url });
+      return;
+    }
+
+    if (msg.type === 'set-slow-mode' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      const dbRoom = db.getRoom(ws.room);
+      if (!isRoomHost(dbRoom, ws)) return;
+      const seconds = SLOW_MODE_OPTIONS.includes(+msg.seconds) ? +msg.seconds : 0;
+      db.setSlowMode(ws.room, seconds);
+      const room = rooms.get(ws.room);
+      if (room) room.slowLast = new Map();
+      broadcastRoom(ws.room, { type: 'slow-mode-updated', seconds, by: ws.profile.name });
       return;
     }
 
@@ -8330,6 +8344,20 @@ wss.on('connection', (ws, req) => {
       if (isWsMsgRateLimited(ws)) {
         send(ws, { type: 'error', message: 'You are sending messages too fast — slow down a bit.' });
         return;
+      }
+      // Slow mode: the host is exempt. Keyed by account (or name for guests) rather than the
+      // connection, so reconnecting or a second tab doesn't reset the wait.
+      const slowRoom = db.getRoom(ws.room);
+      const slowSeconds = slowRoom ? slowRoom.slow_mode || 0 : 0;
+      if (slowSeconds > 0 && !isRoomHost(slowRoom, ws)) {
+        if (!room.slowLast) room.slowLast = new Map();
+        const slowKey = ws.accountId || `name:${ws.profile.name}`;
+        const waitMs = (room.slowLast.get(slowKey) || 0) + slowSeconds * 1000 - Date.now();
+        if (waitMs > 0) {
+          send(ws, { type: 'slow-mode-wait', seconds: Math.ceil(waitMs / 1000) });
+          return;
+        }
+        room.slowLast.set(slowKey, Date.now());
       }
       const text = String(msg.text || '').slice(0, 2000).trim();
       const mediaType = ['video', 'image', 'audio', 'poll'].includes(msg.mediaType) ? msg.mediaType : null;

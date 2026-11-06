@@ -256,6 +256,16 @@
         <input id="announcement-input" type="text" placeholder="Pinned announcement (host only, blank to clear)" maxlength="200" autocomplete="off">
         <button type="submit" class="icon-btn" aria-label="Save announcement">✓</button>
       </form>
+      <label id="slow-mode-row" class="slow-mode-row hidden">🐢 Slow mode (host only)
+        <select id="slow-mode-select">
+          <option value="0">Off</option>
+          <option value="5">5 seconds</option>
+          <option value="10">10 seconds</option>
+          <option value="30">30 seconds</option>
+          <option value="60">1 minute</option>
+          <option value="120">2 minutes</option>
+        </select>
+      </label>
       <form id="room-pin-form" class="rename-room-form hidden">
         <input id="room-pin-form-input" type="text" placeholder="Room PIN (host only, blank to remove)" maxlength="12" autocomplete="off">
         <button type="submit" class="icon-btn" aria-label="Save room PIN">✓</button>

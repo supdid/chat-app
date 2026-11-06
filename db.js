@@ -177,6 +177,8 @@ ensureColumn('bc_overrides', 'updated_at', 'INTEGER');
 // player's name and post onto their row. The first signed-in account to score under a name now
 // owns that row; see bumpLeaderboard.
 ensureColumn('leaderboard', 'owner_account_id', 'TEXT');
+// Host-set slow mode: minimum seconds between messages per person (0 = off).
+ensureColumn('rooms', 'slow_mode', 'INTEGER DEFAULT 0');
 
 // One-time migration: pins used to be single-pin-per-room (PK: room_code) — multi-pin needs a
 // composite PK (room_code, message_id) instead, which ALTER TABLE can't change in place.
@@ -623,6 +625,10 @@ function renameRoomHostIfMatches(code, oldName, newName, accountId = null) {
   } else {
     db.prepare('UPDATE rooms SET host_name = ? WHERE code = ? AND host_name = ?').run(newName, code, oldName);
   }
+}
+
+function setSlowMode(code, seconds) {
+  db.prepare('UPDATE rooms SET slow_mode = ? WHERE code = ?').run(seconds, code);
 }
 
 function setAnnouncement(code, text) {
@@ -2217,6 +2223,7 @@ function getAccountByStreamKey(key) {
 }
 
 module.exports = {
+  setSlowMode,
   insertDirectMessage,
   getDirectMessages,
   markDirectMessagesRead,

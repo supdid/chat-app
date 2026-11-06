@@ -7152,3 +7152,41 @@ describe('saved 1-on-1 friend DMs (2026-11-05)', () => {
     cWs.close();
   });
 });
+
+describe('slow mode (2026-11-05)', () => {
+  test('host turns on slow mode; a member is held to it, the host is not, and only the host can change it', async () => {
+    const { ws: host, code } = await joinRoom('SlowHost');
+    const member = await joinExistingRoom('SlowMember', code);
+    await sleep(100);
+
+    // Non-host can't turn it on.
+    send(member, { type: 'set-slow-mode', seconds: 30 });
+    await sleep(200);
+
+    const updated = waitFor(member, (m) => m.type === 'slow-mode-updated');
+    send(host, { type: 'set-slow-mode', seconds: 10 });
+    assert.equal((await updated).seconds, 10);
+
+    send(member, { type: 'message', text: 'slow one' });
+    await waitFor(member, (m) => m.type === 'message' && m.text === 'slow one');
+    const wait = waitFor(member, (m) => m.type === 'slow-mode-wait');
+    send(member, { type: 'message', text: 'slow two' });
+    const w = await wait;
+    assert.ok(w.seconds > 0 && w.seconds <= 10);
+
+    // Host is exempt.
+    send(host, { type: 'message', text: 'host a' });
+    await waitFor(host, (m) => m.type === 'message' && m.text === 'host a');
+    send(host, { type: 'message', text: 'host b' });
+    await waitFor(host, (m) => m.type === 'message' && m.text === 'host b');
+
+    // Fresh join sees the setting.
+    const late = await joinExistingRoom('SlowLate', code).catch(() => null);
+    const off = waitFor(member, (m) => m.type === 'slow-mode-updated');
+    send(host, { type: 'set-slow-mode', seconds: 0 });
+    assert.equal((await off).seconds, 0);
+    send(member, { type: 'message', text: 'free again' });
+    await waitFor(member, (m) => m.type === 'message' && m.text === 'free again');
+    host.close(); member.close(); if (late) late.close();
+  });
+});

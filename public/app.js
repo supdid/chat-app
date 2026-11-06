@@ -235,6 +235,20 @@ const mentionDropdownEl = document.getElementById('mention-dropdown');
 const pinnedBannerEl = document.getElementById('pinned-banner');
 const announcementBannerEl = document.getElementById('announcement-banner');
 const announcementForm = document.getElementById('announcement-form');
+const slowModeRow = document.getElementById('slow-mode-row');
+const slowModeSelect = document.getElementById('slow-mode-select');
+let roomSlowMode = 0;
+let slowModeReadyAt = 0;
+
+function slowModeLabel(seconds) {
+  return seconds >= 60 ? `${seconds / 60} min` : `${seconds}s`;
+}
+
+function applySlowMode(seconds) {
+  roomSlowMode = seconds || 0;
+  slowModeSelect.value = String(roomSlowMode);
+  messageInput.placeholder = roomSlowMode && !isHost ? `Slow mode is on — one message every ${slowModeLabel(roomSlowMode)}` : 'Type a message...';
+}
 const announcementInput = document.getElementById('announcement-input');
 const typingIndicatorEl = document.getElementById('typing-indicator');
 const replyPreviewEl = document.getElementById('reply-preview');
@@ -930,6 +944,9 @@ function handleServerMessage(data) {
       renameRoomForm.classList.toggle('hidden', !isHost);
       announcementForm.classList.toggle('hidden', !isHost);
       announcementInput.value = currentAnnouncement || '';
+      slowModeRow.classList.toggle('hidden', !isHost);
+      slowModeReadyAt = 0;
+      applySlowMode(data.slowMode);
       roomPinForm.classList.toggle('hidden', !isHost);
       roomPinFormInput.value = '';
       // Found by the room-settings/menu-panel correctness audit: this field was always blank with
@@ -1234,6 +1251,16 @@ function handleServerMessage(data) {
       groupDmOverlay.classList.add('hidden');
       currentGroupDmId = null;
       if (groupsOverlay && !groupsOverlay.classList.contains('hidden')) loadGroupThreads();
+      break;
+
+    case 'slow-mode-updated':
+      applySlowMode(data.seconds);
+      showAppToast(data.seconds ? `🐢 ${data.by} turned on slow mode: one message every ${slowModeLabel(data.seconds)}` : `🐢 ${data.by} turned off slow mode`);
+      break;
+
+    case 'slow-mode-wait':
+      slowModeReadyAt = Date.now() + data.seconds * 1000;
+      showAppToast(`🐢 Slow mode — you can send again in ${data.seconds}s`);
       break;
 
     case 'announcement-updated':
@@ -3753,6 +3780,11 @@ renameRoomForm.addEventListener('submit', (e) => {
   ws.send(JSON.stringify({ type: 'rename-room', name: renameRoomInput.value.trim() }));
 });
 
+slowModeSelect.addEventListener('change', () => {
+  if (!currentRoomCode || !ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'set-slow-mode', seconds: Number(slowModeSelect.value) }));
+});
+
 announcementForm.addEventListener('submit', (e) => {
   e.preventDefault();
   if (!currentRoomCode || ws.readyState !== WebSocket.OPEN) return;
@@ -5230,6 +5262,11 @@ messageForm.addEventListener('submit', (e) => {
     showAppToast("Not connected — your message wasn't sent. It'll stay in the box until you're back online.");
     return;
   }
+  if (roomSlowMode && !isHost && Date.now() < slowModeReadyAt) {
+    showAppToast(`🐢 Slow mode — you can send again in ${Math.ceil((slowModeReadyAt - Date.now()) / 1000)}s`);
+    return;
+  }
+  if (roomSlowMode && !isHost) slowModeReadyAt = Date.now() + roomSlowMode * 1000;
   const text = resolveSlashCommand(raw);
   const payload = { type: 'message', text };
   if (replyingTo) payload.replyTo = replyingTo.id;

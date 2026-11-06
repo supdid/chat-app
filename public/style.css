@@ -2045,6 +2045,15 @@ button.danger:hover {
   max-height: 55vh;
 }
 
+.slow-mode-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0.4rem 0;
+  font-size: 0.9rem;
+}
+
 .friend-action-btn .unread-badge {
   display: inline-block;
   min-width: 1.1rem;
