@@ -7381,3 +7381,52 @@ describe('spoilers (2026-11-06)', () => {
     ws.close();
   });
 });
+
+describe('typing + seen in DMs (2026-11-06)', () => {
+  test('friend DM typing reaches the friend; opening the chat tells the sender it was seen', async () => {
+    const signup = async (username, email) => fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password: 'pass1234', email }),
+    }).then((r) => r.json());
+    const a = await signup('TypA', 'typa@test.com');
+    const b = await signup('TypB', 'typb@test.com');
+    const c = await signup('TypC', 'typc@test.com');
+    const fr = async (x, y, yName, xName) => {
+      await fetch(`${BASE_URL}/friends/request`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${x.token}` }, body: JSON.stringify({ username: yName }) });
+      await fetch(`${BASE_URL}/friends/accept`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${y.token}` }, body: JSON.stringify({ username: xName }) });
+    };
+    await fr(a, b, 'TypB', 'TypA');
+    await fr(a, c, 'TypC', 'TypA');
+    const aWs = await joinAsAccount('TypA', a.token);
+    const bWs = await joinAsAccount('TypB', b.token);
+    const cWs = await joinAsAccount('TypC', c.token);
+
+    const typing = waitFor(bWs, (m) => m.type === 'friend-dm-typing');
+    send(aWs, { type: 'friend-dm-typing', toUsername: 'TypB' });
+    assert.equal((await typing).fromUsername, 'TypA');
+
+    send(aWs, { type: 'friend-dm', toUsername: 'TypB', text: 'did you see this' });
+    await waitFor(bWs, (m) => m.type === 'friend-dm');
+    const seen = waitFor(aWs, (m) => m.type === 'friend-dm-seen');
+    send(bWs, { type: 'get-friend-dm-history', withUsername: 'TypA' });
+    const s = await seen;
+    assert.equal(s.byUsername, 'TypB');
+    send(aWs, { type: 'get-friend-dm-history', withUsername: 'TypB' });
+    const hist = await waitFor(aWs, (m) => m.type === 'friend-dm-history');
+    assert.ok(hist.otherReadAt >= hist.messages[hist.messages.length - 1].at, 'history says B has read it');
+
+    // Group DM: typing + seen fan out to the other members.
+    send(aWs, { type: 'create-group-dm', memberUsernames: ['TypB', 'TypC'], name: 'Typers' });
+    const created = await waitFor(aWs, (m) => m.type === 'group-dm-created');
+    const groupId = created.thread.id;
+    const gTyping = waitFor(cWs, (m) => m.type === 'group-dm-typing' && m.groupId === groupId);
+    send(bWs, { type: 'group-dm-typing', groupId });
+    assert.equal((await gTyping).username, 'TypB');
+    const gSeen = waitFor(aWs, (m) => m.type === 'group-dm-seen' && m.username === 'TypC');
+    send(cWs, { type: 'get-group-dm-messages', groupId });
+    const msgs = await waitFor(cWs, (m) => m.type === 'group-dm-messages');
+    assert.ok(Array.isArray(msgs.reads));
+    await gSeen;
+    aWs.close(); bWs.close(); cWs.close();
+  });
+});

@@ -357,6 +357,12 @@ db.exec(`
     at INTEGER,
     PRIMARY KEY (event_id, name)
   );
+  CREATE TABLE IF NOT EXISTS group_dm_reads (
+    group_id TEXT,
+    account_id TEXT,
+    read_at INTEGER,
+    PRIMARY KEY (group_id, account_id)
+  );
   CREATE TABLE IF NOT EXISTS direct_message_reads (
     account_id TEXT,
     other_account_id TEXT,
@@ -1496,6 +1502,27 @@ function unsaveAccountMessage(accountId, messageId) {
   db.prepare('DELETE FROM account_saved_messages WHERE account_id = ? AND message_id = ?').run(accountId, messageId);
 }
 
+// When `accountId` last read their chat with `otherAccountId` (0 if never).
+function getDirectMessageReadAt(accountId, otherAccountId) {
+  const row = db.prepare('SELECT read_at FROM direct_message_reads WHERE account_id = ? AND other_account_id = ?').get(accountId, otherAccountId);
+  return row ? row.read_at : 0;
+}
+
+function markGroupDmRead(groupId, accountId) {
+  const at = Date.now();
+  db.prepare(
+    `INSERT INTO group_dm_reads (group_id, account_id, read_at) VALUES (?, ?, ?)
+     ON CONFLICT(group_id, account_id) DO UPDATE SET read_at = excluded.read_at`
+  ).run(groupId, accountId, at);
+  return at;
+}
+
+function getGroupDmReads(groupId) {
+  return db
+    .prepare('SELECT a.username, r.read_at AS at FROM group_dm_reads r JOIN accounts a ON a.id = r.account_id WHERE r.group_id = ?')
+    .all(groupId);
+}
+
 function markDirectMessagesRead(accountId, otherAccountId) {
   db.prepare(
     `INSERT INTO direct_message_reads (account_id, other_account_id, read_at) VALUES (?, ?, ?)
@@ -2379,6 +2406,9 @@ function getAccountByStreamKey(key) {
 }
 
 module.exports = {
+  getDirectMessageReadAt,
+  markGroupDmRead,
+  getGroupDmReads,
   insertRoomEvent,
   getRoomEvent,
   deleteRoomEvent,

@@ -2180,6 +2180,14 @@ button.danger:hover {
   max-height: 55vh;
 }
 
+.dm-status {
+  min-height: 1.1em;
+  margin: 0.2rem 0 0;
+  font-size: 0.75rem;
+  color: var(--text-subtle);
+  text-align: right;
+}
+
 .spoiler {
   background: var(--text-subtle, #888);
   color: transparent;

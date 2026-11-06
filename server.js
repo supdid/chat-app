@@ -7514,6 +7514,10 @@ wss.on('connection', (ws, req) => {
         return;
       }
       db.markDirectMessagesRead(ws.accountId, other.id);
+      // Tell the other person's open tabs that their messages have been seen.
+      const me = db.getAccountById(ws.accountId);
+      const seen = JSON.stringify({ type: 'friend-dm-seen', byUsername: me ? me.username : '', at: Date.now() });
+      for (const c of accountConnections.get(other.id) || []) if (c.readyState === c.OPEN) c.send(seen);
       if (msg.type === 'get-friend-dm-history') {
         const friendship = db.getFriendshipBetween(ws.accountId, other.id);
         send(ws, {
@@ -7521,7 +7525,47 @@ wss.on('connection', (ws, req) => {
           withUsername: other.username,
           isFriend: !!(friendship && friendship.status === 'accepted'),
           messages: db.getDirectMessages(ws.accountId, other.id, 100),
+          otherReadAt: db.getDirectMessageReadAt(other.id, ws.accountId),
         });
+      }
+      return;
+    }
+
+    // "X is typing…" in a friend DM. Dropped silently when too frequent; friends only.
+    if (msg.type === 'friend-dm-typing') {
+      if (!ws.accountId) return;
+      const now = Date.now();
+      if (now - (ws.lastDmTypingAt || 0) < 1000) return;
+      ws.lastDmTypingAt = now;
+      const other = db.getAccountByUsername(String(msg.toUsername || '').trim());
+      if (!other) return;
+      const friendship = db.getFriendshipBetween(ws.accountId, other.id);
+      if (!friendship || friendship.status !== 'accepted') return;
+      const me = db.getAccountById(ws.accountId);
+      const payload = JSON.stringify({ type: 'friend-dm-typing', fromUsername: me ? me.username : '' });
+      for (const c of accountConnections.get(other.id) || []) if (c.readyState === c.OPEN) c.send(payload);
+      return;
+    }
+
+    if (msg.type === 'group-dm-typing' || msg.type === 'group-dm-read') {
+      if (!ws.accountId) return;
+      const groupId = String(msg.groupId || '');
+      if (!db.isGroupDmMember(groupId, ws.accountId)) return;
+      const now = Date.now();
+      const key = msg.type === 'group-dm-typing' ? 'lastGroupTypingAt' : 'lastGroupReadAt';
+      if (now - (ws[key] || 0) < 1000) return;
+      ws[key] = now;
+      const me = db.getAccountById(ws.accountId);
+      const username = me ? me.username : '';
+      let payload;
+      if (msg.type === 'group-dm-typing') {
+        payload = JSON.stringify({ type: 'group-dm-typing', groupId, username, name: ws.profile ? ws.profile.name : username });
+      } else {
+        payload = JSON.stringify({ type: 'group-dm-seen', groupId, username, at: db.markGroupDmRead(groupId, ws.accountId) });
+      }
+      for (const accountId of db.getGroupDmMemberIds(groupId)) {
+        if (accountId === ws.accountId || db.isBlockedBetween(ws.accountId, accountId)) continue;
+        for (const c of accountConnections.get(accountId) || []) if (c.readyState === c.OPEN) c.send(payload);
       }
       return;
     }
@@ -7611,7 +7655,14 @@ wss.on('connection', (ws, req) => {
       // an isBlockedBetween query per message (up to 200, the default history limit).
       const blockedIds = db.getBlockedAccountIds(ws.accountId);
       const messages = db.getGroupDmMessages(groupId).filter((m) => !blockedIds.has(m.fromAccountId));
-      send(ws, { type: 'group-dm-messages', groupId, messages });
+      const readAt = db.markGroupDmRead(groupId, ws.accountId);
+      const me = db.getAccountById(ws.accountId);
+      send(ws, { type: 'group-dm-messages', groupId, messages, reads: db.getGroupDmReads(groupId) });
+      const seen = JSON.stringify({ type: 'group-dm-seen', groupId, username: me ? me.username : '', at: readAt });
+      for (const accountId of db.getGroupDmMemberIds(groupId)) {
+        if (accountId === ws.accountId || db.isBlockedBetween(ws.accountId, accountId)) continue;
+        for (const c of accountConnections.get(accountId) || []) if (c.readyState === c.OPEN) c.send(seen);
+      }
       return;
     }
 

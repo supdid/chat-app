@@ -163,7 +163,17 @@ const friendDmTargetName = document.getElementById('friend-dm-target-name');
 const friendDmForm = document.getElementById('friend-dm-form');
 const friendDmInput = document.getElementById('friend-dm-input');
 const friendDmMessagesEl = document.getElementById('friend-dm-messages');
+const friendDmStatusEl = document.getElementById('friend-dm-status');
+const groupDmStatusEl = document.getElementById('group-dm-status');
 let currentFriendDmUsername = null;
+// Typing / seen state for the open friend DM and group DM.
+let friendDmOtherReadAt = 0;
+let friendDmTypingTimer = null;
+let friendDmTypingName = null;
+let lastFriendDmTypingSentAt = 0;
+let groupDmReads = new Map(); // username -> read_at
+const groupDmTyping = new Map(); // display name -> timeout id
+let lastGroupDmTypingSentAt = 0;
 const onlineContextMenu = document.getElementById('online-context-menu');
 const privateCallContextBtn = document.getElementById('private-call-context-btn');
 const privateCallIncomingOverlay = document.getElementById('private-call-incoming');
@@ -1208,8 +1218,41 @@ function handleServerMessage(data) {
       }
       break;
 
+    case 'friend-dm-typing':
+      if (isFriendDmOpenWith(data.fromUsername)) {
+        clearTimeout(friendDmTypingTimer);
+        friendDmTypingName = data.fromUsername;
+        friendDmTypingTimer = setTimeout(() => { friendDmTypingName = null; renderFriendDmStatus(); }, 4000);
+        renderFriendDmStatus();
+      }
+      break;
+
+    case 'friend-dm-seen':
+      if (isFriendDmOpenWith(data.byUsername)) {
+        friendDmOtherReadAt = Math.max(friendDmOtherReadAt, data.at || 0);
+        renderFriendDmStatus();
+      }
+      break;
+
+    case 'group-dm-typing':
+      if (currentGroupDmId === data.groupId && groupDmOverlay && !groupDmOverlay.classList.contains('hidden')) {
+        const who = data.name || data.username;
+        clearTimeout(groupDmTyping.get(who));
+        groupDmTyping.set(who, setTimeout(() => { groupDmTyping.delete(who); renderGroupDmStatus(); }, 4000));
+        renderGroupDmStatus();
+      }
+      break;
+
+    case 'group-dm-seen':
+      if (currentGroupDmId === data.groupId) {
+        groupDmReads.set(data.username, Math.max(groupDmReads.get(data.username) || 0, data.at || 0));
+        renderGroupDmStatus();
+      }
+      break;
+
     case 'friend-dm-history':
       if (isFriendDmOpenWith(data.withUsername)) {
+        friendDmOtherReadAt = data.otherReadAt || 0;
         friendDmTargetName.textContent = data.withUsername;
         friendDmMessagesEl.innerHTML = '';
         if (!data.messages.length) {
@@ -1278,6 +1321,7 @@ function handleServerMessage(data) {
 
     case 'group-dm-messages':
       if (currentGroupDmId === data.groupId) {
+        groupDmReads = new Map((data.reads || []).map((r) => [r.username, r.at]));
         groupDmMessagesEl.innerHTML = '';
         if (!data.messages.length) {
           groupDmMessagesEl.innerHTML = '<p class="search-status">No messages yet — say hi!</p>';
@@ -1305,6 +1349,7 @@ function handleServerMessage(data) {
         if (empty) groupDmMessagesEl.innerHTML = '';
         renderGroupDmMessage(data);
         groupDmMessagesEl.scrollTop = groupDmMessagesEl.scrollHeight;
+        ws.send(JSON.stringify({ type: 'group-dm-read', groupId: data.groupId }));
       } else {
         showAppToast(`💬 ${data.fromName} (group): ${data.text}`);
         playNotifySound();
@@ -3347,6 +3392,43 @@ friendDmContextBtn.addEventListener('click', () => {
   if (target) openFriendDm(target);
 });
 
+function lastMessageAt(container, ownOnly) {
+  const els = container.querySelectorAll(ownOnly ? '.thread-message.own' : '.thread-message');
+  const last = els[els.length - 1];
+  return last ? Number(last.dataset.at) || 0 : 0;
+}
+
+function lastMessageIsOwn(container) {
+  const els = container.querySelectorAll('.thread-message');
+  const last = els[els.length - 1];
+  return !!last && last.classList.contains('own');
+}
+
+function renderFriendDmStatus() {
+  if (friendDmTypingName) {
+    friendDmStatusEl.textContent = `${friendDmTypingName} is typing…`;
+    return;
+  }
+  const lastOwn = lastMessageAt(friendDmMessagesEl, true);
+  friendDmStatusEl.textContent = lastOwn && lastMessageIsOwn(friendDmMessagesEl) && friendDmOtherReadAt >= lastOwn ? 'Seen ✓' : '';
+}
+
+function renderGroupDmStatus() {
+  if (groupDmTyping.size) {
+    const names = [...groupDmTyping.keys()];
+    groupDmStatusEl.textContent = names.length === 1 ? `${names[0]} is typing…` : `${names.slice(0, 3).join(', ')} are typing…`;
+    return;
+  }
+  const lastAt = lastMessageAt(groupDmMessagesEl, false);
+  const seenBy = lastAt ? [...groupDmReads].filter(([u, at]) => at >= lastAt && (!accountUsername || u.toLowerCase() !== accountUsername.toLowerCase())).map(([u]) => u) : [];
+  groupDmStatusEl.textContent = seenBy.length ? `Seen by ${seenBy.slice(0, 5).join(', ')}${seenBy.length > 5 ? ` +${seenBy.length - 5}` : ''}` : '';
+}
+
+function clearFriendDmTyping() {
+  clearTimeout(friendDmTypingTimer);
+  friendDmTypingName = null;
+}
+
 // Saved 1-on-1 chat with a friend: loads the history from the server (which also marks it read).
 function openFriendDm(username) {
   if (!username) return;
@@ -3359,6 +3441,9 @@ function openFriendDm(username) {
   friendDmForm.dataset.username = username;
   friendDmInput.value = '';
   friendDmMessagesEl.innerHTML = '<p class="search-status">Loading…</p>';
+  friendDmOtherReadAt = 0;
+  clearFriendDmTyping();
+  friendDmStatusEl.textContent = '';
   friendDmOverlay.classList.remove('hidden');
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'get-friend-dm-history', withUsername: username }));
   friendDmInput.focus();
@@ -3383,6 +3468,7 @@ function renderFriendDmMessage(m) {
   const el = document.createElement('div');
   el.className = 'thread-message' + (own ? ' own' : '');
   if (m.id) el.dataset.dmId = m.id;
+  el.dataset.at = m.at;
   const meta = document.createElement('span');
   meta.className = 'meta';
   const d = new Date(m.at);
@@ -3395,7 +3481,17 @@ function renderFriendDmMessage(m) {
   el.appendChild(text);
   friendDmMessagesEl.appendChild(el);
   friendDmMessagesEl.scrollTop = friendDmMessagesEl.scrollHeight;
+  if (!own && friendDmTypingName) clearFriendDmTyping();
+  renderFriendDmStatus();
 }
+
+friendDmInput.addEventListener('input', () => {
+  const to = friendDmForm.dataset.username;
+  if (!to || !friendDmInput.value.trim() || !ws || ws.readyState !== WebSocket.OPEN) return;
+  if (Date.now() - lastFriendDmTypingSentAt < 2500) return;
+  lastFriendDmTypingSentAt = Date.now();
+  ws.send(JSON.stringify({ type: 'friend-dm-typing', toUsername: to }));
+});
 
 friendDmCloseBtn.addEventListener('click', closeFriendDm);
 friendDmOverlay.addEventListener('click', (e) => {
@@ -3731,6 +3827,12 @@ let pendingGroupDmCreate = false;
 function renderGroupDmMessage(data) {
   const el = document.createElement('div');
   el.className = 'thread-message' + (myProfile && data.fromName === myProfile.name ? ' own' : '');
+  el.dataset.at = data.at;
+  // A message from someone means they've stopped typing.
+  if (data.fromName && groupDmTyping.has(data.fromName)) {
+    clearTimeout(groupDmTyping.get(data.fromName));
+    groupDmTyping.delete(data.fromName);
+  }
   const meta = document.createElement('span');
   meta.className = 'meta';
   const time = new Date(data.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -3740,6 +3842,7 @@ function renderGroupDmMessage(data) {
   text.appendChild(renderTextWithMentions(data.text));
   el.appendChild(text);
   groupDmMessagesEl.appendChild(el);
+  renderGroupDmStatus();
 }
 
 function groupThreadLabel(thread) {
@@ -3770,6 +3873,10 @@ function loadGroupThreads() {
 
 function openGroupDm(groupId, thread) {
   currentGroupDmId = groupId;
+  groupDmReads = new Map();
+  for (const t of groupDmTyping.values()) clearTimeout(t);
+  groupDmTyping.clear();
+  groupDmStatusEl.textContent = '';
   currentGroupDmMemberNames = thread ? thread.members.map((m) => m.username) : [];
   groupDmTitleEl.textContent = thread ? groupThreadLabel(thread) : 'Group';
   groupDmMembersEl.textContent = currentGroupDmMemberNames.length ? `With ${currentGroupDmMemberNames.join(', ')}` : '';
@@ -6538,3 +6645,11 @@ window.addEventListener('unhandledrejection', (e) => {
     if (e.key === 'Escape' && !gifPicker.classList.contains('hidden')) gifPicker.classList.add('hidden');
   });
 })();
+
+// Group DM "typing…" signal (throttled).
+groupDmInput.addEventListener('input', () => {
+  if (!currentGroupDmId || !groupDmInput.value.trim() || !ws || ws.readyState !== WebSocket.OPEN) return;
+  if (Date.now() - lastGroupDmTypingSentAt < 2500) return;
+  lastGroupDmTypingSentAt = Date.now();
+  ws.send(JSON.stringify({ type: 'group-dm-typing', groupId: currentGroupDmId }));
+});
