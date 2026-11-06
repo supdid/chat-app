@@ -7069,3 +7069,31 @@ describe('friend notifications + presence (2026-11-05)', () => {
     tab1.close(); tab2.close(); room1.ws.close(); room2.ws.close();
   });
 });
+
+describe('leaderboards are tied to accounts (2026-11-05)', () => {
+  test('a guest using a signed-in player\'s name is recorded as "(guest)"; the real player keeps their row', async () => {
+    const acct = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'LbOwner', password: 'pass1234', email: 'lbowner@test.com' }),
+    }).then((r) => r.json());
+    const code = 'LBOWN1';
+    const owner = await connectWs();
+    send(owner, { type: 'arcade-join', code, name: 'LbOwner', game: 'snake', accountToken: acct.token });
+    await waitFor(owner, (m) => m.type === 'arcade-leaderboard');
+    const faker = await connectWs();
+    send(faker, { type: 'arcade-join', code, name: 'LbOwner', game: 'snake' });
+    await waitFor(faker, (m) => m.type === 'arcade-leaderboard');
+    await sleep(3050);
+    send(owner, { type: 'arcade-submit-score', score: 10 });
+    await waitFor(owner, (m) => m.type === 'arcade-leaderboard' && m.scores.length > 0);
+    send(faker, { type: 'arcade-submit-score', score: 999 });
+    const board = await waitFor(faker, (m) => m.type === 'arcade-leaderboard' && m.scores.length > 1);
+    const real = board.scores.find((s) => s.name === 'LbOwner');
+    const fake = board.scores.find((s) => s.name === 'LbOwner (guest)');
+    assert.equal(real.score, 10, 'the faker must not be able to raise the real player\'s score');
+    assert.equal(real.verified, true);
+    assert.equal(fake.score, 999);
+    assert.equal(fake.verified, false);
+    owner.close(); faker.close();
+  });
+});

@@ -173,6 +173,10 @@ ensureColumn('bc_claims', 'owner_id', 'TEXT');
 // so they're evicted first if a cap-trim is ever needed on an old install — a reasonable default
 // (they're the oldest changes anyway) needing no backfill.
 ensureColumn('bc_overrides', 'updated_at', 'INTEGER');
+// Leaderboard rows used to be keyed only by the typed name, so anyone could type a signed-in
+// player's name and post onto their row. The first signed-in account to score under a name now
+// owns that row; see bumpLeaderboard.
+ensureColumn('leaderboard', 'owner_account_id', 'TEXT');
 
 // One-time migration: pins used to be single-pin-per-room (PK: room_code) — multi-pin needs a
 // composite PK (room_code, message_id) instead, which ALTER TABLE can't change in place.
@@ -913,13 +917,30 @@ function upsertProfile(name, { avatarUrl, status }) {
 
 // ---- Leaderboard (per room + game) ----
 
-function bumpLeaderboard(code, game, name, score) {
+// accountId = the signed-in account behind the game connection (null for guests). A name is
+// "taken" if its row is already owned by an account, or if it IS a registered account's
+// username — anyone else scoring under it is recorded as "<name> (guest)" instead, so nobody can
+// post onto (or pose as) a signed-in player's row. Returns the name actually recorded.
+function bumpLeaderboard(code, game, name, score, accountId = null) {
+  let finalName = String(name);
+  const row = db.prepare('SELECT owner_account_id FROM leaderboard WHERE room_code = ? AND game = ? AND name = ?').get(code, game, finalName);
+  let ownerId = row && row.owner_account_id ? row.owner_account_id : null;
+  if (!ownerId) {
+    const registered = getAccountByUsername(finalName);
+    if (registered) ownerId = registered.id;
+  }
+  if (ownerId && ownerId !== accountId) {
+    finalName = `${finalName.slice(0, 40)} (guest)`;
+    accountId = null;
+  }
   db.prepare(
-    `INSERT INTO leaderboard (room_code, game, name, score, updated_at) VALUES (?, ?, ?, ?, ?)
+    `INSERT INTO leaderboard (room_code, game, name, score, updated_at, owner_account_id) VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(room_code, game, name) DO UPDATE SET
        score = CASE WHEN excluded.score > leaderboard.score THEN excluded.score ELSE leaderboard.score END,
-       updated_at = excluded.updated_at`
-  ).run(code, game, name, score, Date.now());
+       updated_at = excluded.updated_at,
+       owner_account_id = COALESCE(leaderboard.owner_account_id, excluded.owner_account_id)`
+  ).run(code, game, finalName, score, Date.now(), accountId || null);
+  return finalName;
 }
 
 // ---- Fight for Glory PvP win streak (global, not room-scoped — Online Play is always one shared
@@ -957,8 +978,9 @@ function getBbWinStreak(name) {
 
 function getLeaderboard(code, game, limit = 10) {
   return db
-    .prepare('SELECT name, score FROM leaderboard WHERE room_code = ? AND game = ? ORDER BY score DESC LIMIT ?')
-    .all(code, game, limit);
+    .prepare('SELECT name, score, (owner_account_id IS NOT NULL) AS verified FROM leaderboard WHERE room_code = ? AND game = ? ORDER BY score DESC LIMIT ?')
+    .all(code, game, limit)
+    .map((r) => ({ name: r.name, score: r.score, verified: !!r.verified }));
 }
 
 // ---- Firefight weapon-unlock progress (see fg_stats above) ----

@@ -2082,6 +2082,16 @@ function setReplyingTo(data) {
   messageInput.focus();
 }
 
+// Photo/video uploads, voice clips, stickers and GIFs all send through here so a media send
+// answers whatever "Replying to…" is showing and then clears it — they used to ignore the reply
+// bar entirely and leave it stuck on the composer.
+function sendMediaMessage(mediaUrl, mediaType) {
+  const payload = { type: 'message', mediaUrl, mediaType };
+  if (replyingTo) payload.replyTo = replyingTo.id;
+  ws.send(JSON.stringify(payload));
+  clearReplyingTo();
+}
+
 function clearReplyingTo() {
   replyingTo = null;
   renderReplyPreview();
@@ -5211,7 +5221,7 @@ fileInput.addEventListener('change', async () => {
       roomErrorEl.textContent = data.error || 'Upload failed';
       return;
     }
-    ws.send(JSON.stringify({ type: 'message', mediaUrl: data.url, mediaType: data.mediaType }));
+    sendMediaMessage(data.url, data.mediaType);
   } catch {
     console.error('Upload failed');
   } finally {
@@ -5241,7 +5251,7 @@ fileInput.addEventListener('change', async () => {
         stickerPicker.classList.add('hidden');
         return;
       }
-      ws.send(JSON.stringify({ type: 'message', mediaUrl: s.url, mediaType: 'image' }));
+      sendMediaMessage(s.url, 'image');
       stickerPicker.classList.add('hidden');
     });
     stickerPicker.appendChild(btn);
@@ -5308,7 +5318,7 @@ if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.Medi
           roomErrorEl.textContent = data.error || 'Upload failed';
           return;
         }
-        ws.send(JSON.stringify({ type: 'message', mediaUrl: data.url, mediaType: data.mediaType }));
+        sendMediaMessage(data.url, data.mediaType);
       } catch {
         console.error('Voice clip upload failed');
       } finally {

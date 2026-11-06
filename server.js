@@ -4351,7 +4351,7 @@ function endFgRound(code, winnerSlot) {
     const matchWinner = matchWinnerWs && fg.players.get(matchWinnerWs);
     // Total kills across the whole match, not just this round — a meaningful "best duel
     // performance" score for the room's leaderboard, only recorded once per match (not per round).
-    if (matchWinner) db.bumpLeaderboard(code, 'fg', matchWinner.name, matchWinner.kills);
+    if (matchWinner) db.bumpLeaderboard(code, 'fg', matchWinner.name, matchWinner.kills, matchWinnerWs.scoreAccountId);
     fg.phase = 'match-end';
     broadcastFg(code, { type: 'fg-match-end', winner: matchWinnerSlot, scoreA: fg.scoreA, scoreB: fg.scoreB });
     // A fresh fg-start is required for a new match — same "explicit start, not auto-restart"
@@ -5703,6 +5703,13 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    // Minigame pages send the signed-in account token with their *-join so leaderboard scores
+    // can be tied to the account instead of just the typed name (see db.bumpLeaderboard).
+    if (typeof msg.type === 'string' && msg.type.endsWith('-join') && msg.type !== 'join-server') {
+      const scoreAccount = typeof msg.accountToken === 'string' && msg.accountToken ? db.getSessionAccount(msg.accountToken) : null;
+      ws.scoreAccountId = scoreAccount ? scoreAccount.id : (ws.accountId || null);
+    }
+
     if (msg.type === 'gw-join') {
       if (isWsMsgRateLimited(ws)) return; // see bc-join's comment on this same guard
       const code = String(msg.code || '').toUpperCase().trim();
@@ -5786,7 +5793,7 @@ wss.on('connection', (ws, req) => {
       const nowGw = Date.now();
       if (nowGw - (ws.lastGwSubmitAt || 0) < ARCADE_SUBMIT_COOLDOWN_MS) return;
       ws.lastGwSubmitAt = nowGw;
-      db.bumpLeaderboard(ws.gwRoom, `gw-${level}`, name, percent);
+      db.bumpLeaderboard(ws.gwRoom, `gw-${level}`, name, percent, ws.scoreAccountId);
       return;
     }
 
@@ -5910,7 +5917,7 @@ wss.on('connection', (ws, req) => {
       if (nowSw - (ws.swJoinedAt || 0) < ARCADE_SUBMIT_MIN_SESSION_MS) return;
       if (nowSw - (ws.lastSwSubmitAt || 0) < ARCADE_SUBMIT_COOLDOWN_MS) return;
       ws.lastSwSubmitAt = nowSw;
-      db.bumpLeaderboard(ws.swRoom, 'sw', p.name, score);
+      db.bumpLeaderboard(ws.swRoom, 'sw', p.name, score, ws.scoreAccountId);
       return;
     }
 
@@ -6521,7 +6528,7 @@ wss.on('connection', (ws, req) => {
         const rank = [...tv.answeredThisRound.values()].filter(Boolean).length;
         points = rank === 1 ? 3 : rank === 2 ? 2 : 1; // speed bonus for the first couple of correct answers
         me.score += points;
-        db.bumpLeaderboard(ws.tvRoom, 'trivia', me.name, me.score);
+        db.bumpLeaderboard(ws.tvRoom, 'trivia', me.name, me.score, ws.scoreAccountId);
       }
       send(ws, { type: 'tv-answer-ack', correct, points, score: me.score });
       broadcastTv(ws.tvRoom, { type: 'tv-answer-count', answered: tv.answeredThisRound.size, total: tv.players.size }, ws);
@@ -6581,7 +6588,7 @@ wss.on('connection', (ws, req) => {
       if (nowArcade - (ws.lastArcadeSubmitAt || 0) < ARCADE_SUBMIT_COOLDOWN_MS) return;
       ws.lastArcadeSubmitAt = nowArcade;
       const score = Math.max(0, Math.min(100000, Math.floor(+msg.score || 0)));
-      db.bumpLeaderboard(ws.arcadeRoom, ARCADE_LEADERBOARD_KEY[ws.arcadeGame], ws.arcadeName, score);
+      db.bumpLeaderboard(ws.arcadeRoom, ARCADE_LEADERBOARD_KEY[ws.arcadeGame], ws.arcadeName, score, ws.scoreAccountId);
       send(ws, { type: 'arcade-leaderboard', scores: db.getLeaderboard(ws.arcadeRoom, ARCADE_LEADERBOARD_KEY[ws.arcadeGame], 10) });
       return;
     }
@@ -6677,7 +6684,7 @@ wss.on('connection', (ws, req) => {
       const correct = hm.word.includes(letter);
       if (correct) {
         me.score += 1;
-        db.bumpLeaderboard(ws.hmRoom, 'hangman', me.name, me.score);
+        db.bumpLeaderboard(ws.hmRoom, 'hangman', me.name, me.score, ws.scoreAccountId);
       } else {
         hm.wrongCount += 1;
       }
@@ -6779,7 +6786,7 @@ wss.on('connection', (ws, req) => {
       me.done = me.solved || me.guessCount >= WG_MAX_GUESSES;
       if (me.solved) {
         const score = WG_SCORE_BY_GUESSES[me.guessCount];
-        db.bumpLeaderboard(ws.wgRoom, 'wordguess', me.name, score);
+        db.bumpLeaderboard(ws.wgRoom, 'wordguess', me.name, score, ws.scoreAccountId);
       }
       send(ws, {
         type: 'wg-guess-result',
@@ -6898,7 +6905,7 @@ wss.on('connection', (ws, req) => {
         ch.winner = opponentInCheck ? me.color : 'draw';
         if (ch.winner !== 'draw') {
           me.wins += 1;
-          db.bumpLeaderboard(ws.chRoom, 'chess', me.name, me.wins);
+          db.bumpLeaderboard(ws.chRoom, 'chess', me.name, me.wins, ws.scoreAccountId);
         }
       } else {
         ch.turn = opponent;
@@ -7031,8 +7038,8 @@ wss.on('connection', (ws, req) => {
       tt.winner = result ? result.symbol : null;
       tt.winCells = result ? result.cells : null;
       if (result && result.symbol !== 'draw') {
-        for (const p of tt.players.values()) {
-          if (p.symbol === result.symbol) { p.wins += 1; db.bumpLeaderboard(ws.ttRoom, `tictactoe-${tt.mode}`, p.name, p.wins); }
+        for (const [pWs, p] of tt.players) {
+          if (p.symbol === result.symbol) { p.wins += 1; db.bumpLeaderboard(ws.ttRoom, `tictactoe-${tt.mode}`, p.name, p.wins, pWs.scoreAccountId); }
         }
       }
       tt.turn = tt.turn === 'X' ? 'O' : 'X';
@@ -7251,7 +7258,7 @@ wss.on('connection', (ws, req) => {
         dg.guessedThisRound.add(me.name);
         const points = dg.guessedThisRound.size === 1 ? 3 : 1;
         me.score += points;
-        db.bumpLeaderboard(ws.dgRoom, 'pictionary', me.name, me.score);
+        db.bumpLeaderboard(ws.dgRoom, 'pictionary', me.name, me.score, ws.scoreAccountId);
         broadcastDg(ws.dgRoom, { type: 'dg-correct', id: me.id, name: me.name, points, score: me.score });
         const guessableCount = [...dg.players.values()].filter((p) => !p.isSpectator).length - 1;
         if (guessableCount > 0 && dg.guessedThisRound.size >= guessableCount) endDgRound(ws.dgRoom);

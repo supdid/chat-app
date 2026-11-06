@@ -319,7 +319,7 @@ if (roomCode) backLink.href = `index.html?room=${encodeURIComponent(roomCode)}&n
   function connect() {
     var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(protocol + '//' + location.host);
-    ws.addEventListener('open', function(){ send({ type: 'arcade-join', code: roomCode, name: myName, game: 'hello' }); });
+    ws.addEventListener('open', function(){ send({ type: 'arcade-join', code: roomCode, name: myName, game: 'hello', accountToken: localStorage.getItem('valk-account-token') }); });
     ws.addEventListener('close', function(){ setTimeout(connect, 1500); });
     ws.addEventListener('message', function(event){
       var data;

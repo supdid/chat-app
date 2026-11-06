@@ -2441,7 +2441,7 @@ function connectSw() {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   swSocket = new WebSocket(`${protocol}//${location.host}`);
   swSocket.addEventListener('open', () => {
-    swSocket.send(JSON.stringify({ type: 'sw-join', code: mpRoomCode, name: mpPlayerName }));
+    swSocket.send(JSON.stringify({ type: 'sw-join', code: mpRoomCode, name: mpPlayerName, accountToken: localStorage.getItem('valk-account-token') }));
   });
   swSocket.addEventListener('message', (event) => {
     let data;

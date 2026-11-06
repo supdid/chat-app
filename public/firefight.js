@@ -1308,7 +1308,7 @@ function connectFg() {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(`${protocol}//${location.host}`);
   ws.addEventListener('open', () => {
-    ws.send(JSON.stringify({ type: 'fg-join', code: roomCode, name: playerName }));
+    ws.send(JSON.stringify({ type: 'fg-join', code: roomCode, name: playerName, accountToken: localStorage.getItem('valk-account-token') }));
   });
   ws.addEventListener('message', (event) => {
     let data;

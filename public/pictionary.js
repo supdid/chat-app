@@ -294,7 +294,7 @@ function connect() {
 
   ws.addEventListener('open', () => {
     lobbyStatusEl.textContent = 'Joining room…';
-    send({ type: 'dg-join', code: roomCode, name: myName });
+    send({ type: 'dg-join', code: roomCode, name: myName, accountToken: localStorage.getItem('valk-account-token') });
   });
 
   ws.addEventListener('close', () => {

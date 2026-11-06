@@ -4861,7 +4861,7 @@ function arcadeJoinGame(game) {
   if (!game) return;
   const doJoin = () => {
     arcadeJoinedGame = game;
-    arcadeSend({ type: 'arcade-join', code: bbRoomCode || 'GLOBAL-LOBBY', game, name: bbPlayerName || 'Player' });
+    arcadeSend({ type: 'arcade-join', code: bbRoomCode || 'GLOBAL-LOBBY', game, name: bbPlayerName || 'Player', accountToken: localStorage.getItem('valk-account-token') });
   };
   if (arcadeWs && arcadeWs.readyState === WebSocket.OPEN) {
     doJoin();
@@ -4930,7 +4930,7 @@ function ensureBbLevelWs() {
   bbLevelWs = new WebSocket(`${protocol}//${location.host}`);
   bbLevelWs.addEventListener('open', () => {
     bbLevelJoined = true;
-    bbLevelWs.send(JSON.stringify({ type: 'arcade-join', code: bbRoomCode || 'GLOBAL-LOBBY', game: 'bblevel', name: bbPlayerName || 'Player' }));
+    bbLevelWs.send(JSON.stringify({ type: 'arcade-join', code: bbRoomCode || 'GLOBAL-LOBBY', game: 'bblevel', name: bbPlayerName || 'Player', accountToken: localStorage.getItem('valk-account-token') }));
   });
   bbLevelWs.addEventListener('close', () => { bbLevelWs = null; bbLevelJoined = false; });
 }
@@ -4941,7 +4941,7 @@ function ensureBbPlaytimeWs() {
   bbPlaytimeWs = new WebSocket(`${protocol}//${location.host}`);
   bbPlaytimeWs.addEventListener('open', () => {
     bbPlaytimeJoined = true;
-    bbPlaytimeWs.send(JSON.stringify({ type: 'arcade-join', code: bbRoomCode || 'GLOBAL-LOBBY', game: 'bbplaytime', name: bbPlayerName || 'Player' }));
+    bbPlaytimeWs.send(JSON.stringify({ type: 'arcade-join', code: bbRoomCode || 'GLOBAL-LOBBY', game: 'bbplaytime', name: bbPlayerName || 'Player', accountToken: localStorage.getItem('valk-account-token') }));
   });
   bbPlaytimeWs.addEventListener('close', () => { bbPlaytimeWs = null; bbPlaytimeJoined = false; });
 }

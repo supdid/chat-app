@@ -448,7 +448,7 @@ if (typeof document !== 'undefined') {
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
       gwSocket = new WebSocket(`${protocol}//${location.host}`);
       gwSocket.addEventListener('open', () => {
-        gwSocket.send(JSON.stringify({ type: 'gw-join', code: mpRoomCode, level: levelKey, name: mpPlayerName }));
+        gwSocket.send(JSON.stringify({ type: 'gw-join', code: mpRoomCode, level: levelKey, name: mpPlayerName, accountToken: localStorage.getItem('valk-account-token') }));
       });
       gwSocket.addEventListener('message', (event) => {
         let data;

@@ -192,7 +192,7 @@ function send(obj) {
 function connect() {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(`${protocol}//${location.host}`);
-  ws.addEventListener('open', () => send({ type: 'arcade-join', code: roomCode, name: myName, game: 'snake' }));
+  ws.addEventListener('open', () => send({ type: 'arcade-join', code: roomCode, name: myName, game: 'snake', accountToken: localStorage.getItem('valk-account-token') }));
   ws.addEventListener('close', () => setTimeout(connect, 1500));
   ws.addEventListener('message', (event) => {
     let data;
