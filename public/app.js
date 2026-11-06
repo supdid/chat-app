@@ -249,6 +249,9 @@ const mentionDropdownEl = document.getElementById('mention-dropdown');
 const pinnedBannerEl = document.getElementById('pinned-banner');
 const announcementBannerEl = document.getElementById('announcement-banner');
 const announcementForm = document.getElementById('announcement-form');
+const disappearRow = document.getElementById('disappear-row');
+const disappearSelect = document.getElementById('disappear-select');
+const DISAPPEAR_LABELS = { 3600: '1 hour', 86400: '24 hours', 604800: '7 days' };
 const wordFilterRow = document.getElementById('word-filter-row');
 const wordFilterToggleBtn = document.getElementById('word-filter-toggle-btn');
 const wordFilterForm = document.getElementById('word-filter-form');
@@ -1025,6 +1028,9 @@ function handleServerMessage(data) {
       slowModeRow.classList.toggle('hidden', !isHost);
       roomEmojisRow.classList.toggle('hidden', !isHost);
       wordFilterRow.classList.toggle('hidden', !isHost);
+      disappearRow.classList.toggle('hidden', !isHost);
+      disappearSelect.value = String(data.disappearAfter || 0);
+      pendingDisappearNotice = data.disappearAfter || 0;
       applyWordFilterSettings(data.wordFilter || {});
       setRoomEmojis(data.emojis || []);
       setRoomEvents(data.events || []);
@@ -1056,6 +1062,7 @@ function handleServerMessage(data) {
       renderOnlineList(data.users);
       data.messages.forEach(renderMessage);
       if (data.messages.length) sendReadReceipt(data.messages[data.messages.length - 1].id);
+      if (pendingDisappearNotice) renderSystem({ text: `⏳ Disappearing messages are on — messages here are deleted after ${DISAPPEAR_LABELS[pendingDisappearNotice] || 'a while'}` });
       roomCodeChip.textContent = currentRoomName ? `${currentRoomName} (${data.code})` : data.code;
       menuRoomCode.textContent = data.code;
       renameRoomInput.value = currentRoomName || '';
@@ -1414,6 +1421,18 @@ function handleServerMessage(data) {
       if (ev && myProfile && ev.going.includes(myProfile.name)) notify('📅 Event reminder', msgText);
       break;
     }
+
+    case 'disappearing-updated':
+      disappearSelect.value = String(data.seconds || 0);
+      renderSystem({ text: data.seconds ? `⏳ ${data.by} turned on disappearing messages — messages are deleted after ${DISAPPEAR_LABELS[data.seconds]}` : `⏳ ${data.by} turned off disappearing messages` });
+      break;
+
+    case 'messages-expired':
+      for (const id of data.ids || []) {
+        const el = document.getElementById(`msg-${id}`);
+        if (el) el.remove();
+      }
+      break;
 
     case 'word-filter-settings':
       applyWordFilterSettings(data);
@@ -4206,6 +4225,17 @@ eventCreateForm.addEventListener('submit', (e) => {
   eventDescInput.value = '';
   eventTimeInput.value = '';
   showAppToast('📅 Event scheduled');
+});
+
+let pendingDisappearNotice = 0;
+disappearSelect.addEventListener('change', () => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const seconds = Number(disappearSelect.value);
+  if (seconds && !confirm(`Turn on disappearing messages? Messages older than ${DISAPPEAR_LABELS[seconds]} will be deleted for everyone, starting now.`)) {
+    disappearSelect.value = '0';
+    return;
+  }
+  ws.send(JSON.stringify({ type: 'set-disappearing', seconds }));
 });
 
 function applyWordFilterSettings(f) {

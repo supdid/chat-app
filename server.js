@@ -3312,6 +3312,7 @@ function sendGroupDm(groupId, fromAccountId, fromName, text, excludeWs) {
 }
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I
 const SLOW_MODE_OPTIONS = [0, 5, 10, 30, 60, 120];
+const DISAPPEAR_OPTIONS = [0, 60 * 60, 24 * 60 * 60, 7 * 24 * 60 * 60];
 const REMINDERS_MAX = 25;
 const REMINDER_MAX_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -7797,7 +7798,7 @@ wss.on('connection', (ws, req) => {
       rooms.set(code, { history: [], clients: new Set([ws]) });
       ws.room = code;
       ws.roomActiveAt = Date.now();
-      send(ws, { type: 'joined-room', code, messages: [], users: roomUsers(code), name: null, reactions: [], pins: [], activity: [], isHost: true, announcement: null, wallpaperUrl: null, pinRequired: false, slowMode: 0, emojis: [], events: [], wordFilter: { useDefault: false, words: [] } });
+      send(ws, { type: 'joined-room', code, messages: [], users: roomUsers(code), name: null, reactions: [], pins: [], activity: [], isHost: true, announcement: null, wallpaperUrl: null, pinRequired: false, slowMode: 0, emojis: [], events: [], wordFilter: { useDefault: false, words: [] }, disappearAfter: 0 });
       return;
     }
 
@@ -7901,6 +7902,7 @@ wss.on('connection', (ws, req) => {
         slowMode: dbRoom ? dbRoom.slow_mode || 0 : 0,
         emojis: db.getRoomEmojis(code),
         events: db.getUpcomingRoomEvents(code),
+        disappearAfter: dbRoom ? dbRoom.disappear_after || 0 : 0,
         wordFilter: dbRoom && isRoomHost({ host_name: hostName, host_account_id: hostAccountId }, ws)
           ? { useDefault: !!dbRoom.filter_default, words: (() => { try { return JSON.parse(dbRoom.filter_words || '[]'); } catch { return []; } })() }
           : { useDefault: !!(dbRoom && dbRoom.filter_default) },
@@ -8238,6 +8240,17 @@ wss.on('connection', (ws, req) => {
       } else {
         send(ws, { type: 'reminders-cleared', count: db.clearReminders(...owner) });
       }
+      return;
+    }
+
+    if (msg.type === 'set-disappearing' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      const dbRoom = db.getRoom(ws.room);
+      if (!isRoomHost(dbRoom, ws)) return;
+      const seconds = DISAPPEAR_OPTIONS.includes(+msg.seconds) ? +msg.seconds : 0;
+      db.setDisappearAfter(ws.room, seconds);
+      broadcastRoom(ws.room, { type: 'disappearing-updated', seconds, by: ws.profile.name });
+      if (seconds) expireMessagesInRoom(ws.room, seconds);
       return;
     }
 
@@ -9067,6 +9080,22 @@ function sendDueEventReminders() {
   }
 }
 setInterval(sendDueEventReminders, Number(process.env.EVENT_REMINDER_INTERVAL_MS) || 30 * 1000);
+
+// Disappearing messages: delete expired messages for good and tell anyone in the room.
+function expireMessagesInRoom(code, seconds) {
+  const expired = db.expireRoomMessages(code, Date.now() - seconds * 1000);
+  if (!expired.length) return;
+  for (const m of expired) deleteUploadFile(m.mediaUrl);
+  const ids = new Set(expired.map((m) => m.id));
+  const room = rooms.get(code);
+  if (room) room.history = room.history.filter((m) => !ids.has(m.id));
+  broadcastRoom(code, { type: 'messages-expired', ids: [...ids] });
+  broadcastRoom(code, { type: 'pins-updated', pins: db.getPins(code) });
+}
+function sweepDisappearingMessages() {
+  for (const r of db.getRoomsWithDisappearing()) expireMessagesInRoom(r.code, r.disappear_after);
+}
+setInterval(sweepDisappearingMessages, Number(process.env.DISAPPEAR_SWEEP_MS) || 60 * 1000);
 
 function sendDueReminders() {
   for (const r of db.takeDueReminders(Date.now())) {

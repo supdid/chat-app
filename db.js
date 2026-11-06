@@ -183,6 +183,8 @@ ensureColumn('rooms', 'slow_mode', 'INTEGER DEFAULT 0');
 // Host word filter: filter_default = use the built-in bad-word list; filter_words = JSON array of
 // the host's own extra words.
 ensureColumn('rooms', 'filter_default', 'INTEGER DEFAULT 0');
+// Disappearing messages: seconds after which a room's messages are deleted for good (0 = keep).
+ensureColumn('rooms', 'disappear_after', 'INTEGER DEFAULT 0');
 ensureColumn('rooms', 'filter_words', 'TEXT');
 
 // One-time migration: pins used to be single-pin-per-room (PK: room_code) — multi-pin needs a
@@ -855,6 +857,32 @@ function takeDueReminders(now) {
   for (const r of due) del.run(r.id);
   return due;
 }
+
+function setDisappearAfter(code, seconds) {
+  db.prepare('UPDATE rooms SET disappear_after = ? WHERE code = ?').run(seconds, code);
+}
+
+function getRoomsWithDisappearing() {
+  return db.prepare('SELECT code, disappear_after FROM rooms WHERE disappear_after > 0').all();
+}
+
+// Permanently removes a room's messages older than `before` (and their reactions/votes/pins).
+// Returns [{ id, mediaUrl }] so the caller can delete uploaded files and tell clients.
+const expireRoomMessages = db.transaction((code, before) => {
+  const rows = db.prepare('SELECT id, media_url FROM messages WHERE room_code = ? AND at < ? LIMIT 2000').all(code, before);
+  if (!rows.length) return [];
+  const delReactions = db.prepare('DELETE FROM reactions WHERE message_id = ?');
+  const delVotes = db.prepare('DELETE FROM poll_votes WHERE message_id = ?');
+  const delMsg = db.prepare('DELETE FROM messages WHERE id = ?');
+  const delPin = db.prepare('DELETE FROM pins WHERE room_code = ? AND message_id = ?');
+  for (const r of rows) {
+    delReactions.run(r.id);
+    delVotes.run(r.id);
+    delPin.run(code, r.id);
+    delMsg.run(r.id);
+  }
+  return rows.map((r) => ({ id: r.id, mediaUrl: r.media_url }));
+});
 
 function setWordFilter(code, useDefault, words) {
   db.prepare('UPDATE rooms SET filter_default = ?, filter_words = ? WHERE code = ?').run(useDefault ? 1 : 0, JSON.stringify(words || []), code);
@@ -2506,6 +2534,9 @@ function getAccountByStreamKey(key) {
 }
 
 module.exports = {
+  setDisappearAfter,
+  getRoomsWithDisappearing,
+  expireRoomMessages,
   insertReminder,
   listReminders,
   clearReminders,

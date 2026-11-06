@@ -7530,3 +7530,50 @@ describe('/remind reminders (2026-11-06)', () => {
     }
   });
 });
+
+describe('disappearing messages (2026-11-06)', () => {
+  test('host turns it on; messages older than the limit are deleted for good and everyone is told', async () => {
+    const dsServer = await startTestServer({ DISAPPEAR_SWEEP_MS: '300' }, 3235);
+    try {
+      const open = async (name) => {
+        const ws = new WebSocket(`ws://localhost:${dsServer.port}`);
+        await new Promise((r) => ws.on('open', r));
+        send(ws, { type: 'join-server', username: name });
+        await waitFor(ws, (m) => m.type === 'joined-server');
+        return ws;
+      };
+      const host = await open('DisHost');
+      send(host, { type: 'create-room' });
+      const { code } = await waitFor(host, (m) => m.type === 'joined-room');
+      const member = await open('DisMember');
+      send(member, { type: 'join-room', code });
+      await waitFor(member, (m) => m.type === 'joined-room');
+      send(host, { type: 'message', text: 'old news' });
+      const old = await waitFor(member, (m) => m.type === 'message' && m.text === 'old news');
+      await sleep(1100);
+      send(host, { type: 'message', text: 'fresh' });
+      await waitFor(member, (m) => m.type === 'message' && m.text === 'fresh');
+
+      // Pretend "old news" was sent 2 hours ago.
+      const Database = require('better-sqlite3');
+      const sqlite = new Database(require('path').join(dsServer.dir, 'valk.db'));
+      sqlite.prepare('UPDATE messages SET at = ? WHERE id = ?').run(Date.now() - 2 * 60 * 60 * 1000, old.id);
+      sqlite.close();
+
+      send(member, { type: 'set-disappearing', seconds: 3600 }); // not host: ignored
+      await sleep(400);
+      const expired = waitFor(member, (m) => m.type === 'messages-expired');
+      send(host, { type: 'set-disappearing', seconds: 3600 });
+      assert.deepEqual((await expired).ids, [old.id]);
+
+      const late = await open('DisLate');
+      send(late, { type: 'join-room', code });
+      const joined = await waitFor(late, (m) => m.type === 'joined-room');
+      assert.equal(joined.disappearAfter, 3600);
+      assert.deepEqual(joined.messages.map((m) => m.text), ['fresh']);
+      host.close(); member.close(); late.close();
+    } finally {
+      await dsServer.stop();
+    }
+  });
+});

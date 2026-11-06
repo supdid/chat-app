@@ -286,6 +286,14 @@
         <button id="wallpaper-clear-btn" class="menu-link hidden" type="button">🚫 Clear room wallpaper</button>
         <button id="room-export-btn" class="menu-link" type="button">📦 Export this room as a .zip (Power Creator+)</button>
       </div>
+      <label id="disappear-row" class="slow-mode-row hidden">⏳ Disappearing messages (host only)
+        <select id="disappear-select">
+          <option value="0">Off</option>
+          <option value="3600">After 1 hour</option>
+          <option value="86400">After 24 hours</option>
+          <option value="604800">After 7 days</option>
+        </select>
+      </label>
       <div id="word-filter-row" class="hidden">
         <button id="word-filter-toggle-btn" class="menu-link" type="button">🚫 Word filter (host only)</button>
         <form id="word-filter-form" class="word-filter-form hidden">
