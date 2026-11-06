@@ -2180,6 +2180,69 @@ button.danger:hover {
   max-height: 55vh;
 }
 
+.profile-card-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+  text-align: center;
+}
+
+.profile-card-body .avatar {
+  width: 88px;
+  height: 88px;
+  font-size: 2rem;
+}
+
+.profile-card-name {
+  font-size: 1.3rem;
+  font-weight: 700;
+}
+
+.profile-card-sub {
+  font-size: 0.85rem;
+  color: var(--text-subtle);
+}
+
+.profile-card-status {
+  font-style: italic;
+}
+
+.profile-badges {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 0.4rem;
+  width: 100%;
+  margin-top: 0.4rem;
+}
+
+.profile-badge {
+  border: 1px solid var(--header-border);
+  border-radius: 10px;
+  padding: 0.4rem 0.3rem;
+  font-size: 0.75rem;
+}
+
+.profile-badge .badge-emoji {
+  display: block;
+  font-size: 1.5rem;
+}
+
+.profile-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  justify-content: center;
+  margin-top: 0.6rem;
+}
+
+#messages .avatar,
+#messages .message .flair-name,
+#menu-online-list .avatar,
+#menu-online-list .flair-name {
+  cursor: pointer;
+}
+
 .dm-status {
   min-height: 1.1em;
   margin: 0.2rem 0 0;

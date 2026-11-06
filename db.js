@@ -156,6 +156,7 @@ ensureColumn('messages', 'edited', 'INTEGER DEFAULT 0');
 ensureColumn('messages', 'deleted', 'INTEGER DEFAULT 0');
 // See insertMessage's comment — a signed-in poster's account_id, not just their display name.
 ensureColumn('messages', 'account_id', 'TEXT');
+db.exec('CREATE INDEX IF NOT EXISTS idx_messages_account ON messages(account_id)');
 ensureColumn('rooms', 'host_name', 'TEXT');
 ensureColumn('rooms', 'host_account_id', 'TEXT');
 ensureColumn('rooms', 'announcement', 'TEXT');
@@ -758,6 +759,56 @@ function addRoomEmoji(code, name, url, addedBy) {
 
 function removeRoomEmoji(code, name) {
   db.prepare('DELETE FROM room_emojis WHERE room_code = ? AND name = ?').run(code, name);
+}
+
+// ---- Profile cards + badges ----
+// The account behind a display name in a room, from that room's saved messages.
+function getAccountIdForNameInRoom(code, name) {
+  const row = db
+    .prepare('SELECT account_id FROM messages WHERE room_code = ? AND name = ? AND account_id IS NOT NULL ORDER BY at DESC LIMIT 1')
+    .get(code, name);
+  return row ? row.account_id : null;
+}
+
+const BADGES = [
+  { id: 'first_message', emoji: '💬', label: 'First Words', desc: 'Sent a first message' },
+  { id: 'chatterbox', emoji: '🗣️', label: 'Chatterbox', desc: 'Sent 500 messages' },
+  { id: 'friendly', emoji: '🤝', label: 'Friendly', desc: 'Has 5 friends' },
+  { id: 'popular', emoji: '🌟', label: 'Popular', desc: 'Has 20 friends' },
+  { id: 'gamer', emoji: '🎮', label: 'Gamer', desc: 'Got on a game leaderboard' },
+  { id: 'champion', emoji: '🏆', label: 'Champion', desc: 'Holds a #1 leaderboard spot' },
+  { id: 'host', emoji: '🏠', label: 'Host', desc: 'Hosts a room' },
+  { id: 'planner', emoji: '📅', label: 'Planner', desc: 'Scheduled an event' },
+  { id: 'party', emoji: '🎟️', label: 'Party Goer', desc: 'Said "I\'m going" to 3 events' },
+  { id: 'creator', emoji: '🎬', label: 'Creator', desc: 'Uploaded a Scorpture video' },
+  { id: 'regular', emoji: '🗓️', label: 'Regular', desc: 'Account is 30+ days old' },
+  { id: 'supporter', emoji: '⭐', label: 'Supporter', desc: 'Has Valk Premium' },
+];
+
+function getAccountBadges(accountId) {
+  const one = (sql, ...args) => db.prepare(sql).get(...args);
+  const count = (sql, ...args) => (one(sql, ...args) || { n: 0 }).n;
+  const account = one('SELECT created_at FROM accounts WHERE id = ?', accountId);
+  if (!account) return [];
+  const messages = count('SELECT COUNT(*) AS n FROM messages WHERE account_id = ?', accountId);
+  const friends = count(
+    `SELECT COUNT(*) AS n FROM friendships WHERE status = 'accepted' AND (requester_id = ? OR addressee_id = ?)`, accountId, accountId);
+  const earned = new Set();
+  if (messages >= 1) earned.add('first_message');
+  if (messages >= 500) earned.add('chatterbox');
+  if (friends >= 5) earned.add('friendly');
+  if (friends >= 20) earned.add('popular');
+  if (count('SELECT COUNT(*) AS n FROM leaderboard WHERE owner_account_id = ?', accountId)) earned.add('gamer');
+  if (one(
+    `SELECT 1 AS x FROM leaderboard l WHERE l.owner_account_id = ? AND l.score > 0
+       AND l.score = (SELECT MAX(score) FROM leaderboard WHERE room_code = l.room_code AND game = l.game) LIMIT 1`, accountId)) earned.add('champion');
+  if (one('SELECT 1 AS x FROM rooms WHERE host_account_id = ? LIMIT 1', accountId)) earned.add('host');
+  if (one('SELECT 1 AS x FROM room_events WHERE created_by_account = ? LIMIT 1', accountId)) earned.add('planner');
+  if (count('SELECT COUNT(*) AS n FROM room_event_rsvps WHERE account_id = ?', accountId) >= 3) earned.add('party');
+  if (one('SELECT 1 AS x FROM scorpture_videos WHERE uploader_id = ? LIMIT 1', accountId)) earned.add('creator');
+  if (account.created_at && Date.now() - account.created_at >= 30 * 24 * 60 * 60 * 1000) earned.add('regular');
+  if (getActivePremium(accountId)) earned.add('supporter');
+  return BADGES.filter((b) => earned.has(b.id));
 }
 
 function setSlowMode(code, seconds) {
@@ -2406,6 +2457,9 @@ function getAccountByStreamKey(key) {
 }
 
 module.exports = {
+  BADGES,
+  getAccountBadges,
+  getAccountIdForNameInRoom,
   getDirectMessageReadAt,
   markGroupDmRead,
   getGroupDmReads,

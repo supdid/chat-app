@@ -1365,6 +1365,10 @@ function handleServerMessage(data) {
       if (groupsOverlay && !groupsOverlay.classList.contains('hidden')) loadGroupThreads();
       break;
 
+    case 'profile-card':
+      renderProfileCard(data);
+      break;
+
     case 'events-updated':
       setRoomEvents(data.events || []);
       if (data.created && data.created.by !== (myProfile && myProfile.name)) {
@@ -6652,4 +6656,138 @@ groupDmInput.addEventListener('input', () => {
   if (Date.now() - lastGroupDmTypingSentAt < 2500) return;
   lastGroupDmTypingSentAt = Date.now();
   ws.send(JSON.stringify({ type: 'group-dm-typing', groupId: currentGroupDmId }));
+});
+
+// --- Profile cards: tap a name or avatar in the chat or the online list ---
+const profileCardOverlay = document.getElementById('profile-card-overlay');
+const profileCardBody = document.getElementById('profile-card-body');
+const profileCardCloseBtn = document.getElementById('profile-card-close-btn');
+let profileCardRequestedName = null;
+
+function openProfileCard(name) {
+  if (!name || !ws || ws.readyState !== WebSocket.OPEN || !currentRoomCode) return;
+  profileCardRequestedName = name;
+  profileCardBody.innerHTML = '<p class="search-status">Loading…</p>';
+  profileCardOverlay.classList.remove('hidden');
+  ws.send(JSON.stringify({ type: 'get-profile-card', name }));
+}
+
+function closeProfileCard() {
+  profileCardOverlay.classList.add('hidden');
+  profileCardRequestedName = null;
+}
+
+function renderProfileCard(data) {
+  if (data.name !== profileCardRequestedName) return;
+  profileCardBody.innerHTML = '';
+  if (data.avatarUrl) roomProfiles.set(data.name, { ...(roomProfiles.get(data.name) || {}), avatarUrl: data.avatarUrl });
+  profileCardBody.appendChild(makeAvatar(data.name));
+  const nameEl = document.createElement('div');
+  nameEl.className = 'profile-card-name';
+  nameEl.appendChild(makeFlairName(data.name, data.account && data.account.flair));
+  profileCardBody.appendChild(nameEl);
+  const sub = document.createElement('div');
+  sub.className = 'profile-card-sub';
+  const bits = [data.online ? '🟢 Online' : '⚪ Not here right now'];
+  if (data.isHost) bits.push('👑 Room host');
+  sub.textContent = bits.join(' · ');
+  profileCardBody.appendChild(sub);
+  if (data.status) {
+    const st = document.createElement('div');
+    st.className = 'profile-card-status';
+    st.textContent = data.status;
+    profileCardBody.appendChild(st);
+  }
+  const acct = data.account;
+  const info = document.createElement('div');
+  info.className = 'profile-card-sub';
+  if (acct) {
+    const joined = acct.joinedAt ? new Date(acct.joinedAt).toLocaleDateString([], { month: 'long', year: 'numeric' }) : null;
+    info.textContent = `Valk account: ${acct.username}${joined ? ` · joined ${joined}` : ''}`;
+  } else {
+    info.textContent = 'Guest (no Valk account)';
+  }
+  profileCardBody.appendChild(info);
+
+  if (acct) {
+    const badges = document.createElement('div');
+    badges.className = 'profile-badges';
+    if (!acct.badges.length) {
+      const none = document.createElement('p');
+      none.className = 'search-status';
+      none.style.gridColumn = '1 / -1';
+      none.textContent = 'No badges yet';
+      badges.appendChild(none);
+    }
+    for (const b of acct.badges) {
+      const el = document.createElement('div');
+      el.className = 'profile-badge';
+      el.title = b.desc;
+      const em = document.createElement('span');
+      em.className = 'badge-emoji';
+      em.textContent = b.emoji;
+      el.append(em, document.createTextNode(b.label));
+      badges.appendChild(el);
+    }
+    profileCardBody.appendChild(badges);
+
+    const actions = document.createElement('div');
+    actions.className = 'profile-card-actions';
+    const addBtn = (label, onClick, cls = '') => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'small-btn ' + cls;
+      btn.textContent = label;
+      if (onClick) btn.addEventListener('click', onClick); else btn.disabled = true;
+      actions.appendChild(btn);
+    };
+    const signedIn = !!accountToken;
+    const friendCall = async (action) => {
+      try {
+        const res = await fetch(`/friends/${action}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accountToken}` },
+          body: JSON.stringify({ username: acct.username }),
+        });
+        const out = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(out.error || 'Something went wrong');
+        showAppToast(action === 'request' ? (out.status === 'accepted' ? `🤝 You and ${acct.username} are now friends` : `👋 Friend request sent to ${acct.username}`) : `🤝 You and ${acct.username} are now friends`);
+        openProfileCard(data.name);
+      } catch (err) {
+        showAppToast(err.message);
+      }
+    };
+    switch (acct.friendStatus) {
+      case 'self': addBtn("That's you!", null); break;
+      case 'friends': addBtn('💬 Message', () => { closeProfileCard(); openFriendDm(acct.username); }); break;
+      case 'pending-out': addBtn('Friend request sent', null); break;
+      case 'pending-in': addBtn('✅ Accept friend request', () => friendCall('accept')); break;
+      case 'blocked': addBtn('Blocked', null); break;
+      default:
+        if (signedIn) addBtn('➕ Add friend', () => friendCall('request'));
+        else addBtn('Sign in to add friends', null);
+    }
+    profileCardBody.appendChild(actions);
+  }
+}
+
+document.addEventListener('click', (e) => {
+  const inMessages = e.target.closest('#messages .avatar, #messages .message .bubble > .meta .flair-name');
+  if (inMessages) {
+    const msgEl = inMessages.closest('.message');
+    if (msgEl && msgEl.dataset.senderName) openProfileCard(msgEl.dataset.senderName);
+    return;
+  }
+  const inOnline = e.target.closest('#menu-online-list .avatar, #menu-online-list .flair-name');
+  if (inOnline) {
+    const row = inOnline.closest('li[data-username]');
+    if (row) { closeMenu(); openProfileCard(row.dataset.username); }
+  }
+});
+profileCardCloseBtn.addEventListener('click', closeProfileCard);
+profileCardOverlay.addEventListener('click', (e) => {
+  if (e.target === profileCardOverlay) closeProfileCard();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !profileCardOverlay.classList.contains('hidden')) closeProfileCard();
 });

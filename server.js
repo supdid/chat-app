@@ -8025,6 +8025,52 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    // Profile card for someone in the current room (tap their name/avatar).
+    if (msg.type === 'get-profile-card' && ws.room) {
+      const now = Date.now();
+      if (now - (ws.lastProfileCardAt || 0) < 300) return;
+      ws.lastProfileCardAt = now;
+      const name = String(msg.name || '').slice(0, 60);
+      const room = rooms.get(ws.room);
+      if (!name || !room) return;
+      let accountId = null;
+      let online = false;
+      for (const c of room.clients) {
+        if (c.profile && c.profile.name === name) { online = true; if (c.accountId) accountId = c.accountId; }
+      }
+      if (!accountId && room.recentAccountsByName) accountId = room.recentAccountsByName.get(name) || null;
+      if (!accountId) accountId = db.getAccountIdForNameInRoom(ws.room, name);
+      const profile = db.getProfile(name);
+      const dbRoom = db.getRoom(ws.room);
+      let account = null;
+      if (accountId) {
+        const a = db.getAccountById(accountId);
+        if (a) {
+          let friendStatus = 'none';
+          if (ws.accountId === a.id) friendStatus = 'self';
+          else if (ws.accountId) {
+            if (db.isBlockedBetween(ws.accountId, a.id)) friendStatus = 'blocked';
+            else {
+              const f = db.getFriendshipBetween(ws.accountId, a.id);
+              if (f && f.status === 'accepted') friendStatus = 'friends';
+              else if (f && f.status === 'pending') friendStatus = f.requester_id === ws.accountId ? 'pending-out' : 'pending-in';
+            }
+          }
+          account = { username: a.username, joinedAt: a.created_at, flair: db.accountFlair(a.id), badges: db.getAccountBadges(a.id), friendStatus };
+        }
+      }
+      send(ws, {
+        type: 'profile-card',
+        name,
+        avatarUrl: profile ? profile.avatar_url || profile.avatarUrl || null : null,
+        status: profile ? profile.status || null : null,
+        online,
+        isHost: !!dbRoom && (dbRoom.host_account_id ? !!accountId && dbRoom.host_account_id === accountId : dbRoom.host_name === name),
+        account,
+      });
+      return;
+    }
+
     // ---- Room events: anyone in the room can schedule one; the host or its creator can cancel it.
     if (msg.type === 'create-event' && ws.room) {
       if (isWsMsgRateLimited(ws)) {

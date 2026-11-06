@@ -7430,3 +7430,38 @@ describe('typing + seen in DMs (2026-11-06)', () => {
     aWs.close(); bWs.close(); cWs.close();
   });
 });
+
+describe('profile cards + badges (2026-11-06)', () => {
+  test('tapping a signed-in member shows their account, badges and friend status; guests show as guests', async () => {
+    const signup = async (username, email) => fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password: 'pass1234', email }),
+    }).then((r) => r.json());
+    const a = await signup('CardA', 'carda@test.com');
+    const b = await signup('CardB', 'cardb@test.com');
+    const { ws: guestHost, code } = await joinRoom('CardGuestHost');
+    const aWs = await joinAsAccount('CardA', a.token, code);
+    const bWs = await joinAsAccount('CardB', b.token, code);
+    send(aWs, { type: 'message', text: 'hello' });
+    await waitFor(aWs, (m) => m.type === 'message' && m.text === 'hello');
+
+    send(bWs, { type: 'get-profile-card', name: 'CardA' });
+    const card = await waitFor(bWs, (m) => m.type === 'profile-card');
+    assert.equal(card.online, true);
+    assert.equal(card.account.username, 'CardA');
+    assert.equal(card.account.friendStatus, 'none');
+    assert.ok(card.account.badges.some((x) => x.id === 'first_message'), 'sent a message → First Words badge');
+
+    await fetch(`${BASE_URL}/friends/request`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${b.token}` }, body: JSON.stringify({ username: 'CardA' }) });
+    await sleep(350);
+    send(bWs, { type: 'get-profile-card', name: 'CardA' });
+    assert.equal((await waitFor(bWs, (m) => m.type === 'profile-card')).account.friendStatus, 'pending-out');
+
+    await sleep(350);
+    send(bWs, { type: 'get-profile-card', name: 'CardGuestHost' });
+    const g = await waitFor(bWs, (m) => m.type === 'profile-card');
+    assert.equal(g.account, null);
+    assert.equal(g.isHost, true);
+    guestHost.close(); aWs.close(); bWs.close();
+  });
+});
