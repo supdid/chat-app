@@ -119,6 +119,10 @@
     <div id="connection-banner" class="connection-banner hidden">Reconnecting…</div>
     <div id="announcement-banner" class="announcement-banner hidden"></div>
     <div id="pinned-banner" class="pinned-banner hidden"></div>
+    <div id="event-banner" class="event-banner hidden">
+      <button type="button" id="event-banner-open" class="event-banner-open"></button>
+      <button type="button" id="event-banner-rsvp" class="small-btn"></button>
+    </div>
     <button type="button" id="voice-call-banner" class="voice-call-banner hidden">📞 <span id="voice-call-banner-text">Voice call in progress</span> — tap to join</button>
 
     <div id="messages"></div>
@@ -337,6 +341,7 @@
       <button id="search-btn" class="menu-link" type="button">🔍 Search messages</button>
       <button id="gallery-btn" class="menu-link" type="button">🖼️ Media gallery</button>
       <button id="poll-btn" class="menu-link" type="button">📊 Create a poll</button>
+      <button id="events-btn" class="menu-link" type="button">📅 Events</button>
       <button id="saved-btn" class="menu-link" type="button">🔖 Saved messages</button>
       <button id="qr-btn" class="menu-link" type="button">📱 Room QR code</button>
       <button id="export-link" class="menu-link" type="button">📥 Export chat history</button>
@@ -497,6 +502,25 @@
         <input id="dm-input" type="text" placeholder="Message…" maxlength="2000" autocomplete="off">
         <button type="submit">Send</button>
       </form>
+    </div>
+  </div>
+
+  <!-- Room events overlay -->
+  <div id="events-overlay" class="menu-overlay hidden">
+    <div class="menu-panel">
+      <div class="menu-header">
+        <h2>📅 Events</h2>
+        <button id="events-close-btn" class="icon-btn" aria-label="Close events">✕</button>
+      </div>
+      <ul id="events-list" class="events-list"></ul>
+      <h3>Schedule an event</h3>
+      <form id="event-create-form" class="event-create-form">
+        <input id="event-title-input" type="text" placeholder="What's happening? (e.g. Block Battle tournament)" maxlength="80" autocomplete="off" required>
+        <input id="event-time-input" type="datetime-local" required>
+        <textarea id="event-desc-input" placeholder="Details (optional)" maxlength="500" rows="2"></textarea>
+        <button type="submit">Schedule</button>
+      </form>
+      <p class="search-status">Everyone who taps "I'm going" gets a reminder 15 minutes before and when it starts.</p>
     </div>
   </div>
 

@@ -809,6 +809,79 @@ body {
   border: 1px solid var(--bg-color);
 }
 
+.event-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 1.5rem;
+  background: var(--header-bg);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--header-border);
+  font-size: 0.85rem;
+}
+
+.event-banner.hidden {
+  display: none;
+}
+
+.event-banner-open {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0;
+  font: inherit;
+}
+
+.events-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.events-list li {
+  border: 1px solid var(--header-border);
+  border-radius: 10px;
+  padding: 0.6rem 0.75rem;
+}
+
+.event-title {
+  font-weight: 700;
+}
+
+.event-when,
+.event-going {
+  font-size: 0.8rem;
+  color: var(--text-subtle);
+}
+
+.event-desc {
+  margin: 0.3rem 0;
+  white-space: pre-wrap;
+  font-size: 0.9rem;
+}
+
+.event-actions {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+
+.event-create-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
 .pinned-banner {
   display: flex;
   flex-direction: column;

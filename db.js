@@ -336,6 +336,27 @@ db.exec(`
     at INTEGER,
     PRIMARY KEY (room_code, name)
   );
+  -- Scheduled room events ("Block Battle tournament Saturday 3pm") with RSVPs and reminders.
+  -- reminder_stage: 0 = none sent, 1 = "starts in 15 min" sent, 2 = "starting now" sent.
+  CREATE TABLE IF NOT EXISTS room_events (
+    id TEXT PRIMARY KEY,
+    room_code TEXT,
+    title TEXT,
+    description TEXT,
+    starts_at INTEGER,
+    created_by_name TEXT,
+    created_by_account TEXT,
+    created_at INTEGER,
+    reminder_stage INTEGER DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS idx_room_events_room ON room_events(room_code, starts_at);
+  CREATE TABLE IF NOT EXISTS room_event_rsvps (
+    event_id TEXT,
+    name TEXT,
+    account_id TEXT,
+    at INTEGER,
+    PRIMARY KEY (event_id, name)
+  );
   CREATE TABLE IF NOT EXISTS direct_message_reads (
     account_id TEXT,
     other_account_id TEXT,
@@ -644,6 +665,74 @@ function renameRoomHostIfMatches(code, oldName, newName, accountId = null) {
   } else {
     db.prepare('UPDATE rooms SET host_name = ? WHERE code = ? AND host_name = ?').run(newName, code, oldName);
   }
+}
+
+// ---- Room events ----
+const EVENT_SHOW_AFTER_START_MS = 3 * 60 * 60 * 1000; // still listed for 3h after it starts
+
+function insertRoomEvent(e) {
+  db.prepare(
+    `INSERT INTO room_events (id, room_code, title, description, starts_at, created_by_name, created_by_account, created_at, reminder_stage)
+     VALUES (@id, @roomCode, @title, @description, @startsAt, @createdByName, @createdByAccount, @createdAt, @reminderStage)`
+  ).run(e);
+}
+
+function getRoomEvent(id) {
+  return db.prepare('SELECT * FROM room_events WHERE id = ?').get(id) || null;
+}
+
+function deleteRoomEvent(id) {
+  db.prepare('DELETE FROM room_event_rsvps WHERE event_id = ?').run(id);
+  db.prepare('DELETE FROM room_events WHERE id = ?').run(id);
+}
+
+function getUpcomingRoomEvents(code) {
+  const events = db
+    .prepare('SELECT * FROM room_events WHERE room_code = ? AND starts_at > ? ORDER BY starts_at ASC LIMIT 50')
+    .all(code, Date.now() - EVENT_SHOW_AFTER_START_MS);
+  const rsvp = db.prepare('SELECT name FROM room_event_rsvps WHERE event_id = ? ORDER BY at ASC');
+  return events.map((e) => ({
+    id: e.id,
+    title: e.title,
+    description: e.description || '',
+    startsAt: e.starts_at,
+    createdBy: e.created_by_name,
+    going: rsvp.all(e.id).map((r) => r.name),
+  }));
+}
+
+function setRoomEventRsvp(eventId, name, accountId, going) {
+  if (going) {
+    db.prepare(
+      `INSERT INTO room_event_rsvps (event_id, name, account_id, at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(event_id, name) DO UPDATE SET account_id = excluded.account_id`
+    ).run(eventId, name, accountId || null, Date.now());
+  } else {
+    db.prepare('DELETE FROM room_event_rsvps WHERE event_id = ? AND name = ?').run(eventId, name);
+  }
+}
+
+function getRoomEventRsvps(eventId) {
+  return db.prepare('SELECT name, account_id FROM room_event_rsvps WHERE event_id = ?').all(eventId);
+}
+
+// Events whose next reminder is due: stage 0 -> 1 at 15 minutes before, 1 -> 2 at the start.
+function getDueEventReminders(now) {
+  return db
+    .prepare(
+      `SELECT * FROM room_events WHERE
+         (reminder_stage = 0 AND starts_at - 15 * 60 * 1000 <= ? AND starts_at > ?)
+         OR (reminder_stage < 2 AND starts_at <= ? AND starts_at > ? - 10 * 60 * 1000)`
+    )
+    .all(now, now, now, now);
+}
+
+function setRoomEventReminderStage(id, stage) {
+  db.prepare('UPDATE room_events SET reminder_stage = ? WHERE id = ?').run(stage, id);
+}
+
+function countUpcomingRoomEvents(code) {
+  return db.prepare('SELECT COUNT(*) AS n FROM room_events WHERE room_code = ? AND starts_at > ?').get(code, Date.now()).n;
 }
 
 function getRoomEmojis(code) {
@@ -2008,6 +2097,8 @@ const deleteRoomCascade = db.transaction((code) => {
   db.prepare('DELETE FROM bc_claims WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM leaderboard WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM room_emojis WHERE room_code = ?').run(code);
+  db.prepare('DELETE FROM room_event_rsvps WHERE event_id IN (SELECT id FROM room_events WHERE room_code = ?)').run(code);
+  db.prepare('DELETE FROM room_events WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM bc_blueprints WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM dms WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM push_subscriptions WHERE room_code = ?').run(code);
@@ -2288,6 +2379,15 @@ function getAccountByStreamKey(key) {
 }
 
 module.exports = {
+  insertRoomEvent,
+  getRoomEvent,
+  deleteRoomEvent,
+  getUpcomingRoomEvents,
+  setRoomEventRsvp,
+  getRoomEventRsvps,
+  getDueEventReminders,
+  setRoomEventReminderStage,
+  countUpcomingRoomEvents,
   getRoomEmojis,
   hasRoomEmoji,
   addRoomEmoji,

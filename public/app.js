@@ -244,6 +244,18 @@ const roomEmojiFileInput = document.getElementById('room-emoji-file-input');
 const roomEmojisList = document.getElementById('room-emojis-list');
 // Custom emojis for the current room: name -> image url. Used as :name: in text and reactions.
 let roomEmojis = new Map();
+const eventBanner = document.getElementById('event-banner');
+const eventBannerOpen = document.getElementById('event-banner-open');
+const eventBannerRsvp = document.getElementById('event-banner-rsvp');
+const eventsBtn = document.getElementById('events-btn');
+const eventsOverlay = document.getElementById('events-overlay');
+const eventsCloseBtn = document.getElementById('events-close-btn');
+const eventsListEl = document.getElementById('events-list');
+const eventCreateForm = document.getElementById('event-create-form');
+const eventTitleInput = document.getElementById('event-title-input');
+const eventTimeInput = document.getElementById('event-time-input');
+const eventDescInput = document.getElementById('event-desc-input');
+let roomEvents = [];
 const slowModeRow = document.getElementById('slow-mode-row');
 const slowModeSelect = document.getElementById('slow-mode-select');
 let roomSlowMode = 0;
@@ -993,6 +1005,7 @@ function handleServerMessage(data) {
       slowModeRow.classList.toggle('hidden', !isHost);
       roomEmojisRow.classList.toggle('hidden', !isHost);
       setRoomEmojis(data.emojis || []);
+      setRoomEvents(data.events || []);
       slowModeReadyAt = 0;
       applySlowMode(data.slowMode);
       roomPinForm.classList.toggle('hidden', !isHost);
@@ -1088,6 +1101,7 @@ function handleServerMessage(data) {
       // server-side room cleanup) left a still-open QR panel showing a join code/link for a room
       // you're no longer in, on a screen that had already switched to roomSelectScreen underneath.
       qrOverlay.classList.add('hidden');
+      eventsOverlay.classList.add('hidden');
       showScreen(roomSelectScreen);
       break;
 
@@ -1300,6 +1314,23 @@ function handleServerMessage(data) {
       currentGroupDmId = null;
       if (groupsOverlay && !groupsOverlay.classList.contains('hidden')) loadGroupThreads();
       break;
+
+    case 'events-updated':
+      setRoomEvents(data.events || []);
+      if (data.created && data.created.by !== (myProfile && myProfile.name)) {
+        showAppToast(`📅 ${data.created.by} scheduled "${data.created.title}"`);
+      }
+      if (data.cancelled) showAppToast(`📅 "${data.cancelled.title}" was cancelled`);
+      break;
+
+    case 'event-reminder': {
+      const msgText = data.startingNow ? `📅 "${data.title}" is starting now!` : `📅 "${data.title}" starts in 15 minutes`;
+      showAppToast(msgText);
+      playNotifySound();
+      const ev = roomEvents.find((e) => e.id === data.id);
+      if (ev && myProfile && ev.going.includes(myProfile.name)) notify('📅 Event reminder', msgText);
+      break;
+    }
 
     case 'room-emojis-updated':
       setRoomEmojis(data.emojis || []);
@@ -3863,6 +3894,138 @@ renameRoomForm.addEventListener('submit', (e) => {
   ws.send(JSON.stringify({ type: 'rename-room', name: renameRoomInput.value.trim() }));
 });
 
+function formatEventTime(ts) {
+  const d = new Date(ts);
+  const now = new Date();
+  const tomorrow = new Date(now);
+  tomorrow.setDate(now.getDate() + 1);
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  if (d.toDateString() === now.toDateString()) return `Today ${time}`;
+  if (d.toDateString() === tomorrow.toDateString()) return `Tomorrow ${time}`;
+  return `${d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })} ${time}`;
+}
+
+function amGoing(ev) {
+  return !!myProfile && ev.going.includes(myProfile.name);
+}
+
+function rsvpEvent(ev, going) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    showAppToast('Not connected — try again in a moment.');
+    return;
+  }
+  ws.send(JSON.stringify({ type: 'rsvp-event', id: ev.id, going }));
+}
+
+function setRoomEvents(list) {
+  roomEvents = list;
+  // Banner: the next event that hasn't started more than an hour ago, if it's within a week.
+  const now = Date.now();
+  const next = roomEvents.find((e) => e.startsAt > now - 60 * 60 * 1000 && e.startsAt < now + 7 * 24 * 60 * 60 * 1000);
+  if (next) {
+    const started = next.startsAt <= now;
+    eventBannerOpen.textContent = `📅 ${next.title} · ${started ? 'happening now' : formatEventTime(next.startsAt)} · ${next.going.length} going`;
+    eventBannerRsvp.textContent = amGoing(next) ? 'Going ✓' : "I'm going";
+    eventBannerRsvp.onclick = () => rsvpEvent(next, !amGoing(next));
+    eventBanner.classList.remove('hidden');
+  } else {
+    eventBanner.classList.add('hidden');
+  }
+  if (!eventsOverlay.classList.contains('hidden')) renderEventsList();
+}
+
+function renderEventsList() {
+  eventsListEl.innerHTML = '';
+  if (!roomEvents.length) {
+    const li = document.createElement('li');
+    li.className = 'search-status';
+    li.textContent = 'No events scheduled yet.';
+    eventsListEl.appendChild(li);
+    return;
+  }
+  for (const ev of roomEvents) {
+    const li = document.createElement('li');
+    const title = document.createElement('div');
+    title.className = 'event-title';
+    title.textContent = ev.title;
+    const when = document.createElement('div');
+    when.className = 'event-when';
+    when.textContent = `${ev.startsAt <= Date.now() ? 'Started ' : ''}${formatEventTime(ev.startsAt)} · by ${ev.createdBy}`;
+    li.append(title, when);
+    if (ev.description) {
+      const desc = document.createElement('div');
+      desc.className = 'event-desc';
+      desc.textContent = ev.description;
+      li.appendChild(desc);
+    }
+    const going = document.createElement('div');
+    going.className = 'event-going';
+    going.textContent = ev.going.length ? `Going (${ev.going.length}): ${ev.going.join(', ')}` : 'Nobody going yet';
+    li.appendChild(going);
+    const actions = document.createElement('div');
+    actions.className = 'event-actions';
+    const rsvpBtn = document.createElement('button');
+    rsvpBtn.type = 'button';
+    rsvpBtn.className = 'small-btn';
+    rsvpBtn.textContent = amGoing(ev) ? 'Going ✓ (tap to cancel)' : "I'm going";
+    rsvpBtn.addEventListener('click', () => rsvpEvent(ev, !amGoing(ev)));
+    actions.appendChild(rsvpBtn);
+    if (isHost || (myProfile && ev.createdBy === myProfile.name)) {
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'small-btn danger';
+      del.textContent = 'Cancel event';
+      del.addEventListener('click', () => {
+        if (!confirm(`Cancel "${ev.title}"?`)) return;
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'delete-event', id: ev.id }));
+      });
+      actions.appendChild(del);
+    }
+    li.appendChild(actions);
+    eventsListEl.appendChild(li);
+  }
+}
+
+function openEventsPanel() {
+  closeMenu();
+  renderEventsList();
+  if (!eventTimeInput.value) {
+    // Default: the next whole hour, in local time.
+    const d = new Date(Date.now() + 60 * 60 * 1000);
+    d.setMinutes(0, 0, 0);
+    const pad = (n) => String(n).padStart(2, '0');
+    eventTimeInput.value = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+  eventsOverlay.classList.remove('hidden');
+}
+
+eventsBtn.addEventListener('click', openEventsPanel);
+eventBannerOpen.addEventListener('click', openEventsPanel);
+eventsCloseBtn.addEventListener('click', () => eventsOverlay.classList.add('hidden'));
+eventsOverlay.addEventListener('click', (e) => {
+  if (e.target === eventsOverlay) eventsOverlay.classList.add('hidden');
+});
+
+eventCreateForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const title = eventTitleInput.value.trim();
+  const startsAt = new Date(eventTimeInput.value).getTime();
+  if (!title || !Number.isFinite(startsAt)) return;
+  if (startsAt < Date.now() - 60 * 1000) {
+    showAppToast('Pick a time in the future');
+    return;
+  }
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    showAppToast("Not connected — the event wasn't scheduled.");
+    return;
+  }
+  ws.send(JSON.stringify({ type: 'create-event', title, description: eventDescInput.value.trim(), startsAt }));
+  eventTitleInput.value = '';
+  eventDescInput.value = '';
+  eventTimeInput.value = '';
+  showAppToast('📅 Event scheduled');
+});
+
 function setRoomEmojis(list) {
   roomEmojis = new Map(list.map((e) => [e.name, e.url]));
   renderRoomEmojiPicker();
@@ -4488,6 +4651,7 @@ const ESCAPE_CLOSABLE = [
   [friendsOverlay, friendsCloseBtn], [friendDmOverlay, friendDmCloseBtn], [groupsOverlay, groupsCloseBtn],
   [groupDmOverlay, groupDmCloseBtn], [savedOverlay, savedCloseBtn], [qrOverlay, qrCloseBtn],
   [threadOverlay, threadCloseBtn], [dmOverlay, dmCloseBtn], [pollOverlay, pollCloseBtn],
+  [eventsOverlay, eventsCloseBtn],
 ];
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;

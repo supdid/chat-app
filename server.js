@@ -3249,6 +3249,8 @@ function sendGroupDm(groupId, fromAccountId, fromName, text, excludeWs) {
 }
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I
 const SLOW_MODE_OPTIONS = [0, 5, 10, 30, 60, 120];
+const ROOM_EVENTS_MAX = 20;
+const EVENT_MAX_AHEAD_MS = 366 * 24 * 60 * 60 * 1000;
 const ROOM_EMOJI_MAX = 50;
 const ROOM_EMOJI_MAX_BYTES = 512 * 1024;
 const ROOM_EMOJI_NAME_RE = /^[a-z0-9_]{2,20}$/;
@@ -7647,7 +7649,7 @@ wss.on('connection', (ws, req) => {
       rooms.set(code, { history: [], clients: new Set([ws]) });
       ws.room = code;
       ws.roomActiveAt = Date.now();
-      send(ws, { type: 'joined-room', code, messages: [], users: roomUsers(code), name: null, reactions: [], pins: [], activity: [], isHost: true, announcement: null, wallpaperUrl: null, pinRequired: false, slowMode: 0, emojis: [] });
+      send(ws, { type: 'joined-room', code, messages: [], users: roomUsers(code), name: null, reactions: [], pins: [], activity: [], isHost: true, announcement: null, wallpaperUrl: null, pinRequired: false, slowMode: 0, emojis: [], events: [] });
       return;
     }
 
@@ -7750,6 +7752,7 @@ wss.on('connection', (ws, req) => {
         wallpaperUrl: dbRoom ? dbRoom.wallpaper_url : null,
         slowMode: dbRoom ? dbRoom.slow_mode || 0 : 0,
         emojis: db.getRoomEmojis(code),
+        events: db.getUpcomingRoomEvents(code),
         // Found by the room-settings/menu-panel correctness audit: the host-only PIN form gave no
         // indication whether a PIN was currently even set — always the same blank field/placeholder
         // regardless of actual state, only discoverable by trying to (re)join blind. Never sends
@@ -7905,6 +7908,65 @@ wss.on('connection', (ws, req) => {
       claimUpload(url);
       db.setWallpaper(ws.room, url);
       broadcastRoom(ws.room, { type: 'wallpaper-updated', url });
+      return;
+    }
+
+    // ---- Room events: anyone in the room can schedule one; the host or its creator can cancel it.
+    if (msg.type === 'create-event' && ws.room) {
+      if (isWsMsgRateLimited(ws)) {
+        send(ws, { type: 'error', message: 'You are doing that too fast — slow down a bit.' });
+        return;
+      }
+      const evRoom = rooms.get(ws.room);
+      if (evRoom && evRoom.muted && evRoom.muted.has(ws.profile.name)) {
+        send(ws, { type: 'error', message: 'You have been muted in this room' });
+        return;
+      }
+      const title = String(msg.title || '').slice(0, 80).trim();
+      const description = String(msg.description || '').slice(0, 500).trim();
+      const startsAt = Math.floor(Number(msg.startsAt));
+      const now = Date.now();
+      if (!title) {
+        send(ws, { type: 'error', message: 'Give the event a name' });
+        return;
+      }
+      if (!Number.isFinite(startsAt) || startsAt < now - 60 * 1000 || startsAt > now + EVENT_MAX_AHEAD_MS) {
+        send(ws, { type: 'error', message: 'Pick a start time in the future (up to a year ahead)' });
+        return;
+      }
+      if (db.countUpcomingRoomEvents(ws.room) >= ROOM_EVENTS_MAX) {
+        send(ws, { type: 'error', message: `This room already has ${ROOM_EVENTS_MAX} upcoming events` });
+        return;
+      }
+      const id = crypto.randomUUID();
+      db.insertRoomEvent({
+        id, roomCode: ws.room, title, description, startsAt,
+        createdByName: ws.profile.name, createdByAccount: ws.accountId || null, createdAt: now,
+        // Created less than 15 minutes ahead: skip the "starts in 15 min" reminder.
+        reminderStage: startsAt - now <= 15 * 60 * 1000 ? 1 : 0,
+      });
+      db.setRoomEventRsvp(id, ws.profile.name, ws.accountId, true);
+      broadcastRoom(ws.room, { type: 'events-updated', events: db.getUpcomingRoomEvents(ws.room), created: { title, by: ws.profile.name } });
+      return;
+    }
+
+    if (msg.type === 'rsvp-event' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      const ev = db.getRoomEvent(String(msg.id || ''));
+      if (!ev || ev.room_code !== ws.room) return;
+      db.setRoomEventRsvp(ev.id, ws.profile.name, ws.accountId, !!msg.going);
+      broadcastRoom(ws.room, { type: 'events-updated', events: db.getUpcomingRoomEvents(ws.room) });
+      return;
+    }
+
+    if (msg.type === 'delete-event' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      const ev = db.getRoomEvent(String(msg.id || ''));
+      if (!ev || ev.room_code !== ws.room) return;
+      const isCreator = ev.created_by_account ? ev.created_by_account === ws.accountId : ev.created_by_name === ws.profile.name;
+      if (!isCreator && !isRoomHost(db.getRoom(ws.room), ws)) return;
+      db.deleteRoomEvent(ev.id);
+      broadcastRoom(ws.room, { type: 'events-updated', events: db.getUpcomingRoomEvents(ws.room), cancelled: { title: ev.title, by: ws.profile.name } });
       return;
     }
 
@@ -8739,6 +8801,27 @@ function cleanupInactiveRooms() {
 
 setTimeout(cleanupInactiveRooms, 30 * 1000); // shortly after boot, not instantly — let startup settle first
 setInterval(cleanupInactiveRooms, CLEANUP_INTERVAL_MS);
+
+// Event reminders: "starts in 15 minutes" and "starting now", live to everyone in the room and as a
+// real push to everyone who said they're going.
+function sendDueEventReminders() {
+  const now = Date.now();
+  for (const ev of db.getDueEventReminders(now)) {
+    const startingNow = ev.starts_at <= now;
+    db.setRoomEventReminderStage(ev.id, startingNow ? 2 : 1);
+    const when = startingNow ? 'is starting now' : 'starts in 15 minutes';
+    broadcastRoom(ev.room_code, { type: 'event-reminder', id: ev.id, title: ev.title, startsAt: ev.starts_at, startingNow });
+    const rsvps = db.getRoomEventRsvps(ev.id);
+    const names = new Set(rsvps.map((r) => r.name));
+    const accounts = new Set(rsvps.map((r) => r.account_id).filter(Boolean));
+    const room = rooms.get(ev.room_code);
+    const connectedNames = new Set(room ? [...room.clients].map((c) => c.profile.name) : []);
+    const subs = db.getPushSubscriptionsForRoom(ev.room_code)
+      .filter((sub) => (names.has(sub.name) || (sub.accountId && accounts.has(sub.accountId))) && !connectedNames.has(sub.name));
+    sendPushToSubs(subs, { title: `📅 ${ev.title} ${when}`, body: 'Tap to open the room', roomCode: ev.room_code });
+  }
+}
+setInterval(sendDueEventReminders, Number(process.env.EVENT_REMINDER_INTERVAL_MS) || 30 * 1000);
 
 // See pendingUploads/claimUpload near the /upload route above for why this exists. Generous grace
 // period — real flows (AI Studio's caption-then-upload-then-post, the video editor's "send to

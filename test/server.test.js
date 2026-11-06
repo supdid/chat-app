@@ -7256,3 +7256,64 @@ describe('custom room emojis (2026-11-05)', () => {
     host.close(); member.close(); late.close();
   });
 });
+
+describe('room events (2026-11-05)', () => {
+  test('schedule, RSVP, see it on join, and only host/creator can cancel', async () => {
+    const { ws: host, code } = await joinRoom('EvHost');
+    const member = await joinExistingRoom('EvMember', code);
+    const startsAt = Date.now() + 2 * 24 * 60 * 60 * 1000;
+
+    const created = waitFor(host, (m) => m.type === 'events-updated' && m.events.length === 1);
+    send(member, { type: 'create-event', title: 'Block Battle tournament', description: 'bring snacks', startsAt });
+    const ev = (await created).events[0];
+    assert.equal(ev.title, 'Block Battle tournament');
+    assert.deepEqual(ev.going, ['EvMember'], 'the creator is going automatically');
+
+    const rsvped = waitFor(member, (m) => m.type === 'events-updated' && m.events[0] && m.events[0].going.length === 2);
+    send(host, { type: 'rsvp-event', id: ev.id, going: true });
+    assert.deepEqual((await rsvped).events[0].going.sort(), ['EvHost', 'EvMember']);
+
+    // Past time is rejected.
+    const err = waitFor(member, (m) => m.type === 'error');
+    send(member, { type: 'create-event', title: 'Too late', startsAt: Date.now() - 60 * 60 * 1000 });
+    assert.match((await err).message, /future/);
+
+    const late = await joinExistingRoom('EvLate', code);
+    // joinExistingRoom already consumed joined-room; ask again via a fresh connection to read the payload.
+    const viewer = await connectWs();
+    send(viewer, { type: 'join-server', username: 'EvViewer' });
+    await waitFor(viewer, (m) => m.type === 'joined-server');
+    send(viewer, { type: 'join-room', code });
+    const joined = await waitFor(viewer, (m) => m.type === 'joined-room');
+    assert.equal(joined.events.length, 1);
+
+    // A random member can't cancel it.
+    send(late, { type: 'delete-event', id: ev.id });
+    await sleep(250);
+    const cancelled = waitFor(member, (m) => m.type === 'events-updated' && m.cancelled);
+    send(host, { type: 'delete-event', id: ev.id });
+    const c = await cancelled;
+    assert.equal(c.events.length, 0);
+    host.close(); member.close(); late.close(); viewer.close();
+  });
+
+  test('a "starting now" reminder goes out when the event starts', async () => {
+    const evServer = await startTestServer({ EVENT_REMINDER_INTERVAL_MS: '200' }, 3231);
+    try {
+      const ws = new WebSocket(`ws://localhost:${evServer.port}`);
+      await new Promise((r) => ws.on('open', r));
+      send(ws, { type: 'join-server', username: 'EvRemind' });
+      await waitFor(ws, (m) => m.type === 'joined-server');
+      send(ws, { type: 'create-room' });
+      await waitFor(ws, (m) => m.type === 'joined-room');
+      const reminder = waitFor(ws, (m) => m.type === 'event-reminder', 5000);
+      send(ws, { type: 'create-event', title: 'Quick game', startsAt: Date.now() + 800 });
+      const r = await reminder;
+      assert.equal(r.title, 'Quick game');
+      assert.equal(r.startingNow, true);
+      ws.close();
+    } finally {
+      await evServer.stop();
+    }
+  });
+});
