@@ -327,6 +327,15 @@ db.exec(`
     saved_at INTEGER,
     PRIMARY KEY (account_id, message_id)
   );
+  -- Host-uploaded custom emojis for a room, used as :name: in messages and as reactions.
+  CREATE TABLE IF NOT EXISTS room_emojis (
+    room_code TEXT,
+    name TEXT,
+    url TEXT,
+    added_by TEXT,
+    at INTEGER,
+    PRIMARY KEY (room_code, name)
+  );
   CREATE TABLE IF NOT EXISTS direct_message_reads (
     account_id TEXT,
     other_account_id TEXT,
@@ -635,6 +644,25 @@ function renameRoomHostIfMatches(code, oldName, newName, accountId = null) {
   } else {
     db.prepare('UPDATE rooms SET host_name = ? WHERE code = ? AND host_name = ?').run(newName, code, oldName);
   }
+}
+
+function getRoomEmojis(code) {
+  return db.prepare('SELECT name, url FROM room_emojis WHERE room_code = ? ORDER BY at ASC').all(code);
+}
+
+function hasRoomEmoji(code, name) {
+  return !!db.prepare('SELECT 1 FROM room_emojis WHERE room_code = ? AND name = ?').get(code, name);
+}
+
+function addRoomEmoji(code, name, url, addedBy) {
+  db.prepare(
+    `INSERT INTO room_emojis (room_code, name, url, added_by, at) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(room_code, name) DO UPDATE SET url = excluded.url, added_by = excluded.added_by, at = excluded.at`
+  ).run(code, name, url, addedBy, Date.now());
+}
+
+function removeRoomEmoji(code, name) {
+  db.prepare('DELETE FROM room_emojis WHERE room_code = ? AND name = ?').run(code, name);
 }
 
 function setSlowMode(code, seconds) {
@@ -1979,6 +2007,7 @@ const deleteRoomCascade = db.transaction((code) => {
   db.prepare('DELETE FROM bc_overrides WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM bc_claims WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM leaderboard WHERE room_code = ?').run(code);
+  db.prepare('DELETE FROM room_emojis WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM bc_blueprints WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM dms WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM push_subscriptions WHERE room_code = ?').run(code);
@@ -2259,6 +2288,10 @@ function getAccountByStreamKey(key) {
 }
 
 module.exports = {
+  getRoomEmojis,
+  hasRoomEmoji,
+  addRoomEmoji,
+  removeRoomEmoji,
   getAccountSavedMessages,
   saveAccountMessage,
   unsaveAccountMessage,

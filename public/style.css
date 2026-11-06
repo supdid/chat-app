@@ -2045,6 +2045,62 @@ button.danger:hover {
   max-height: 55vh;
 }
 
+.custom-emoji {
+  height: 1.6em;
+  width: auto;
+  max-width: 3em;
+  vertical-align: middle;
+  object-fit: contain;
+}
+
+.reaction-pill .custom-emoji {
+  height: 1.2em;
+}
+
+.room-emoji-picker-heading {
+  grid-column: 1 / -1;
+  font-size: 0.75rem;
+  color: var(--text-subtle);
+  margin: 0.2rem 0 0;
+}
+
+.room-emoji-option img {
+  width: 36px;
+  height: 36px;
+  object-fit: contain;
+}
+
+.room-emoji-add-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.4rem 0;
+}
+
+.room-emoji-add-form input[type="text"] {
+  flex: 1 1 8rem;
+}
+
+.room-emojis-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.4rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.room-emojis-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.room-emojis-list li span {
+  flex: 1;
+  font-family: monospace;
+}
+
 .slow-mode-row {
   display: flex;
   align-items: center;

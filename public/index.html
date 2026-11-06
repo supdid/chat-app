@@ -276,6 +276,18 @@
         <button id="wallpaper-clear-btn" class="menu-link hidden" type="button">🚫 Clear room wallpaper</button>
         <button id="room-export-btn" class="menu-link" type="button">📦 Export this room as a .zip (Power Creator+)</button>
       </div>
+      <div id="room-emojis-row" class="hidden">
+        <button id="room-emojis-toggle-btn" class="menu-link" type="button">😀 Room emojis (host only)</button>
+        <div id="room-emojis-manager" class="room-emojis-manager hidden">
+          <form id="room-emoji-add-form" class="room-emoji-add-form">
+            <input id="room-emoji-name-input" type="text" placeholder="name (like party_cat)" maxlength="20" autocomplete="off" required>
+            <input type="file" id="room-emoji-file-input" accept="image/png,image/gif,image/webp,image/jpeg" required>
+            <button type="submit">Add emoji</button>
+          </form>
+          <p class="search-status">Small square images work best (max 512 KB). People use them by typing :name: or from the 🙂 picker.</p>
+          <ul id="room-emojis-list" class="room-emojis-list"></ul>
+        </div>
+      </div>
       <div id="bans-row" class="hidden">
         <button id="manage-bans-btn" class="menu-link" type="button">🚫 Manage banned users (host only)</button>
         <ul id="bans-list" class="hidden"></ul>

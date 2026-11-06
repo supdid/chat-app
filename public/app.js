@@ -235,6 +235,15 @@ const mentionDropdownEl = document.getElementById('mention-dropdown');
 const pinnedBannerEl = document.getElementById('pinned-banner');
 const announcementBannerEl = document.getElementById('announcement-banner');
 const announcementForm = document.getElementById('announcement-form');
+const roomEmojisRow = document.getElementById('room-emojis-row');
+const roomEmojisToggleBtn = document.getElementById('room-emojis-toggle-btn');
+const roomEmojisManager = document.getElementById('room-emojis-manager');
+const roomEmojiAddForm = document.getElementById('room-emoji-add-form');
+const roomEmojiNameInput = document.getElementById('room-emoji-name-input');
+const roomEmojiFileInput = document.getElementById('room-emoji-file-input');
+const roomEmojisList = document.getElementById('room-emojis-list');
+// Custom emojis for the current room: name -> image url. Used as :name: in text and reactions.
+let roomEmojis = new Map();
 const slowModeRow = document.getElementById('slow-mode-row');
 const slowModeSelect = document.getElementById('slow-mode-select');
 let roomSlowMode = 0;
@@ -982,6 +991,8 @@ function handleServerMessage(data) {
       announcementForm.classList.toggle('hidden', !isHost);
       announcementInput.value = currentAnnouncement || '';
       slowModeRow.classList.toggle('hidden', !isHost);
+      roomEmojisRow.classList.toggle('hidden', !isHost);
+      setRoomEmojis(data.emojis || []);
       slowModeReadyAt = 0;
       applySlowMode(data.slowMode);
       roomPinForm.classList.toggle('hidden', !isHost);
@@ -1288,6 +1299,11 @@ function handleServerMessage(data) {
       groupDmOverlay.classList.add('hidden');
       currentGroupDmId = null;
       if (groupsOverlay && !groupsOverlay.classList.contains('hidden')) loadGroupThreads();
+      break;
+
+    case 'room-emojis-updated':
+      setRoomEmojis(data.emojis || []);
+      if (data.added) showAppToast(`😀 New room emoji :${data.added}: — find it in the 🙂 picker`);
       break;
 
     case 'slow-mode-updated':
@@ -1773,7 +1789,16 @@ function messageHasMention(text, name) {
 // Single left-to-right pass handling **bold**, *italic*, `code`, and @mentions (including the
 // special @everyone) together, so e.g. "**@everyone**" or "`@name`" don't fight each other over
 // the same text. Bold is checked before italic so "**x**" isn't consumed as "*" + "*x*" + "*".
-const FORMAT_RE = /\*\*(.+?)\*\*|\*(.+?)\*|`([^`]+?)`|@(\S+)/g;
+const FORMAT_RE = /\*\*(.+?)\*\*|\*(.+?)\*|`([^`]+?)`|:([a-z0-9_]{2,20}):|@(\S+)/g;
+
+function makeCustomEmojiImg(name) {
+  const img = document.createElement('img');
+  img.className = 'custom-emoji';
+  img.src = roomEmojis.get(name);
+  img.alt = `:${name}:`;
+  img.title = `:${name}:`;
+  return img;
+}
 
 function renderTextWithMentions(text) {
   const frag = document.createDocumentFragment();
@@ -1798,9 +1823,12 @@ function renderTextWithMentions(text) {
       code.className = m[3].includes('\n') ? 'inline-code code-block' : 'inline-code';
       code.textContent = m[3];
       frag.appendChild(code);
+    } else if (m[4] !== undefined) {
+      if (roomEmojis.has(m[4])) frag.appendChild(makeCustomEmojiImg(m[4]));
+      else frag.appendChild(document.createTextNode(m[0]));
     } else {
-      const token = m[4].replace(/[.,!?;:]+$/, '');
-      const trailing = m[4].slice(token.length);
+      const token = m[5].replace(/[.,!?;:]+$/, '');
+      const trailing = m[5].slice(token.length);
       const isEveryone = token.toLowerCase() === 'everyone';
       const isKnown = isEveryone || lastRoomUsers.some((u) => u.name.toLowerCase() === token.toLowerCase());
       if (isKnown) {
@@ -1812,7 +1840,7 @@ function renderTextWithMentions(text) {
         frag.appendChild(span);
         if (trailing) frag.appendChild(document.createTextNode(trailing));
       } else {
-        frag.appendChild(document.createTextNode('@' + m[4]));
+        frag.appendChild(document.createTextNode('@' + m[5]));
       }
     }
     lastIndex = FORMAT_RE.lastIndex;
@@ -2055,6 +2083,16 @@ function openReactionPicker(anchorBtn, messageId) {
     });
     grid.appendChild(btn);
   });
+  for (const name of roomEmojis.keys()) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.appendChild(makeCustomEmojiImg(name));
+    btn.addEventListener('click', () => {
+      toggleReaction(messageId, `:${name}:`);
+      closeReactionPicker();
+    });
+    grid.appendChild(btn);
+  }
   popover.appendChild(grid);
 
   // Anything not in the quick-pick grid — paste or use the OS's own emoji picker
@@ -2155,7 +2193,12 @@ function renderReactionPills(bubble, messageId) {
     const pill = document.createElement('button');
     pill.type = 'button';
     pill.className = 'reaction-pill' + (myProfile && visibleNames.includes(myProfile.name) ? ' mine' : '');
-    pill.textContent = `${emoji} ${visibleNames.length}`;
+    const customName = emoji.match(/^:([a-z0-9_]{2,20}):$/);
+    if (customName && roomEmojis.has(customName[1])) {
+      pill.append(makeCustomEmojiImg(customName[1]), ` ${visibleNames.length}`);
+    } else {
+      pill.textContent = `${emoji} ${visibleNames.length}`;
+    }
     pill.addEventListener('click', () => toggleReaction(messageId, emoji));
     row.appendChild(pill);
   }
@@ -3818,6 +3861,97 @@ renameRoomForm.addEventListener('submit', (e) => {
   e.preventDefault();
   if (!currentRoomCode || ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify({ type: 'rename-room', name: renameRoomInput.value.trim() }));
+});
+
+function setRoomEmojis(list) {
+  roomEmojis = new Map(list.map((e) => [e.name, e.url]));
+  renderRoomEmojiPicker();
+  roomEmojisList.innerHTML = '';
+  for (const [name, url] of roomEmojis) {
+    const li = document.createElement('li');
+    const img = document.createElement('img');
+    img.className = 'custom-emoji';
+    img.src = url;
+    img.alt = '';
+    const label = document.createElement('span');
+    label.textContent = `:${name}:`;
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'small-btn danger';
+    del.textContent = 'Remove';
+    del.addEventListener('click', () => {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'remove-room-emoji', name }));
+    });
+    li.append(img, label, del);
+    roomEmojisList.appendChild(li);
+  }
+}
+
+// Room emojis sit at the top of the 🙂 sticker picker; tapping one types :name: into the message box.
+function renderRoomEmojiPicker() {
+  if (!stickerPicker) return;
+  stickerPicker.querySelectorAll('.room-emoji-picker-heading, .room-emoji-option').forEach((el) => el.remove());
+  if (!roomEmojis.size) return;
+  const first = stickerPicker.firstChild;
+  const heading = document.createElement('p');
+  heading.className = 'room-emoji-picker-heading';
+  heading.textContent = 'Room emojis';
+  stickerPicker.insertBefore(heading, first);
+  for (const name of roomEmojis.keys()) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'sticker-option room-emoji-option';
+    btn.title = `:${name}:`;
+    btn.appendChild(makeCustomEmojiImg(name));
+    btn.addEventListener('click', () => {
+      const v = messageInput.value;
+      messageInput.value = `${v}${v && !v.endsWith(' ') ? ' ' : ''}:${name}: `;
+      stickerPicker.classList.add('hidden');
+      messageInput.focus();
+    });
+    stickerPicker.insertBefore(btn, first);
+  }
+  const stickersHeading = document.createElement('p');
+  stickersHeading.className = 'room-emoji-picker-heading';
+  stickersHeading.textContent = 'Stickers';
+  stickerPicker.insertBefore(stickersHeading, first);
+}
+
+roomEmojisToggleBtn.addEventListener('click', () => roomEmojisManager.classList.toggle('hidden'));
+
+roomEmojiAddForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const name = roomEmojiNameInput.value.trim().toLowerCase().replace(/^:|:$/g, '');
+  const file = roomEmojiFileInput.files[0];
+  if (!/^[a-z0-9_]{2,20}$/.test(name)) {
+    showAppToast('Emoji names are 2-20 letters, numbers or _ (like party_cat)');
+    return;
+  }
+  if (!file) return;
+  if (file.size > 512 * 1024) {
+    showAppToast('That image is too big for an emoji (max 512 KB)');
+    return;
+  }
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    showAppToast("Not connected — the emoji wasn't added.");
+    return;
+  }
+  const submitBtn = roomEmojiAddForm.querySelector('button[type="submit"]');
+  submitBtn.disabled = true;
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch('/upload', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Upload failed');
+    ws.send(JSON.stringify({ type: 'add-room-emoji', name, url: data.url }));
+    roomEmojiNameInput.value = '';
+    roomEmojiFileInput.value = '';
+  } catch (err) {
+    showAppToast(err.message || 'Upload failed');
+  } finally {
+    submitBtn.disabled = false;
+  }
 });
 
 slowModeSelect.addEventListener('change', () => {

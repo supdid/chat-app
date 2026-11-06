@@ -3249,6 +3249,10 @@ function sendGroupDm(groupId, fromAccountId, fromName, text, excludeWs) {
 }
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I
 const SLOW_MODE_OPTIONS = [0, 5, 10, 30, 60, 120];
+const ROOM_EMOJI_MAX = 50;
+const ROOM_EMOJI_MAX_BYTES = 512 * 1024;
+const ROOM_EMOJI_NAME_RE = /^[a-z0-9_]{2,20}$/;
+const ROOM_EMOJI_TOKEN_RE = /^:([a-z0-9_]{2,20}):$/;
 const HISTORY_LIMIT = 50;
 const MAX_GAME_PLAYERS = 20;
 const MAX_SCORPTURE_VIEWERS = 500;
@@ -7643,7 +7647,7 @@ wss.on('connection', (ws, req) => {
       rooms.set(code, { history: [], clients: new Set([ws]) });
       ws.room = code;
       ws.roomActiveAt = Date.now();
-      send(ws, { type: 'joined-room', code, messages: [], users: roomUsers(code), name: null, reactions: [], pins: [], activity: [], isHost: true, announcement: null, wallpaperUrl: null, pinRequired: false, slowMode: 0 });
+      send(ws, { type: 'joined-room', code, messages: [], users: roomUsers(code), name: null, reactions: [], pins: [], activity: [], isHost: true, announcement: null, wallpaperUrl: null, pinRequired: false, slowMode: 0, emojis: [] });
       return;
     }
 
@@ -7745,6 +7749,7 @@ wss.on('connection', (ws, req) => {
         announcement: dbRoom ? dbRoom.announcement : null,
         wallpaperUrl: dbRoom ? dbRoom.wallpaper_url : null,
         slowMode: dbRoom ? dbRoom.slow_mode || 0 : 0,
+        emojis: db.getRoomEmojis(code),
         // Found by the room-settings/menu-panel correctness audit: the host-only PIN form gave no
         // indication whether a PIN was currently even set — always the same blank field/placeholder
         // regardless of actual state, only discoverable by trying to (re)join blind. Never sends
@@ -7900,6 +7905,47 @@ wss.on('connection', (ws, req) => {
       claimUpload(url);
       db.setWallpaper(ws.room, url);
       broadcastRoom(ws.room, { type: 'wallpaper-updated', url });
+      return;
+    }
+
+    // Custom room emojis: the host uploads a small image through /upload, then names it here.
+    if (msg.type === 'add-room-emoji' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      const dbRoom = db.getRoom(ws.room);
+      if (!isRoomHost(dbRoom, ws)) return;
+      const name = String(msg.name || '').trim().toLowerCase().replace(/^:|:$/g, '');
+      const url = typeof msg.url === 'string' ? msg.url : '';
+      if (!ROOM_EMOJI_NAME_RE.test(name)) {
+        send(ws, { type: 'error', message: 'Emoji names are 2-20 letters, numbers or _ (like party_cat)' });
+        return;
+      }
+      if (!/^\/uploads\/[^/]+\.(png|gif|webp|jpe?g)$/i.test(url)) {
+        send(ws, { type: 'error', message: 'Emojis must be a PNG, GIF, WEBP or JPG image' });
+        return;
+      }
+      let size = Infinity;
+      try { size = fs.statSync(path.join(__dirname, 'public', url)).size; } catch {}
+      if (size > ROOM_EMOJI_MAX_BYTES) {
+        send(ws, { type: 'error', message: 'That image is too big for an emoji (max 512 KB)' });
+        return;
+      }
+      const existing = db.getRoomEmojis(ws.room);
+      if (existing.length >= ROOM_EMOJI_MAX && !existing.some((e) => e.name === name)) {
+        send(ws, { type: 'error', message: `This room already has the max of ${ROOM_EMOJI_MAX} emojis` });
+        return;
+      }
+      claimUpload(url);
+      db.addRoomEmoji(ws.room, name, url, ws.profile.name);
+      broadcastRoom(ws.room, { type: 'room-emojis-updated', emojis: db.getRoomEmojis(ws.room), added: name });
+      return;
+    }
+
+    if (msg.type === 'remove-room-emoji' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      const dbRoom = db.getRoom(ws.room);
+      if (!isRoomHost(dbRoom, ws)) return;
+      db.removeRoomEmoji(ws.room, String(msg.name || ''));
+      broadcastRoom(ws.room, { type: 'room-emojis-updated', emojis: db.getRoomEmojis(ws.room) });
       return;
     }
 
@@ -8525,7 +8571,9 @@ wss.on('connection', (ws, req) => {
       // Length-bounded rather than validated against a strict emoji regex (those are unreliable
       // for multi-codepoint sequences like flags/skin tones/ZWJ combos).
       const raw = typeof msg.emoji === 'string' ? msg.emoji.trim() : '';
-      const emoji = raw && raw.length <= 8 ? raw : null;
+      // A room's own custom emoji can be a reaction too, written as :name:.
+      const customMatch = raw.match(ROOM_EMOJI_TOKEN_RE);
+      const emoji = raw && (raw.length <= 8 || (customMatch && db.hasRoomEmoji(ws.room, customMatch[1]))) ? raw : null;
       if (!messageId || !emoji) return;
       // Every sibling handler (edit/delete/pin/vote/get-thread) verifies the target message
       // belongs to the reactor's own room before acting — this one didn't, so a reaction on a

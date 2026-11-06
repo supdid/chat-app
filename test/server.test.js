@@ -7210,3 +7210,49 @@ describe('saved messages sync to the account (2026-11-05)', () => {
     assert.equal((await fetch(`${BASE_URL}/account/saved-messages`)).status, 401);
   });
 });
+
+describe('custom room emojis (2026-11-05)', () => {
+  test('host adds an emoji, everyone gets it, it works as a reaction; non-hosts cannot add', async () => {
+    const { ws: host, code } = await joinRoom('EmojiHost');
+    const member = await joinExistingRoom('EmojiMember', code);
+    // 1x1 transparent PNG
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
+    const fd = new FormData();
+    fd.append('file', new Blob([png], { type: 'image/png' }), 'e.png');
+    const up = await fetch(`${BASE_URL}/upload`, { method: 'POST', body: fd }).then((r) => r.json());
+    assert.match(up.url, /^\/uploads\/.+\.png$/);
+
+    // Member (not host) is ignored.
+    send(member, { type: 'add-room-emoji', name: 'sneaky', url: up.url });
+    await sleep(200);
+
+    const got = waitFor(member, (m) => m.type === 'room-emojis-updated');
+    send(host, { type: 'add-room-emoji', name: 'party_cat', url: up.url });
+    const upd = await got;
+    assert.deepEqual(upd.emojis.map((e) => e.name), ['party_cat']);
+
+    const late = await connectWs();
+    send(late, { type: 'join-server', username: 'EmojiLate' });
+    await waitFor(late, (m) => m.type === 'joined-server');
+    send(late, { type: 'join-room', code });
+    const joined = await waitFor(late, (m) => m.type === 'joined-room');
+    assert.deepEqual(joined.emojis.map((e) => e.name), ['party_cat']);
+
+    send(host, { type: 'message', text: 'hi :party_cat:' });
+    const msg = await waitFor(member, (m) => m.type === 'message' && m.text === 'hi :party_cat:');
+    const reacted = waitFor(host, (m) => m.type === 'reaction' || m.type === 'reaction-updated' || (m.type && m.type.startsWith('react')));
+    send(member, { type: 'react', messageId: msg.id, emoji: ':party_cat:' });
+    const r = await reacted;
+    assert.equal(r.emoji, ':party_cat:');
+
+    // An emoji that doesn't exist in the room is rejected as a reaction.
+    let bogus = false;
+    const h = (d) => { const m = JSON.parse(d); if (m.emoji === ':not_here:') bogus = true; };
+    host.on('message', h);
+    send(member, { type: 'react', messageId: msg.id, emoji: ':not_here:' });
+    await sleep(300);
+    host.off('message', h);
+    assert.equal(bogus, false);
+    host.close(); member.close(); late.close();
+  });
+});
