@@ -2272,6 +2272,11 @@ function renderMessage(data, opts = {}) {
       tickCountdown(clock);
       ensureCountdownTicker();
     }
+    if (data.kind === 'effect' && data.meta && data.meta.effect) {
+      bubble.classList.add('effect-bubble');
+      // Only live messages rain on the screen — not every time history loads.
+      if (!opts.history && Date.now() - (data.at || 0) < 15000) playScreenEffect(data.meta.effect);
+    }
     if (data.kind === 'roll') {
       bubble.classList.add('roll-bubble');
       const fair = document.createElement('span');
@@ -9157,6 +9162,7 @@ const WHATS_NEW = [
   ['🛡️', 'Co-hosts', 'Hosts can tap ⭐ next to someone to make them a co-host who helps moderate.'],
   ['📊', 'Better polls', 'Pick-several polls, polls that end on a timer, and /wyr for a random "Would you rather".'],
   ['🎲', 'Fun commands', '/roll, /flip, /8ball, /pick pizza or tacos, /countdown 5m, /me waves, /later 1h text.'],
+  ['🎉', 'Screen effects', '/confetti Happy birthday! — also /hearts, /snow and /stars rain on everyone’s screen.'],
   ['⬆️', 'Scroll back forever', 'Scroll up to load older messages. Search, pins and replies jump to any message.'],
   ['🖼️', 'Photos', 'Tap a photo to zoom. Paste or drag photos in, add a caption, send up to 10 at once.'],
   ['▶️', 'YouTube in chat', 'YouTube links play right inside the chat.'],
@@ -9457,4 +9463,33 @@ function renderChampions(games) {
     });
     body.appendChild(sec);
   }
+}
+
+
+// --- /confetti /hearts /snow /stars: a few seconds of falling things for everyone ---
+const EFFECT_CHARS = { confetti: ['🎉', '🎊', '✨', '🟨', '🟦', '🟥', '🟩'], hearts: ['💖', '💗', '💕', '❤️', '💜'], snow: ['❄️', '❅', '❆', '⛄'], stars: ['⭐', '🌟', '✨', '💫'] };
+let effectRunning = false;
+function playScreenEffect(effect) {
+  const chars = EFFECT_CHARS[effect];
+  if (!chars || effectRunning) return;
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  effectRunning = true;
+  const layer = document.createElement('div');
+  layer.className = 'fx-layer';
+  layer.setAttribute('aria-hidden', 'true');
+  const count = window.innerWidth < 600 ? 28 : 46;
+  for (let i = 0; i < count; i++) {
+    const p = document.createElement('span');
+    p.className = 'fx-piece';
+    p.textContent = chars[Math.floor(Math.random() * chars.length)];
+    p.style.left = `${Math.random() * 100}%`;
+    p.style.fontSize = `${14 + Math.random() * 18}px`;
+    p.style.animationDuration = `${2.4 + Math.random() * 2.2}s`;
+    p.style.animationDelay = `${Math.random() * 1.2}s`;
+    p.style.setProperty('--drift', `${(Math.random() - 0.5) * 120}px`);
+    p.style.setProperty('--spin', `${(Math.random() - 0.5) * 720}deg`);
+    layer.appendChild(p);
+  }
+  document.body.appendChild(layer);
+  setTimeout(() => { layer.remove(); effectRunning = false; }, 5200);
 }

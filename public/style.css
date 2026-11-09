@@ -3075,3 +3075,8 @@ button:focus-visible, a:focus-visible, [role="button"]:focus-visible, select:foc
 .champ-game { margin-bottom: 0.8rem; }
 .champ-title { font-weight: 700; font-size: 0.9rem; margin-bottom: 0.25rem; }
 .champ-row { display: flex; justify-content: space-between; font-size: 0.88rem; padding: 0.15rem 0; }
+
+.fx-layer { position: fixed; inset: 0; pointer-events: none; z-index: 2900; overflow: hidden; }
+.fx-piece { position: absolute; top: -40px; animation-name: fx-fall; animation-timing-function: linear; animation-fill-mode: forwards; will-change: transform; }
+@keyframes fx-fall { to { transform: translate(var(--drift), 110vh) rotate(var(--spin)); } }
+.effect-bubble { border-left: 3px solid #ff6bd6; }

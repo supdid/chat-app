@@ -5576,6 +5576,12 @@ function resolveServerCommand(text) {
       return { kind: 'countdown', text: cd[3].trim().slice(0, 200) || 'Countdown', meta: { endsAt: Date.now() + ms } };
     }
   }
+  const fx = text.match(/^\/(confetti|hearts|snow|stars)\b\s*([\s\S]*)$/i);
+  if (fx) {
+    const effect = fx[1].toLowerCase();
+    const label = { confetti: '🎉', hearts: '💖', snow: '❄️', stars: '✨' }[effect];
+    return { kind: 'effect', text: fx[2].trim().slice(0, 300) || label, meta: { effect } };
+  }
   const me = text.match(/^\/me\s+(.+)$/is);
   if (me) return { kind: 'me', text: me[1].trim() };
   return null;
