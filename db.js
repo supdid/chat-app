@@ -1233,7 +1233,18 @@ function getRoomStats(code, now = Date.now()) {
      GROUP BY r.emoji ORDER BY n DESC LIMIT 5`
   ).all(code, now - 30 * DAY);
   const first = q('SELECT MIN(at) AS at FROM messages WHERE room_code = ?', code).at;
-  return { total, today, week, topChatters, people30, hoursUtc: hours, topReactions, firstMessageAt: first || null };
+  const mostLoved = db.prepare(
+    `SELECT m.id, m.name, m.text, m.media_type AS mediaType, COUNT(r.emoji) AS n
+     FROM messages m JOIN reactions r ON r.message_id = m.id
+     WHERE m.room_code = ? AND m.at > ? AND m.deleted = 0
+     GROUP BY m.id ORDER BY n DESC, m.at DESC LIMIT 3`
+  ).all(code, now - 7 * DAY).map((m) => {
+    let text = m.text || '';
+    if (m.mediaType === 'poll') { try { text = `📊 ${JSON.parse(m.text).question}`; } catch { text = '📊 Poll'; } }
+    else if (!text && m.mediaType) text = m.mediaType === 'image' ? '🖼️ Photo' : m.mediaType === 'video' ? '🎬 Video' : '🔊 Audio';
+    return { id: m.id, name: m.name, text: text.slice(0, 140), n: m.n };
+  });
+  return { total, today, week, topChatters, people30, hoursUtc: hours, topReactions, mostLoved, firstMessageAt: first || null };
 }
 
 // Messages that @mention `name` (or @everyone) in the given rooms since `since`, newest first.
@@ -1253,6 +1264,21 @@ function findMentions(codes, name, since, limit = 60) {
 
 function setRoomAccent(code, accent) {
   db.prepare('UPDATE rooms SET accent = ? WHERE code = ?').run(accent, code);
+}
+
+// Consecutive days (UTC) this account posted a room message, counting back from today — or from
+// yesterday, so a streak isn't shown as broken before you've had a chance to chat today.
+function getChatStreak(accountId, now = Date.now()) {
+  if (!accountId) return 0;
+  const DAY = 24 * 60 * 60 * 1000;
+  const days = new Set(db.prepare(
+    'SELECT DISTINCT CAST(at / 86400000 AS INTEGER) AS d FROM messages WHERE account_id = ? AND at > ?'
+  ).all(accountId, now - 400 * DAY).map((r) => r.d));
+  let d = Math.floor(now / DAY);
+  if (!days.has(d)) d -= 1;
+  let streak = 0;
+  while (days.has(d)) { streak++; d--; }
+  return streak;
 }
 
 function setHostsOnly(code, on) {
@@ -2959,6 +2985,7 @@ function getAccountByStreamKey(key) {
 }
 
 module.exports = {
+  getChatStreak,
   setRoomAccent,
   findMentions,
   getRoomStats,

@@ -8618,7 +8618,7 @@ wss.on('connection', (ws, req) => {
               else if (f && f.status === 'pending') friendStatus = f.requester_id === ws.accountId ? 'pending-out' : 'pending-in';
             }
           }
-          account = { username: a.username, joinedAt: a.created_at, flair: db.accountFlair(a.id), badges: db.getAccountBadges(a.id), friendStatus, bio: friendStatus === 'blocked' ? null : a.bio || null };
+          account = { username: a.username, joinedAt: a.created_at, flair: db.accountFlair(a.id), badges: db.getAccountBadges(a.id), friendStatus, bio: friendStatus === 'blocked' ? null : a.bio || null, streak: db.getChatStreak(a.id) };
         }
       }
       send(ws, {

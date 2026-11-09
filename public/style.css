@@ -3020,3 +3020,8 @@ body.ts-xl .bubble .meta { font-size: 0.9rem; }
 #accent-select { max-width: 9rem; }
 
 .pending-message .bubble { opacity: 0.6; border-style: dashed; }
+
+.profile-streak { font-size: 0.9rem; font-weight: 700; color: #ff9a3d; margin: 0.25rem 0; }
+.stats-loved { display: flex; flex-direction: column; align-items: flex-start; gap: 0.1rem; width: 100%; text-align: left; margin: 0.3rem 0; padding: 0.5rem 0.6rem; border-radius: 8px; border: 1px solid var(--input-border); background: var(--input-bg); color: var(--text-color); font: inherit; cursor: pointer; }
+.stats-loved-meta { font-size: 0.72rem; color: var(--text-subtle); }
+.stats-loved-text { font-size: 0.88rem; white-space: pre-wrap; word-break: break-word; max-height: 3.2em; overflow: hidden; }

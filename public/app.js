@@ -7611,10 +7611,18 @@ function renderProfileCard(data) {
   if (acct) {
     const joined = acct.joinedAt ? new Date(acct.joinedAt).toLocaleDateString([], { month: 'long', year: 'numeric' }) : null;
     info.textContent = `Valk account: ${acct.username}${joined ? ` · joined ${joined}` : ''}`;
+
   } else {
     info.textContent = 'Guest (no Valk account)';
   }
   profileCardBody.appendChild(info);
+  if (acct && acct.streak >= 2) {
+    const streak = document.createElement('div');
+    streak.className = 'profile-streak';
+    streak.textContent = `🔥 ${acct.streak}-day chat streak`;
+    streak.title = 'Days in a row this person has chatted on Valk';
+    profileCardBody.appendChild(streak);
+  }
 
   if (acct && (acct.bio || acct.friendStatus === 'self')) {
     const bioWrap = document.createElement('div');
@@ -8481,6 +8489,23 @@ function renderRoomStats(s) {
       wrap.appendChild(sp);
     }
     statsBody.appendChild(wrap);
+  }
+  if (s.mostLoved && s.mostLoved.length) {
+    h('🌟 Most-loved messages this week');
+    for (const m of s.mostLoved) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'stats-loved';
+      const who = document.createElement('span');
+      who.className = 'stats-loved-meta';
+      who.textContent = `${m.name} · ${m.n} reaction${m.n === 1 ? '' : 's'}`;
+      const t = document.createElement('span');
+      t.className = 'stats-loved-text';
+      t.textContent = hideSpoilerText(m.text);
+      row.append(who, t);
+      row.addEventListener('click', () => { statsModal.classList.add('hidden'); jumpToMessage(m.id); });
+      statsBody.appendChild(row);
+    }
   }
   const foot = document.createElement('p');
   foot.className = 'search-status';

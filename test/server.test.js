@@ -8207,3 +8207,26 @@ describe('search filters (2026-11-08)', () => {
     a.close(); b.close();
   });
 });
+
+describe('chat streaks + most-loved (2026-11-08)', () => {
+  test('streak counts consecutive days; stats list the most-reacted messages', async () => {
+    const acct = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'StreakUser', password: 'pass1234', email: 'streakuser@test.com' }),
+    }).then((r) => r.json());
+    const { ws: host, code } = await joinRoom('StreakHost');
+    const me = await joinAsAccount('StreakUser', acct.token, code);
+    send(me, { type: 'message', text: 'day one' });
+    const m = await waitFor(host, (x) => x.type === 'message' && x.text === 'day one');
+    send(host, { type: 'react', messageId: m.id, emoji: '🔥' });
+    await sleep(200);
+    send(host, { type: 'get-profile-card', name: 'StreakUser' });
+    const card = await waitFor(host, (x) => x.type === 'profile-card');
+    assert.equal(card.account.streak, 1);
+    send(host, { type: 'get-room-stats' });
+    const st = await waitFor(host, (x) => x.type === 'room-stats');
+    assert.equal(st.mostLoved[0].text, 'day one');
+    assert.equal(st.mostLoved[0].n, 1);
+    host.close(); me.close();
+  });
+});
