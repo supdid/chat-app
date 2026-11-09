@@ -9291,6 +9291,11 @@ const WHATS_NEW = [
   ['🔥', 'Streaks & About me', 'Profile cards show your chat streak and an "about me" you can write.'],
   ['⭐', 'Make your own stickers', 'Open 🙂 stickers → ＋ under My stickers to turn any photo into a sticker.'],
   ['📨', 'Invite friends', 'In 👥 Friends, tap 📨 to invite a friend to the room you’re in.'],
+  ['↩', 'Replies notify you', 'When someone replies to your message you get notified, and it shows in ＠ Mentions.'],
+  ['🎈', 'Room icons & people count', 'Hosts can give the room an emoji icon. 👥 in the header shows who’s here.'],
+  ['👀', 'Public polls', 'Tick "Show who voted for what" when making a poll.'],
+  ['🏅', 'New badges', 'Type Racer, Speedster, Co-host, Sticker Artist, Pollster and On Fire.'],
+  ['📲', 'Install Valk', 'Room menu → 📲 Install Valk as an app.'],
   ['🎮', 'Game invites', 'Type /play typerace (or chess, trivia, wordle…) to call the room to a game. 🏆 Room champions shows the top players.'],
 ];
 const whatsNewModal = document.getElementById('whats-new-modal');
