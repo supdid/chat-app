@@ -4176,6 +4176,8 @@ function broadcastRoom(code, data, exclude) {
 function roomUsers(code) {
   const room = rooms.get(code);
   if (!room) return [];
+  const cohostIds = new Set(db.getRoomCohosts(code).map((c) => c.accountId));
+  const dbRoomForFlags = db.getRoom(code);
   // `muted` lets the host's own client render an unmute option — unmute-user has always existed
   // server-side (and is fully tested), but the client never had any way to know who was already
   // muted (not even freshly after clicking mute-user, and definitely not after a page refresh
@@ -4187,6 +4189,8 @@ function roomUsers(code) {
     status: c.profile.status,
     muted: !!(room.muted && room.muted.has(c.profile.name)),
     flair: db.accountFlair(c.accountId),
+    cohost: !!(c.accountId && cohostIds.has(c.accountId)),
+    host: isRoomHost(dbRoomForFlags, c),
   }));
 }
 
@@ -4209,6 +4213,21 @@ function roomActivityList(room) {
 // DevTools, with nothing in the UI ever claiming or needing that anonymity to be broken. Now
 // computes an aggregate `counts` array (safe for everyone) plus `myVote` resolved specifically
 // for `forName`, the one recipient this call is actually being sent to.
+// Marks which history entries belong to the person receiving them (`own: true`), so a page
+// reload keeps your own messages editable/deletable and on your side of the chat. Live entries
+// carry a per-connection `sub` that's random on every connect, so it can't do this by itself
+// after a reconnect. Same ownership rule as ownsMessage(): account if the message has one, else
+// display name.
+function markOwnForViewer(entries, ws) {
+  return entries.map((e) => {
+    if (!e || e.name !== ws.profile.name || !e.id) return e;
+    const row = db.getMessage(e.id);
+    if (!row) return e;
+    const own = row.account_id ? row.account_id === ws.accountId : true;
+    return own ? { ...e, own: true } : e;
+  });
+}
+
 function attachPollVotes(historyEntries, forName) {
   return historyEntries.map((e) => {
     if (e.mediaType !== 'poll') return e;
@@ -5271,6 +5290,68 @@ function isRoomHost(dbRoom, ws) {
   return dbRoom.host_name === ws.profile.name;
 }
 
+// Co-hosts (room_cohosts) are signed-in members the host promoted to help moderate. They get
+// the moderation powers (kick/mute/unmute/ban/unban, delete any message, announcement, slow mode,
+// cancel events) but NOT the room-owner ones (rename, PIN, wallpaper, emojis, invites, word
+// filter, disappearing messages, managing co-hosts). Keyed by account id only — a guest can't be
+// one, so a copied display name can never pass this.
+const EIGHT_BALL = [
+  'It is certain.', 'Without a doubt.', 'Yes — definitely.', 'You may rely on it.', 'Most likely.',
+  'Outlook good.', 'Signs point to yes.', 'Reply hazy, try again.', 'Ask again later.',
+  'Better not tell you now.', 'Cannot predict now.', "Don't count on it.", 'My reply is no.',
+  'Outlook not so good.', 'Very doubtful.',
+];
+function resolveServerCommand(text) {
+  const roll = text.match(/^\/roll(?:\s+(\d*)d(\d+))?\s*$/i);
+  if (roll) {
+    const count = Math.min(20, Math.max(1, parseInt(roll[1] || '1', 10) || 1));
+    const sides = Math.min(1000, Math.max(2, parseInt(roll[2] || '6', 10) || 6));
+    const rolls = Array.from({ length: count }, () => crypto.randomInt(1, sides + 1));
+    const total = rolls.reduce((a, b) => a + b, 0);
+    return { kind: 'roll', text: count === 1 ? `🎲 rolled a d${sides}: ${total}` : `🎲 rolled ${count}d${sides}: ${rolls.join(' + ')} = ${total}` };
+  }
+  if (/^\/flip\s*$/i.test(text)) return { kind: 'roll', text: `🪙 flipped a coin: ${crypto.randomInt(2) ? 'Heads' : 'Tails'}` };
+  const ball = text.match(/^\/8ball\s+(.+)$/is);
+  if (ball) return { kind: 'roll', text: `🎱 asked: "${ball[1].trim().slice(0, 300)}" — ${EIGHT_BALL[crypto.randomInt(EIGHT_BALL.length)]}` };
+  const pick = text.match(/^\/pick\s+(.+)$/is);
+  if (pick) {
+    const options = pick[1].split(/\s*(?:,|\bor\b)\s*/i).map((o) => o.trim()).filter(Boolean).slice(0, 20);
+    if (options.length >= 2) return { kind: 'roll', text: `🤔 picked from ${options.join(', ')}: **${options[crypto.randomInt(options.length)]}**` };
+  }
+  const me = text.match(/^\/me\s+(.+)$/is);
+  if (me) return { kind: 'me', text: me[1].trim() };
+  return null;
+}
+
+function isRoomCohost(dbRoom, ws) {
+  return !!(dbRoom && ws.accountId && db.isRoomCohost(dbRoom.code, ws.accountId));
+}
+function isRoomMod(dbRoom, ws) {
+  return isRoomHost(dbRoom, ws) || isRoomCohost(dbRoom, ws);
+}
+// Is the person called targetName (in this room) the host or a co-host? Co-hosts may moderate
+// regular members only — never the host or each other.
+function isProtectedFromCohost(dbRoom, room, targetName) {
+  if (!dbRoom) return false;
+  const targetClient = room && [...room.clients].find((c) => c.profile && c.profile.name === targetName);
+  const acct = (targetClient && targetClient.accountId)
+    || (room && room.recentAccountsByName && room.recentAccountsByName.get(targetName))
+    || null;
+  if (dbRoom.host_account_id ? acct === dbRoom.host_account_id : dbRoom.host_name === targetName) return true;
+  return !!(acct && db.isRoomCohost(dbRoom.code, acct));
+}
+const MAX_COHOSTS = 10;
+function sendCohostsUpdate(code) {
+  const room = rooms.get(code);
+  if (!room) return;
+  const cohosts = db.getRoomCohosts(code);
+  const ids = new Set(cohosts.map((c) => c.accountId));
+  for (const client of room.clients) {
+    send(client, { type: 'cohosts-updated', cohosts: cohosts.map((c) => c.name), isCohost: !!(client.accountId && ids.has(client.accountId)) });
+  }
+  broadcastRoom(code, { type: 'presence', users: roomUsers(code) });
+}
+
 // Shared by kick-user/mute-user/ban-user (host check + target-name parsing + in-memory room
 // lookup) — was copy-pasted verbatim at all three call sites. unmute-user isn't included: its
 // shape genuinely differs (no empty/self-name guard, doesn't bail if the room is already gone),
@@ -5281,11 +5362,15 @@ function resolveModerationTarget(ws, msg) {
   // not just the attacker's own.
   if (isWsMsgRateLimited(ws)) return null;
   const dbRoom = db.getRoom(ws.room);
-  if (!isRoomHost(dbRoom, ws)) return null;
+  if (!isRoomMod(dbRoom, ws)) return null;
   const targetName = String(msg.name || '').trim();
   if (!targetName || targetName === ws.profile.name) return null;
   const room = rooms.get(ws.room);
   if (!room) return null;
+  if (!isRoomHost(dbRoom, ws) && isProtectedFromCohost(dbRoom, room, targetName)) {
+    send(ws, { type: 'error', message: "Co-hosts can't do that to the host or another co-host" });
+    return null;
+  }
   return { dbRoom, room, targetName };
 }
 
@@ -7983,7 +8068,7 @@ wss.on('connection', (ws, req) => {
       send(ws, {
         type: 'joined-room',
         code,
-        messages: attachPollVotes(room.history, ws.profile.name),
+        messages: markOwnForViewer(attachPollVotes(room.history, ws.profile.name), ws),
         users: roomUsers(code),
         name: dbRoom ? dbRoom.name : null,
         reactions: db.getReactionsForRoom(code, HISTORY_LIMIT),
@@ -7996,6 +8081,9 @@ wss.on('connection', (ws, req) => {
         readReceipts: db.getReadReceipts(code),
         activity: roomActivityList(room),
         isHost: isRoomHost({ host_name: hostName, host_account_id: hostAccountId }, ws),
+        isCohost: !!(ws.accountId && db.isRoomCohost(code, ws.accountId)),
+        cohosts: db.getRoomCohosts(code).map((c) => c.name),
+        welcome: dbRoom ? dbRoom.welcome_text || null : null,
         announcement: dbRoom ? dbRoom.announcement : null,
         wallpaperUrl: dbRoom ? dbRoom.wallpaper_url : null,
         slowMode: dbRoom ? dbRoom.slow_mode || 0 : 0,
@@ -8263,7 +8351,7 @@ wss.on('connection', (ws, req) => {
       const ev = db.getRoomEvent(String(msg.id || ''));
       if (!ev || ev.room_code !== ws.room) return;
       const isCreator = ev.created_by_account ? ev.created_by_account === ws.accountId : ev.created_by_name === ws.profile.name;
-      if (!isCreator && !isRoomHost(db.getRoom(ws.room), ws)) return;
+      if (!isCreator && !isRoomMod(db.getRoom(ws.room), ws)) return;
       db.deleteRoomEvent(ev.id);
       broadcastRoom(ws.room, { type: 'events-updated', events: db.getUpcomingRoomEvents(ws.room), cancelled: { title: ev.title, by: ws.profile.name } });
       return;
@@ -8394,7 +8482,7 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'set-slow-mode' && ws.room) {
       if (isWsMsgRateLimited(ws)) return;
       const dbRoom = db.getRoom(ws.room);
-      if (!isRoomHost(dbRoom, ws)) return;
+      if (!isRoomMod(dbRoom, ws)) return;
       const seconds = SLOW_MODE_OPTIONS.includes(+msg.seconds) ? +msg.seconds : 0;
       db.setSlowMode(ws.room, seconds);
       const room = rooms.get(ws.room);
@@ -8403,10 +8491,62 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    if ((msg.type === 'add-cohost' || msg.type === 'remove-cohost') && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      const dbRoom = db.getRoom(ws.room);
+      if (!isRoomHost(dbRoom, ws)) return;
+      const room = rooms.get(ws.room);
+      if (msg.type === 'add-cohost') {
+        const targetName = String(msg.name || '').trim();
+        const target = room && [...room.clients].find((c) => c.profile && c.profile.name === targetName);
+        if (!target || target === ws) return;
+        if (!target.accountId) {
+          send(ws, { type: 'error', message: `${targetName} needs to be signed in to an account to be a co-host` });
+          return;
+        }
+        if (dbRoom.host_account_id && target.accountId === dbRoom.host_account_id) return;
+        if (!db.isRoomCohost(ws.room, target.accountId) && db.countRoomCohosts(ws.room) >= MAX_COHOSTS) {
+          send(ws, { type: 'error', message: `A room can have up to ${MAX_COHOSTS} co-hosts` });
+          return;
+        }
+        db.addRoomCohost(ws.room, target.accountId, targetName, ws.profile.name);
+        broadcastRoom(ws.room, { type: 'system', text: `${ws.profile.name} made ${targetName} a co-host`, at: Date.now() });
+      } else {
+        const targetName = String(msg.name || '').trim();
+        const row = db.getRoomCohosts(ws.room).find((c) => c.name === targetName);
+        const live = room && [...room.clients].find((c) => c.profile && c.profile.name === targetName && c.accountId);
+        const acct = (live && live.accountId) || (row && row.accountId);
+        if (!acct || !db.isRoomCohost(ws.room, acct)) return;
+        db.removeRoomCohost(ws.room, acct);
+        broadcastRoom(ws.room, { type: 'system', text: `${targetName} is no longer a co-host`, at: Date.now() });
+      }
+      sendCohostsUpdate(ws.room);
+      return;
+    }
+
+    if (msg.type === 'set-welcome' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      const dbRoom = db.getRoom(ws.room);
+      if (!isRoomHost(dbRoom, ws)) return;
+      const text = String(msg.text || '').slice(0, 1000).trim() || null;
+      db.setRoomWelcome(ws.room, text);
+      broadcastRoom(ws.room, { type: 'welcome-updated', text });
+      return;
+    }
+
+    if (msg.type === 'get-edit-history' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      const messageId = String(msg.messageId || '');
+      const target = messageId && db.getMessage(messageId);
+      if (!target || target.room_code !== ws.room || target.deleted) return;
+      send(ws, { type: 'edit-history', messageId, current: target.text, versions: db.getMessageEdits(messageId) });
+      return;
+    }
+
     if (msg.type === 'set-announcement' && ws.room) {
       if (isWsMsgRateLimited(ws)) return; // see rename-room's comment on this same guard
       const dbRoom = db.getRoom(ws.room);
-      if (!isRoomHost(dbRoom, ws)) return;
+      if (!isRoomMod(dbRoom, ws)) return;
       const text = String(msg.text || '').slice(0, 200).trim() || null;
       db.setAnnouncement(ws.room, text);
       broadcastRoom(ws.room, { type: 'announcement-updated', text });
@@ -8462,7 +8602,7 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'unmute-user' && ws.room) {
       if (isWsMsgRateLimited(ws)) return; // see rename-room's comment on this same guard
       const dbRoom = db.getRoom(ws.room);
-      if (!isRoomHost(dbRoom, ws)) return;
+      if (!isRoomMod(dbRoom, ws)) return;
       const targetName = String(msg.name || '').trim();
       const room = rooms.get(ws.room);
       if (room && room.muted) room.muted.delete(targetName);
@@ -8534,7 +8674,7 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'unban-user' && ws.room) {
       if (isWsMsgRateLimited(ws)) return; // see rename-room's comment on this same guard
       const dbRoom = db.getRoom(ws.room);
-      if (!isRoomHost(dbRoom, ws)) return;
+      if (!isRoomMod(dbRoom, ws)) return;
       const banId = String(msg.banId || '');
       if (!banId) return;
       db.unbanFromRoom(banId, ws.room);
@@ -8544,7 +8684,7 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'get-bans' && ws.room) {
       const dbRoom = db.getRoom(ws.room);
-      if (!isRoomHost(dbRoom, ws)) return;
+      if (!isRoomMod(dbRoom, ws)) return;
       send(ws, { type: 'bans-result', bans: db.getRoomBans(ws.room) });
       return;
     }
@@ -8851,11 +8991,15 @@ wss.on('connection', (ws, req) => {
     // Scroll-to-top pagination — the room's initial history (see 'joined-room') only ever sends
     // the newest HISTORY_LIMIT messages; this is the only way to reach anything older.
     if (msg.type === 'load-older-messages' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
       const beforeAt = Number(msg.beforeAt);
       if (!Number.isFinite(beforeAt)) return;
+      const beforeId = typeof msg.beforeId === 'string' ? msg.beforeId.slice(0, 100) : null;
       const LOAD_OLDER_LIMIT = 50;
-      const messages = db.getMessagesBefore(ws.room, beforeAt, LOAD_OLDER_LIMIT);
-      send(ws, { type: 'older-messages', messages, hasMore: messages.length === LOAD_OLDER_LIMIT });
+      const raw = db.getMessagesBefore(ws.room, beforeAt, LOAD_OLDER_LIMIT, beforeId);
+      const messages = markOwnForViewer(attachPollVotes(raw, ws.profile.name), ws);
+      const reactions = db.getReactionsForMessages(raw.map((m) => m.id));
+      send(ws, { type: 'older-messages', messages, reactions, hasMore: raw.length === LOAD_OLDER_LIMIT, beforeId });
       return;
     }
 
@@ -8875,7 +9019,7 @@ wss.on('connection', (ws, req) => {
       // connection, so reconnecting or a second tab doesn't reset the wait.
       const slowRoom = db.getRoom(ws.room);
       const slowSeconds = slowRoom ? slowRoom.slow_mode || 0 : 0;
-      if (slowSeconds > 0 && !isRoomHost(slowRoom, ws)) {
+      if (slowSeconds > 0 && !isRoomMod(slowRoom, ws)) {
         if (!room.slowLast) room.slowLast = new Map();
         const slowKey = ws.accountId || `name:${ws.profile.name}`;
         const waitMs = (room.slowLast.get(slowKey) || 0) + slowSeconds * 1000 - Date.now();
@@ -8885,7 +9029,14 @@ wss.on('connection', (ws, req) => {
         }
         room.slowLast.set(slowKey, Date.now());
       }
-      const text = String(msg.text || '').slice(0, 2000).trim();
+      let text = String(msg.text || '').slice(0, 2000).trim();
+      // /roll, /flip, /8ball are rolled HERE (not in the browser) so nobody can fake a result;
+      // kind 'roll' tells clients to show it as a verified roll. /me becomes an action line.
+      let kind = null;
+      if (!msg.mediaType && !msg.gifId) {
+        const cmd = resolveServerCommand(text);
+        if (cmd) { text = cmd.text; kind = cmd.kind; }
+      }
       // A GIF from the GIF picker arrives as just its GIPHY id; the URL is built here.
       const gifUrl = typeof msg.gifId === 'string' && GIF_ID_RE.test(msg.gifId) ? gifUrlForId(msg.gifId) : null;
       const mediaType = gifUrl ? 'image' : ['video', 'image', 'audio', 'poll'].includes(msg.mediaType) ? msg.mediaType : null;
@@ -8934,11 +9085,12 @@ wss.on('connection', (ws, req) => {
         mediaType,
         replyPreview,
         at: Date.now(),
+        kind,
         flair: db.accountFlair(ws.accountId),
       };
       room.history.push(entry);
       if (room.history.length > HISTORY_LIMIT) room.history.shift();
-      db.insertMessage({ id: entry.id, roomCode: ws.room, name: entry.name, text: entry.text, mediaUrl: entry.mediaUrl, mediaType: entry.mediaType, replyToId, at: entry.at, accountId: ws.accountId || null });
+      db.insertMessage({ id: entry.id, roomCode: ws.room, name: entry.name, text: entry.text, mediaUrl: entry.mediaUrl, mediaType: entry.mediaType, replyToId, at: entry.at, accountId: ws.accountId || null, kind });
       db.upsertRoom(ws.room);
       broadcastRoom(ws.room, entry);
       pushNewMessage(ws.room, entry);
@@ -8968,7 +9120,7 @@ wss.on('connection', (ws, req) => {
       // supported poll feature and this generic free-text path has no shape validation, so
       // allowing it here would let a user corrupt their own poll the same way the message
       // handler above now guards against on creation.
-      if (!target || target.room_code !== ws.room || !ownsMessage(target, ws) || target.deleted || target.media_type === 'poll') return;
+      if (!target || target.room_code !== ws.room || !ownsMessage(target, ws) || target.deleted || target.media_type === 'poll' || target.kind === 'roll') return;
       db.updateMessageText(messageId, text);
       const entry = room && room.history.find((m) => m.id === messageId);
       if (entry) { entry.text = text; entry.edited = true; }
@@ -8986,8 +9138,14 @@ wss.on('connection', (ws, req) => {
       const target = db.getMessage(messageId);
       if (!target || target.room_code !== ws.room || target.deleted) return;
       const dbRoom = db.getRoom(ws.room);
-      const isHost = isRoomHost(dbRoom, ws);
+      const isHost = isRoomMod(dbRoom, ws);
       if (!ownsMessage(target, ws) && !isHost) return;
+      // A co-host can remove regular members' messages, not the host's or another co-host's.
+      if (!ownsMessage(target, ws) && !isRoomHost(dbRoom, ws)) {
+        const authorAcct = target.account_id || null;
+        const authorIsHost = dbRoom.host_account_id ? authorAcct === dbRoom.host_account_id : dbRoom.host_name === target.name;
+        if (authorIsHost || (authorAcct && db.isRoomCohost(ws.room, authorAcct))) return;
+      }
       // Found by a file-upload storage audit: deleteMessageRow nulls media_url as part of the same
       // UPDATE that marks the row deleted — cleanupInactiveRooms' 90-day sweep finds files solely
       // via a live media_url column (getRoomMediaUrls), so once that column is nulled the file

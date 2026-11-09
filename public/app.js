@@ -297,7 +297,7 @@ function slowModeLabel(seconds) {
 function applySlowMode(seconds) {
   roomSlowMode = seconds || 0;
   slowModeSelect.value = String(roomSlowMode);
-  messageInput.placeholder = roomSlowMode && !isHost ? `Slow mode is on — one message every ${slowModeLabel(roomSlowMode)}` : 'Type a message...';
+  messageInput.placeholder = roomSlowMode && !isMod() ? `Slow mode is on — one message every ${slowModeLabel(roomSlowMode)}` : 'Type a message...';
 }
 const announcementInput = document.getElementById('announcement-input');
 const typingIndicatorEl = document.getElementById('typing-indicator');
@@ -309,6 +309,96 @@ let myUsername = null;
 let currentRoomCode = null;
 let currentRoomName = null;
 let isHost = false;
+// Co-host = a member the host promoted to help moderate (server: room_cohosts). isMod() is what
+// the moderation UI (delete any message, mute/kick/ban, announcement, slow mode, bans) keys off.
+let isCohost = false;
+let roomCohosts = [];
+function isMod() { return isHost || isCohost; }
+function applyModVisibility() {
+  announcementForm.classList.toggle('hidden', !isMod());
+  slowModeRow.classList.toggle('hidden', !isMod());
+  bansRow.classList.toggle('hidden', !isMod());
+  welcomeForm.classList.toggle('hidden', !isHost);
+  cohostHint.classList.toggle('hidden', !isHost);
+  messageInput.placeholder = roomSlowMode && !isMod() ? `Slow mode is on — one message every ${slowModeLabel(roomSlowMode)}` : 'Type a message...';
+}
+const welcomeForm = document.getElementById('welcome-form');
+const welcomeInput = document.getElementById('welcome-input');
+const cohostHint = document.getElementById('cohost-hint');
+const welcomeModal = document.getElementById('welcome-modal');
+const editHistoryModal = document.getElementById('edit-history-modal');
+const editHistoryList = document.getElementById('edit-history-list');
+let roomWelcomeText = null;
+
+function welcomeSeenKey(code) { return `valk-welcome-seen:${code}`; }
+function maybeShowWelcome(code, text, roomName) {
+  if (!text) return;
+  let seen = null;
+  try { seen = localStorage.getItem(welcomeSeenKey(code)); } catch (err) { /* private mode */ }
+  if (seen === text) return;
+  document.getElementById('welcome-room-name').textContent = roomName || code;
+  const body = document.getElementById('welcome-modal-text');
+  body.textContent = '';
+  body.appendChild(renderTextWithMentions(text));
+  welcomeModal.classList.remove('hidden');
+  try { localStorage.setItem(welcomeSeenKey(code), text); } catch (err) { /* ignore */ }
+  document.getElementById('welcome-modal-ok').focus();
+}
+document.getElementById('welcome-modal-ok').addEventListener('click', () => welcomeModal.classList.add('hidden'));
+welcomeModal.addEventListener('click', (e) => { if (e.target === welcomeModal) welcomeModal.classList.add('hidden'); });
+welcomeForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'set-welcome', text: welcomeInput.value }));
+});
+
+function openEditHistory(messageId) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'get-edit-history', messageId }));
+}
+function showEditHistory(data) {
+  editHistoryList.textContent = '';
+  const versions = data.versions || [];
+  if (!versions.length) {
+    const li = document.createElement('li');
+    li.textContent = 'No earlier versions saved (this message was edited before history was kept).';
+    editHistoryList.appendChild(li);
+  }
+  for (const v of versions) {
+    const li = document.createElement('li');
+    const when = document.createElement('span');
+    when.className = 'eh-when';
+    when.textContent = `Before ${new Date(v.editedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`;
+    li.append(when, renderTextWithMentions(v.text));
+    editHistoryList.appendChild(li);
+  }
+  const cur = document.createElement('li');
+  cur.className = 'eh-current';
+  const curWhen = document.createElement('span');
+  curWhen.className = 'eh-when';
+  curWhen.textContent = 'Now';
+  cur.append(curWhen, renderTextWithMentions(data.current || ''));
+  editHistoryList.appendChild(cur);
+  editHistoryModal.classList.remove('hidden');
+}
+document.getElementById('edit-history-close').addEventListener('click', () => editHistoryModal.classList.add('hidden'));
+editHistoryModal.addEventListener('click', (e) => { if (e.target === editHistoryModal) editHistoryModal.classList.add('hidden'); });
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  welcomeModal.classList.add('hidden');
+  editHistoryModal.classList.add('hidden');
+});
+
+function makeEditedTag(messageId) {
+  const tag = document.createElement('span');
+  tag.className = 'edited-tag';
+  tag.textContent = 'edited';
+  tag.title = 'See edit history';
+  tag.tabIndex = 0;
+  tag.setAttribute('role', 'button');
+  const open = (e) => { e.stopPropagation(); openEditHistory(messageId); };
+  tag.addEventListener('click', open);
+  tag.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(e); } });
+  return tag;
+}
 // The WS join-room handler is the only place that ever verifies a room's PIN — /search,
 // /export, and the AI Studio/Video Editor post-to-chat endpoints are plain HTTP and need the
 // PIN threaded through separately. currentRoomPin is set once 'joined-room' actually confirms
@@ -953,6 +1043,10 @@ function handleServerMessage(data) {
       currentRoomCode = data.code;
       currentRoomName = data.name || null;
       isHost = !!data.isHost;
+      isCohost = !!data.isCohost;
+      roomCohosts = data.cohosts || [];
+      roomWelcomeText = data.welcome || null;
+      welcomeInput.value = roomWelcomeText || '';
       currentRoomPin = data.invitePass || pendingJoinPin;
       pendingJoinPin = '';
       pendingInviteToken = null;
@@ -1063,6 +1157,8 @@ function handleServerMessage(data) {
       applyWallpaper(data.wallpaperUrl || null);
       bansRow.classList.toggle('hidden', !isHost);
       bansListEl.classList.add('hidden');
+      applyModVisibility();
+      if (!isHost) maybeShowWelcome(data.code, roomWelcomeText, data.name);
       unreadCount = 0;
       updateUnreadBadge();
       // Found by the room-chat client-side correctness audit: renderOnlineList (the only place
@@ -1074,6 +1170,12 @@ function handleServerMessage(data) {
       // the render loop so history gets the same highlighting live messages always had.
       renderOnlineList(data.users);
       data.messages.forEach(renderMessage);
+      // "New messages" divider: where this person's saved read receipt (from before this join)
+      // sits in the history, if others have posted since — the chat then opens there instead of
+      // at the very bottom, so you can catch up from where you left off.
+      const myReceipt = myProfile && (data.readReceipts || []).find((r) => r.name === myProfile.name);
+      const newMsgsDivider = placeNewMessagesDivider(myReceipt && myReceipt.messageId, data.messages);
+      resetOlderMessages(data.messages);
       if (data.messages.length) sendReadReceipt(data.messages[data.messages.length - 1].id);
       if (pendingDisappearNotice) renderSystem({ text: `⏳ Disappearing messages are on — messages here are deleted after ${DISAPPEAR_LABELS[pendingDisappearNotice] || 'a while'}` });
       roomCodeChip.textContent = currentRoomName ? `${currentRoomName} (${data.code})` : data.code;
@@ -1088,6 +1190,7 @@ function handleServerMessage(data) {
       // at the default scrollTop 0 (top) instead of the bottom. Force one real scroll now that
       // the screen is actually visible and has real layout dimensions.
       scrollToBottom();
+      if (newMsgsDivider) newMsgsDivider.scrollIntoView({ block: 'center' });
       messageInput.focus();
       subscribeToPush();
       break;
@@ -1515,6 +1618,32 @@ function handleServerMessage(data) {
       applyReaction(data.messageId, data.emoji, data.name, data.added);
       break;
 
+    case 'cohosts-updated':
+      roomCohosts = data.cohosts || [];
+      if (isCohost !== !!data.isCohost) {
+        isCohost = !!data.isCohost;
+        showAppToast(isCohost ? '⭐ You are now a co-host of this room' : 'You are no longer a co-host of this room');
+        rerenderModControls();
+      }
+      applyModVisibility();
+      break;
+
+    case 'welcome-updated':
+      roomWelcomeText = data.text || null;
+      if (isHost) {
+        welcomeInput.value = roomWelcomeText || '';
+        showAppToast(roomWelcomeText ? '👋 Welcome message saved' : 'Welcome message turned off');
+      }
+      break;
+
+    case 'edit-history':
+      showEditHistory(data);
+      break;
+
+    case 'older-messages':
+      handleOlderMessages(data);
+      break;
+
     case 'message-edited': {
       const msgEl = document.getElementById(`msg-${data.messageId}`);
       // Found by the room-chat client-side correctness audit: a message-edited broadcast that
@@ -1530,6 +1659,10 @@ function handleServerMessage(data) {
         const fresh = document.createElement('span');
         fresh.className = 'text';
         fresh.dataset.rawText = data.text;
+        if (bubble.dataset.mePrefix) {
+          fresh.classList.add('me-action');
+          fresh.appendChild(document.createTextNode(bubble.dataset.mePrefix));
+        }
         fresh.appendChild(renderTextWithMentions(data.text));
         textEl.replaceWith(fresh);
       }
@@ -1547,7 +1680,7 @@ function handleServerMessage(data) {
         if (urlMatch) renderLinkPreview(bubble, trimTrailingUrlPunctuation(urlMatch[0]));
       }
       const metaEl = bubble && bubble.querySelector('.meta');
-      if (metaEl && !metaEl.textContent.includes('edited')) metaEl.appendChild(document.createTextNode(' · edited'));
+      if (metaEl && !metaEl.querySelector('.edited-tag')) metaEl.append(document.createTextNode(' · '), makeEditedTag(data.messageId));
       break;
     }
 
@@ -1820,7 +1953,7 @@ function renderLinkPreview(bubble, url) {
 function renderMessage(data, opts = {}) {
   const prepend = !!opts.prepend;
   const el = document.createElement('div');
-  const isOwn = myProfile && data.sub === myProfile.sub;
+  const isOwn = !!(myProfile && (data.sub === myProfile.sub || data.own));
   const isBlocked = !isOwn && blockedNames.has(data.name);
   el.className = 'message' + (isOwn ? ' own' : '') + (isBlocked ? ' blocked-hidden' : '');
   el.dataset.senderName = data.name;
@@ -1834,7 +1967,8 @@ function renderMessage(data, opts = {}) {
   bubble.className = 'bubble';
   const meta = document.createElement('span');
   meta.className = 'meta';
-  meta.append(makeFlairName(data.name, data.flair), document.createTextNode(` · ${time}${data.edited ? ' · edited' : ''}`));
+  meta.append(makeFlairName(data.name, data.flair), document.createTextNode(` · ${time}`));
+  if (data.edited) meta.append(document.createTextNode(' · '), makeEditedTag(data.id));
   bubble.appendChild(meta);
   if (data.flair && data.flair.bubble) bubble.classList.add(`bubble-${data.flair.bubble}`);
 
@@ -1902,8 +2036,21 @@ function renderMessage(data, opts = {}) {
     // the actual raw source text (not the rendered/stripped version) to edit without silently
     // destroying the formatting the moment Save or Cancel is clicked.
     text.dataset.rawText = data.text;
+    if (data.kind === 'me') {
+      text.classList.add('me-action');
+      bubble.dataset.mePrefix = `* ${data.name} `;
+      text.appendChild(document.createTextNode(bubble.dataset.mePrefix));
+    }
     text.appendChild(renderTextWithMentions(data.text));
     bubble.appendChild(text);
+    if (data.kind === 'roll') {
+      bubble.classList.add('roll-bubble');
+      const fair = document.createElement('span');
+      fair.className = 'roll-verified';
+      fair.textContent = '✓ rolled by Valk';
+      fair.title = 'This result was picked by the server, so it can\'t be faked';
+      bubble.appendChild(fair);
+    }
     if (!data.mediaUrl) {
       const urlMatch = data.text.includes('||') ? null : data.text.match(/https?:\/\/[^\s<]+/i);
       if (urlMatch) renderLinkPreview(bubble, trimTrailingUrlPunctuation(urlMatch[0]));
@@ -1949,7 +2096,9 @@ function messageHasMention(text, name) {
 // Single left-to-right pass handling **bold**, *italic*, `code`, and @mentions (including the
 // special @everyone) together, so e.g. "**@everyone**" or "`@name`" don't fight each other over
 // the same text. Bold is checked before italic so "**x**" isn't consumed as "*" + "*x*" + "*".
-const FORMAT_RE = /\*\*(.+?)\*\*|\*(.+?)\*|`([^`]+?)`|:([a-z0-9_]{2,20}):|@(\S+)|\|\|(.+?)\|\|/g;
+// Group 7/8: a ```fenced code block``` (optional language tag on the first line, e.g. ```js).
+// Listed first so three backticks never get read as inline `code`.
+const FORMAT_RE = /```(?:([a-zA-Z0-9+#.-]{1,15})[ \t]*\n)?([\s\S]+?)```|\*\*(.+?)\*\*|\*(.+?)\*|`([^`]+?)`|:([a-z0-9_]{2,20}):|@(\S+)|\|\|(.+?)\|\|/g;
 
 function hideSpoilerText(text) {
   return typeof text === 'string' ? text.replace(/\|\|([\s\S]+?)\|\|/g, '▒▒▒▒') : text;
@@ -1964,6 +2113,37 @@ function makeCustomEmojiImg(name) {
   return img;
 }
 
+function makeCodeBlock(code, lang) {
+  const wrap = document.createElement('div');
+  wrap.className = 'fenced-code';
+  const bar = document.createElement('div');
+  bar.className = 'fenced-code-bar';
+  const label = document.createElement('span');
+  label.textContent = lang || 'code';
+  const copyBtn = document.createElement('button');
+  copyBtn.type = 'button';
+  copyBtn.className = 'fenced-code-copy';
+  copyBtn.textContent = 'Copy';
+  copyBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const done = () => { copyBtn.textContent = 'Copied!'; setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(code).then(done, () => { copyBtn.textContent = 'Copy failed'; });
+    else {
+      const ta = document.createElement('textarea');
+      ta.value = code; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); done(); } catch (err) { copyBtn.textContent = 'Copy failed'; }
+      ta.remove();
+    }
+  });
+  bar.append(label, copyBtn);
+  const pre = document.createElement('pre');
+  const codeEl = document.createElement('code');
+  codeEl.textContent = code;
+  pre.appendChild(codeEl);
+  wrap.append(bar, pre);
+  return wrap;
+}
+
 function renderTextWithMentions(text) {
   const frag = document.createDocumentFragment();
   let lastIndex = 0;
@@ -1971,27 +2151,29 @@ function renderTextWithMentions(text) {
   FORMAT_RE.lastIndex = 0;
   while ((m = FORMAT_RE.exec(text))) {
     if (m.index > lastIndex) frag.appendChild(document.createTextNode(text.slice(lastIndex, m.index)));
-    if (m[1] !== undefined) {
-      const strong = document.createElement('strong');
-      strong.textContent = m[1];
-      frag.appendChild(strong);
-    } else if (m[2] !== undefined) {
-      const em = document.createElement('em');
-      em.textContent = m[2];
-      frag.appendChild(em);
+    if (m[2] !== undefined) {
+      frag.appendChild(makeCodeBlock(m[2].replace(/^\n+|\s+$/g, ''), m[1] || ''));
     } else if (m[3] !== undefined) {
+      const strong = document.createElement('strong');
+      strong.textContent = m[3];
+      frag.appendChild(strong);
+    } else if (m[4] !== undefined) {
+      const em = document.createElement('em');
+      em.textContent = m[4];
+      frag.appendChild(em);
+    } else if (m[5] !== undefined) {
       const code = document.createElement('code');
       // A multi-line backtick-wrapped snippet (e.g. AI Studio's "Generate code" send-to-chat) reads
       // as a squished single line without this — `.inline-code` alone has no white-space rule, and
       // <code> collapses newlines like any other inline element by default.
-      code.className = m[3].includes('\n') ? 'inline-code code-block' : 'inline-code';
-      code.textContent = m[3];
+      code.className = m[5].includes('\n') ? 'inline-code code-block' : 'inline-code';
+      code.textContent = m[5];
       frag.appendChild(code);
-    } else if (m[6] !== undefined) {
+    } else if (m[8] !== undefined) {
       // ||spoiler||: blurred until tapped.
       const spoiler = document.createElement('span');
       spoiler.className = 'spoiler';
-      spoiler.textContent = m[6];
+      spoiler.textContent = m[8];
       spoiler.tabIndex = 0;
       spoiler.setAttribute('role', 'button');
       spoiler.setAttribute('aria-label', 'Spoiler — tap to reveal');
@@ -2004,12 +2186,12 @@ function renderTextWithMentions(text) {
       spoiler.addEventListener('click', reveal);
       spoiler.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') reveal(e); });
       frag.appendChild(spoiler);
-    } else if (m[4] !== undefined) {
-      if (roomEmojis.has(m[4])) frag.appendChild(makeCustomEmojiImg(m[4]));
+    } else if (m[6] !== undefined) {
+      if (roomEmojis.has(m[6])) frag.appendChild(makeCustomEmojiImg(m[6]));
       else frag.appendChild(document.createTextNode(m[0]));
     } else {
-      const token = m[5].replace(/[.,!?;:]+$/, '');
-      const trailing = m[5].slice(token.length);
+      const token = m[7].replace(/[.,!?;:]+$/, '');
+      const trailing = m[7].slice(token.length);
       const isEveryone = token.toLowerCase() === 'everyone';
       const isKnown = isEveryone || lastRoomUsers.some((u) => u.name.toLowerCase() === token.toLowerCase());
       if (isKnown) {
@@ -2021,7 +2203,7 @@ function renderTextWithMentions(text) {
         frag.appendChild(span);
         if (trailing) frag.appendChild(document.createTextNode(trailing));
       } else {
-        frag.appendChild(document.createTextNode('@' + m[5]));
+        frag.appendChild(document.createTextNode('@' + m[7]));
       }
     }
     lastIndex = FORMAT_RE.lastIndex;
@@ -2102,9 +2284,21 @@ function jumpToMessage(id) {
 }
 
 // --- Per-message actions: react / reply / pin ---
+// Remembers which message each action row was built for, so becoming (or stopping being) a
+// co-host mid-session can rebuild the rows with/without the 🗑️ delete-anyone button.
+const messageActionData = new WeakMap();
+function rerenderModControls() {
+  renderOnlineList(lastRoomUsers);
+  document.querySelectorAll('#messages .message-actions').forEach((row) => {
+    const d = messageActionData.get(row);
+    if (d) row.replaceWith(makeMessageActions(d));
+  });
+}
+
 function makeMessageActions(data) {
   const actions = document.createElement('div');
   actions.className = 'message-actions';
+  messageActionData.set(actions, data);
 
   const reactBtn = document.createElement('button');
   reactBtn.type = 'button';
@@ -2154,7 +2348,7 @@ function makeMessageActions(data) {
   });
   actions.appendChild(pinBtn);
 
-  const isOwn = myProfile && data.sub === myProfile.sub;
+  const isOwn = !!(myProfile && (data.sub === myProfile.sub || data.own));
   if (!isOwn && data.name) {
     const reportBtn = document.createElement('button');
     reportBtn.type = 'button';
@@ -2164,7 +2358,7 @@ function makeMessageActions(data) {
     reportBtn.addEventListener('click', () => reportUser(data.name, data.id, data.text));
     actions.appendChild(reportBtn);
   }
-  if (isOwn && !data.mediaUrl) {
+  if (isOwn && !data.mediaUrl && data.kind !== 'roll') {
     const editBtn = document.createElement('button');
     editBtn.type = 'button';
     editBtn.className = 'msg-action-btn';
@@ -2173,12 +2367,13 @@ function makeMessageActions(data) {
     editBtn.addEventListener('click', () => startEditingMessage(data.id));
     actions.appendChild(editBtn);
   }
-  if (isOwn || isHost) {
+  const authorProtected = !isHost && isCohost && (roomCohosts.includes(data.name) || lastRoomUsers.some((u) => u.name === data.name && (u.host || u.cohost)));
+  if (isOwn || (isMod() && !authorProtected)) {
     const deleteBtn = document.createElement('button');
     deleteBtn.type = 'button';
     deleteBtn.className = 'msg-action-btn';
     deleteBtn.textContent = '🗑️';
-    deleteBtn.setAttribute('aria-label', isOwn ? 'Delete message' : `Delete message (host)`);
+    deleteBtn.setAttribute('aria-label', isOwn ? 'Delete message' : (isHost ? 'Delete message (host)' : 'Delete message (co-host)'));
     deleteBtn.addEventListener('click', () => {
       if (!confirm('Delete this message? This can\'t be undone.')) return;
       if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'delete-message', messageId: data.id }));
@@ -2510,6 +2705,24 @@ function renderTypingIndicator() {
   else typingIndicatorEl.textContent = 'Several people are typing…';
 }
 
+function placeNewMessagesDivider(lastReadId, messages) {
+  if (!lastReadId || !myProfile || !messages.length) return null;
+  const idx = messages.findIndex((m) => m.id === lastReadId);
+  if (idx < 0 || idx === messages.length - 1) return null;
+  const fresh = messages.slice(idx + 1).filter((m) => m.name !== myProfile.name);
+  if (!fresh.length) return null;
+  const anchor = document.getElementById(`msg-${lastReadId}`);
+  if (!anchor) return null;
+  const divider = document.createElement('div');
+  divider.className = 'new-messages-divider';
+  divider.setAttribute('role', 'separator');
+  const label = document.createElement('span');
+  label.textContent = fresh.length === 1 ? '1 new message' : `${fresh.length} new messages`;
+  divider.appendChild(label);
+  anchor.after(divider);
+  return divider;
+}
+
 // --- Read receipts ---
 function sendReadReceipt(messageId) {
   if (!messageId || document.hidden || !document.hasFocus()) return;
@@ -2597,6 +2810,13 @@ function renderOnlineList(users) {
     const nameWrap = document.createElement('span');
     nameWrap.className = 'online-name-wrap';
     nameWrap.appendChild(makeFlairName(u.name, u.flair));
+    if (u.host || u.cohost) {
+      const roleBadge = document.createElement('span');
+      roleBadge.className = 'cohost-badge';
+      roleBadge.textContent = u.host ? '👑' : '🛡️';
+      roleBadge.title = u.host ? 'Room host' : 'Co-host';
+      nameWrap.appendChild(roleBadge);
+    }
     if (u.status) {
       const status = document.createElement('span');
       status.className = 'status-text';
@@ -2640,9 +2860,24 @@ function renderOnlineList(users) {
       personalActions.appendChild(reportBtn);
       li.appendChild(personalActions);
     }
-    if (isHost && myProfile && u.name !== myProfile.name) {
+    // Co-hosts get mute/kick/ban for regular members only (the server enforces the same rule —
+    // see isProtectedFromCohost). The host also gets a ⭐ toggle to promote/demote co-hosts.
+    const targetIsCohost = !!u.cohost || roomCohosts.includes(u.name);
+    if (isMod() && myProfile && u.name !== myProfile.name && (isHost || (!targetIsCohost && !u.host))) {
       const modActions = document.createElement('span');
       modActions.className = 'mod-actions';
+      if (isHost) {
+        const cohostBtn = document.createElement('button');
+        cohostBtn.type = 'button';
+        cohostBtn.className = 'mod-btn';
+        cohostBtn.textContent = targetIsCohost ? '🌟' : '⭐';
+        cohostBtn.title = targetIsCohost ? `Remove ${u.name} as co-host` : `Make ${u.name} a co-host (they can mute, kick, ban, delete messages)`;
+        cohostBtn.addEventListener('click', () => {
+          if (!targetIsCohost && !confirm(`Make ${u.name} a co-host? They'll be able to mute, kick and ban people and delete messages.`)) return;
+          if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: targetIsCohost ? 'remove-cohost' : 'add-cohost', name: u.name }));
+        });
+        modActions.appendChild(cohostBtn);
+      }
       const muteBtn = document.createElement('button');
       muteBtn.type = 'button';
       muteBtn.className = 'mod-btn';
@@ -4192,7 +4427,7 @@ function renderEventsList() {
     rsvpBtn.textContent = amGoing(ev) ? 'Going ✓ (tap to cancel)' : "I'm going";
     rsvpBtn.addEventListener('click', () => rsvpEvent(ev, !amGoing(ev)));
     actions.appendChild(rsvpBtn);
-    if (isHost || (myProfile && ev.createdBy === myProfile.name)) {
+    if (isMod() || (myProfile && ev.createdBy === myProfile.name)) {
       const del = document.createElement('button');
       del.type = 'button';
       del.className = 'small-btn danger';
@@ -5852,17 +6087,8 @@ function formatReminderDue(ts) {
 }
 
 function resolveSlashCommand(text) {
-  const rollMatch = text.match(/^\/roll(?:\s+(\d*)d(\d+))?\s*$/i);
-  if (rollMatch) {
-    const count = Math.min(20, Math.max(1, parseInt(rollMatch[1] || '1', 10) || 1));
-    const sides = Math.min(1000, Math.max(2, parseInt(rollMatch[2] || '6', 10) || 6));
-    const rolls = Array.from({ length: count }, () => 1 + Math.floor(Math.random() * sides));
-    const total = rolls.reduce((a, b) => a + b, 0);
-    return `🎲 rolled ${count}d${sides}: ${rolls.join(' + ')} = ${total}`;
-  }
-  if (/^\/flip\s*$/i.test(text)) {
-    return `🪙 flipped a coin: ${Math.random() < 0.5 ? 'Heads' : 'Tails'}`;
-  }
+  // /roll, /flip, /8ball, /pick and /me are handled by the server (so dice can't be faked) —
+  // they're sent as typed.
   const shrugMatch = text.match(/^\/shrug\s*(.*)$/i);
   if (shrugMatch) {
     const prefix = shrugMatch[1].trim();
@@ -5888,11 +6114,11 @@ messageForm.addEventListener('submit', (e) => {
     messageInput.value = '';
     return;
   }
-  if (roomSlowMode && !isHost && Date.now() < slowModeReadyAt) {
+  if (roomSlowMode && !isMod() && Date.now() < slowModeReadyAt) {
     showAppToast(`🐢 Slow mode — you can send again in ${Math.ceil((slowModeReadyAt - Date.now()) / 1000)}s`);
     return;
   }
-  if (roomSlowMode && !isHost) slowModeReadyAt = Date.now() + roomSlowMode * 1000;
+  if (roomSlowMode && !isMod()) slowModeReadyAt = Date.now() + roomSlowMode * 1000;
   const text = resolveSlashCommand(raw);
   const payload = { type: 'message', text };
   if (replyingTo) payload.replyTo = replyingTo.id;
@@ -5930,7 +6156,30 @@ messageInput.addEventListener('keydown', (e) => {
   }
 });
 
+// Enter sends, Shift+Enter adds a new line (the composer is a textarea now so pasted code and
+// multi-line messages keep their line breaks). Registered AFTER the @mention keydown handler
+// above, which calls preventDefault when Enter picks a mention — so that case is skipped here.
+messageInput.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' || e.shiftKey || e.isComposing || e.defaultPrevented) return;
+  // Inside an unfinished ``` block, Enter adds a line instead of sending half the code.
+  const before = messageInput.value.slice(0, messageInput.selectionStart);
+  if (((before.match(/```/g) || []).length % 2) === 1) return;
+  e.preventDefault();
+  messageForm.requestSubmit ? messageForm.requestSubmit() : messageForm.dispatchEvent(new Event('submit', { cancelable: true }));
+});
+
+function autoGrowComposer() {
+  messageInput.style.height = 'auto';
+  const h = Math.min(messageInput.scrollHeight + 2, 152);
+  messageInput.style.height = h + 'px';
+  messageInput.style.overflowY = messageInput.scrollHeight + 2 > 152 ? 'auto' : 'hidden';
+}
+// Any code path that sets messageInput.value directly (send, edit-cancel, drafts, slash commands)
+// doesn't fire 'input', so re-measure on the next frame after a submit too.
+messageForm.addEventListener('submit', () => requestAnimationFrame(autoGrowComposer));
+
 messageInput.addEventListener('input', () => {
+  autoGrowComposer();
   updateMentionDropdown();
   const now = Date.now();
   if (now - lastTypingSentAt < 2000) return;
@@ -7147,3 +7396,196 @@ document.addEventListener('keydown', (e) => {
 renderDnd();
 loadDndFromServer();
 setInterval(renderDnd, 60 * 1000);
+
+
+// --- Keyboard shortcuts: Ctrl/Cmd+K room switcher, ↑ edits your last message, ? cheat sheet ---
+const switcherModal = document.getElementById('switcher-modal');
+const switcherInput = document.getElementById('switcher-input');
+const switcherList = document.getElementById('switcher-list');
+const shortcutsModal = document.getElementById('shortcuts-modal');
+let switcherIndex = 0;
+let switcherItems = [];
+
+function renderSwitcher() {
+  const q = switcherInput.value.trim().toLowerCase();
+  const rooms = getRecentRooms().filter((r) => !q || r.code.toLowerCase().includes(q) || (r.name && r.name.toLowerCase().includes(q)));
+  switcherItems = rooms.slice(0, 12);
+  // A typed 5-character code that isn't in the list can still be joined directly.
+  const typedCode = switcherInput.value.trim().toUpperCase();
+  if (/^[A-Z0-9]{5}$/.test(typedCode) && !switcherItems.some((r) => r.code === typedCode)) {
+    switcherItems.unshift({ code: typedCode, name: null, typed: true });
+  }
+  switcherIndex = Math.min(switcherIndex, Math.max(0, switcherItems.length - 1));
+  switcherList.textContent = '';
+  if (!switcherItems.length) {
+    const li = document.createElement('li');
+    li.textContent = q ? 'No matching rooms — type a 5-letter room code to join it' : 'No recent rooms yet';
+    li.style.cursor = 'default';
+    switcherList.appendChild(li);
+    return;
+  }
+  switcherItems.forEach((r, i) => {
+    const li = document.createElement('li');
+    li.setAttribute('role', 'option');
+    if (i === switcherIndex) li.classList.add('active');
+    if (r.code === currentRoomCode) li.classList.add('current');
+    const name = document.createElement('span');
+    name.textContent = r.typed ? `Join room ${r.code}` : (r.name || `Room ${r.code}`) + (r.code === currentRoomCode ? ' (you are here)' : '');
+    const code = document.createElement('span');
+    code.className = 'sw-code';
+    code.textContent = r.code;
+    li.append(name, code);
+    li.addEventListener('click', () => pickSwitcher(i));
+    switcherList.appendChild(li);
+  });
+}
+
+function openSwitcher() {
+  switcherInput.value = '';
+  switcherIndex = 0;
+  renderSwitcher();
+  switcherModal.classList.remove('hidden');
+  switcherInput.focus();
+}
+function closeSwitcher() { switcherModal.classList.add('hidden'); }
+
+function pickSwitcher(i) {
+  const r = switcherItems[i];
+  if (!r) return;
+  closeSwitcher();
+  if (r.code === currentRoomCode) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) { showAppToast('Not connected right now — try again in a moment'); return; }
+  if (currentRoomCode) {
+    joinFriendRoom(r.code);
+  } else {
+    roomCodeInput.value = r.code;
+    pendingJoinPin = '';
+    ws.send(JSON.stringify({ type: 'join-room', code: r.code }));
+  }
+}
+
+switcherInput.addEventListener('input', () => { switcherIndex = 0; renderSwitcher(); });
+switcherInput.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowDown') { e.preventDefault(); switcherIndex = Math.min(switcherIndex + 1, switcherItems.length - 1); renderSwitcher(); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); switcherIndex = Math.max(switcherIndex - 1, 0); renderSwitcher(); }
+  else if (e.key === 'Enter') { e.preventDefault(); pickSwitcher(switcherIndex); }
+  else if (e.key === 'Escape') { e.preventDefault(); closeSwitcher(); }
+});
+switcherModal.addEventListener('click', (e) => { if (e.target === switcherModal) closeSwitcher(); });
+document.getElementById('shortcuts-close').addEventListener('click', () => shortcutsModal.classList.add('hidden'));
+shortcutsModal.addEventListener('click', (e) => { if (e.target === shortcutsModal) shortcutsModal.classList.add('hidden'); });
+
+function isTypingTarget(el) {
+  return el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
+}
+
+document.addEventListener('keydown', (e) => {
+  const loggedIn = !!myProfile;
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'k' || e.key === 'K')) {
+    if (!loggedIn) return;
+    e.preventDefault();
+    if (switcherModal.classList.contains('hidden')) openSwitcher(); else closeSwitcher();
+    return;
+  }
+  if (e.key === 'Escape') {
+    if (!shortcutsModal.classList.contains('hidden')) { shortcutsModal.classList.add('hidden'); return; }
+    if (document.activeElement === messageInput && replyingTo) { clearReplyingTo(); return; }
+  }
+  if (isTypingTarget(document.activeElement) || e.ctrlKey || e.metaKey || e.altKey) return;
+  const inChat = !chatScreen.classList.contains('hidden');
+  if (e.key === '?' && inChat) {
+    e.preventDefault();
+    shortcutsModal.classList.remove('hidden');
+    document.getElementById('shortcuts-close').focus();
+  } else if (e.key === '/' && inChat) {
+    e.preventDefault();
+    messageInput.focus();
+  }
+});
+
+// ↑ in an empty composer edits your most recent (text) message, like most chat apps.
+messageInput.addEventListener('keydown', (e) => {
+  if (e.key !== 'ArrowUp' || e.defaultPrevented || messageInput.value || !myProfile) return;
+  if (!mentionDropdownEl.classList.contains('hidden')) return;
+  const mine = [...messagesEl.querySelectorAll('.message.own')].reverse()
+    .find((el) => !el.dataset.deleted && el.querySelector('.bubble > .text') && el.querySelector('[aria-label="Edit message"]'));
+  if (!mine) return;
+  e.preventDefault();
+  startEditingMessage(mine.id.replace(/^msg-/, ''));
+});
+
+
+// --- Scroll back through older history (the room only sends the newest 50 on join) ---
+const OLDER_PAGE = 50;
+let olderHasMore = false;
+let olderLoading = false;
+let olderRequestedBefore = null;
+let oldestLoaded = null; // { at, id }
+let loadOlderBtn = null;
+
+function resetOlderMessages(messages) {
+  olderLoading = false;
+  olderRequestedBefore = null;
+  oldestLoaded = messages.length ? { at: messages[0].at, id: messages[0].id } : null;
+  olderHasMore = messages.length >= OLDER_PAGE;
+  loadOlderBtn = document.createElement('button');
+  loadOlderBtn.type = 'button';
+  loadOlderBtn.className = 'load-older-btn';
+  loadOlderBtn.textContent = '⬆ Load earlier messages';
+  loadOlderBtn.addEventListener('click', requestOlderMessages);
+  loadOlderBtn.classList.toggle('hidden', !olderHasMore);
+  messagesEl.prepend(loadOlderBtn);
+}
+
+function requestOlderMessages() {
+  if (!olderHasMore || olderLoading || !oldestLoaded || !ws || ws.readyState !== WebSocket.OPEN) return;
+  olderLoading = true;
+  olderRequestedBefore = oldestLoaded.id;
+  if (loadOlderBtn) loadOlderBtn.textContent = 'Loading…';
+  ws.send(JSON.stringify({ type: 'load-older-messages', beforeAt: oldestLoaded.at, beforeId: oldestLoaded.id }));
+  // If the reply never comes (rate limit, dropped connection) let the user try again.
+  setTimeout(() => {
+    if (olderLoading && olderRequestedBefore === oldestLoaded.id) {
+      olderLoading = false;
+      if (loadOlderBtn) loadOlderBtn.textContent = '⬆ Load earlier messages';
+    }
+  }, 6000);
+}
+
+function handleOlderMessages(data) {
+  if (!olderLoading || data.beforeId !== olderRequestedBefore) return; // stale (room switched)
+  olderLoading = false;
+  const msgs = (data.messages || []).filter((m) => !document.getElementById(`msg-${m.id}`));
+  // Merge (not replace) reactions so the already-shown messages keep theirs.
+  (data.reactions || []).forEach((r) => {
+    let reactions = reactionsByMessage.get(r.messageId);
+    if (!reactions) { reactions = new Map(); reactionsByMessage.set(r.messageId, reactions); }
+    let names = reactions.get(r.emoji);
+    if (!names) { names = new Set(); reactions.set(r.emoji, names); }
+    names.add(r.name);
+  });
+  const savedLastEl = lastMessageEl;
+  const savedLastId = lastMessageId;
+  const prevHeight = messagesEl.scrollHeight;
+  const prevTop = messagesEl.scrollTop;
+  const startCount = messagesEl.children.length;
+  msgs.forEach((m) => renderMessage(m));
+  const added = [...messagesEl.children].slice(startCount);
+  const anchor = loadOlderBtn && loadOlderBtn.parentNode === messagesEl ? loadOlderBtn.nextSibling : messagesEl.firstChild;
+  added.forEach((node) => messagesEl.insertBefore(node, anchor));
+  lastMessageEl = savedLastEl;
+  lastMessageId = savedLastId;
+  if (typeof renderSeenBy === 'function') renderSeenBy();
+  messagesEl.scrollTop = prevTop + (messagesEl.scrollHeight - prevHeight);
+  if (data.messages && data.messages.length) oldestLoaded = { at: data.messages[0].at, id: data.messages[0].id };
+  olderHasMore = !!data.hasMore;
+  if (loadOlderBtn) {
+    loadOlderBtn.textContent = olderHasMore ? '⬆ Load earlier messages' : '— Start of this room —';
+    loadOlderBtn.disabled = !olderHasMore;
+    loadOlderBtn.classList.remove('hidden');
+  }
+}
+
+messagesEl.addEventListener('scroll', () => {
+  if (messagesEl.scrollTop < 60 && olderHasMore && !olderLoading) requestOlderMessages();
+});

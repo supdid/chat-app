@@ -149,9 +149,53 @@
       <button type="button" id="gif-btn" class="icon-btn gif-btn hidden" aria-label="Send a GIF">GIF</button>
       <button type="button" id="voice-clip-btn" class="icon-btn hidden" aria-label="Record a voice message">🎙️</button>
       <button type="button" id="mic-btn" class="icon-btn hidden" aria-label="Speak your message">🎤</button>
-      <input id="message-input" type="text" placeholder="Type a message..." maxlength="2000" autocomplete="off">
+      <textarea id="message-input" rows="1" placeholder="Type a message..." maxlength="2000" autocomplete="off" enterkeyhint="send"></textarea>
       <button type="submit">Send</button>
     </form>
+  </div>
+
+  <div id="welcome-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="welcome-modal-title">
+    <div class="modal-card welcome-card">
+      <h2 id="welcome-modal-title">👋 Welcome to <span id="welcome-room-name"></span></h2>
+      <div id="welcome-modal-text" class="welcome-text"></div>
+      <button type="button" id="welcome-modal-ok">Let's chat!</button>
+    </div>
+  </div>
+
+  <div id="switcher-modal" class="modal-backdrop switcher-backdrop hidden" role="dialog" aria-modal="true" aria-label="Jump to a room">
+    <div class="modal-card switcher-card">
+      <input id="switcher-input" type="text" placeholder="Jump to a room — type a name or code" autocomplete="off" maxlength="40">
+      <ul id="switcher-list" class="switcher-list" role="listbox"></ul>
+      <p class="switcher-hint">↑↓ to pick · Enter to go · Esc to close</p>
+    </div>
+  </div>
+
+  <div id="shortcuts-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="shortcuts-title">
+    <div class="modal-card">
+      <h2 id="shortcuts-title">⌨️ Keyboard shortcuts</h2>
+      <dl class="shortcuts-list">
+        <dt><kbd>Ctrl</kbd> + <kbd>K</kbd></dt><dd>Jump to another room</dd>
+        <dt><kbd>Enter</kbd></dt><dd>Send message</dd>
+        <dt><kbd>Shift</kbd> + <kbd>Enter</kbd></dt><dd>New line</dd>
+        <dt><kbd>↑</kbd></dt><dd>Edit your last message (when the box is empty)</dd>
+        <dt><kbd>Esc</kbd></dt><dd>Cancel reply / close a window</dd>
+        <dt><kbd>/</kbd></dt><dd>Focus the message box</dd>
+        <dt><kbd>?</kbd></dt><dd>Show this list</dd>
+        <dt><code>```code```</code></dt><dd>Code block with a Copy button</dd>
+        <dt><code>||text||</code></dt><dd>Spoiler</dd>
+        <dt><code>/me waves</code></dt><dd>Action message</dd>
+        <dt><code>/roll 2d6</code></dt><dd>Roll dice for everyone to see</dd>
+      </dl>
+      <button type="button" id="shortcuts-close">Close</button>
+    </div>
+  </div>
+
+  <div id="edit-history-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="edit-history-title">
+    <div class="modal-card">
+      <h2 id="edit-history-title">✏️ Edit history</h2>
+      <ol id="edit-history-list" class="edit-history-list"></ol>
+      <button type="button" id="edit-history-close">Close</button>
+    </div>
   </div>
 
   <!-- Call overlay: starts docked as a small pill on the right edge (one avatar +
@@ -263,10 +307,10 @@
         <button type="submit" class="icon-btn" aria-label="Save room name">✓</button>
       </form>
       <form id="announcement-form" class="rename-room-form hidden">
-        <input id="announcement-input" type="text" placeholder="Pinned announcement (host only, blank to clear)" maxlength="200" autocomplete="off">
+        <input id="announcement-input" type="text" placeholder="Pinned announcement (hosts, blank to clear)" maxlength="200" autocomplete="off">
         <button type="submit" class="icon-btn" aria-label="Save announcement">✓</button>
       </form>
-      <label id="slow-mode-row" class="slow-mode-row hidden">🐢 Slow mode (host only)
+      <label id="slow-mode-row" class="slow-mode-row hidden">🐢 Slow mode (hosts)
         <select id="slow-mode-select">
           <option value="0">Off</option>
           <option value="5">5 seconds</option>
@@ -341,8 +385,14 @@
           <ul id="room-emojis-list" class="room-emojis-list"></ul>
         </div>
       </div>
+      <form id="welcome-form" class="welcome-form hidden">
+        <label for="welcome-input">👋 Welcome message (host only) — shown once to each new member</label>
+        <textarea id="welcome-input" rows="3" maxlength="1000" placeholder="e.g. Hi! Be kind, no spam. Games night is Fridays 🎮 — blank to turn off"></textarea>
+        <button type="submit" class="menu-link">Save welcome message</button>
+      </form>
+      <p id="cohost-hint" class="search-status hidden">⭐ Tip: tap ⭐ next to someone in the online list to make them a co-host. Co-hosts can mute, kick, ban and delete messages (they need an account).</p>
       <div id="bans-row" class="hidden">
-        <button id="manage-bans-btn" class="menu-link" type="button">🚫 Manage banned users (host only)</button>
+        <button id="manage-bans-btn" class="menu-link" type="button">🚫 Manage banned users</button>
         <ul id="bans-list" class="hidden"></ul>
       </div>
       <h3>Online in this room</h3>

@@ -156,6 +156,8 @@ ensureColumn('messages', 'edited', 'INTEGER DEFAULT 0');
 ensureColumn('messages', 'deleted', 'INTEGER DEFAULT 0');
 // See insertMessage's comment — a signed-in poster's account_id, not just their display name.
 ensureColumn('messages', 'account_id', 'TEXT');
+// 'roll' (server-rolled /roll /flip /8ball — can't be faked) or 'me' (/me action), else NULL.
+ensureColumn('messages', 'kind', 'TEXT');
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_account ON messages(account_id)');
 ensureColumn('rooms', 'host_name', 'TEXT');
 ensureColumn('rooms', 'host_account_id', 'TEXT');
@@ -186,6 +188,7 @@ ensureColumn('rooms', 'filter_default', 'INTEGER DEFAULT 0');
 // Disappearing messages: seconds after which a room's messages are deleted for good (0 = keep).
 ensureColumn('rooms', 'disappear_after', 'INTEGER DEFAULT 0');
 ensureColumn('rooms', 'filter_words', 'TEXT');
+ensureColumn('rooms', 'welcome_text', 'TEXT');
 
 // One-time migration: pins used to be single-pin-per-room (PK: room_code) — multi-pin needs a
 // composite PK (room_code, message_id) instead, which ALTER TABLE can't change in place.
@@ -334,6 +337,23 @@ db.exec(`
     saved_at INTEGER,
     PRIMARY KEY (account_id, message_id)
   );
+  -- Co-hosts: signed-in members the host trusts to help moderate (kick/mute/ban, delete
+  -- messages, announcement, slow mode). Keyed by account so a display name can't fake it.
+  CREATE TABLE IF NOT EXISTS room_cohosts (
+    room_code TEXT,
+    account_id TEXT,
+    name TEXT,
+    added_by TEXT,
+    at INTEGER,
+    PRIMARY KEY (room_code, account_id)
+  );
+  -- Earlier versions of edited room messages (newest edit = messages.text).
+  CREATE TABLE IF NOT EXISTS message_edits (
+    message_id TEXT,
+    text TEXT,
+    edited_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_message_edits_msg ON message_edits(message_id);
   -- Host-uploaded custom emojis for a room, used as :name: in messages and as reactions.
   CREATE TABLE IF NOT EXISTS room_emojis (
     room_code TEXT,
@@ -901,7 +921,9 @@ const expireRoomMessages = db.transaction((code, before) => {
   const delVotes = db.prepare('DELETE FROM poll_votes WHERE message_id = ?');
   const delMsg = db.prepare('DELETE FROM messages WHERE id = ?');
   const delPin = db.prepare('DELETE FROM pins WHERE room_code = ? AND message_id = ?');
+  const delEdits = db.prepare('DELETE FROM message_edits WHERE message_id = ?');
   for (const r of rows) {
+    delEdits.run(r.id);
     delReactions.run(r.id);
     delVotes.run(r.id);
     delPin.run(code, r.id);
@@ -985,8 +1007,8 @@ function setWallpaper(code, url) {
 
 function insertMessage(entry) {
   db.prepare(
-    `INSERT INTO messages (id, room_code, name, text, media_url, media_type, reply_to_id, at, account_id)
-     VALUES (@id, @roomCode, @name, @text, @mediaUrl, @mediaType, @replyToId, @at, @accountId)`
+    `INSERT INTO messages (id, room_code, name, text, media_url, media_type, reply_to_id, at, account_id, kind)
+     VALUES (@id, @roomCode, @name, @text, @mediaUrl, @mediaType, @replyToId, @at, @accountId, @kind)`
   ).run({
     id: entry.id,
     roomCode: entry.roomCode,
@@ -1002,6 +1024,7 @@ function insertMessage(entry) {
     // (see edit-message/delete-message's use of this column). Null for anonymous posters, who
     // have no such identity to bind to — unchanged, name-only behavior for them.
     accountId: entry.accountId || null,
+    kind: entry.kind || null,
   });
 }
 
@@ -1009,13 +1032,56 @@ function getMessage(id) {
   return db.prepare('SELECT * FROM messages WHERE id = ?').get(id) || null;
 }
 
+// ---- Co-hosts ----
+function getRoomCohosts(code) {
+  return db.prepare('SELECT account_id AS accountId, name FROM room_cohosts WHERE room_code = ? ORDER BY at ASC').all(code);
+}
+function isRoomCohost(code, accountId) {
+  if (!code || !accountId) return false;
+  return !!db.prepare('SELECT 1 FROM room_cohosts WHERE room_code = ? AND account_id = ?').get(code, accountId);
+}
+function addRoomCohost(code, accountId, name, addedBy) {
+  db.prepare(
+    `INSERT INTO room_cohosts (room_code, account_id, name, added_by, at) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(room_code, account_id) DO UPDATE SET name = excluded.name`
+  ).run(code, accountId, name, addedBy, Date.now());
+}
+function removeRoomCohost(code, accountId) {
+  db.prepare('DELETE FROM room_cohosts WHERE room_code = ? AND account_id = ?').run(code, accountId);
+}
+function countRoomCohosts(code) {
+  return db.prepare('SELECT COUNT(*) AS n FROM room_cohosts WHERE room_code = ?').get(code).n;
+}
+
+// ---- Welcome message (shown once to each new member) ----
+function setRoomWelcome(code, text) {
+  db.prepare('UPDATE rooms SET welcome_text = ? WHERE code = ?').run(text, code);
+}
+
+// ---- Edit history ----
+function getMessageEdits(messageId) {
+  return db.prepare('SELECT text, edited_at AS editedAt FROM message_edits WHERE message_id = ? ORDER BY edited_at ASC, rowid ASC').all(messageId);
+}
+
+const MAX_EDITS_KEPT = 20;
 function updateMessageText(id, text) {
+  const prev = db.prepare('SELECT text FROM messages WHERE id = ?').get(id);
+  if (prev && typeof prev.text === 'string' && prev.text !== text) {
+    db.prepare('INSERT INTO message_edits (message_id, text, edited_at) VALUES (?, ?, ?)').run(id, prev.text, Date.now());
+    const n = db.prepare('SELECT COUNT(*) AS n FROM message_edits WHERE message_id = ?').get(id).n;
+    if (n > MAX_EDITS_KEPT) {
+      db.prepare('DELETE FROM message_edits WHERE rowid IN (SELECT rowid FROM message_edits WHERE message_id = ? ORDER BY edited_at ASC, rowid ASC LIMIT ?)').run(id, n - MAX_EDITS_KEPT);
+    }
+  }
   db.prepare('UPDATE messages SET text = ?, edited = 1 WHERE id = ?').run(text, id);
 }
 
 // Soft delete — the row stays (reactions, pins, and reply-quotes all reference the message id)
 // but its content is cleared and flagged, same idea as every chat app's "message was deleted".
 function deleteMessageRow(id) {
+  // A deleted message's earlier versions go too — otherwise "delete" would leave its text
+  // readable through the edit-history view.
+  db.prepare('DELETE FROM message_edits WHERE message_id = ?').run(id);
   db.prepare("UPDATE messages SET text = '', media_url = NULL, media_type = NULL, deleted = 1 WHERE id = ?").run(id);
 }
 
@@ -1043,11 +1109,24 @@ function getRecentMessages(code, limit) {
 // message's own id) instead of a bare timestamp — not done here because, as of this writing, no
 // client anywhere actually calls load-older-messages (grepped all of public/*.js) to begin with;
 // revisit this gap for real if that ever changes.
-function getMessagesBefore(code, beforeAt, limit) {
-  const rows = db
-    .prepare('SELECT * FROM messages WHERE room_code = ? AND at < ? ORDER BY at DESC, rowid DESC LIMIT ?')
-    .all(code, beforeAt, limit);
+function getMessagesBefore(code, beforeAt, limit, beforeId) {
+  // With beforeId (the oldest message the client already has), messages sharing that exact
+  // millisecond but inserted earlier are included too — the compound cursor the note above
+  // asked for, now that the client actually pages backward.
+  const anchor = beforeId ? db.prepare('SELECT rowid AS rid, at FROM messages WHERE id = ? AND room_code = ?').get(beforeId, code) : null;
+  const rows = anchor
+    ? db.prepare('SELECT * FROM messages WHERE room_code = ? AND (at < ? OR (at = ? AND rowid < ?)) ORDER BY at DESC, rowid DESC LIMIT ?')
+      .all(code, anchor.at, anchor.at, anchor.rid, limit)
+    : db.prepare('SELECT * FROM messages WHERE room_code = ? AND at < ? ORDER BY at DESC, rowid DESC LIMIT ?')
+      .all(code, beforeAt, limit);
   return rows.reverse().map(rowToHistoryEntry);
+}
+
+function getReactionsForMessages(ids) {
+  if (!ids.length) return [];
+  return db
+    .prepare(`SELECT message_id as messageId, emoji, name FROM reactions WHERE message_id IN (${ids.map(() => '?').join(',')})`)
+    .all(...ids);
 }
 
 function getAllMessagesForExport(code) {
@@ -1076,6 +1155,7 @@ function rowToHistoryEntry(r) {
     at: r.at,
     edited: !!r.edited,
     deleted: !!r.deleted,
+    kind: r.kind || null,
     flair: r.account_id ? accountFlair(r.account_id) : null,
   };
 }
@@ -2320,6 +2400,7 @@ function getRoomMediaUrls(code) {
 const deleteRoomCascade = db.transaction((code) => {
   db.prepare('DELETE FROM reactions WHERE message_id IN (SELECT id FROM messages WHERE room_code = ?)').run(code);
   db.prepare('DELETE FROM poll_votes WHERE message_id IN (SELECT id FROM messages WHERE room_code = ?)').run(code);
+  db.prepare('DELETE FROM message_edits WHERE message_id IN (SELECT id FROM messages WHERE room_code = ?)').run(code);
   db.prepare('DELETE FROM messages WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM pins WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM read_receipts WHERE room_code = ?').run(code);
@@ -2329,6 +2410,7 @@ const deleteRoomCascade = db.transaction((code) => {
   db.prepare('DELETE FROM bc_claims WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM leaderboard WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM room_emojis WHERE room_code = ?').run(code);
+  db.prepare('DELETE FROM room_cohosts WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM room_invite_uses WHERE token IN (SELECT token FROM room_invites WHERE room_code = ?)').run(code);
   db.prepare('DELETE FROM room_invites WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM room_event_rsvps WHERE event_id IN (SELECT id FROM room_events WHERE room_code = ?)').run(code);
@@ -2613,6 +2695,14 @@ function getAccountByStreamKey(key) {
 }
 
 module.exports = {
+  getReactionsForMessages,
+  getRoomCohosts,
+  isRoomCohost,
+  addRoomCohost,
+  removeRoomCohost,
+  countRoomCohosts,
+  setRoomWelcome,
+  getMessageEdits,
   createRoomInvite,
   getRoomInvite,
   listRoomInvites,

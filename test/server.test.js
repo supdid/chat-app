@@ -7650,3 +7650,175 @@ describe('invite links (2026-11-06)', () => {
     host.close(); noPin.ws.close(); second.ws.close(); back.ws.close();
   });
 });
+
+describe('co-hosts (2026-11-08)', () => {
+  const signup = async (username) => fetch(`${BASE_URL}/auth/signup`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password: 'pass1234', email: `${username.toLowerCase()}@test.com` }),
+  }).then((r) => r.json());
+
+  test('host promotes a signed-in member; co-host can moderate members but not the host; host can demote', async () => {
+    const { ws: host, code } = await joinRoom('CoHostHost');
+    const acct = await signup('CoHostMod');
+    const mod = await joinAsAccount('CoHostMod', acct.token, code);
+    const member = await joinExistingRoom('CoHostMember', code);
+    const guest = await joinExistingRoom('CoHostGuest', code);
+    await sleep(100);
+
+    // A guest can't be a co-host.
+    const guestErr = waitFor(host, (m) => m.type === 'error' && /signed in/.test(m.message));
+    send(host, { type: 'add-cohost', name: 'CoHostGuest' });
+    await guestErr;
+
+    // Non-hosts can't promote.
+    send(member, { type: 'add-cohost', name: 'CoHostMod' });
+    await sleep(200);
+
+    const promoted = waitFor(mod, (m) => m.type === 'cohosts-updated');
+    send(host, { type: 'add-cohost', name: 'CoHostMod' });
+    const p = await promoted;
+    assert.equal(p.isCohost, true);
+    assert.deepEqual(p.cohosts, ['CoHostMod']);
+    const pres = await waitFor(member, (m) => m.type === 'presence' && m.users.some((u) => u.name === 'CoHostMod' && u.cohost));
+    assert.ok(pres.users.find((u) => u.name === 'CoHostHost').host);
+
+    // Co-host can delete a member's message.
+    send(member, { type: 'message', text: 'delete me pls' });
+    const m1 = await waitFor(mod, (m) => m.type === 'message' && m.text === 'delete me pls');
+    const deleted = waitFor(member, (m) => m.type === 'message-deleted' && m.messageId === m1.id);
+    send(mod, { type: 'delete-message', messageId: m1.id });
+    await deleted;
+
+    // Co-host can't delete the host's message.
+    send(host, { type: 'message', text: 'host says hi' });
+    const hm0 = await waitFor(mod, (m) => m.type === 'message' && m.text === 'host says hi');
+    const delSeen = [];
+    const onDel = (raw) => { const m = JSON.parse(raw); if (m.type === 'message-deleted') delSeen.push(m.messageId); };
+    member.on('message', onDel);
+    send(mod, { type: 'delete-message', messageId: hm0.id });
+    await sleep(250);
+    member.off('message', onDel);
+    assert.ok(!delSeen.includes(hm0.id), "co-host can't delete the host's messages");
+
+    // Co-host can't kick the host.
+    const kickErr = waitFor(mod, (m) => m.type === 'error' && /Co-hosts can't/.test(m.message));
+    send(mod, { type: 'kick-user', name: 'CoHostHost' });
+    await kickErr;
+
+    // Co-host can mute a member.
+    const muted = waitFor(member, (m) => m.type === 'user-muted' && m.name === 'CoHostMember');
+    send(mod, { type: 'mute-user', name: 'CoHostMember' });
+    await muted;
+
+    // Co-host still can't do host-only things (rename).
+    send(mod, { type: 'rename-room', name: 'Hijacked' });
+    await sleep(250);
+
+    // Rejoining keeps co-host status (it's tied to the account).
+    mod.close();
+    await sleep(100);
+    const mod2 = await connectWs();
+    send(mod2, { type: 'join-server', username: 'CoHostMod', accountToken: acct.token });
+    await waitFor(mod2, (m) => m.type === 'joined-server');
+    send(mod2, { type: 'join-room', code });
+    const rejoined = await waitFor(mod2, (m) => m.type === 'joined-room');
+    assert.equal(rejoined.isCohost, true);
+    assert.notEqual(rejoined.name, 'Hijacked');
+
+    const demoted = waitFor(mod2, (m) => m.type === 'cohosts-updated');
+    send(host, { type: 'remove-cohost', name: 'CoHostMod' });
+    assert.equal((await demoted).isCohost, false);
+    send(member, { type: 'message', text: 'still here' }); // muted — dropped
+    send(host, { type: 'message', text: 'host msg' });
+    const hm = await waitFor(mod2, (m) => m.type === 'message' && m.text === 'host msg');
+    send(mod2, { type: 'delete-message', messageId: hm.id });
+    await sleep(250);
+    send(host, { type: 'message', text: 'after' });
+    const seen = [];
+    mod2.on('message', (raw) => seen.push(JSON.parse(raw)));
+    await waitFor(host, (m) => m.type === 'message' && m.text === 'after');
+    await sleep(150);
+    assert.ok(!seen.some((m) => m.type === 'message-deleted' && m.messageId === hm.id), 'demoted co-host can no longer delete others\' messages');
+    host.close(); mod2.close(); member.close(); guest.close();
+  });
+});
+
+describe('welcome message + edit history (2026-11-08)', () => {
+  test('host sets a welcome message that new joiners receive; non-hosts cannot set it', async () => {
+    const { ws: host, code } = await joinRoom('WelHost');
+    const member = await joinExistingRoom('WelMember', code);
+    send(member, { type: 'set-welcome', text: 'evil' });
+    await sleep(200);
+    const upd = waitFor(member, (m) => m.type === 'welcome-updated');
+    send(host, { type: 'set-welcome', text: 'Hi! Be kind 🎮' });
+    assert.equal((await upd).text, 'Hi! Be kind 🎮');
+    const ws = await connectWs();
+    send(ws, { type: 'join-server', username: 'WelNew' });
+    await waitFor(ws, (m) => m.type === 'joined-server');
+    send(ws, { type: 'join-room', code });
+    assert.equal((await waitFor(ws, (m) => m.type === 'joined-room')).welcome, 'Hi! Be kind 🎮');
+    host.close(); member.close(); ws.close();
+  });
+
+  test('edits keep earlier versions; deleting the message wipes them', async () => {
+    const { ws: a, code } = await joinRoom('EditHistA');
+    const b = await joinExistingRoom('EditHistB', code);
+    send(a, { type: 'message', text: 'first version' });
+    const msg = await waitFor(a, (m) => m.type === 'message' && m.text === 'first version');
+    for (const t of ['second version', 'third version']) {
+      send(a, { type: 'edit-message', messageId: msg.id, text: t });
+      await waitFor(b, (m) => m.type === 'message-edited' && m.text === t);
+    }
+    send(b, { type: 'get-edit-history', messageId: msg.id });
+    const h = await waitFor(b, (m) => m.type === 'edit-history');
+    assert.equal(h.current, 'third version');
+    assert.deepEqual(h.versions.map((v) => v.text), ['first version', 'second version']);
+
+    send(a, { type: 'delete-message', messageId: msg.id });
+    await waitFor(b, (m) => m.type === 'message-deleted');
+    const replies = [];
+    b.on('message', (raw) => { const m = JSON.parse(raw); if (m.type === 'edit-history') replies.push(m); });
+    send(b, { type: 'get-edit-history', messageId: msg.id });
+    await sleep(300);
+    assert.equal(replies.length, 0, 'a deleted message has no readable history');
+    a.close(); b.close();
+  });
+});
+
+describe('server-rolled dice + /me (2026-11-08)', () => {
+  test('/roll, /flip, /8ball, /pick are rolled by the server and cannot be edited; /me is an action', async () => {
+    const { ws: a, code } = await joinRoom('DiceA');
+    const b = await joinExistingRoom('DiceB', code);
+    send(a, { type: 'message', text: '/roll 3d6' });
+    const r = await waitFor(b, (m) => m.type === 'message' && m.kind === 'roll');
+    const mt = r.text.match(/^🎲 rolled 3d6: (\d+) \+ (\d+) \+ (\d+) = (\d+)$/);
+    assert.ok(mt, r.text);
+    const dice = mt.slice(1, 4).map(Number);
+    assert.ok(dice.every((d) => d >= 1 && d <= 6));
+    assert.equal(dice.reduce((x, y) => x + y, 0), Number(mt[4]));
+
+    send(a, { type: 'edit-message', messageId: r.id, text: '🎲 rolled 3d6: 6 + 6 + 6 = 18' });
+    await sleep(250);
+    send(b, { type: 'get-edit-history', messageId: r.id });
+    assert.equal((await waitFor(b, (m) => m.type === 'edit-history')).current, r.text, 'rolls cannot be edited');
+
+    send(a, { type: 'message', text: '/flip' });
+    assert.match((await waitFor(b, (m) => m.type === 'message' && /flipped/.test(m.text))).text, /Heads|Tails/);
+    send(a, { type: 'message', text: '/8ball will it rain?' });
+    assert.match((await waitFor(b, (m) => m.type === 'message' && /🎱/.test(m.text))).text, /will it rain\?/);
+    send(a, { type: 'message', text: '/pick pizza, tacos or sushi' });
+    assert.match((await waitFor(b, (m) => m.type === 'message' && /🤔/.test(m.text))).text, /\*\*(pizza|tacos|sushi)\*\*$/);
+    send(a, { type: 'message', text: '/me waves' });
+    const me = await waitFor(b, (m) => m.type === 'message' && m.kind === 'me');
+    assert.equal(me.text, 'waves');
+
+    // History keeps the kind.
+    const c = await connectWs();
+    send(c, { type: 'join-server', username: 'DiceC' });
+    await waitFor(c, (m) => m.type === 'joined-server');
+    send(c, { type: 'join-room', code });
+    const joined = await waitFor(c, (m) => m.type === 'joined-room');
+    assert.ok(joined.messages.some((m) => m.kind === 'me' && m.text === 'waves'));
+    a.close(); b.close(); c.close();
+  });
+});

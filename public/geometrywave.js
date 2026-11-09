@@ -446,11 +446,17 @@ if (typeof document !== 'undefined') {
       gwRemotePlayers.clear();
       gwConnectedLevel = levelKey;
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      gwSocket = new WebSocket(`${protocol}//${location.host}`);
-      gwSocket.addEventListener('open', () => {
-        gwSocket.send(JSON.stringify({ type: 'gw-join', code: mpRoomCode, level: levelKey, name: mpPlayerName, accountToken: localStorage.getItem('valk-account-token') }));
+      // Handlers below use this local `sock`, not the shared gwSocket variable: switching levels
+      // closes the old socket and opens a new one, and the OLD socket's open/close events can
+      // still fire afterwards — its close used to null out the NEW gwSocket (and its open could
+      // land after gwSocket was already nulled, crashing with "Cannot read properties of null").
+      const sock = new WebSocket(`${protocol}//${location.host}`);
+      gwSocket = sock;
+      sock.addEventListener('open', () => {
+        sock.send(JSON.stringify({ type: 'gw-join', code: mpRoomCode, level: levelKey, name: mpPlayerName, accountToken: localStorage.getItem('valk-account-token') }));
       });
-      gwSocket.addEventListener('message', (event) => {
+      sock.addEventListener('message', (event) => {
+        if (gwSocket !== sock) return;
         let data;
         try {
           data = JSON.parse(event.data);
@@ -474,7 +480,7 @@ if (typeof document !== 'undefined') {
           gwRemotePlayers.delete(data.id);
         } else if (data.type === 'gw-full') {
           gwRoomFull = true;
-          gwSocket.close();
+          sock.close();
           gwSocket = null;
           showToast('This room is full — playing without multiplayer');
         } else if (data.type === 'gw-join-error') {
@@ -485,7 +491,7 @@ if (typeof document !== 'undefined') {
           // now used here and for gw-full above too, closing the wider gap that dimension
           // deliberately left open at the time.
           gwRoomFull = true;
-          gwSocket.close();
+          sock.close();
           gwSocket = null;
           showToast(data.message || "Couldn't join this room's shared world");
         } else if (data.type === 'gw-leaderboard-result') {
@@ -503,7 +509,8 @@ if (typeof document !== 'undefined') {
       // recover short of reloading the page — same bug webswing.js's connectSw() had and fixed
       // (see its own close listener for the fuller explanation). Existing ghosts are cleared since
       // their positions are now stale; a fresh gw-init snapshot repopulates them once reconnected.
-      gwSocket.addEventListener('close', () => {
+      sock.addEventListener('close', () => {
+        if (gwSocket !== sock) return; // an old level's socket closing — the new one is fine
         gwRemotePlayers.clear();
         gwSocket = null;
         if (!gwRoomFull) setTimeout(() => gwConnect(gwConnectedLevel), 1500);
