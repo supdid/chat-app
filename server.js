@@ -7308,10 +7308,12 @@ wss.on('connection', (ws, req) => {
       if (!tr || tr.state !== 'racing' || !me || !me.racing || me.place) return;
       const now = Date.now();
       if (now < tr.startAt) return;
-      if (now - (ws.trLastProgress || 0) < 80) return;
+      let chars = Math.floor(Number(msg.chars));
+      // Throttle progress spam — but never drop the update that finishes the race (it can easily
+      // land right after the previous one).
+      if (now - (ws.trLastProgress || 0) < 80 && chars < tr.text.length) return;
       ws.trLastProgress = now;
       const elapsed = now - tr.startAt;
-      let chars = Math.floor(Number(msg.chars));
       if (!Number.isFinite(chars) || chars < me.chars) return;
       chars = Math.min(chars, tr.text.length, Math.floor((elapsed / 1000) * TR_MAX_CPS) + 3);
       me.chars = chars;
@@ -8965,6 +8967,12 @@ wss.on('connection', (ws, req) => {
       const messageId = String(msg.messageId || '');
       const target = messageId && db.getMessage(messageId);
       if (!target || target.room_code !== ws.room || target.deleted) return;
+      // Only the author and the room's host/co-hosts — someone who edits out something they
+      // posted by mistake (an address, a phone number) shouldn't have it readable by everyone.
+      if (!ownsMessage(target, ws) && !isRoomMod(db.getRoom(ws.room), ws)) {
+        send(ws, { type: 'error', message: 'Only the person who wrote it and the room hosts can see edit history' });
+        return;
+      }
       send(ws, { type: 'edit-history', messageId, current: target.text, versions: db.getMessageEdits(messageId) });
       return;
     }

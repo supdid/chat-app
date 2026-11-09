@@ -1778,7 +1778,10 @@ function handleServerMessage(data) {
         if (urlMatch) renderLinkPreview(bubble, trimTrailingUrlPunctuation(urlMatch[0]));
       }
       const metaEl = bubble && bubble.querySelector('.meta');
-      if (metaEl && !metaEl.querySelector('.edited-tag')) metaEl.append(document.createTextNode(' · '), makeEditedTag(data.messageId));
+      if (metaEl && !metaEl.querySelector('.edited-tag') && !/· edited/.test(metaEl.textContent)) {
+        const canSee = isMod() || (msgEl && msgEl.classList.contains('own'));
+        metaEl.append(document.createTextNode(' · '), canSee ? makeEditedTag(data.messageId) : document.createTextNode('edited'));
+      }
       break;
     }
 
@@ -2137,7 +2140,7 @@ function renderMessage(data, opts = {}) {
   const meta = document.createElement('span');
   meta.className = 'meta';
   meta.append(makeFlairName(data.name, data.flair), document.createTextNode(` · ${time}${data.scheduled ? ' · ⏰ scheduled' : ''}`));
-  if (data.edited) meta.append(document.createTextNode(' · '), makeEditedTag(data.id));
+  if (data.edited) meta.append(document.createTextNode(' · '), (isOwn || isMod()) ? makeEditedTag(data.id) : document.createTextNode('edited'));
   bubble.appendChild(meta);
   if (data.flair && data.flair.bubble) bubble.classList.add(`bubble-${data.flair.bubble}`);
 

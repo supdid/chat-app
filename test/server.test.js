@@ -7772,8 +7772,12 @@ describe('welcome message + edit history (2026-11-08)', () => {
       send(a, { type: 'edit-message', messageId: msg.id, text: t });
       await waitFor(b, (m) => m.type === 'message-edited' && m.text === t);
     }
+    // Other members can't read it; the author can.
+    const denied = waitFor(b, (m) => m.type === 'error' && /edit history/.test(m.message));
     send(b, { type: 'get-edit-history', messageId: msg.id });
-    const h = await waitFor(b, (m) => m.type === 'edit-history');
+    await denied;
+    send(a, { type: 'get-edit-history', messageId: msg.id });
+    const h = await waitFor(a, (m) => m.type === 'edit-history');
     assert.equal(h.current, 'third version');
     assert.deepEqual(h.versions.map((v) => v.text), ['first version', 'second version']);
 
@@ -7802,8 +7806,8 @@ describe('server-rolled dice + /me (2026-11-08)', () => {
 
     send(a, { type: 'edit-message', messageId: r.id, text: '🎲 rolled 3d6: 6 + 6 + 6 = 18' });
     await sleep(250);
-    send(b, { type: 'get-edit-history', messageId: r.id });
-    assert.equal((await waitFor(b, (m) => m.type === 'edit-history')).current, r.text, 'rolls cannot be edited');
+    send(a, { type: 'get-edit-history', messageId: r.id });
+    assert.equal((await waitFor(a, (m) => m.type === 'edit-history')).current, r.text, 'rolls cannot be edited');
 
     send(a, { type: 'message', text: '/flip' });
     assert.match((await waitFor(b, (m) => m.type === 'message' && /flipped/.test(m.text))).text, /Heads|Tails/);
@@ -8149,6 +8153,9 @@ describe('Type Race (2026-11-08)', () => {
     const needMs = Math.ceil((race.text.length / 22) * 1000) + 200;
     await sleep(needMs);
     const finA = waitFor(b.ws, (m) => m.type === 'tr-finished' && m.id === a.init.id);
+    // A progress update immediately followed by the finishing one (inside the 80ms throttle):
+    // the finish must still count.
+    send(a.ws, { type: 'tr-progress', chars: race.text.length - 3 });
     send(a.ws, { type: 'tr-progress', chars: race.text.length });
     const fa = await finA;
     assert.equal(fa.place, 1);
