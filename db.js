@@ -189,6 +189,8 @@ ensureColumn('rooms', 'filter_default', 'INTEGER DEFAULT 0');
 ensureColumn('rooms', 'disappear_after', 'INTEGER DEFAULT 0');
 ensureColumn('rooms', 'filter_words', 'TEXT');
 ensureColumn('rooms', 'welcome_text', 'TEXT');
+// 1 = announcement-only: just the host and co-hosts can post.
+ensureColumn('rooms', 'hosts_only', 'INTEGER DEFAULT 0');
 
 // One-time migration: pins used to be single-pin-per-room (PK: room_code) — multi-pin needs a
 // composite PK (room_code, message_id) instead, which ALTER TABLE can't change in place.
@@ -227,6 +229,13 @@ db.exec(`
     name TEXT,
     option_index INTEGER,
     PRIMARY KEY (message_id, name)
+  );
+  -- Votes on "pick as many as you like" polls (one row per chosen option).
+  CREATE TABLE IF NOT EXISTS poll_multi_votes (
+    message_id TEXT,
+    name TEXT,
+    option_index INTEGER,
+    PRIMARY KEY (message_id, name, option_index)
   );
 
   CREATE TABLE IF NOT EXISTS dms (
@@ -347,6 +356,17 @@ db.exec(`
     at INTEGER,
     PRIMARY KEY (room_code, account_id)
   );
+  -- "/later 30m text": a message that posts itself at send_at.
+  CREATE TABLE IF NOT EXISTS scheduled_messages (
+    id TEXT PRIMARY KEY,
+    room_code TEXT,
+    name TEXT,
+    account_id TEXT,
+    text TEXT,
+    send_at INTEGER,
+    created_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_scheduled_due ON scheduled_messages(send_at);
   -- Earlier versions of edited room messages (newest edit = messages.text).
   CREATE TABLE IF NOT EXISTS message_edits (
     message_id TEXT,
@@ -919,6 +939,7 @@ const expireRoomMessages = db.transaction((code, before) => {
   if (!rows.length) return [];
   const delReactions = db.prepare('DELETE FROM reactions WHERE message_id = ?');
   const delVotes = db.prepare('DELETE FROM poll_votes WHERE message_id = ?');
+  const delMultiVotes = db.prepare('DELETE FROM poll_multi_votes WHERE message_id = ?');
   const delMsg = db.prepare('DELETE FROM messages WHERE id = ?');
   const delPin = db.prepare('DELETE FROM pins WHERE room_code = ? AND message_id = ?');
   const delEdits = db.prepare('DELETE FROM message_edits WHERE message_id = ?');
@@ -926,6 +947,7 @@ const expireRoomMessages = db.transaction((code, before) => {
     delEdits.run(r.id);
     delReactions.run(r.id);
     delVotes.run(r.id);
+    delMultiVotes.run(r.id);
     delPin.run(code, r.id);
     delMsg.run(r.id);
   }
@@ -1054,6 +1076,32 @@ function countRoomCohosts(code) {
 }
 
 // ---- Welcome message (shown once to each new member) ----
+// ---- Scheduled messages ----
+function addScheduledMessage(m) {
+  db.prepare('INSERT INTO scheduled_messages (id, room_code, name, account_id, text, send_at, created_at) VALUES (@id, @roomCode, @name, @accountId, @text, @sendAt, @createdAt)').run(m);
+}
+// Account-owned if signed in, otherwise by display name in that room.
+function listScheduledMessages(code, accountId, name) {
+  return accountId
+    ? db.prepare('SELECT id, text, send_at AS sendAt FROM scheduled_messages WHERE room_code = ? AND account_id = ? ORDER BY send_at').all(code, accountId)
+    : db.prepare('SELECT id, text, send_at AS sendAt FROM scheduled_messages WHERE room_code = ? AND account_id IS NULL AND name = ? ORDER BY send_at').all(code, name);
+}
+function deleteScheduledMessage(id, code, accountId, name) {
+  return accountId
+    ? db.prepare('DELETE FROM scheduled_messages WHERE id = ? AND room_code = ? AND account_id = ?').run(id, code, accountId).changes
+    : db.prepare('DELETE FROM scheduled_messages WHERE id = ? AND room_code = ? AND account_id IS NULL AND name = ?').run(id, code, name).changes;
+}
+const takeDueScheduledMessages = db.transaction((now) => {
+  const rows = db.prepare('SELECT * FROM scheduled_messages WHERE send_at <= ? ORDER BY send_at LIMIT 200').all(now);
+  const del = db.prepare('DELETE FROM scheduled_messages WHERE id = ?');
+  for (const r of rows) del.run(r.id);
+  return rows;
+});
+
+function setHostsOnly(code, on) {
+  db.prepare('UPDATE rooms SET hosts_only = ? WHERE code = ?').run(on ? 1 : 0, code);
+}
+
 function setRoomWelcome(code, text) {
   db.prepare('UPDATE rooms SET welcome_text = ? WHERE code = ?').run(text, code);
 }
@@ -1109,6 +1157,26 @@ function getRecentMessages(code, limit) {
 // message's own id) instead of a bare timestamp — not done here because, as of this writing, no
 // client anywhere actually calls load-older-messages (grepped all of public/*.js) to begin with;
 // revisit this gap for real if that ever changes.
+// Everything from message `untilId` (inclusive) up to just before beforeId — used to jump to an
+// old message (search hit / message link) in one round trip. Capped; null if untilId isn't in
+// this room or is newer than the anchor.
+function getMessagesBetween(code, untilId, beforeId, cap) {
+  const target = db.prepare('SELECT rowid AS rid, at FROM messages WHERE id = ? AND room_code = ?').get(untilId, code);
+  const anchor = db.prepare('SELECT rowid AS rid, at FROM messages WHERE id = ? AND room_code = ?').get(beforeId, code);
+  if (!target || !anchor) return null;
+  const rows = db.prepare(
+    `SELECT * FROM messages WHERE room_code = ?
+       AND (at < ? OR (at = ? AND rowid < ?))
+       AND (at > ? OR (at = ? AND rowid >= ?))
+     ORDER BY at DESC, rowid DESC LIMIT ?`
+  ).all(code, anchor.at, anchor.at, anchor.rid, target.at, target.at, target.rid, cap + 1);
+  if (rows.length > cap) return null;
+  // A few messages of context above the target too.
+  const above = db.prepare('SELECT * FROM messages WHERE room_code = ? AND (at < ? OR (at = ? AND rowid < ?)) ORDER BY at DESC, rowid DESC LIMIT 10')
+    .all(code, target.at, target.at, target.rid);
+  return rows.concat(above).reverse().map(rowToHistoryEntry);
+}
+
 function getMessagesBefore(code, beforeAt, limit, beforeId) {
   // With beforeId (the oldest message the client already has), messages sharing that exact
   // millisecond but inserted earlier are included too — the compound cursor the note above
@@ -1471,6 +1539,22 @@ function setPollVote(messageId, name, optionIndex) {
     `INSERT INTO poll_votes (message_id, name, option_index) VALUES (?, ?, ?)
      ON CONFLICT(message_id, name) DO UPDATE SET option_index = excluded.option_index`
   ).run(messageId, name, optionIndex);
+}
+
+function togglePollMultiVote(messageId, name, optionIndex) {
+  const had = db.prepare('SELECT 1 FROM poll_multi_votes WHERE message_id = ? AND name = ? AND option_index = ?').get(messageId, name, optionIndex);
+  if (had) db.prepare('DELETE FROM poll_multi_votes WHERE message_id = ? AND name = ? AND option_index = ?').run(messageId, name, optionIndex);
+  else db.prepare('INSERT INTO poll_multi_votes (message_id, name, option_index) VALUES (?, ?, ?)').run(messageId, name, optionIndex);
+}
+
+function getPollMultiVotes(messageId) {
+  return db.prepare('SELECT name, option_index as optionIndex FROM poll_multi_votes WHERE message_id = ?').all(messageId);
+}
+
+// Poll messages keep their definition as JSON in `text`; closing a poll rewrites it without
+// marking the message "edited" or saving an edit-history version.
+function setPollText(messageId, text) {
+  db.prepare('UPDATE messages SET text = ? WHERE id = ?').run(text, messageId);
 }
 
 function getPollVotes(messageId) {
@@ -2400,6 +2484,7 @@ function getRoomMediaUrls(code) {
 const deleteRoomCascade = db.transaction((code) => {
   db.prepare('DELETE FROM reactions WHERE message_id IN (SELECT id FROM messages WHERE room_code = ?)').run(code);
   db.prepare('DELETE FROM poll_votes WHERE message_id IN (SELECT id FROM messages WHERE room_code = ?)').run(code);
+  db.prepare('DELETE FROM poll_multi_votes WHERE message_id IN (SELECT id FROM messages WHERE room_code = ?)').run(code);
   db.prepare('DELETE FROM message_edits WHERE message_id IN (SELECT id FROM messages WHERE room_code = ?)').run(code);
   db.prepare('DELETE FROM messages WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM pins WHERE room_code = ?').run(code);
@@ -2411,6 +2496,7 @@ const deleteRoomCascade = db.transaction((code) => {
   db.prepare('DELETE FROM leaderboard WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM room_emojis WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM room_cohosts WHERE room_code = ?').run(code);
+  db.prepare('DELETE FROM scheduled_messages WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM room_invite_uses WHERE token IN (SELECT token FROM room_invites WHERE room_code = ?)').run(code);
   db.prepare('DELETE FROM room_invites WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM room_event_rsvps WHERE event_id IN (SELECT id FROM room_events WHERE room_code = ?)').run(code);
@@ -2695,6 +2781,15 @@ function getAccountByStreamKey(key) {
 }
 
 module.exports = {
+  addScheduledMessage,
+  listScheduledMessages,
+  deleteScheduledMessage,
+  takeDueScheduledMessages,
+  setHostsOnly,
+  togglePollMultiVote,
+  getPollMultiVotes,
+  setPollText,
+  getMessagesBetween,
   getReactionsForMessages,
   getRoomCohosts,
   isRoomCohost,

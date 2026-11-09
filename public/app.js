@@ -297,7 +297,17 @@ function slowModeLabel(seconds) {
 function applySlowMode(seconds) {
   roomSlowMode = seconds || 0;
   slowModeSelect.value = String(roomSlowMode);
-  messageInput.placeholder = roomSlowMode && !isMod() ? `Slow mode is on — one message every ${slowModeLabel(roomSlowMode)}` : 'Type a message...';
+  updateComposerLock();
+}
+// Announcement-only rooms: non-hosts can still read, react and vote, but the composer is locked.
+let roomHostsOnly = false;
+function updateComposerLock() {
+  const locked = roomHostsOnly && !isMod();
+  messageInput.disabled = locked;
+  messageForm.classList.toggle('composer-locked', locked);
+  messageForm.querySelectorAll('button').forEach((b) => { b.disabled = locked; });
+  if (locked) messageInput.placeholder = '📢 Only the host and co-hosts can post here';
+  else messageInput.placeholder = roomSlowMode && !isMod() ? `Slow mode is on — one message every ${slowModeLabel(roomSlowMode)}` : 'Type a message...';
 }
 const announcementInput = document.getElementById('announcement-input');
 const typingIndicatorEl = document.getElementById('typing-indicator');
@@ -320,7 +330,8 @@ function applyModVisibility() {
   bansRow.classList.toggle('hidden', !isMod());
   welcomeForm.classList.toggle('hidden', !isHost);
   cohostHint.classList.toggle('hidden', !isHost);
-  messageInput.placeholder = roomSlowMode && !isMod() ? `Slow mode is on — one message every ${slowModeLabel(roomSlowMode)}` : 'Type a message...';
+  document.getElementById('hosts-only-row').classList.toggle('hidden', !isHost);
+  updateComposerLock();
 }
 const welcomeForm = document.getElementById('welcome-form');
 const welcomeInput = document.getElementById('welcome-input');
@@ -385,6 +396,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   welcomeModal.classList.add('hidden');
   editHistoryModal.classList.add('hidden');
+  document.getElementById('scheduled-modal').classList.add('hidden');
 });
 
 function makeEditedTag(messageId) {
@@ -599,7 +611,7 @@ function renderSavedList() {
     }
     const actions = document.createElement('div');
     actions.className = 'saved-actions';
-    if (m.roomCode === currentRoomCode && document.getElementById(`msg-${m.id}`)) {
+    if (m.roomCode === currentRoomCode) {
       const jumpBtn = document.createElement('button');
       jumpBtn.type = 'button';
       jumpBtn.className = 'small-btn';
@@ -1024,20 +1036,17 @@ function handleServerMessage(data) {
       renderThread(data.root, data.replies || []);
       break;
 
-    case 'poll-voted': {
+    case 'poll-voted':
+      // Re-render just the poll card in place (replaceWith keeps its position in the bubble —
+      // the old remove-then-append moved it below the reaction buttons after the first vote).
       seedPollVotes(data.messageId, data);
-      const el = document.getElementById(`msg-${data.messageId}`);
-      const bubble = el && el.querySelector('.bubble');
-      const oldCard = bubble && bubble.querySelector('.poll-card');
-      if (bubble && oldCard) {
-        // Re-render just the poll card in place — everything renderPoll needs (data.id/text)
-        // is already on the message, we just need the freshly-seeded vote counts.
-        const msgData = { id: data.messageId, text: oldCard.dataset.pollText };
-        oldCard.remove();
-        renderPoll(bubble, msgData);
-      }
+      rerenderPollCard(data.messageId);
       break;
-    }
+
+    case 'poll-closed':
+      rerenderPollCard(data.messageId, data.text);
+      if (myProfile && data.by !== myProfile.name) showAppToast(`📊 ${data.by} ended a poll`);
+      break;
 
     case 'joined-room':
       currentRoomCode = data.code;
@@ -1046,6 +1055,10 @@ function handleServerMessage(data) {
       isCohost = !!data.isCohost;
       roomCohosts = data.cohosts || [];
       roomWelcomeText = data.welcome || null;
+      roomHostsOnly = !!data.hostsOnly;
+      sentAway = false;
+      lastActivityAt = Date.now();
+      document.getElementById('hosts-only-input').checked = roomHostsOnly;
       welcomeInput.value = roomWelcomeText || '';
       currentRoomPin = data.invitePass || pendingJoinPin;
       pendingJoinPin = '';
@@ -1190,7 +1203,12 @@ function handleServerMessage(data) {
       // at the default scrollTop 0 (top) instead of the bottom. Force one real scroll now that
       // the screen is actually visible and has real layout dimensions.
       scrollToBottom();
-      if (newMsgsDivider) newMsgsDivider.scrollIntoView({ block: 'center' });
+      if (newMsgsDivider && !pendingLinkMsgId) newMsgsDivider.scrollIntoView({ block: 'center' });
+      if (pendingLinkMsgId && data.code === pendingLinkRoom) {
+        const id = pendingLinkMsgId;
+        pendingLinkMsgId = null;
+        setTimeout(() => jumpToMessage(id), 50);
+      }
       messageInput.focus();
       subscribeToPush();
       break;
@@ -1569,6 +1587,13 @@ function handleServerMessage(data) {
       if (data.added) showAppToast(`😀 New room emoji :${data.added}: — find it in the 🙂 picker`);
       break;
 
+    case 'hosts-only-updated':
+      roomHostsOnly = !!data.on;
+      document.getElementById('hosts-only-input').checked = roomHostsOnly;
+      updateComposerLock();
+      showAppToast(data.on ? `📢 ${data.by} made this an announcement-only room` : `📢 ${data.by} opened the room back up — everyone can post`);
+      break;
+
     case 'slow-mode-updated':
       applySlowMode(data.seconds);
       showAppToast(data.seconds ? `🐢 ${data.by} turned on slow mode: one message every ${slowModeLabel(data.seconds)}` : `🐢 ${data.by} turned off slow mode`);
@@ -1633,6 +1658,13 @@ function handleServerMessage(data) {
       if (isHost) {
         welcomeInput.value = roomWelcomeText || '';
         showAppToast(roomWelcomeText ? '👋 Welcome message saved' : 'Welcome message turned off');
+      }
+      break;
+
+    case 'scheduled-list':
+      renderScheduledList(data.items || []);
+      if (data.action === 'schedule-message') {
+        showAppToast(`⏰ Scheduled! Type /scheduled to see or cancel (${(data.items || []).length} waiting)`);
       }
       break;
 
@@ -1967,7 +1999,7 @@ function renderMessage(data, opts = {}) {
   bubble.className = 'bubble';
   const meta = document.createElement('span');
   meta.className = 'meta';
-  meta.append(makeFlairName(data.name, data.flair), document.createTextNode(` · ${time}`));
+  meta.append(makeFlairName(data.name, data.flair), document.createTextNode(` · ${time}${data.scheduled ? ' · ⏰ scheduled' : ''}`));
   if (data.edited) meta.append(document.createTextNode(' · '), makeEditedTag(data.id));
   bubble.appendChild(meta);
   if (data.flair && data.flair.bubble) bubble.classList.add(`bubble-${data.flair.bubble}`);
@@ -2275,9 +2307,24 @@ function insertMention(name) {
   messageInput.focus();
 }
 
+// If the message is further back than what's loaded, fetch everything up to it first (one
+// request — see load-older-messages' untilId), then jump. Used by pins, reply quotes, search,
+// the media gallery, saved messages, notifications and message links.
+let pendingJumpId = null;
 function jumpToMessage(id) {
   const target = document.getElementById(`msg-${id}`);
-  if (!target) return;
+  if (!target) {
+    if (!id || !oldestLoaded || !olderHasMore || !ws || ws.readyState !== WebSocket.OPEN) {
+      showAppToast("Couldn't find that message — it may have been deleted.");
+      return;
+    }
+    pendingJumpId = id;
+    showAppToast('Loading older messages…');
+    olderLoading = true;
+    olderRequestedBefore = oldestLoaded.id;
+    ws.send(JSON.stringify({ type: 'load-older-messages', beforeAt: oldestLoaded.at, beforeId: oldestLoaded.id, untilId: id }));
+    return;
+  }
   target.scrollIntoView({ behavior: 'smooth', block: 'center' });
   target.classList.add('highlight');
   setTimeout(() => target.classList.remove('highlight'), 1500);
@@ -2318,6 +2365,21 @@ function makeMessageActions(data) {
   saveBtn.setAttribute('aria-label', 'Save message');
   saveBtn.addEventListener('click', () => toggleSaveMessage(data));
   actions.appendChild(saveBtn);
+
+  const linkBtn = document.createElement('button');
+  linkBtn.type = 'button';
+  linkBtn.className = 'msg-action-btn';
+  linkBtn.textContent = '🔗';
+  linkBtn.setAttribute('aria-label', 'Copy link to message');
+  linkBtn.title = 'Copy link to this message';
+  linkBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const url = `${location.origin}/?room=${encodeURIComponent(currentRoomCode)}&msg=${encodeURIComponent(data.id)}`;
+    const ok = () => showAppToast('🔗 Link copied — anyone in this room can open it');
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(ok, () => prompt('Copy this link:', url));
+    else prompt('Copy this link:', url);
+  });
+  actions.appendChild(linkBtn);
 
   const replyBtn = document.createElement('button');
   replyBtn.type = 'button';
@@ -2810,6 +2872,14 @@ function renderOnlineList(users) {
     const nameWrap = document.createElement('span');
     nameWrap.className = 'online-name-wrap';
     nameWrap.appendChild(makeFlairName(u.name, u.flair));
+    if (u.away) {
+      li.classList.add('user-away');
+      const awayBadge = document.createElement('span');
+      awayBadge.className = 'cohost-badge';
+      awayBadge.textContent = '🌙';
+      awayBadge.title = 'Away';
+      nameWrap.appendChild(awayBadge);
+    }
     if (u.host || u.cohost) {
       const roleBadge = document.createElement('span');
       roleBadge.className = 'cohost-badge';
@@ -6068,6 +6138,20 @@ function handleReminderCommand(raw) {
     ws.send(JSON.stringify({ type: 'list-reminders' }));
     return true;
   }
+  if (/^\/scheduled\s*$/i.test(raw)) {
+    ws.send(JSON.stringify({ type: 'list-scheduled' }));
+    scheduledModal.classList.remove('hidden');
+    return true;
+  }
+  if (/^\/later\b/i.test(raw)) {
+    const r = parseLaterCommand(raw);
+    if (!r) {
+      showAppToast('Try: /later 30m Happy birthday!  or  /later 6:30pm Game time');
+      return true;
+    }
+    ws.send(JSON.stringify({ type: 'schedule-message', text: r.text, sendAt: r.sendAt }));
+    return true;
+  }
   if (/^\/remind(me)?\b/i.test(raw)) {
     const r = parseRemindCommand(raw);
     if (!r) {
@@ -6194,28 +6278,80 @@ messageInput.addEventListener('blur', () => {
 // --- Media upload ---
 attachBtn.addEventListener('click', () => fileInput.click());
 
-fileInput.addEventListener('change', async () => {
-  const file = fileInput.files[0];
-  fileInput.value = '';
-  if (!file || ws.readyState !== WebSocket.OPEN) return;
-
+// Shared by the 📎 button, pasting an image into the message box, and dragging files onto the chat.
+async function uploadAndSendFile(file) {
+  if (!file) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    showAppToast("Not connected — your file wasn't sent.");
+    return;
+  }
+  if (!/^(image|video)\//.test(file.type)) {
+    showAppToast('Only photos and videos can be sent here.');
+    return;
+  }
   const formData = new FormData();
-  formData.append('file', file);
-
+  formData.append('file', file, file.name || (file.type.startsWith('video/') ? 'clip.mp4' : 'pasted.png'));
   attachBtn.disabled = true;
+  showAppToast(file.type.startsWith('video/') ? '⏫ Uploading video…' : '⏫ Uploading photo…');
   try {
     const res = await fetch('/upload', { method: 'POST', body: formData });
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
+    // Used to write into roomErrorEl, which lives on the room-select screen — invisible from
+    // inside a room, so a failed upload just silently did nothing.
     if (!res.ok) {
-      roomErrorEl.textContent = data.error || 'Upload failed';
+      showAppToast(`Upload failed: ${data.error || `error ${res.status}`}`);
       return;
     }
     sendMediaMessage(data.url, data.mediaType);
   } catch {
-    console.error('Upload failed');
+    showAppToast('Upload failed — check your connection and try again.');
   } finally {
     attachBtn.disabled = false;
   }
+}
+
+fileInput.addEventListener('change', () => {
+  const file = fileInput.files[0];
+  fileInput.value = '';
+  uploadAndSendFile(file);
+});
+
+// Paste a screenshot/photo straight into the message box.
+messageInput.addEventListener('paste', (e) => {
+  const items = e.clipboardData ? [...e.clipboardData.items] : [];
+  const fileItem = items.find((it) => it.kind === 'file' && /^(image|video)\//.test(it.type));
+  if (!fileItem) return; // plain text paste — leave it alone
+  e.preventDefault();
+  uploadAndSendFile(fileItem.getAsFile());
+});
+
+// Drag photos/videos onto the chat to send them.
+let dragDepth = 0;
+function dragHasFiles(e) { return e.dataTransfer && [...e.dataTransfer.types].includes('Files'); }
+chatScreen.addEventListener('dragenter', (e) => {
+  if (!dragHasFiles(e)) return;
+  e.preventDefault();
+  dragDepth++;
+  chatScreen.classList.add('drag-over');
+});
+chatScreen.addEventListener('dragover', (e) => {
+  if (!dragHasFiles(e)) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+});
+chatScreen.addEventListener('dragleave', (e) => {
+  if (!dragHasFiles(e)) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (!dragDepth) chatScreen.classList.remove('drag-over');
+});
+chatScreen.addEventListener('drop', async (e) => {
+  if (!dragHasFiles(e)) return;
+  e.preventDefault();
+  dragDepth = 0;
+  chatScreen.classList.remove('drag-over');
+  const files = [...e.dataTransfer.files].filter((f) => /^(image|video)\//.test(f.type)).slice(0, 5);
+  if (!files.length) { showAppToast('Only photos and videos can be sent here.'); return; }
+  for (const f of files) await uploadAndSendFile(f);
 });
 
 // --- Sticker picker ---
@@ -6511,7 +6647,7 @@ function renderGallery(media) {
     else el.alt = 'shared image';
     item.appendChild(el);
     item.addEventListener('click', () => {
-      if (document.getElementById(`msg-${m.id}`)) {
+      if (document.getElementById(`msg-${m.id}`) || (m.id && olderHasMore)) {
         galleryOverlay.classList.add('hidden');
         jumpToMessage(m.id);
       } else {
@@ -6649,6 +6785,8 @@ pollBtn.addEventListener('click', () => {
   closeMenu();
   pollQuestionInput.value = '';
   pollOptionsListEl.innerHTML = '';
+  document.getElementById('poll-multi-input').checked = false;
+  document.getElementById('poll-ends-select').value = '0';
   addPollOptionRow();
   addPollOptionRow();
   pollOverlay.classList.remove('hidden');
@@ -6667,9 +6805,13 @@ pollCreateForm.addEventListener('submit', (e) => {
     .map((i) => i.value.trim())
     .filter(Boolean);
   if (!question || options.length < 2 || !ws || ws.readyState !== WebSocket.OPEN) return;
+  const pollDef = { question, options };
+  if (document.getElementById('poll-multi-input').checked) pollDef.multi = true;
+  const endsIn = Number(document.getElementById('poll-ends-select').value) || 0;
+  if (endsIn > 0) pollDef.endsAt = Date.now() + endsIn;
   ws.send(JSON.stringify({
     type: 'message',
-    text: JSON.stringify({ question, options }),
+    text: JSON.stringify(pollDef),
     mediaUrl: 'poll',
     mediaType: 'poll',
   }));
@@ -6677,49 +6819,115 @@ pollCreateForm.addEventListener('submit', (e) => {
 });
 
 function seedPollVotes(messageId, data) {
-  pollVotesByMessage.set(messageId, { counts: (data && data.counts) || [], myVote: data && data.myVote != null ? data.myVote : null });
+  const myVote = data && data.myVote != null ? data.myVote : null;
+  pollVotesByMessage.set(messageId, {
+    counts: (data && data.counts) || [],
+    myVote,
+    myVotes: data && Array.isArray(data.myVotes) ? data.myVotes : (myVote != null ? [myVote] : []),
+    voters: data && Number.isFinite(data.voters) ? data.voters : null,
+  });
+}
+
+function formatTimeLeft(ms) {
+  const m = Math.ceil(ms / 60000);
+  if (m < 60) return `${m} min`;
+  const h = Math.round(m / 60);
+  if (h < 48) return `${h} hour${h === 1 ? '' : 's'}`;
+  const d = Math.round(h / 24);
+  return `${d} day${d === 1 ? '' : 's'}`;
+}
+
+function rerenderPollCard(messageId, text) {
+  const el = document.getElementById(`msg-${messageId}`);
+  const bubble = el && el.querySelector('.bubble');
+  const oldCard = bubble && bubble.querySelector('.poll-card');
+  if (!bubble || !oldCard) return;
+  const fresh = document.createElement('div');
+  renderPoll(fresh, { id: messageId, text: text || oldCard.dataset.pollText, name: oldCard.dataset.pollAuthor, own: oldCard.dataset.pollOwn === '1' });
+  if (fresh.firstChild) oldCard.replaceWith(fresh.firstChild);
 }
 
 function renderPoll(container, data) {
   let poll;
   try { poll = JSON.parse(data.text); } catch { return; }
   if (!pollVotesByMessage.has(data.id)) seedPollVotes(data.id, data);
-  const { counts, myVote } = pollVotesByMessage.get(data.id) || { counts: poll.options.map(() => 0), myVote: null };
+  const state = pollVotesByMessage.get(data.id) || {};
+  const counts = state.counts && state.counts.length ? state.counts : poll.options.map(() => 0);
+  const myVotes = state.myVotes || [];
   const total = counts.reduce((a, b) => a + b, 0);
+  const ended = !!poll.closedAt || (poll.endsAt && Date.now() >= poll.endsAt);
+  const isOwnPoll = !!(myProfile && (data.own || (data.sub && data.sub === myProfile.sub)));
 
   const card = document.createElement('div');
-  card.className = 'poll-card';
+  card.className = 'poll-card' + (ended ? ' poll-ended' : '');
   card.dataset.pollText = data.text;
+  card.dataset.pollAuthor = data.name || '';
+  card.dataset.pollOwn = isOwnPoll ? '1' : '';
   const q = document.createElement('div');
   q.className = 'poll-question';
   q.textContent = `📊 ${poll.question}`;
   card.appendChild(q);
+  if (poll.multi && !ended) {
+    const hint = document.createElement('div');
+    hint.className = 'poll-hint';
+    hint.textContent = 'Pick as many as you like';
+    card.appendChild(hint);
+  }
 
+  // When it ends, the winning option(s) get a 🏆.
+  const top = Math.max(0, ...counts);
   poll.options.forEach((label, i) => {
-    const opt = document.createElement('div');
-    opt.className = 'poll-option' + (myVote === i ? ' voted' : '');
-    const pct = total > 0 ? Math.round((counts[i] / total) * 100) : 0;
+    const mine = myVotes.includes(i);
+    const opt = document.createElement(ended ? 'div' : 'button');
+    if (!ended) opt.type = 'button';
+    opt.className = 'poll-option' + (mine ? ' voted' : '') + (ended && top > 0 && counts[i] === top ? ' winner' : '');
+    // Percent of people who picked it (multi-choice can add up to more than 100%).
+    const base = poll.multi ? (state.voters || total) : total;
+    const pct = base > 0 ? Math.round((counts[i] / base) * 100) : 0;
     const fill = document.createElement('div');
     fill.className = 'poll-option-fill';
-    fill.style.width = `${pct}%`;
+    fill.style.width = `${Math.min(100, pct)}%`;
     const labelRow = document.createElement('div');
     labelRow.className = 'poll-option-label';
     const labelText = document.createElement('span');
-    labelText.textContent = label;
+    labelText.textContent = (poll.multi ? (mine ? '☑ ' : '☐ ') : '') + label + (ended && top > 0 && counts[i] === top ? ' 🏆' : '');
     const countText = document.createElement('span');
     countText.textContent = total > 0 ? `${pct}% (${counts[i]})` : '';
     labelRow.append(labelText, countText);
     opt.append(fill, labelRow);
-    opt.addEventListener('click', () => {
-      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'vote-poll', messageId: data.id, optionIndex: i }));
-    });
+    if (!ended) {
+      opt.addEventListener('click', () => {
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'vote-poll', messageId: data.id, optionIndex: i }));
+      });
+    }
     card.appendChild(opt);
   });
 
-  const totalEl = document.createElement('div');
-  totalEl.className = 'poll-total-votes';
-  totalEl.textContent = `${total} vote${total === 1 ? '' : 's'}`;
-  card.appendChild(totalEl);
+  const footer = document.createElement('div');
+  footer.className = 'poll-total-votes';
+  const voters = poll.multi ? (state.voters != null ? state.voters : total) : total;
+  let footText = `${voters} ${poll.multi ? 'voter' : 'vote'}${voters === 1 ? '' : 's'}`;
+  if (ended) footText += ' · Final results';
+  else if (poll.endsAt) footText += ` · ends in ${formatTimeLeft(poll.endsAt - Date.now())}`;
+  footer.textContent = footText;
+  if (!ended && (isOwnPoll || isMod())) {
+    const endBtn = document.createElement('button');
+    endBtn.type = 'button';
+    endBtn.className = 'poll-end-btn';
+    endBtn.textContent = 'End poll';
+    endBtn.addEventListener('click', () => {
+      if (!confirm('End this poll now? Nobody will be able to vote after this.')) return;
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'close-poll', messageId: data.id }));
+    });
+    footer.append(' · ', endBtn);
+  }
+  card.appendChild(footer);
+
+  // Flip to "Final results" by itself when the timer runs out.
+  if (!ended && poll.endsAt) {
+    const wait = poll.endsAt - Date.now() + 500;
+    if (wait < 2147483647) setTimeout(() => { if (card.isConnected) rerenderPollCard(data.id, data.text); }, wait);
+  }
 
   container.appendChild(card);
 }
@@ -6802,11 +7010,9 @@ function renderSearchResults(results) {
 
     li.append(meta, text);
     li.addEventListener('click', () => {
-      if (document.getElementById(`msg-${r.id}`)) {
-        searchOverlay.classList.add('hidden');
-        jumpToMessage(r.id);
-        return;
-      }
+      searchOverlay.classList.add('hidden');
+      jumpToMessage(r.id);
+      return;
       // Found by the search-feature correctness audit: search exists specifically to reach
       // messages beyond the ~50-message in-memory/DOM window (see server.js's own comment on
       // HISTORY_LIMIT) — a hit on exactly that kind of older message used to be a silent dead
@@ -6816,7 +7022,6 @@ function renderSearchResults(results) {
       // something to build unprompted as a side effect of this fix); until that exists, a clear
       // message is the honest, complete fix for the actual bug here (misleading silence), not a
       // dead click.
-      showAppToast("That message is further back than what's currently loaded — can't jump to it yet.");
     });
     searchResultsEl.appendChild(li);
   });
@@ -6997,6 +7202,9 @@ if ('serviceWorker' in navigator) {
   });
 }
 const rejoinRoom = rejoinParams.get('room');
+// ?room=CODE&msg=ID (a copied message link) — jump to that message once the room is joined.
+let pendingLinkMsgId = rejoinParams.get('msg') || null;
+const pendingLinkRoom = rejoinRoom ? rejoinRoom.trim().toUpperCase() : null;
 const rejoinName = rejoinParams.get('name');
 if (rejoinRoom) {
   currentRoomCode = rejoinRoom.trim().toUpperCase();
@@ -7579,6 +7787,12 @@ function handleOlderMessages(data) {
   messagesEl.scrollTop = prevTop + (messagesEl.scrollHeight - prevHeight);
   if (data.messages && data.messages.length) oldestLoaded = { at: data.messages[0].at, id: data.messages[0].id };
   olderHasMore = !!data.hasMore;
+  if (pendingJumpId) {
+    const want = pendingJumpId;
+    pendingJumpId = null;
+    if (document.getElementById(`msg-${want}`)) requestAnimationFrame(() => jumpToMessage(want));
+    else showAppToast("Couldn't find that message — it may have been deleted or be too far back.");
+  }
   if (loadOlderBtn) {
     loadOlderBtn.textContent = olderHasMore ? '⬆ Load earlier messages' : '— Start of this room —';
     loadOlderBtn.disabled = !olderHasMore;
@@ -7589,3 +7803,87 @@ function handleOlderMessages(data) {
 messagesEl.addEventListener('scroll', () => {
   if (messagesEl.scrollTop < 60 && olderHasMore && !olderLoading) requestOlderMessages();
 });
+
+
+document.getElementById('hosts-only-input').addEventListener('change', (e) => {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'set-hosts-only', on: e.target.checked }));
+});
+
+// --- Auto-away: 🌙 after 5 minutes with no activity (or the tab hidden that long) ---
+const AWAY_AFTER_MS = 5 * 60 * 1000;
+let lastActivityAt = Date.now();
+let sentAway = false;
+function noteActivity() {
+  lastActivityAt = Date.now();
+  if (sentAway && !document.hidden) setAway(false);
+}
+function setAway(away) {
+  if (!ws || ws.readyState !== WebSocket.OPEN || !currentRoomCode) return;
+  sentAway = away;
+  ws.send(JSON.stringify({ type: 'set-away', away }));
+}
+['pointerdown', 'keydown', 'mousemove', 'touchstart', 'focus'].forEach((ev) => window.addEventListener(ev, noteActivity, { passive: true }));
+document.addEventListener('visibilitychange', () => { if (!document.hidden) noteActivity(); });
+setInterval(() => {
+  if (!sentAway && currentRoomCode && Date.now() - lastActivityAt > AWAY_AFTER_MS) setAway(true);
+}, 30000);
+
+
+// --- /later scheduled messages ---
+const scheduledModal = document.getElementById('scheduled-modal');
+const scheduledListEl = document.getElementById('scheduled-list');
+document.getElementById('scheduled-close').addEventListener('click', () => scheduledModal.classList.add('hidden'));
+scheduledModal.addEventListener('click', (e) => { if (e.target === scheduledModal) scheduledModal.classList.add('hidden'); });
+
+// "/later 30m text", "/later 2h text", "/later 1d text", "/later 18:30 text", "/later 6pm text",
+// "/later 6:30pm text" (a clock time that's already passed today means tomorrow).
+function parseLaterCommand(raw) {
+  let m = raw.match(/^\/later\s+(?:in\s+)?(\d+(?:\.\d+)?)\s*(m|mins?|minutes?|h|hrs?|hours?|d|days?)\b\s+([\s\S]+)$/i);
+  if (m) {
+    const unit = m[2][0].toLowerCase();
+    return { sendAt: Date.now() + Math.round(parseFloat(m[1]) * REMIND_UNITS[unit]), text: m[3].trim() };
+  }
+  m = raw.match(/^\/later\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+([\s\S]+)$/i);
+  if (m && (m[2] || m[3])) {
+    let h = parseInt(m[1], 10);
+    const min = m[2] ? parseInt(m[2], 10) : 0;
+    const ap = m[3] ? m[3].toLowerCase() : null;
+    if (ap === 'pm' && h < 12) h += 12;
+    if (ap === 'am' && h === 12) h = 0;
+    if (h > 23 || min > 59) return null;
+    const d = new Date();
+    d.setHours(h, min, 0, 0);
+    if (d.getTime() <= Date.now() + 30 * 1000) d.setDate(d.getDate() + 1);
+    return { sendAt: d.getTime(), text: m[4].trim() };
+  }
+  return null;
+}
+
+function renderScheduledList(items) {
+  scheduledListEl.textContent = '';
+  if (!items.length) {
+    const li = document.createElement('li');
+    li.className = 'search-status';
+    li.textContent = 'Nothing scheduled in this room.';
+    scheduledListEl.appendChild(li);
+    return;
+  }
+  for (const it of items) {
+    const li = document.createElement('li');
+    const when = document.createElement('span');
+    when.className = 'eh-when';
+    when.textContent = formatReminderDue(it.sendAt);
+    const text = document.createElement('span');
+    text.className = 'scheduled-text';
+    text.textContent = it.text;
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'small-btn';
+    cancel.textContent = 'Cancel';
+    cancel.addEventListener('click', () => {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'cancel-scheduled', id: it.id }));
+    });
+    li.append(when, text, cancel);
+    scheduledListEl.appendChild(li);
+  }
+}

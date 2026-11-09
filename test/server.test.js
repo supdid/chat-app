@@ -7822,3 +7822,160 @@ describe('server-rolled dice + /me (2026-11-08)', () => {
     a.close(); b.close(); c.close();
   });
 });
+
+describe('poll upgrades (2026-11-08)', () => {
+  const postPoll = (ws, def) => send(ws, { type: 'message', text: JSON.stringify(def), mediaUrl: 'poll', mediaType: 'poll' });
+
+  test('multi-choice polls let one person pick several options and toggle them', async () => {
+    const { ws: a, code } = await joinRoom('PollMultiA');
+    const b = await joinExistingRoom('PollMultiB', code);
+    postPoll(a, { question: 'Snacks?', options: ['chips', 'fruit', 'cake'], multi: true, junk: 'dropped' });
+    const p = await waitFor(b, (m) => m.type === 'message' && m.mediaType === 'poll');
+    const def = JSON.parse(p.text);
+    assert.equal(def.multi, true);
+    assert.equal(def.junk, undefined, 'unknown fields are stripped');
+    send(b, { type: 'vote-poll', messageId: p.id, optionIndex: 0 });
+    await waitFor(b, (m) => m.type === 'poll-voted' && m.messageId === p.id);
+    send(b, { type: 'vote-poll', messageId: p.id, optionIndex: 2 });
+    let st = await waitFor(b, (m) => m.type === 'poll-voted' && m.myVotes.length === 2);
+    assert.deepEqual(st.counts, [1, 0, 1]);
+    assert.equal(st.voters, 1);
+    const forAP = waitFor(a, (m) => m.type === 'poll-voted' && m.counts[2] === 1 && m.counts[0] === 0);
+    send(b, { type: 'vote-poll', messageId: p.id, optionIndex: 0 }); // toggle off
+    st = await waitFor(b, (m) => m.type === 'poll-voted' && m.myVotes.length === 1);
+    assert.deepEqual(st.counts, [0, 0, 1]);
+    const forA = await forAP;
+    assert.deepEqual(forA.myVotes, [], 'other people only see totals, not your picks');
+    a.close(); b.close();
+  });
+
+  test('only the poster or a host can end a poll; ended polls refuse votes; endsAt is enforced', async () => {
+    const { ws: host, code } = await joinRoom('PollEndHost');
+    const a = await joinExistingRoom('PollEndA', code);
+    const b = await joinExistingRoom('PollEndB', code);
+    postPoll(a, { question: 'Q?', options: ['x', 'y'] });
+    const p = await waitFor(b, (m) => m.type === 'message' && m.mediaType === 'poll');
+    send(b, { type: 'close-poll', messageId: p.id }); // not allowed
+    await sleep(200);
+    send(b, { type: 'vote-poll', messageId: p.id, optionIndex: 1 });
+    await waitFor(b, (m) => m.type === 'poll-voted' && m.messageId === p.id);
+    const closed = waitFor(b, (m) => m.type === 'poll-closed' && m.messageId === p.id);
+    send(host, { type: 'close-poll', messageId: p.id });
+    assert.ok(JSON.parse((await closed).text).closedAt);
+    const err = waitFor(b, (m) => m.type === 'error' && /ended/.test(m.message));
+    send(b, { type: 'vote-poll', messageId: p.id, optionIndex: 0 });
+    await err;
+
+    // A poll whose endsAt is in the past (beyond the allowed window) just has no timer.
+    postPoll(a, { question: 'Old?', options: ['x', 'y'], endsAt: Date.now() - 1000 });
+    const p2 = await waitFor(b, (m) => m.type === 'message' && m.mediaType === 'poll' && /Old/.test(m.text));
+    assert.equal(JSON.parse(p2.text).endsAt, undefined);
+    postPoll(a, { question: 'Soon?', options: ['x', 'y'], endsAt: Date.now() + 400 });
+    const p3 = await waitFor(b, (m) => m.type === 'message' && m.mediaType === 'poll' && /Soon/.test(m.text));
+    assert.ok(JSON.parse(p3.text).endsAt);
+    await sleep(500);
+    const err2 = waitFor(b, (m) => m.type === 'error' && /ended/.test(m.message));
+    send(b, { type: 'vote-poll', messageId: p3.id, optionIndex: 0 });
+    await err2;
+    host.close(); a.close(); b.close();
+  });
+
+  test('the word filter now covers poll questions and options', async () => {
+    const { ws: host, code } = await joinRoom('PollFilterHost');
+    send(host, { type: 'set-word-filter', useDefault: false, words: ['banana'] });
+    await sleep(200);
+    postPoll(host, { question: 'banana time?', options: ['banana', 'apple'] });
+    const p = await waitFor(host, (m) => m.type === 'message' && m.mediaType === 'poll');
+    assert.doesNotMatch(p.text, /banana/i);
+    host.close();
+  });
+});
+
+describe('announcement-only rooms + away status (2026-11-08)', () => {
+  test('in an announcement-only room only the host can post; only the host can toggle it', async () => {
+    const { ws: host, code } = await joinRoom('AnnOnlyHost');
+    const member = await joinExistingRoom('AnnOnlyMember', code);
+    send(member, { type: 'set-hosts-only', on: true });
+    await sleep(200);
+    const upd = waitFor(member, (m) => m.type === 'hosts-only-updated');
+    send(host, { type: 'set-hosts-only', on: true });
+    assert.equal((await upd).on, true);
+    const err = waitFor(member, (m) => m.type === 'error' && /Only the host/.test(m.message));
+    send(member, { type: 'message', text: 'can I talk?' });
+    await err;
+    send(host, { type: 'message', text: 'announcement!' });
+    await waitFor(member, (m) => m.type === 'message' && m.text === 'announcement!');
+    const late = await connectWs();
+    send(late, { type: 'join-server', username: 'AnnOnlyLate' });
+    await waitFor(late, (m) => m.type === 'joined-server');
+    send(late, { type: 'join-room', code });
+    assert.equal((await waitFor(late, (m) => m.type === 'joined-room')).hostsOnly, true);
+    send(host, { type: 'set-hosts-only', on: false });
+    await waitFor(member, (m) => m.type === 'hosts-only-updated' && !m.on);
+    send(member, { type: 'message', text: 'now I can' });
+    await waitFor(host, (m) => m.type === 'message' && m.text === 'now I can');
+    host.close(); member.close(); late.close();
+  });
+
+  test('set-away shows up in presence', async () => {
+    const { ws: a, code } = await joinRoom('AwayA');
+    const b = await joinExistingRoom('AwayB', code);
+    await sleep(100);
+    const pres = waitFor(a, (m) => m.type === 'presence' && m.users.some((u) => u.name === 'AwayB' && u.away));
+    send(b, { type: 'set-away', away: true });
+    await pres;
+    a.close(); b.close();
+  });
+});
+
+describe('scheduled messages (2026-11-08)', () => {
+  test('a /later message posts itself when due; it can be listed and cancelled', async () => {
+    const srv = await startTestServer({ SCHEDULE_INTERVAL_MS: '100' }, 3236);
+    try {
+      const url = `ws://localhost:${srv.port}`;
+      const connect = async (name, code) => {
+        const ws = new WebSocket(url);
+        await new Promise((r) => ws.on('open', r));
+        send(ws, { type: 'join-server', username: name });
+        await waitFor(ws, (m) => m.type === 'joined-server');
+        send(ws, code ? { type: 'join-room', code } : { type: 'create-room' });
+        const j = await waitFor(ws, (m) => m.type === 'joined-room');
+        return { ws, code: j.code };
+      };
+      const a = await connect('SchedA');
+      const b = await connect('SchedB', a.code);
+
+      const tooSoon = waitFor(a.ws, (m) => m.type === 'error' && /between 1 minute/.test(m.message));
+      send(a.ws, { type: 'schedule-message', text: 'nope', sendAt: Date.now() + 1000 });
+      await tooSoon;
+
+      const listed = waitFor(a.ws, (m) => m.type === 'scheduled-list' && m.items.length === 2);
+      send(a.ws, { type: 'schedule-message', text: 'cancel me', sendAt: Date.now() + 60 * 60 * 1000 });
+      await waitFor(a.ws, (m) => m.type === 'scheduled-list' && m.items.length === 1);
+      send(a.ws, { type: 'schedule-message', text: 'later hi /roll', sendAt: Date.now() + 31 * 1000 });
+      const items = (await listed).items;
+
+      // B can't see or cancel A's.
+      send(b.ws, { type: 'list-scheduled' });
+      assert.equal((await waitFor(b.ws, (m) => m.type === 'scheduled-list')).items.length, 0);
+      send(b.ws, { type: 'cancel-scheduled', id: items[0].id });
+      await waitFor(b.ws, (m) => m.type === 'scheduled-list');
+
+      const cancelId = items.find((i) => i.text === 'cancel me').id;
+      send(a.ws, { type: 'cancel-scheduled', id: cancelId });
+      assert.equal((await waitFor(a.ws, (m) => m.type === 'scheduled-list' && m.action === 'cancel-scheduled')).items.length, 1);
+
+      // Make it due right now (the API won't accept < 30s, so move it in the DB).
+      const Database = require(require('node:path').join(__dirname, '..', 'node_modules', 'better-sqlite3'));
+      const db = new Database(require('node:path').join(srv.dir, 'valk.db'));
+      db.prepare('UPDATE scheduled_messages SET send_at = ?').run(Date.now() - 1);
+      db.close();
+      const got = await waitFor(b.ws, (m) => m.type === 'message' && m.text === 'later hi /roll', 3000);
+      assert.equal(got.scheduled, true);
+      assert.equal(got.name, 'SchedA');
+      a.ws.close(); b.ws.close();
+    } finally {
+      await srv.stop();
+    }
+  });
+});

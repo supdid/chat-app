@@ -170,6 +170,15 @@
     </div>
   </div>
 
+  <div id="scheduled-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="scheduled-title">
+    <div class="modal-card">
+      <h2 id="scheduled-title">⏰ Scheduled messages</h2>
+      <ul id="scheduled-list" class="scheduled-list"></ul>
+      <p class="search-status">Schedule one with <code>/later 30m Happy birthday!</code> or <code>/later 6:30pm Game time</code></p>
+      <button type="button" id="scheduled-close">Close</button>
+    </div>
+  </div>
+
   <div id="shortcuts-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="shortcuts-title">
     <div class="modal-card">
       <h2 id="shortcuts-title">⌨️ Keyboard shortcuts</h2>
@@ -184,7 +193,8 @@
         <dt><code>```code```</code></dt><dd>Code block with a Copy button</dd>
         <dt><code>||text||</code></dt><dd>Spoiler</dd>
         <dt><code>/me waves</code></dt><dd>Action message</dd>
-        <dt><code>/roll 2d6</code></dt><dd>Roll dice for everyone to see</dd>
+        <dt><code>/roll 2d6</code></dt><dd>Roll dice for everyone to see (also /flip, /8ball, /pick a, b)</dd>
+        <dt><code>/later 1h text</code></dt><dd>Send a message later (/scheduled to see them)</dd>
       </dl>
       <button type="button" id="shortcuts-close">Close</button>
     </div>
@@ -310,6 +320,9 @@
         <input id="announcement-input" type="text" placeholder="Pinned announcement (hosts, blank to clear)" maxlength="200" autocomplete="off">
         <button type="submit" class="icon-btn" aria-label="Save announcement">✓</button>
       </form>
+      <label id="hosts-only-row" class="slow-mode-row hidden">📢 Announcement-only (just hosts can post)
+        <input type="checkbox" id="hosts-only-input">
+      </label>
       <label id="slow-mode-row" class="slow-mode-row hidden">🐢 Slow mode (hosts)
         <select id="slow-mode-select">
           <option value="0">Off</option>
@@ -701,6 +714,16 @@
         <input id="poll-question-input" type="text" placeholder="Ask a question…" maxlength="200" autocomplete="off">
         <div id="poll-options-list" class="poll-options-list"></div>
         <button type="button" id="poll-add-option-btn" class="small-btn-link">+ Add option</button>
+        <label class="poll-setting"><input type="checkbox" id="poll-multi-input"> Let people pick more than one</label>
+        <label class="poll-setting">Voting ends
+          <select id="poll-ends-select">
+            <option value="0">When I end it</option>
+            <option value="300000">in 5 minutes</option>
+            <option value="3600000">in 1 hour</option>
+            <option value="86400000">in 1 day</option>
+            <option value="604800000">in 1 week</option>
+          </select>
+        </label>
         <button type="submit" class="primary">Post poll</button>
       </form>
     </div>

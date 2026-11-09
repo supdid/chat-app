@@ -3468,6 +3468,38 @@ function sanitizeStrokePoints(rawPoints) {
 // forEach with no per-item try/catch, that one bad poll permanently broke rendering of every
 // message *after* it in that room's history for every future joiner.
 const POLL_MAX_OPTIONS = 20;
+// Rebuilds a poll's JSON from only the fields we understand: multi (pick several), endsAt
+// (auto-close time, up to 31 days out). Anything else a client sends is dropped.
+const POLL_MAX_DURATION_MS = 31 * 24 * 60 * 60 * 1000;
+function normalizePollText(text) {
+  const parsed = JSON.parse(text);
+  const out = { question: parsed.question.trim().slice(0, 200), options: parsed.options.map((o) => o.trim().slice(0, 80)) };
+  if (parsed.multi === true) out.multi = true;
+  const endsAt = Number(parsed.endsAt);
+  if (Number.isFinite(endsAt) && endsAt > Date.now() && endsAt <= Date.now() + POLL_MAX_DURATION_MS) out.endsAt = Math.round(endsAt);
+  return JSON.stringify(out);
+}
+
+function pollIsOpen(poll) {
+  return !poll.closedAt && !(poll.endsAt && Date.now() >= poll.endsAt);
+}
+
+// Aggregate counts + only this viewer's own choice(s) — never other people's names.
+function pollStateFor(messageId, poll, forName) {
+  const optionCount = Array.isArray(poll.options) ? poll.options.length : 0;
+  if (poll.multi) {
+    const votes = db.getPollMultiVotes(messageId);
+    const counts = Array.from({ length: optionCount }, (_, i) => votes.filter((v) => v.optionIndex === i).length);
+    const voters = new Set(votes.map((v) => v.name)).size;
+    const myVotes = votes.filter((v) => v.name === forName).map((v) => v.optionIndex);
+    return { counts, myVote: null, myVotes, voters };
+  }
+  const votes = db.getPollVotes(messageId);
+  const counts = Array.from({ length: optionCount }, (_, i) => votes.filter((v) => v.optionIndex === i).length);
+  const mine = votes.find((v) => v.name === forName);
+  return { counts, myVote: mine ? mine.optionIndex : null, myVotes: mine ? [mine.optionIndex] : [], voters: votes.length };
+}
+
 function isValidPollText(text) {
   let parsed;
   try {
@@ -4191,6 +4223,7 @@ function roomUsers(code) {
     flair: db.accountFlair(c.accountId),
     cohost: !!(c.accountId && cohostIds.has(c.accountId)),
     host: isRoomHost(dbRoomForFlags, c),
+    away: !!c.profile.away,
   }));
 }
 
@@ -4231,13 +4264,19 @@ function markOwnForViewer(entries, ws) {
 function attachPollVotes(historyEntries, forName) {
   return historyEntries.map((e) => {
     if (e.mediaType !== 'poll') return e;
-    const allVotes = db.getPollVotes(e.id);
-    let optionCount = 0;
-    try { optionCount = JSON.parse(e.text).options.length; } catch {}
-    const counts = Array.from({ length: optionCount }, (_, i) => allVotes.filter((v) => v.optionIndex === i).length);
-    const mine = allVotes.find((v) => v.name === forName);
-    return { ...e, counts, myVote: mine ? mine.optionIndex : null };
+    let poll = {};
+    try { poll = JSON.parse(e.text); } catch {}
+    return { ...e, ...pollStateFor(e.id, poll, forName) };
   });
+}
+
+// The word filter used to skip polls entirely (their text is JSON) — so a filtered word could
+// still be posted as a poll question/option. Filters the human-readable parts only.
+function applyWordFilterToPoll(dbRoom, pollText) {
+  const poll = JSON.parse(pollText);
+  poll.question = applyWordFilter(dbRoom, poll.question);
+  poll.options = poll.options.map((o) => applyWordFilter(dbRoom, o));
+  return JSON.stringify(poll);
 }
 
 function setRoomActivity(code, name, game) {
@@ -8084,6 +8123,7 @@ wss.on('connection', (ws, req) => {
         isCohost: !!(ws.accountId && db.isRoomCohost(code, ws.accountId)),
         cohosts: db.getRoomCohosts(code).map((c) => c.name),
         welcome: dbRoom ? dbRoom.welcome_text || null : null,
+        hostsOnly: !!(dbRoom && dbRoom.hosts_only),
         announcement: dbRoom ? dbRoom.announcement : null,
         wallpaperUrl: dbRoom ? dbRoom.wallpaper_url : null,
         slowMode: dbRoom ? dbRoom.slow_mode || 0 : 0,
@@ -8491,6 +8531,52 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    if ((msg.type === 'schedule-message' || msg.type === 'list-scheduled' || msg.type === 'cancel-scheduled') && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      const acct = ws.accountId || null;
+      if (msg.type === 'schedule-message') {
+        const text = String(msg.text || '').slice(0, 2000).trim();
+        const sendAt = Math.round(Number(msg.sendAt));
+        const now = Date.now();
+        if (!text) return;
+        if (!Number.isFinite(sendAt) || sendAt < now + 30 * 1000 || sendAt > now + SCHEDULE_MAX_AHEAD_MS) {
+          send(ws, { type: 'error', message: 'Pick a time between 1 minute and 30 days from now' });
+          return;
+        }
+        if (db.listScheduledMessages(ws.room, acct, ws.profile.name).length >= SCHEDULE_MAX_PENDING) {
+          send(ws, { type: 'error', message: `You can have up to ${SCHEDULE_MAX_PENDING} scheduled messages in a room` });
+          return;
+        }
+        db.addScheduledMessage({ id: crypto.randomUUID(), roomCode: ws.room, name: ws.profile.name, accountId: acct, text, sendAt, createdAt: now });
+      } else if (msg.type === 'cancel-scheduled') {
+        db.deleteScheduledMessage(String(msg.id || ''), ws.room, acct, ws.profile.name);
+      }
+      send(ws, { type: 'scheduled-list', items: db.listScheduledMessages(ws.room, acct, ws.profile.name), action: msg.type });
+      return;
+    }
+
+    if (msg.type === 'set-hosts-only' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      const dbRoom = db.getRoom(ws.room);
+      if (!isRoomHost(dbRoom, ws)) return;
+      const on = !!msg.on;
+      db.setHostsOnly(ws.room, on);
+      broadcastRoom(ws.room, { type: 'hosts-only-updated', on, by: ws.profile.name });
+      return;
+    }
+
+    // Auto-away: the client says when you've gone idle / come back; shown as 🌙 in the online list.
+    if (msg.type === 'set-away' && ws.room) {
+      const away = !!msg.away;
+      if (!!ws.profile.away === away) return;
+      const now = Date.now();
+      if (ws.lastAwayChange && now - ws.lastAwayChange < 2000) return;
+      ws.lastAwayChange = now;
+      ws.profile.away = away;
+      broadcastRoom(ws.room, { type: 'presence', users: roomUsers(ws.room) });
+      return;
+    }
+
     if ((msg.type === 'add-cohost' || msg.type === 'remove-cohost') && ws.room) {
       if (isWsMsgRateLimited(ws)) return;
       const dbRoom = db.getRoom(ws.room);
@@ -8714,8 +8800,9 @@ wss.on('connection', (ws, req) => {
       const messageId = String(msg.messageId || '');
       const target = db.getMessage(messageId);
       if (!target || target.room_code !== ws.room || target.media_type !== 'poll' || target.deleted) return;
-      let options;
-      try { options = JSON.parse(target.text).options; } catch { return; }
+      let poll;
+      try { poll = JSON.parse(target.text); } catch { return; }
+      const options = poll.options;
       const optionIndex = Math.floor(+msg.optionIndex);
       // Number.isInteger rejects NaN explicitly — without it, a non-numeric optionIndex (e.g. an
       // object/array/string) makes both bounds comparisons below false (NaN comparisons always
@@ -8725,19 +8812,41 @@ wss.on('connection', (ws, req) => {
       if (!Array.isArray(options) || !Number.isInteger(optionIndex) || optionIndex < 0 || optionIndex >= options.length) return;
       const room = rooms.get(ws.room);
       if (!room) return;
-      db.setPollVote(messageId, ws.profile.name, optionIndex);
+      if (!pollIsOpen(poll)) {
+        send(ws, { type: 'error', message: 'This poll has ended' });
+        return;
+      }
+      if (poll.multi) db.togglePollMultiVote(messageId, ws.profile.name, optionIndex);
+      else db.setPollVote(messageId, ws.profile.name, optionIndex);
       // Found by the poll-creation-UI audit: this used to be a single broadcastRoom call carrying
       // the raw per-voter name/optionIndex list to every room member — see attachPollVotes' own
       // comment above for why that leaked every voter's identity to everyone despite the UI only
       // ever showing aggregate results. Sent per-connection instead so each recipient gets the
       // same safe aggregate counts plus ONLY their own vote, never anyone else's.
-      const allVotes = db.getPollVotes(messageId);
-      const counts = options.map((_, i) => allVotes.filter((v) => v.optionIndex === i).length);
       for (const client of room.clients) {
         if (client.readyState !== client.OPEN) continue;
-        const mine = allVotes.find((v) => v.name === client.profile.name);
-        send(client, { type: 'poll-voted', messageId, counts, myVote: mine ? mine.optionIndex : null });
+        send(client, { type: 'poll-voted', messageId, ...pollStateFor(messageId, poll, client.profile.name) });
       }
+      return;
+    }
+
+    // End a poll early — whoever posted it, or the host/co-hosts.
+    if (msg.type === 'close-poll' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      const messageId = String(msg.messageId || '');
+      const target = db.getMessage(messageId);
+      if (!target || target.room_code !== ws.room || target.media_type !== 'poll' || target.deleted) return;
+      if (!ownsMessage(target, ws) && !isRoomMod(db.getRoom(ws.room), ws)) return;
+      let poll;
+      try { poll = JSON.parse(target.text); } catch { return; }
+      if (poll.closedAt) return;
+      poll.closedAt = Date.now();
+      const text = JSON.stringify(poll);
+      db.setPollText(messageId, text);
+      const room = rooms.get(ws.room);
+      const entry = room && room.history.find((m) => m.id === messageId);
+      if (entry) entry.text = text;
+      broadcastRoom(ws.room, { type: 'poll-closed', messageId, text, by: ws.profile.name });
       return;
     }
 
@@ -8996,10 +9105,19 @@ wss.on('connection', (ws, req) => {
       if (!Number.isFinite(beforeAt)) return;
       const beforeId = typeof msg.beforeId === 'string' ? msg.beforeId.slice(0, 100) : null;
       const LOAD_OLDER_LIMIT = 50;
-      const raw = db.getMessagesBefore(ws.room, beforeAt, LOAD_OLDER_LIMIT, beforeId);
+      let raw = null;
+      let jumped = false;
+      if (typeof msg.untilId === 'string' && beforeId) {
+        raw = db.getMessagesBetween(ws.room, msg.untilId.slice(0, 100), beforeId, 2000);
+        jumped = !!raw;
+      }
+      if (!raw) raw = db.getMessagesBefore(ws.room, beforeAt, LOAD_OLDER_LIMIT, beforeId);
       const messages = markOwnForViewer(attachPollVotes(raw, ws.profile.name), ws);
       const reactions = db.getReactionsForMessages(raw.map((m) => m.id));
-      send(ws, { type: 'older-messages', messages, reactions, hasMore: raw.length === LOAD_OLDER_LIMIT, beforeId });
+      const hasMore = jumped
+        ? !!(raw.length && db.getMessagesBefore(ws.room, raw[0].at, 1, raw[0].id).length)
+        : raw.length === LOAD_OLDER_LIMIT;
+      send(ws, { type: 'older-messages', messages, reactions, hasMore, beforeId, jumpTo: jumped ? msg.untilId : null });
       return;
     }
 
@@ -9018,6 +9136,10 @@ wss.on('connection', (ws, req) => {
       // Slow mode: the host is exempt. Keyed by account (or name for guests) rather than the
       // connection, so reconnecting or a second tab doesn't reset the wait.
       const slowRoom = db.getRoom(ws.room);
+      if (slowRoom && slowRoom.hosts_only && !isRoomMod(slowRoom, ws)) {
+        send(ws, { type: 'error', message: 'Only the host and co-hosts can post in this room' });
+        return;
+      }
       const slowSeconds = slowRoom ? slowRoom.slow_mode || 0 : 0;
       if (slowSeconds > 0 && !isRoomMod(slowRoom, ws)) {
         if (!room.slowLast) room.slowLast = new Map();
@@ -9056,7 +9178,7 @@ wss.on('connection', (ws, req) => {
         : null);
       if (!text && !(mediaUrl && mediaType)) return;
       if (mediaType === 'poll' && !isValidPollText(text)) return;
-      const filteredText = mediaType === 'poll' ? text : applyWordFilter(slowRoom, text);
+      const filteredText = mediaType === 'poll' ? applyWordFilterToPoll(slowRoom, normalizePollText(text)) : applyWordFilter(slowRoom, text);
       // Claimed only after both rejections above — a raw WS client sending a real /uploads/
       // mediaUrl alongside an empty text and an invalid/missing mediaType used to get this file
       // claimed here and then the whole message silently dropped by the very next line, leaving a
@@ -9380,6 +9502,58 @@ function sweepDisappearingMessages() {
   for (const r of db.getRoomsWithDisappearing()) expireMessagesInRoom(r.code, r.disappear_after);
 }
 setInterval(sweepDisappearingMessages, Number(process.env.DISAPPEAR_SWEEP_MS) || 60 * 1000);
+
+const SCHEDULE_MAX_AHEAD_MS = 30 * 24 * 60 * 60 * 1000;
+const SCHEDULE_MAX_PENDING = 10;
+// Posts due "/later" messages as their author. Re-checks bans, mutes and announcement-only at
+// send time (things may have changed since it was scheduled).
+function sendDueScheduledMessages() {
+  for (const r of db.takeDueScheduledMessages(Date.now())) {
+    try {
+      const dbRoom = db.getRoom(r.room_code);
+      if (!dbRoom) continue;
+      if (db.isBannedFromRoom(r.room_code, r.account_id, r.name)) continue;
+      const room = rooms.get(r.room_code);
+      if (room && room.muted && room.muted.has(r.name)) continue;
+      if (r.account_id && db.isPersistentlyMuted(r.room_code, r.account_id)) continue;
+      if (dbRoom.hosts_only) {
+        const fake = { accountId: r.account_id, profile: { name: r.name } };
+        if (!isRoomMod(dbRoom, fake)) continue;
+      }
+      const cmd = resolveServerCommand(r.text);
+      const entry = {
+        type: 'message',
+        id: crypto.randomUUID(),
+        name: r.name,
+        sub: null,
+        text: applyWordFilter(dbRoom, cmd ? cmd.text : r.text),
+        mediaUrl: null,
+        mediaType: null,
+        replyPreview: null,
+        at: Date.now(),
+        kind: cmd ? cmd.kind : null,
+        scheduled: true,
+        flair: db.accountFlair(r.account_id),
+      };
+      db.insertMessage({ id: entry.id, roomCode: r.room_code, name: entry.name, text: entry.text, mediaUrl: null, mediaType: null, replyToId: null, at: entry.at, accountId: r.account_id || null, kind: entry.kind });
+      db.upsertRoom(r.room_code);
+      if (room) {
+        room.history.push(entry);
+        if (room.history.length > HISTORY_LIMIT) room.history.shift();
+        // Each viewer needs their own `own` flag, same as history.
+        for (const client of room.clients) {
+          const own = r.account_id ? client.accountId === r.account_id : client.profile && client.profile.name === r.name;
+          send(client, own ? { ...entry, own: true } : entry);
+        }
+      }
+      pushNewMessage(r.room_code, entry);
+      pushMentionNotifications(r.room_code, entry, r.account_id || null);
+    } catch (err) {
+      reportError('server', err, { where: 'sendDueScheduledMessages' });
+    }
+  }
+}
+setInterval(sendDueScheduledMessages, Number(process.env.SCHEDULE_INTERVAL_MS) || 15 * 1000);
 
 function sendDueReminders() {
   for (const r of db.takeDueReminders(Date.now())) {
