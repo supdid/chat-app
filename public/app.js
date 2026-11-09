@@ -2474,6 +2474,7 @@ function highlightMentionItem(index) {
 }
 
 function updateMentionDropdown() {
+  if (updateCommandSuggestions()) return;
   if (updateEmojiSuggestions()) return;
   const query = currentMentionQuery();
   let matches = query === null ? [] : lastRoomUsers.filter((u) => u.name.toLowerCase().startsWith(query.toLowerCase())).slice(0, 5);
@@ -6538,6 +6539,17 @@ messageInput.addEventListener('keydown', (e) => {
   } else if (e.key === 'Enter' || e.key === 'Tab') {
     e.preventDefault();
     const picked = items[mentionHighlightIndex];
+    if (picked && picked.dataset.command) {
+      // Enter on an exact, argument-free command (e.g. "/flip") sends it straight away.
+      if (e.key === 'Enter' && messageInput.value.trim() === picked.dataset.insert.trim() && !/\s\S/.test(picked.querySelector('code').textContent)) {
+        mentionDropdownEl.classList.add('hidden');
+        mentionHighlightIndex = -1;
+        messageForm.requestSubmit();
+        return;
+      }
+      insertCommandSuggestion(picked.dataset.insert);
+      return;
+    }
     if (picked && picked.dataset.insert) { insertEmojiSuggestion(picked.dataset.insert); return; }
     const label = picked && picked.querySelector('span');
     if (label) insertMention(label.textContent);
@@ -9162,6 +9174,7 @@ const WHATS_NEW = [
   ['🛡️', 'Co-hosts', 'Hosts can tap ⭐ next to someone to make them a co-host who helps moderate.'],
   ['📊', 'Better polls', 'Pick-several polls, polls that end on a timer, and /wyr for a random "Would you rather".'],
   ['🎲', 'Fun commands', '/roll, /flip, /8ball, /pick pizza or tacos, /countdown 5m, /me waves, /later 1h text.'],
+  ['⌨️', 'Command list', 'Type / in the message box to see every command.'],
   ['🎉', 'Screen effects', '/confetti Happy birthday! — also /hearts, /snow and /stars rain on everyone’s screen.'],
   ['⬆️', 'Scroll back forever', 'Scroll up to load older messages. Search, pins and replies jump to any message.'],
   ['🖼️', 'Photos', 'Tap a photo to zoom. Paste or drag photos in, add a caption, send up to 10 at once.'],
@@ -9492,4 +9505,60 @@ function playScreenEffect(effect) {
   }
   document.body.appendChild(layer);
   setTimeout(() => { layer.remove(); effectRunning = false; }, 5200);
+}
+
+
+// --- "/" command suggestions ---
+const SLASH_COMMANDS = [
+  ['/roll', '2d6', 'Roll dice (fair — rolled by Valk)'],
+  ['/flip', '', 'Flip a coin'],
+  ['/8ball', 'will it snow?', 'Ask the magic 8-ball'],
+  ['/pick', 'pizza, tacos or sushi', 'Let Valk choose'],
+  ['/me', 'waves', 'Say an action'],
+  ['/countdown', '5m Lunch!', 'Live timer for everyone'],
+  ['/confetti', 'Happy birthday!', 'Confetti on everyone’s screen'],
+  ['/hearts', '', 'Hearts on everyone’s screen'],
+  ['/snow', '', 'Snow on everyone’s screen'],
+  ['/stars', '', 'Stars on everyone’s screen'],
+  ['/wyr', '', 'Random "Would you rather…" poll'],
+  ['/play', 'typerace', 'Invite the room to a game'],
+  ['/later', '30m text', 'Send a message later'],
+  ['/scheduled', '', 'See or cancel scheduled messages'],
+  ['/remind', '10m feed the dog', 'Remind yourself'],
+  ['/reminders', '', 'List your reminders'],
+  ['/shrug', '', '¯\\_(ツ)_/¯'],
+];
+function updateCommandSuggestions() {
+  const v = messageInput.value;
+  const m = v.match(/^\/([a-z0-9]*)$/i);
+  if (!m || messageInput.selectionStart !== v.length) return false;
+  const q = m[1].toLowerCase();
+  const matches = SLASH_COMMANDS.filter(([c]) => c.slice(1).startsWith(q)).slice(0, 20);
+  if (!matches.length) return false;
+  mentionDropdownEl.innerHTML = '';
+  for (const [cmd, example, desc] of matches) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'mention-dropdown-item command-suggest-item';
+    item.dataset.insert = `${cmd} `;
+    item.dataset.command = '1';
+    const c = document.createElement('code');
+    c.textContent = example ? `${cmd} ${example}` : cmd;
+    const d = document.createElement('span');
+    d.textContent = desc;
+    item.append(c, d);
+    item.addEventListener('mousedown', (e) => { e.preventDefault(); insertCommandSuggestion(item.dataset.insert); });
+    mentionDropdownEl.appendChild(item);
+  }
+  mentionDropdownEl.classList.remove('hidden');
+  highlightMentionItem(0);
+  return true;
+}
+function insertCommandSuggestion(text) {
+  messageInput.value = text;
+  mentionDropdownEl.classList.add('hidden');
+  mentionHighlightIndex = -1;
+  messageInput.setSelectionRange(text.length, text.length);
+  messageInput.focus();
+  autoGrowComposer();
 }

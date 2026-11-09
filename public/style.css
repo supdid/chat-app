@@ -3080,3 +3080,10 @@ button:focus-visible, a:focus-visible, [role="button"]:focus-visible, select:foc
 .fx-piece { position: absolute; top: -40px; animation-name: fx-fall; animation-timing-function: linear; animation-fill-mode: forwards; will-change: transform; }
 @keyframes fx-fall { to { transform: translate(var(--drift), 110vh) rotate(var(--spin)); } }
 .effect-bubble { border-left: 3px solid #ff6bd6; }
+
+.command-suggest-item { display: flex; flex-direction: column; align-items: flex-start; gap: 0.1rem; }
+.command-suggest-item code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85rem; color: #3b9dff; }
+.command-suggest-item span { font-size: 0.75rem; color: var(--text-subtle); }
+.mention-dropdown { scrollbar-width: thin; scrollbar-color: rgba(127, 140, 155, 0.45) transparent; }
+.mention-dropdown::-webkit-scrollbar { width: 8px; }
+.mention-dropdown::-webkit-scrollbar-thumb { background: rgba(127, 140, 155, 0.45); border-radius: 4px; }
