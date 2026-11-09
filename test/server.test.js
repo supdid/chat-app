@@ -8363,3 +8363,23 @@ describe('public polls (2026-11-09)', () => {
     a.close(); b.close();
   });
 });
+
+describe('room icon (2026-11-09)', () => {
+  test('host sets a single emoji icon; letters are rejected; joiners get it', async () => {
+    const { ws: host, code } = await joinRoom('IconHost');
+    const err = waitFor(host, (m) => m.type === 'error' && /single emoji/.test(m.message));
+    send(host, { type: 'set-room-icon', icon: 'abc' });
+    await err;
+    for (const icon of ['🎮', '🇺🇸', '👍🏽', '👨‍👩‍👧']) {
+      send(host, { type: 'set-room-icon', icon });
+      assert.equal((await waitFor(host, (m) => m.type === 'room-icon-updated')).icon, icon);
+      await sleep(1100); // flood gate
+    }
+    const c = await connectWs();
+    send(c, { type: 'join-server', username: 'IconJoiner' });
+    await waitFor(c, (m) => m.type === 'joined-server');
+    send(c, { type: 'join-room', code });
+    assert.equal((await waitFor(c, (m) => m.type === 'joined-room')).icon, '👨‍👩‍👧');
+    host.close(); c.close();
+  });
+});

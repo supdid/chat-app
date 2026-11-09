@@ -8513,6 +8513,7 @@ wss.on('connection', (ws, req) => {
         welcome: dbRoom ? dbRoom.welcome_text || null : null,
         hostsOnly: !!(dbRoom && dbRoom.hosts_only),
         accent: dbRoom && ROOM_ACCENTS.includes(dbRoom.accent) ? dbRoom.accent : null,
+        icon: dbRoom ? dbRoom.icon || null : null,
         notifyPref: (() => {
           const p = ws.accountId ? roomNotifyPrefs.get(`acct:${ws.accountId}|${code}`) : null;
           return p && (!p.until || p.until > Date.now()) ? p : null;
@@ -9023,6 +9024,19 @@ wss.on('connection', (ws, req) => {
         .slice(0, 40)
         .map((m) => ({ ...m, text: String(m.text).slice(0, 300) }));
       send(ws, { type: 'mentions', mentions: rows });
+      return;
+    }
+
+    // Room icon: one emoji (a few code points for flags/skin tones/ZWJ sequences), no letters.
+    if (msg.type === 'set-room-icon' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      const dbRoom = db.getRoom(ws.room);
+      if (!isRoomHost(dbRoom, ws)) return;
+      const raw = String(msg.icon || '').trim();
+      const icon = raw && [...raw].length <= 8 && /\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(raw) && !/[\p{L}\p{N}<>]/u.test(raw.replace(/[\u{1F1E6}-\u{1F1FF}]/gu, '')) ? raw : null;
+      if (raw && !icon) { send(ws, { type: 'error', message: 'Pick a single emoji for the room icon' }); return; }
+      db.setRoomIcon(ws.room, icon);
+      broadcastRoom(ws.room, { type: 'room-icon-updated', icon });
       return;
     }
 

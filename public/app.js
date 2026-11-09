@@ -334,6 +334,7 @@ function applyModVisibility() {
   cohostHint.classList.toggle('hidden', !isHost);
   document.getElementById('hosts-only-row').classList.toggle('hidden', !isHost);
   document.getElementById('accent-row').classList.toggle('hidden', !isHost);
+  document.getElementById('room-icon-form').classList.toggle('hidden', !isHost);
   updateFavoriteButton();
   updateComposerLock();
 }
@@ -1078,6 +1079,8 @@ function handleServerMessage(data) {
       roomWelcomeText = data.welcome || null;
       roomHostsOnly = !!data.hostsOnly;
       applyRoomAccent(data.accent || null);
+      currentRoomIcon = data.icon || null;
+      document.getElementById('room-icon-input').value = currentRoomIcon || '';
       // Each room keeps its own unsent draft (survives switching rooms and reloading).
       saveDraftNow(); // flush the previous room's draft first
       draftRoomCode = data.code;
@@ -1224,7 +1227,7 @@ function handleServerMessage(data) {
       resetOlderMessages(data.messages);
       if (data.messages.length) sendReadReceipt(data.messages[data.messages.length - 1].id);
       if (pendingDisappearNotice) renderSystem({ text: `⏳ Disappearing messages are on — messages here are deleted after ${DISAPPEAR_LABELS[pendingDisappearNotice] || 'a while'}` });
-      roomCodeChip.textContent = currentRoomName ? `${currentRoomName} (${data.code})` : data.code;
+      renderRoomChip();
       menuRoomCode.textContent = data.code;
       renameRoomInput.value = currentRoomName || '';
       updateGameLinks();
@@ -1347,7 +1350,7 @@ function handleServerMessage(data) {
 
     case 'room-renamed':
       currentRoomName = data.name || null;
-      roomCodeChip.textContent = currentRoomName ? `${currentRoomName} (${currentRoomCode})` : currentRoomCode;
+      renderRoomChip();
       renameRoomInput.value = currentRoomName || '';
       saveRecentRoom(currentRoomCode, currentRoomName);
       break;
@@ -1637,6 +1640,13 @@ function handleServerMessage(data) {
     case 'room-emojis-updated':
       setRoomEmojis(data.emojis || []);
       if (data.added) showAppToast(`😀 New room emoji :${data.added}: — find it in the 🙂 picker`);
+      break;
+
+    case 'room-icon-updated':
+      currentRoomIcon = data.icon || null;
+      document.getElementById('room-icon-input').value = currentRoomIcon || '';
+      renderRoomChip();
+      if (currentRoomCode) saveRecentRoom(currentRoomCode, currentRoomName);
       break;
 
     case 'accent-updated':
@@ -3542,7 +3552,7 @@ function removeRecentRoom(code) {
 
 function saveRecentRoom(code, name) {
   const list = getRecentRooms().filter((r) => r.code !== code);
-  list.unshift({ code, name: name || null, lastJoined: Date.now() });
+  list.unshift({ code, name: name || null, icon: code === currentRoomCode ? currentRoomIcon || null : null, lastJoined: Date.now() });
   // A throw here previously skipped the account-sync fetch below too, not just local persistence.
   // Favorites never fall off the end of the recent list.
   const favs = getFavoriteRooms();
@@ -3569,7 +3579,7 @@ function renderRecentRooms() {
     const chip = document.createElement('button');
     chip.type = 'button';
     chip.className = 'recent-room-chip';
-    chip.textContent = (favs.includes(r.code) ? '⭐ ' : '') + (r.name ? `${r.name} (${r.code})` : r.code);
+    chip.textContent = (favs.includes(r.code) ? '⭐ ' : '') + (r.icon ? `${r.icon} ` : '') + (r.name ? `${r.name} (${r.code})` : r.code);
     chip.addEventListener('click', () => {
       roomErrorEl.classList.add('hidden');
       pendingJoinPin = '';
@@ -9670,3 +9680,16 @@ function downloadEventIcs(ev) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
+
+
+// --- Room icon ---
+let currentRoomIcon = null;
+function renderRoomChip() {
+  if (!currentRoomCode) return;
+  const label = currentRoomName ? `${currentRoomName} (${currentRoomCode})` : currentRoomCode;
+  roomCodeChip.textContent = currentRoomIcon ? `${currentRoomIcon} ${label}` : label;
+}
+document.getElementById('room-icon-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'set-room-icon', icon: document.getElementById('room-icon-input').value.trim() }));
+});
