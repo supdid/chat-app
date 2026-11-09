@@ -7174,8 +7174,9 @@ dmForm.addEventListener('submit', (e) => {
 // this specific recipient's own myVote — this map mirrors that shape 1:1.
 const pollVotesByMessage = new Map(); // messageId -> { counts: number[], myVote: number|null }
 
+const POLL_UI_MAX_OPTIONS = 10;
 function addPollOptionRow(value) {
-  if (pollOptionsListEl.children.length >= 6) return;
+  if (pollOptionsListEl.children.length >= POLL_UI_MAX_OPTIONS) return;
   const row = document.createElement('div');
   row.className = 'poll-option-row';
   const input = document.createElement('input');
@@ -7188,9 +7189,11 @@ function addPollOptionRow(value) {
   removeBtn.textContent = '✕';
   removeBtn.addEventListener('click', () => {
     if (pollOptionsListEl.children.length > 2) row.remove();
+    pollAddOptionBtn.classList.toggle('hidden', pollOptionsListEl.children.length >= POLL_UI_MAX_OPTIONS);
   });
   row.append(input, removeBtn);
   pollOptionsListEl.appendChild(row);
+  pollAddOptionBtn.classList.toggle('hidden', pollOptionsListEl.children.length >= POLL_UI_MAX_OPTIONS);
 }
 
 pollBtn.addEventListener('click', () => {

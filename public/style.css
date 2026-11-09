@@ -3090,7 +3090,7 @@ button:focus-visible, a:focus-visible, [role="button"]:focus-visible, select:foc
 
 .recent-online { margin-left: 0.4rem; font-size: 0.72rem; color: var(--text-subtle); }
 
-.spoiler-media-wrap { position: relative; display: inline-block; border-radius: 8px; overflow: hidden; cursor: pointer; max-width: 100%; }
+.spoiler-media-wrap { position: relative; display: block; width: fit-content; border-radius: 8px; overflow: hidden; cursor: pointer; max-width: 100%; }
 .spoiler-media-wrap .media { filter: blur(28px) brightness(0.7); transform: scale(1.05); transition: filter 0.25s; pointer-events: none; }
 .spoiler-media-wrap.revealed .media { filter: none; transform: none; pointer-events: auto; }
 .spoiler-media-wrap.revealed { cursor: default; }
