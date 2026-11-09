@@ -2243,6 +2243,28 @@ function renderMessage(data, opts = {}) {
       media.alt = 'shared image';
     }
     media.className = 'media' + extraClass;
+    // A caption wrapped in ||spoiler|| also hides the photo/video until it's tapped.
+    if (data.text && /\|\|[\s\S]+?\|\|/.test(data.text) && data.mediaType !== 'audio') {
+      const veil = document.createElement('div');
+      veil.className = 'spoiler-media-wrap';
+      veil.tabIndex = 0;
+      veil.setAttribute('role', 'button');
+      veil.setAttribute('aria-label', 'Spoiler photo — tap to reveal');
+      const label = document.createElement('span');
+      label.className = 'spoiler-media-label';
+      label.textContent = '🙈 Spoiler — tap to see';
+      const reveal = (e) => {
+        if (veil.classList.contains('revealed')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        veil.classList.add('revealed');
+        veil.removeAttribute('role');
+        label.remove();
+      };
+      veil.addEventListener('click', reveal, true);
+      veil.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') reveal(e); });
+      queueMicrotask(() => { if (media.parentNode) { media.replaceWith(veil); veil.append(media, label); } });
+    }
     // Found by the room-chat client-side correctness audit: a 404'd/expired upload (deleted file,
     // orphan-sweep reclaim, etc.) had no fallback at all — just the browser's bare default broken-
     // image glyph, or a blank/inert player with zero explanation. One shared handler for all three
@@ -4790,6 +4812,14 @@ function renderEventsList() {
     rsvpBtn.textContent = amGoing(ev) ? 'Going ✓ (tap to cancel)' : "I'm going";
     rsvpBtn.addEventListener('click', () => rsvpEvent(ev, !amGoing(ev)));
     actions.appendChild(rsvpBtn);
+    if (ev.startsAt > Date.now()) {
+      const cal = document.createElement('button');
+      cal.type = 'button';
+      cal.className = 'small-btn';
+      cal.textContent = '📅 Add to calendar';
+      cal.addEventListener('click', () => downloadEventIcs(ev));
+      actions.appendChild(cal);
+    }
     if (isMod() || (myProfile && ev.createdBy === myProfile.name)) {
       const del = document.createElement('button');
       del.type = 'button';
@@ -9605,3 +9635,25 @@ favRoomBtn.addEventListener('click', () => {
   updateFavoriteButton();
   showAppToast(isFav ? 'Removed from favorites' : '⭐ Added to favorites — it’ll stay at the top of your rooms');
 });
+
+
+// "📅 Add to calendar": a one-hour .ics event with a link back to the room.
+function downloadEventIcs(ev) {
+  const fmt = (t) => new Date(t).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  const esc = (s) => String(s || '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
+  const link = `${location.origin}/?room=${encodeURIComponent(currentRoomCode)}`;
+  const ics = [
+    'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Valk//Room events//EN', 'BEGIN:VEVENT',
+    `UID:${ev.id}@valk.chat`, `DTSTAMP:${fmt(Date.now())}`, `DTSTART:${fmt(ev.startsAt)}`, `DTEND:${fmt(ev.startsAt + 60 * 60 * 1000)}`,
+    `SUMMARY:${esc(ev.title)}`, `DESCRIPTION:${esc(`${ev.description ? ev.description + '\n\n' : ''}Join on Valk: ${link}`)}`, `URL:${link}`,
+    'BEGIN:VALARM', 'TRIGGER:-PT15M', 'ACTION:DISPLAY', `DESCRIPTION:${esc(ev.title)}`, 'END:VALARM',
+    'END:VEVENT', 'END:VCALENDAR',
+  ].join('\r\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([ics], { type: 'text/calendar' }));
+  a.download = `${(ev.title || 'event').replace(/[^\w\- ]+/g, '').slice(0, 40) || 'event'}.ics`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
