@@ -8405,3 +8405,23 @@ describe('recently here (2026-11-09)', () => {
     a.close();
   });
 });
+
+describe('new badges (2026-11-09)', () => {
+  test('Sticker Artist badge appears after making a sticker', async () => {
+    const acct = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'BadgeArtist', password: 'pass1234', email: 'badgeartist@test.com' }),
+    }).then((r) => r.json());
+    const { ws: host, code } = await joinRoom('BadgeHost');
+    const me = await joinAsAccount('BadgeArtist', acct.token, code);
+    const form = new FormData();
+    form.append('file', new Blob([Buffer.from('RIFF0000WEBPVP8 ')], { type: 'image/webp' }), 's.webp');
+    const up = await fetch(`${BASE_URL}/upload`, { method: 'POST', body: form }).then((r) => r.json());
+    send(me, { type: 'add-my-sticker', url: up.url });
+    await waitFor(me, (m) => m.type === 'my-stickers' && m.stickers.length === 1);
+    send(host, { type: 'get-profile-card', name: 'BadgeArtist' });
+    const card = await waitFor(host, (m) => m.type === 'profile-card');
+    assert.ok(card.account.badges.some((b) => b.id === 'sticker_artist'));
+    host.close(); me.close();
+  });
+});

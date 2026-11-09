@@ -897,6 +897,12 @@ const BADGES = [
   { id: 'creator', emoji: '🎬', label: 'Creator', desc: 'Uploaded a Scorpture video' },
   { id: 'regular', emoji: '🗓️', label: 'Regular', desc: 'Account is 30+ days old' },
   { id: 'supporter', emoji: '⭐', label: 'Supporter', desc: 'Has Valk Premium' },
+  { id: 'typist', emoji: '⌨️', label: 'Type Racer', desc: 'Finished a Type Race' },
+  { id: 'speedster', emoji: '⚡', label: 'Speedster', desc: 'Typed 60+ WPM in Type Race' },
+  { id: 'cohost', emoji: '🛡️', label: 'Co-host', desc: 'Trusted to help run a room' },
+  { id: 'sticker_artist', emoji: '🎨', label: 'Sticker Artist', desc: 'Made a sticker' },
+  { id: 'pollster', emoji: '📊', label: 'Pollster', desc: 'Started 5 polls' },
+  { id: 'on_fire', emoji: '🔥', label: 'On Fire', desc: 'Chatted 7 days in a row' },
 ];
 
 function getAccountBadges(accountId) {
@@ -922,6 +928,13 @@ function getAccountBadges(accountId) {
   if (one('SELECT 1 AS x FROM scorpture_videos WHERE uploader_id = ? LIMIT 1', accountId)) earned.add('creator');
   if (account.created_at && Date.now() - account.created_at >= 30 * 24 * 60 * 60 * 1000) earned.add('regular');
   if (getActivePremium(accountId)) earned.add('supporter');
+  const bestWpm = one("SELECT MAX(score) AS s FROM leaderboard WHERE owner_account_id = ? AND game = 'typerace'", accountId);
+  if (bestWpm && bestWpm.s != null) earned.add('typist');
+  if (bestWpm && bestWpm.s >= 60) earned.add('speedster');
+  if (one('SELECT 1 AS x FROM room_cohosts WHERE account_id = ? LIMIT 1', accountId)) earned.add('cohost');
+  if (one('SELECT 1 AS x FROM account_stickers WHERE account_id = ? LIMIT 1', accountId)) earned.add('sticker_artist');
+  if (count("SELECT COUNT(*) AS n FROM messages WHERE account_id = ? AND media_type = 'poll'", accountId) >= 5) earned.add('pollster');
+  if (getChatStreak(accountId) >= 7) earned.add('on_fire');
   return BADGES.filter((b) => earned.has(b.id));
 }
 
