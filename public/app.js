@@ -703,6 +703,24 @@ let screenStream = null; // local outgoing screen-share stream, null when not sh
 let screenShareStarting = false; // guards against a second getDisplayMedia() call racing the first while its OS picker is still up
 const voicePeers = new Map(); // sub -> { name, pc, audioEl, stopDetector }
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
+// A TURN relay credential (from the server's valk-turn, when it's running) lets calls connect
+// even when both people are behind strict NATs (phones on mobile data, school/work Wi-Fi) where
+// a direct connection is impossible. Cached ~50 minutes (credentials last an hour).
+let turnIceServer = null;
+let turnFetchedAt = 0;
+let turnWaiters = [];
+function callIceServers() {
+  return turnIceServer ? [...ICE_SERVERS, turnIceServer] : ICE_SERVERS;
+}
+function prefetchTurn(timeoutMs = 2000) {
+  if (turnIceServer && Date.now() - turnFetchedAt < 50 * 60 * 1000) return Promise.resolve();
+  if (!ws || ws.readyState !== WebSocket.OPEN || !currentRoomCode) return Promise.resolve();
+  return new Promise((resolve) => {
+    turnWaiters.push(resolve);
+    if (turnWaiters.length === 1) ws.send(JSON.stringify({ type: 'get-turn' }));
+    setTimeout(resolve, timeoutMs);
+  });
+}
 let pttMode = false;
 let pttActive = false; // currently holding the push-to-talk button/key
 let handRaised = false;
@@ -1666,6 +1684,16 @@ function handleServerMessage(data) {
       if (data.action === 'schedule-message') {
         showAppToast(`⏰ Scheduled! Type /scheduled to see or cancel (${(data.items || []).length} waiting)`);
       }
+      break;
+
+    case 'turn-credential':
+      if (data.iceServer) { turnIceServer = data.iceServer; turnFetchedAt = Date.now(); }
+      turnWaiters.forEach((r) => r());
+      turnWaiters = [];
+      break;
+
+    case 'account-deleted':
+      signOutAccount('Your account was deleted');
       break;
 
     case 'edit-history':
@@ -3936,6 +3964,7 @@ privateCallContextBtn.addEventListener('click', () => {
   privateCallPeerName = target;
   closeMenu();
   showOutgoingCallPopup(target);
+  prefetchTurn();
   ws.send(JSON.stringify({ type: 'private-call-invite', toName: target }));
 });
 
@@ -3980,6 +4009,7 @@ function hideCallPopup() {
 privateCallAcceptBtn.addEventListener('click', () => {
   if (!privateCallId || !ws || ws.readyState !== WebSocket.OPEN) return;
   hideCallPopup();
+  prefetchTurn();
   ws.send(JSON.stringify({ type: 'private-call-accept' }));
 });
 
@@ -4096,7 +4126,7 @@ privateCallMicRetryBtn.addEventListener('click', async () => {
 });
 
 function createPrivatePeerConnection() {
-  const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  const pc = new RTCPeerConnection({ iceServers: callIceServers() });
   if (privateCallLocalStream) {
     privateCallLocalStream.getTracks().forEach((track) => pc.addTrack(track, privateCallLocalStream));
   } else {
@@ -5050,6 +5080,7 @@ async function startVoiceCall() {
   voiceCallBanner.classList.add('hidden');
   voiceErrorEl.classList.add('hidden');
   micRetryBtn.classList.add('hidden');
+  const turnReady = prefetchTurn(); // runs alongside the mic prompt
 
   // A microphone is optional — if it's missing, blocked, or unsupported, we still
   // join so the person can listen; we just send no audio track of our own.
@@ -5075,6 +5106,7 @@ async function startVoiceCall() {
   // reset to false in that case, e.g. a WS drop-and-reconnect happening mid-prompt) — resurrecting
   // the call here would leave voiceActive/the Hang Up button permanently out of sync with a live
   // mic capture and no way to stop it. Abandon this stale attempt instead.
+  await turnReady;
   if (myCallGeneration !== voiceCallGeneration) {
     if (localStream) localStream.getTracks().forEach((t) => t.stop());
     localStream = null;
@@ -5756,7 +5788,7 @@ function clearTileSharing(sub) {
 }
 
 function makePeerConnection(sub) {
-  const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  const pc = new RTCPeerConnection({ iceServers: callIceServers() });
   if (localStream) {
     localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
   } else {
@@ -7887,3 +7919,38 @@ function renderScheduledList(items) {
     scheduledListEl.appendChild(li);
   }
 }
+
+
+// --- Delete my account ---
+const accountDeleteForm = document.getElementById('account-delete-form');
+const accountDeleteError = document.getElementById('account-delete-error');
+document.getElementById('account-delete-toggle-btn').addEventListener('click', () => {
+  accountDeleteForm.classList.toggle('hidden');
+  accountDeleteError.classList.add('hidden');
+});
+accountDeleteForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  accountDeleteError.classList.add('hidden');
+  const password = document.getElementById('account-delete-password').value;
+  const confirmText = document.getElementById('account-delete-confirm').value.trim();
+  const fail = (msg) => { accountDeleteError.textContent = msg; accountDeleteError.classList.remove('hidden'); };
+  if (confirmText !== 'DELETE') return fail('Type DELETE (in capitals) to confirm');
+  if (!accountToken) return fail('You are not signed in');
+  try {
+    const res = await fetch('/auth/delete-account', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accountToken}` },
+      body: JSON.stringify({ password, confirmUsername: accountUsername }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return fail(data.error || 'Something went wrong');
+    accountDeleteForm.classList.add('hidden');
+    document.getElementById('account-delete-password').value = '';
+    document.getElementById('account-delete-confirm').value = '';
+    // The server already ended every session; this just clears it from this browser.
+    accountToken = null;
+    signOutAccount('🗑️ Your account has been deleted');
+  } catch {
+    fail('Could not reach the server — try again');
+  }
+});

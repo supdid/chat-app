@@ -1054,6 +1054,78 @@ function getMessage(id) {
   return db.prepare('SELECT * FROM messages WHERE id = ?').get(id) || null;
 }
 
+// ---- Delete my account ----
+// Removes the account and everything personal tied to it, in one transaction. Room messages
+// stay (other people's conversations would have holes otherwise) but lose their account link,
+// so they're just text under the old display name. Rooms they hosted get a new host (the next
+// person to join — same as a room that never had one). Returns uploaded file URLs to delete.
+const deleteAccountCascade = db.transaction((accountId) => {
+  const acct = db.prepare('SELECT * FROM accounts WHERE id = ?').get(accountId);
+  if (!acct) return null;
+  const files = [];
+  const pushUrl = (u) => { if (typeof u === 'string' && u.startsWith('/uploads/')) files.push(u); };
+  pushUrl(acct.scorpture_banner_url);
+  pushUrl(acct.scorpture_avatar_url);
+  const videos = db.prepare('SELECT id, video_url, thumbnail_url FROM scorpture_videos WHERE uploader_id = ?').all(accountId);
+  for (const v of videos) {
+    pushUrl(v.video_url);
+    pushUrl(v.thumbnail_url);
+    db.prepare('DELETE FROM scorpture_comments WHERE video_id = ?').run(v.id);
+    db.prepare('DELETE FROM scorpture_likes WHERE video_id = ?').run(v.id);
+    db.prepare('DELETE FROM scorpture_reports WHERE video_id = ?').run(v.id);
+  }
+  db.prepare('DELETE FROM scorpture_videos WHERE uploader_id = ?').run(accountId);
+  db.prepare('DELETE FROM scorpture_comments WHERE account_id = ?').run(accountId);
+  db.prepare('DELETE FROM scorpture_likes WHERE account_id = ?').run(accountId);
+  db.prepare('DELETE FROM scorpture_subscriptions WHERE subscriber_id = ? OR channel_id = ?').run(accountId, accountId);
+  db.prepare('UPDATE scorpture_reports SET reporter_account_id = NULL WHERE reporter_account_id = ?').run(accountId);
+
+  for (const c of db.prepare('SELECT id, banner_url, icon FROM communities WHERE owner_id = ?').all(accountId)) {
+    pushUrl(c.banner_url);
+    pushUrl(c.icon);
+    for (const p of db.prepare('SELECT id, image_url FROM community_posts WHERE community_id = ?').all(c.id)) {
+      pushUrl(p.image_url);
+      db.prepare('DELETE FROM community_post_likes WHERE post_id = ?').run(p.id);
+    }
+    db.prepare('DELETE FROM community_posts WHERE community_id = ?').run(c.id);
+    db.prepare('DELETE FROM community_members WHERE community_id = ?').run(c.id);
+    db.prepare('DELETE FROM communities WHERE id = ?').run(c.id);
+  }
+  for (const p of db.prepare('SELECT id, image_url FROM community_posts WHERE author_id = ?').all(accountId)) {
+    pushUrl(p.image_url);
+    db.prepare('DELETE FROM community_post_likes WHERE post_id = ?').run(p.id);
+  }
+  db.prepare('DELETE FROM community_posts WHERE author_id = ?').run(accountId);
+  db.prepare('DELETE FROM community_members WHERE account_id = ?').run(accountId);
+  db.prepare('DELETE FROM community_post_likes WHERE account_id = ?').run(accountId);
+
+  db.prepare('DELETE FROM valkmail WHERE from_id = ? OR to_id = ?').run(accountId, accountId);
+  db.prepare('DELETE FROM direct_messages WHERE from_account_id = ? OR to_account_id = ?').run(accountId, accountId);
+  db.prepare('DELETE FROM direct_message_reads WHERE account_id = ? OR other_account_id = ?').run(accountId, accountId);
+  db.prepare('DELETE FROM dms WHERE from_account_id = ? OR to_account_id = ?').run(accountId, accountId);
+  db.prepare('DELETE FROM group_dm_messages WHERE from_account_id = ?').run(accountId);
+  db.prepare('DELETE FROM group_dm_members WHERE account_id = ?').run(accountId);
+  db.prepare('DELETE FROM group_dm_reads WHERE account_id = ?').run(accountId);
+  db.prepare('DELETE FROM friendships WHERE requester_id = ? OR addressee_id = ?').run(accountId, accountId);
+
+  db.prepare('DELETE FROM sessions WHERE account_id = ?').run(accountId);
+  db.prepare('DELETE FROM account_recent_rooms WHERE account_id = ?').run(accountId);
+  db.prepare('DELETE FROM account_saved_messages WHERE account_id = ?').run(accountId);
+  db.prepare('DELETE FROM push_subscriptions WHERE account_id = ?').run(accountId);
+  db.prepare('DELETE FROM reminders WHERE account_id = ?').run(accountId);
+  db.prepare('DELETE FROM dnd_settings WHERE key = ?').run(`acct:${accountId}`);
+  db.prepare('DELETE FROM room_cohosts WHERE account_id = ?').run(accountId);
+  db.prepare('DELETE FROM scheduled_messages WHERE account_id = ?').run(accountId);
+  db.prepare('DELETE FROM room_event_rsvps WHERE account_id = ?').run(accountId);
+  db.prepare('UPDATE room_events SET created_by_account = NULL WHERE created_by_account = ?').run(accountId);
+  db.prepare('UPDATE reports SET reporter_account_id = NULL WHERE reporter_account_id = ?').run(accountId);
+  db.prepare('UPDATE leaderboard SET owner_account_id = NULL WHERE owner_account_id = ?').run(accountId);
+  db.prepare('UPDATE messages SET account_id = NULL WHERE account_id = ?').run(accountId);
+  db.prepare('UPDATE rooms SET host_account_id = NULL, host_name = NULL WHERE host_account_id = ?').run(accountId);
+  db.prepare('DELETE FROM accounts WHERE id = ?').run(accountId);
+  return { username: acct.username, files };
+});
+
 // ---- Co-hosts ----
 function getRoomCohosts(code) {
   return db.prepare('SELECT account_id AS accountId, name FROM room_cohosts WHERE room_code = ? ORDER BY at ASC').all(code);
@@ -2781,6 +2853,7 @@ function getAccountByStreamKey(key) {
 }
 
 module.exports = {
+  deleteAccountCascade,
   addScheduledMessage,
   listScheduledMessages,
   deleteScheduledMessage,

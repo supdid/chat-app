@@ -2873,3 +2873,7 @@ button.poll-option { display: block; width: 100%; text-align: left; font: inheri
 .scheduled-list .eh-when { grid-column: 1; font-size: 0.75rem; color: var(--text-subtle); }
 .scheduled-list .scheduled-text { grid-column: 1; white-space: pre-wrap; word-break: break-word; }
 .scheduled-list button { grid-column: 2; grid-row: 1 / span 2; }
+
+.danger-link { color: #ff7a7a !important; }
+.account-delete-form { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.5rem; padding: 0.75rem; border: 1px solid rgba(255, 92, 92, 0.5); border-radius: 10px; font-size: 0.85rem; text-align: left; }
+.account-delete-form p { margin: 0; }

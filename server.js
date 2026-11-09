@@ -394,6 +394,11 @@ app.post('/errors/report', (req, res) => {
   const body = req.body || {};
   const message = String(body.message || '').slice(0, 2000);
   if (!message) return res.status(400).json({ error: 'Missing message' });
+  // Search-engine crawlers render the page with features switched off (e.g. Googlebot rejects
+  // service worker registration) — their "errors" aren't real users' problems, just log noise.
+  if (/\b(googlebot|bingbot|duckduckbot|yandex(bot)?|baiduspider|applebot|petalbot|ahrefsbot|semrushbot|crawler|spider)\b/i.test(req.get('user-agent') || '')) {
+    return res.json({ ok: true, ignored: true });
+  }
   const stack = typeof body.stack === 'string' ? body.stack.slice(0, 5000) : null;
   const context = {
     url: typeof body.url === 'string' ? body.url.slice(0, 500) : null,
@@ -1971,6 +1976,37 @@ app.post('/auth/google', async (req, res) => {
   res.json({ token, username: account.username });
 });
 
+// Delete my account. Password accounts must re-enter their password; Google-only accounts type
+// their username instead. Everything personal goes (see db.deleteAccountCascade), every open tab
+// for this account is signed out, and the uploaded files tied to it are removed from disk.
+app.post('/auth/delete-account', (req, res) => {
+  if (isAuthRateLimited(req)) return res.status(429).json({ error: 'Too many attempts — try again in a minute' });
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  const full = db.getAccountById ? db.getAccountById(account.id) : null;
+  const acct = full || db.getAccountByUsername(account.username);
+  if (!acct) return res.status(404).json({ error: 'Account not found' });
+  const body = req.body || {};
+  if (acct.password_hash && acct.salt) {
+    if (!verifyPassword(String(body.password || ''), acct.salt, acct.password_hash)) {
+      recordUsernameFail(acct.username);
+      return res.status(401).json({ error: 'That password isn\'t right' });
+    }
+  } else if (String(body.confirmUsername || '').trim().toLowerCase() !== acct.username.toLowerCase()) {
+    return res.status(400).json({ error: 'Type your username to confirm' });
+  }
+  const result = db.deleteAccountCascade(acct.id);
+  if (!result) return res.status(404).json({ error: 'Account not found' });
+  for (const u of result.files) deleteUploadFile(u);
+  for (const c of [...(accountConnections.get(acct.id) || [])]) {
+    try { send(c, { type: 'account-deleted' }); } catch {}
+    c.accountId = null;
+  }
+  accountConnections.delete(acct.id);
+  console.log(`[account] deleted account ${acct.id} (${result.username}), ${result.files.length} files`);
+  res.json({ ok: true });
+});
+
 app.post('/auth/logout', (req, res) => {
   const header = req.get('authorization') || '';
   const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
@@ -2911,22 +2947,38 @@ function isTurnCredentialRateLimited(accountId) {
 // broadcasters can relay through it when a direct WebRTC P2P path can't be found (e.g. across
 // unrelated networks). Ephemeral rather than a single static secret baked into client JS — a
 // leaked static TURN credential would let anyone use this connection as an open relay forever.
+// Shared by Scorpture and voice calls. When the relay isn't running (e.g. not installed on this
+// server yet) it backs off for 5 minutes instead of retrying on every call, and only logs the
+// failure once an hour — it used to file an error report on every single attempt.
+let turnDownUntil = 0;
+let turnLastReportedAt = 0;
+async function mintTurnCredential() {
+  if (Date.now() < turnDownUntil) return null;
+  try {
+    const turnRes = await fetch('http://127.0.0.1:3479/credential', { method: 'POST', signal: AbortSignal.timeout(2000) });
+    if (!turnRes.ok) throw new Error('valk-turn admin API returned ' + turnRes.status);
+    const cred = await turnRes.json();
+    return { username: cred.username, credential: cred.credential, urls: cred.urls };
+  } catch (err) {
+    turnDownUntil = Date.now() + 5 * 60 * 1000;
+    if (Date.now() - turnLastReportedAt > 60 * 60 * 1000) {
+      turnLastReportedAt = Date.now();
+      reportError('server', { message: 'turn-credentials: valk-turn unreachable: ' + err.message }, {});
+    }
+    return null;
+  }
+}
+
 app.post('/api/scorpture/turn-credentials', async (req, res) => {
   const account = getAccountFromReq(req);
   if (!account) return res.status(401).json({ error: 'Not signed in' });
   if (isTurnCredentialRateLimited(account.id)) return res.status(429).json({ error: 'Too many requests too quickly' });
   if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many requests too quickly' });
-  try {
-    const turnRes = await fetch('http://127.0.0.1:3479/credential', { method: 'POST' });
-    if (!turnRes.ok) throw new Error('valk-turn admin API returned ' + turnRes.status);
-    const cred = await turnRes.json();
-    res.json({ username: cred.username, credential: cred.credential, urls: cred.urls });
-  } catch (err) {
-    // valk-turn being down shouldn't break live streaming entirely — callers fall back to
-    // STUN-only (works when a direct P2P path exists) rather than getting a hard error.
-    reportError('server', { message: 'turn-credentials: valk-turn unreachable: ' + err.message }, {});
-    res.status(503).json({ error: 'TURN relay unavailable' });
-  }
+  // valk-turn being down shouldn't break live streaming entirely — callers fall back to
+  // STUN-only (works when a direct P2P path exists) rather than getting a hard error.
+  const cred = await mintTurnCredential();
+  if (!cred) return res.status(503).json({ error: 'TURN relay unavailable' });
+  res.json(cred);
 });
 
 // ---- Scorpture OBS streaming — OBS (or any RTMP encoder) publishes to
@@ -8552,6 +8604,17 @@ wss.on('connection', (ws, req) => {
         db.deleteScheduledMessage(String(msg.id || ''), ws.room, acct, ws.profile.name);
       }
       send(ws, { type: 'scheduled-list', items: db.listScheduledMessages(ws.room, acct, ws.profile.name), action: msg.type });
+      return;
+    }
+
+    // Voice/private calls ask for a relay credential right before connecting. Needs a joined
+    // room (not just any socket), same per-account/IP limit as Scorpture's HTTP route.
+    if (msg.type === 'get-turn' && ws.room) {
+      const key = ws.accountId || `ip:${ws._ip || 'unknown'}`;
+      if (isTurnCredentialRateLimited(key)) { send(ws, { type: 'turn-credential', iceServer: null }); return; }
+      mintTurnCredential().then((cred) => {
+        send(ws, { type: 'turn-credential', iceServer: cred ? { urls: cred.urls, username: cred.username, credential: cred.credential } : null });
+      });
       return;
     }
 

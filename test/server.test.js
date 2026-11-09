@@ -7979,3 +7979,43 @@ describe('scheduled messages (2026-11-08)', () => {
     }
   });
 });
+
+describe('delete my account (2026-11-08)', () => {
+  const api = (pathName, token, body) => fetch(`${BASE_URL}${pathName}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: JSON.stringify(body || {}),
+  });
+  test('needs the right password; removes the account, sessions, friendships and DMs; room messages stay unlinked', async () => {
+    const a = await api('/auth/signup', null, { username: 'DelMeA', password: 'pass1234', email: 'delmea@test.com' }).then((r) => r.json());
+    const b = await api('/auth/signup', null, { username: 'DelMeB', password: 'pass1234', email: 'delmeb@test.com' }).then((r) => r.json());
+    await api('/friends/request', a.token, { username: 'DelMeB' });
+    await api('/friends/accept', b.token, { username: 'DelMeA' });
+    const aWs = await joinAsAccount('DelMeA', a.token);
+    send(aWs, { type: 'create-room' });
+    const { code } = await waitFor(aWs, (m) => m.type === 'joined-room');
+    send(aWs, { type: 'message', text: 'my last words' });
+    await waitFor(aWs, (m) => m.type === 'message' && m.text === 'my last words');
+
+    assert.equal((await api('/auth/delete-account', a.token, { password: 'wrong' })).status, 401);
+    const gone = waitFor(aWs, (m) => m.type === 'account-deleted');
+    const res = await api('/auth/delete-account', a.token, { password: 'pass1234' });
+    assert.equal(res.status, 200);
+    await gone;
+
+    // Session is dead, the name can't log in, B's friend list no longer has A.
+    assert.equal((await fetch(`${BASE_URL}/friends`, { headers: { Authorization: `Bearer ${a.token}` } })).status, 401);
+    assert.equal((await api('/auth/login', null, { username: 'DelMeA', password: 'pass1234' })).status, 401);
+    const friends = await fetch(`${BASE_URL}/friends`, { headers: { Authorization: `Bearer ${b.token}` } }).then((r) => r.json());
+    assert.ok(!JSON.stringify(friends).includes('DelMeA'));
+
+    // The room and the message are still there; the room gets a new host on next join.
+    const c = await connectWs();
+    send(c, { type: 'join-server', username: 'DelMeHeir' });
+    await waitFor(c, (m) => m.type === 'joined-server');
+    send(c, { type: 'join-room', code });
+    const joined = await waitFor(c, (m) => m.type === 'joined-room');
+    assert.ok(joined.messages.some((m) => m.text === 'my last words'));
+    assert.equal(joined.isHost, true, 'the room passes to the next person who joins');
+    aWs.close(); c.close();
+  });
+});

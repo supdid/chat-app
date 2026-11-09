@@ -71,6 +71,14 @@
           </form>
           <p id="account-password-error" class="error hidden"></p>
           <button type="button" id="account-signout-btn" class="link-btn">Sign out</button>
+          <button type="button" id="account-delete-toggle-btn" class="link-btn danger-link">🗑️ Delete my account</button>
+          <form id="account-delete-form" class="account-delete-form hidden">
+            <p>This permanently deletes your account, friends, DMs, ValkMail, saved messages, videos and communities you own. Messages you sent in rooms stay, but they won't be linked to you anymore. <strong>This can't be undone.</strong></p>
+            <input id="account-delete-password" type="password" placeholder="Your password" autocomplete="current-password">
+            <input id="account-delete-confirm" type="text" placeholder='Type DELETE to confirm' autocomplete="off">
+            <button type="submit" class="danger">Delete my account forever</button>
+          </form>
+          <p id="account-delete-error" class="error hidden"></p>
         </div>
       </div>
     </div>
