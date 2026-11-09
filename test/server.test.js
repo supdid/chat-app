@@ -8253,3 +8253,19 @@ describe('moderation log (2026-11-08)', () => {
     host.close(); member.close();
   });
 });
+
+describe('admin activity (2026-11-08)', () => {
+  test('GET /admin/activity needs the admin key and reports counts', async () => {
+    const adminKey = JSON.parse(fs.readFileSync(path.join(server.dir, 'admin-key.json'), 'utf8')).key;
+    assert.equal((await fetch(`${BASE_URL}/admin/activity`)).status, 401);
+    const { ws, code } = await joinRoom('ActivityA');
+    send(ws, { type: 'message', text: 'activity!' });
+    await waitFor(ws, (m) => m.type === 'message' && m.text === 'activity!');
+    const a = await fetch(`${BASE_URL}/admin/activity`, { headers: adminAuth(adminKey) }).then((r) => r.json());
+    assert.ok(a.messages24h >= 1);
+    assert.ok(a.onlineNow >= 1);
+    assert.equal(a.daily.length, 7);
+    assert.ok(a.busiestRooms24h.some((r) => r.code === code));
+    ws.close();
+  });
+});

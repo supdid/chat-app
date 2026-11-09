@@ -1304,6 +1304,32 @@ function getModLog(code, limit = 100) {
   return db.prepare('SELECT actor, action, target, detail, at FROM mod_log WHERE room_code = ? ORDER BY at DESC, rowid DESC LIMIT ?').all(code, limit);
 }
 
+// Admin panel "Activity" card.
+function getAdminActivity(now = Date.now()) {
+  const DAY = 24 * 60 * 60 * 1000;
+  const q = (sql, ...a) => db.prepare(sql).get(...a).n;
+  const busiest = db.prepare(
+    `SELECT m.room_code AS code, r.name AS name, COUNT(*) AS n FROM messages m LEFT JOIN rooms r ON r.code = m.room_code
+     WHERE m.at > ? GROUP BY m.room_code ORDER BY n DESC LIMIT 5`
+  ).all(now - DAY);
+  const daily = [];
+  for (let i = 6; i >= 0; i--) {
+    const start = now - (i + 1) * DAY;
+    daily.push({ daysAgo: i, messages: q('SELECT COUNT(*) AS n FROM messages WHERE at > ? AND at <= ?', start, start + DAY) });
+  }
+  return {
+    messages24h: q('SELECT COUNT(*) AS n FROM messages WHERE at > ?', now - DAY),
+    messages7d: q('SELECT COUNT(*) AS n FROM messages WHERE at > ?', now - 7 * DAY),
+    activeRooms24h: q('SELECT COUNT(DISTINCT room_code) AS n FROM messages WHERE at > ?', now - DAY),
+    activeChatters24h: q('SELECT COUNT(DISTINCT name) AS n FROM messages WHERE at > ?', now - DAY),
+    newAccounts7d: q('SELECT COUNT(*) AS n FROM accounts WHERE created_at > ?', now - 7 * DAY),
+    totalAccounts: q('SELECT COUNT(*) AS n FROM accounts'),
+    totalRooms: q('SELECT COUNT(*) AS n FROM rooms'),
+    busiestRooms24h: busiest,
+    daily,
+  };
+}
+
 function setHostsOnly(code, on) {
   db.prepare('UPDATE rooms SET hosts_only = ? WHERE code = ?').run(on ? 1 : 0, code);
 }
@@ -3009,6 +3035,7 @@ function getAccountByStreamKey(key) {
 }
 
 module.exports = {
+  getAdminActivity,
   addModLog,
   getModLog,
   getChatStreak,

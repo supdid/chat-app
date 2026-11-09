@@ -32,6 +32,8 @@
   </div>
   <div id="panel" style="display:none;">
     <h1>Self-healing panel <button class="reject" id="forget-key-btn" type="button" style="font-size:12px;padding:4px 10px;">Forget admin key</button></h1>
+    <h2>Activity</h2>
+    <div class="card" id="activity-card"><div class="meta">Loading…</div></div>
     <h2>Storage cleanup</h2>
     <div class="card">
       <div class="meta">Rooms inactive 90+ days (and their messages/media) are purged automatically once a day.</div>
@@ -212,7 +214,36 @@ async function adminPost(url) {
   }
 }
 
+async function loadActivity() {
+  const el = document.getElementById('activity-card');
+  try {
+    const res = await fetch('/admin/activity', { headers: headers() });
+    if (!res.ok) { el.innerHTML = '<div class="meta">Couldn\'t load activity.</div>'; return; }
+    const a = await res.json();
+    const tile = (n, label) => `<div style="flex:1;min-width:110px;background:#1a1d24;border-radius:8px;padding:10px;text-align:center;"><div style="font-size:22px;font-weight:700;">${Number(n).toLocaleString()}</div><div class="meta">${label}</div></div>`;
+    const max = Math.max(1, ...a.daily.map((d) => d.messages));
+    const bars = a.daily.map((d) => `<div title="${d.messages} messages" style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:4px;"><div style="width:100%;background:#3b9dff;border-radius:3px 3px 0 0;height:${Math.max(2, (d.messages / max) * 70)}px;"></div><span class="meta" style="font-size:11px;">${d.daysAgo === 0 ? 'today' : d.daysAgo + 'd'}</span></div>`).join('');
+    const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const busy = a.busiestRooms24h.length
+      ? a.busiestRooms24h.map((r) => `<li>${esc(r.name || 'Unnamed room')} <code>${esc(r.code)}</code> — ${r.n} messages</li>`).join('')
+      : '<li class="meta">No messages in the last 24 hours.</li>';
+    el.innerHTML = `
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+        ${tile(a.onlineNow, 'online now')}${tile(a.inRoomsNow, 'in a room now')}${tile(a.messages24h, 'messages (24h)')}
+        ${tile(a.activeChatters24h, 'people chatting (24h)')}${tile(a.activeRooms24h, 'active rooms (24h)')}
+        ${tile(a.newAccounts7d, 'new accounts (7d)')}${tile(a.totalAccounts, 'accounts total')}${tile(a.totalRooms, 'rooms total')}
+      </div>
+      <div class="meta" style="margin-bottom:4px;">Messages per day (last 7 days)</div>
+      <div style="display:flex;gap:6px;align-items:flex-end;height:95px;margin-bottom:12px;">${bars}</div>
+      <div class="meta">Busiest rooms (24h)</div>
+      <ol style="margin:6px 0 0;padding-left:20px;">${busy}</ol>`;
+  } catch {
+    el.innerHTML = '<div class="meta">Couldn\'t reach the server.</div>';
+  }
+}
+
 async function refresh() {
+  loadActivity();
   let patchesRes, errorsRes, reportsRes, scorptureReportsRes;
   try {
     [patchesRes, errorsRes, reportsRes, scorptureReportsRes] = await Promise.all([

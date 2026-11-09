@@ -3055,3 +3055,9 @@ body.ts-xl .bubble .meta { font-size: 0.9rem; }
 .mod-log-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.45rem; }
 .mod-log-list li { font-size: 0.88rem; word-break: break-word; padding-bottom: 0.4rem; border-bottom: 1px solid var(--input-border); }
 .mod-log-list li .eh-when { display: block; font-size: 0.72rem; color: var(--text-subtle); }
+
+/* Keyboard users can see where they are (mouse clicks don't show the ring). */
+button:focus-visible, a:focus-visible, [role="button"]:focus-visible, select:focus-visible, .switcher-list li:focus-visible {
+  outline: 2px solid #3b9dff;
+  outline-offset: 2px;
+}

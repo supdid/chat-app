@@ -444,6 +444,17 @@ app.post('/errors/report', (req, res) => {
   reportError('client', { message, stack }, context);
 });
 
+app.get('/admin/activity', requireAdmin, (req, res) => {
+  let online = 0;
+  let inRooms = 0;
+  for (const client of wss.clients) {
+    if (client.readyState !== client.OPEN || !client.profile) continue;
+    online++;
+    if (client.room) inRooms++;
+  }
+  res.json({ ...db.getAdminActivity(), onlineNow: online, inRoomsNow: inRooms, liveRooms: rooms.size });
+});
+
 app.get('/admin/errors', requireAdmin, (req, res) => {
   res.json({ errors: db.getRecentErrorReports() });
 });

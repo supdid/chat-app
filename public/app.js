@@ -1210,7 +1210,11 @@ function handleServerMessage(data) {
       // live afterward were already correct, since lastRoomUsers is set by then. Moved ahead of
       // the render loop so history gets the same highlighting live messages always had.
       renderOnlineList(data.users);
+      // Screen readers announce new messages (#messages is role=log); don't read out the whole
+      // history every time a room loads.
+      messagesEl.setAttribute('aria-busy', 'true');
       data.messages.forEach(renderMessage);
+      setTimeout(() => messagesEl.removeAttribute('aria-busy'), 0);
       // "New messages" divider: where this person's saved read receipt (from before this join)
       // sits in the history, if others have posted since — the chat then opens there instead of
       // at the very bottom, so you can catch up from where you left off.
@@ -1592,7 +1596,15 @@ function handleServerMessage(data) {
 
     case 'invites-list':
       renderInvites(data.invites || []);
-      if (data.created && data.invites && data.invites[0]) copyInviteLink(data.invites[0].token);
+      if (data.created && data.invites && data.invites[0]) {
+        if (pendingFriendInvite) {
+          const who = pendingFriendInvite;
+          pendingFriendInvite = null;
+          sendFriendRoomInvite(who, `${location.origin}/?invite=${data.invites[0].token}`, '');
+        } else {
+          copyInviteLink(data.invites[0].token);
+        }
+      }
       break;
 
     case 'disappearing-updated':
@@ -3786,6 +3798,26 @@ function escapeHtml(str) {
 
 // presence is only ever set on entries in the "Your friends" list (requests/outgoing/blocked
 // rows don't get a dot) — { online, roomCode } or omitted entirely.
+// Sends the friend a private DM with a link straight into the room you're in. In a PIN room the
+// host sends a one-day, single-use invite link (no PIN needed); anyone else's invite just says
+// there's a PIN.
+let pendingFriendInvite = null;
+function sendFriendRoomInvite(username, link, note) {
+  const where = currentRoomName ? `${currentRoomName} (${currentRoomCode})` : currentRoomCode;
+  ws.send(JSON.stringify({ type: 'friend-dm', toUsername: username, text: `📨 Come chat with me in ${where}!${note}\n${link}` }));
+  showAppToast(`📨 Invite sent to ${username}`);
+}
+function inviteFriendHere(username) {
+  if (!ws || ws.readyState !== WebSocket.OPEN || !currentRoomCode) return;
+  const pinRoom = !!(roomPinFormInput && /PIN is set/.test(roomPinFormInput.placeholder));
+  if (pinRoom && isHost) {
+    pendingFriendInvite = username;
+    ws.send(JSON.stringify({ type: 'create-invite', expiresIn: 86400, maxUses: 1 }));
+    return;
+  }
+  sendFriendRoomInvite(username, `${location.origin}/?room=${encodeURIComponent(currentRoomCode)}`, pinRoom ? ' (it has a PIN — ask me for it)' : '');
+}
+
 function friendRow(username, actions, presence) {
   const li = document.createElement('li');
   li.className = 'friend-row';
@@ -3852,6 +3884,7 @@ function renderFriends(data) {
   data.friends.forEach((f) => {
     const actions = [{ action: 'dm', label: '💬', unread: f.unreadDms || 0, title: `Message ${f.username}` }];
     if (f.online && f.roomCode) actions.push({ action: 'join', label: 'Join', roomCode: f.roomCode });
+    if (currentRoomCode && !(f.online && f.roomCode === currentRoomCode)) actions.push({ action: 'invite', label: '📨', title: `Invite ${f.username} to this room` });
     actions.push({ action: 'remove', label: 'Remove', danger: true });
     actions.push({ action: 'block', label: 'Block', danger: true });
     friendsListEl.appendChild(friendRow(f.username, actions, { online: f.online }));
@@ -3943,6 +3976,12 @@ friendAddForm.addEventListener('submit', (e) => {
     }
     if (btn.dataset.action === 'dm') {
       openFriendDm(btn.dataset.username);
+      return;
+    }
+    if (btn.dataset.action === 'invite') {
+      inviteFriendHere(btn.dataset.username);
+      btn.disabled = true;
+      btn.textContent = '✓';
       return;
     }
     friendAction(btn.dataset.action, btn.dataset.username);

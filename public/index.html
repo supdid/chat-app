@@ -24,7 +24,7 @@
   <div id="worldwide-badge" class="worldwide-badge hidden">🌍 <span id="worldwide-count">0</span> online worldwide</div>
   <button id="theme-toggle-btn" class="theme-toggle" aria-label="Toggle dark mode" type="button">🌙</button>
   <button id="menu-music-toggle-btn" class="theme-toggle music-toggle" aria-label="Toggle menu music" type="button">🔊</button>
-  <div id="app-toast" class="app-toast"></div>
+  <div id="app-toast" class="app-toast" role="status" aria-live="polite"></div>
 
   <!-- Screen 1: pick a name -->
   <div id="login-screen" class="screen">
@@ -133,7 +133,7 @@
     </div>
     <button type="button" id="voice-call-banner" class="voice-call-banner hidden">📞 <span id="voice-call-banner-text">Voice call in progress</span> — tap to join</button>
 
-    <div id="messages"></div>
+    <div id="messages" role="log" aria-live="polite" aria-label="Messages"></div>
     <button type="button" id="new-messages-pill" class="new-messages-pill hidden"></button>
 
     <div id="typing-indicator" class="typing-indicator hidden"></div>
