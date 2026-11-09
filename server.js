@@ -204,6 +204,7 @@ function messagePreviewText(entry) {
     try { return `📊 Poll: ${JSON.parse(entry.text).question}`; } catch { return '📊 Poll'; }
   }
   if (entry.kind === 'me') return `* ${entry.name} ${entry.text}`;
+  if (entry.kind === 'checklist') return `☑️ Checklist: ${entry.text}`;
   return entry.text || (entry.mediaType ? `sent a${entry.mediaType === 'image' ? 'n' : ''} ${entry.mediaType}` : '');
 }
 
@@ -5653,6 +5654,31 @@ const EIGHT_BALL = [
   'Better not tell you now.', 'Cannot predict now.', "Don't count on it.", 'My reply is no.',
   'Outlook not so good.', 'Very doubtful.',
 ];
+const ICEBREAKERS = [
+  "What's the best thing that happened to you this week?", 'If you could live in any video game world, which one?',
+  "What's a food you could eat every day and never get bored of?", 'What superpower would you pick, and what would you do first?',
+  "What's the funniest thing you've ever seen happen at school or work?", 'If you had a pet dragon, what would you name it?',
+  "What's a song you'd put on repeat right now?", 'Which fictional character would be your best friend?',
+  "What's the weirdest dream you remember?", 'If you could instantly master one skill, what would it be?',
+  "What's your go-to snack while gaming or watching something?", "What's a movie or show you think everyone should watch?",
+  'Would you rather explore space or the deep ocean?', "What's the best present you've ever been given?",
+  'If you could swap lives with anyone for a day, who?', "What's something small that always makes your day better?",
+  "What's the most useless talent you have?", 'If you opened a shop, what would it sell?',
+  'What would your perfect weekend look like?', "What's an app or game you were obsessed with once?",
+  "What's the best place you've ever been to?", 'If animals could talk, which would be the rudest?',
+  "What's a hobby you'd love to try?", "What's your favourite season and why?",
+  'If you could have dinner with anyone ever, who would it be?', "What's the last thing that made you laugh out loud?",
+  "What's one thing on your bucket list?", 'Pineapple on pizza: yes or no? Defend your answer.',
+  'If you were a ghost, who or what would you haunt?', "What's something you're really proud of?",
+  "What's the most interesting fact you know?", 'Which emoji do you use the most?',
+  'If you could invent a new holiday, what would it celebrate?', "What's a game you'd love to play with this room?",
+  'Cats or dogs, and why?', 'If you got a free plane ticket, where would you go tomorrow?',
+  "What's the best advice you've ever been given?", "What's a word you just love the sound of?",
+  'If your life were a movie, what genre would it be?', "What's a smell that brings back a memory?",
+];
+// Shared checklists (/todo): anyone in the room can tick items off or add more.
+const CHECKLIST_MAX_ITEMS = 30;
+const CHECKLIST_ITEM_MAX = 120;
 function resolveServerCommand(text) {
   const roll = text.match(/^\/roll(?:\s+(\d*)d(\d+))?\s*$/i);
   if (roll) {
@@ -5711,6 +5737,16 @@ function resolveServerCommand(text) {
       people.forEach((p, i) => groups[i % n].push(p));
       return { kind: 'roll', text: `👥 split into ${n} teams — ` + groups.map((g, i) => `Team ${i + 1}: ${g.join(', ')}`).join(' · ') };
     }
+  }
+  if (/^\/(?:icebreaker|question|qotd)\s*$/i.test(text)) return { kind: 'icebreaker', text: ICEBREAKERS[crypto.randomInt(ICEBREAKERS.length)] };
+  const todo = text.match(/^\/(?:todo|checklist|list)\s+([\s\S]+)$/i);
+  if (todo) {
+    let body = todo[1].trim();
+    let title = 'To-do';
+    const colon = body.match(/^([^:\n,]{1,80}):\s*([\s\S]+)$/);
+    if (colon) { title = colon[1].trim(); body = colon[2]; }
+    const items = body.split(/\s*(?:\n|,)\s*/).map((x) => x.replace(/^[-*•]\s*/, '').trim().slice(0, CHECKLIST_ITEM_MAX)).filter(Boolean).slice(0, CHECKLIST_MAX_ITEMS);
+    if (items.length) return { kind: 'checklist', text: title, meta: { items: items.map((t) => ({ t, d: null })) } };
   }
   const me = text.match(/^\/me\s+(.+)$/is);
   if (me) return { kind: 'me', text: me[1].trim() };
@@ -9540,6 +9576,37 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    // ☑️ Tick/untick a checklist item, or add a new one. Anyone in the room can.
+    if ((msg.type === 'checklist-toggle' || msg.type === 'checklist-add') && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      const messageId = String(msg.messageId || '');
+      const target = db.getMessage(messageId);
+      if (!target || target.room_code !== ws.room || target.kind !== 'checklist' || target.deleted) return;
+      const dbRoom = db.getRoom(ws.room);
+      const liveRoom = rooms.get(ws.room);
+      if (liveRoom && liveRoom.muted && liveRoom.muted.has(ws.profile.name)) return;
+      if (dbRoom && dbRoom.hosts_only && !isRoomMod(dbRoom, ws)) { send(ws, { type: 'error', message: 'Only hosts can change things in this room' }); return; }
+      let meta;
+      try { meta = JSON.parse(target.meta); } catch { return; }
+      if (!meta || !Array.isArray(meta.items)) return;
+      if (msg.type === 'checklist-toggle') {
+        const i = Math.floor(+msg.index);
+        if (!Number.isInteger(i) || i < 0 || i >= meta.items.length) return;
+        meta.items[i].d = meta.items[i].d ? null : ws.profile.name;
+      } else {
+        const t = applyWordFilter(dbRoom, String(msg.text || '').trim().slice(0, CHECKLIST_ITEM_MAX));
+        if (!t) return;
+        if (meta.items.length >= CHECKLIST_MAX_ITEMS) { send(ws, { type: 'error', message: `A checklist can have up to ${CHECKLIST_MAX_ITEMS} items` }); return; }
+        meta.items.push({ t, d: null, by: ws.profile.name });
+      }
+      db.setMessageMeta(messageId, meta);
+      const room = rooms.get(ws.room);
+      const entry = room && room.history.find((m) => m.id === messageId);
+      if (entry) entry.meta = meta;
+      broadcastRoom(ws.room, { type: 'checklist-updated', messageId, meta, by: ws.profile.name });
+      return;
+    }
+
     // End a poll early — whoever posted it, or the host/co-hosts.
     if (msg.type === 'close-poll' && ws.room) {
       if (isWsMsgRateLimited(ws)) return;
@@ -9897,6 +9964,7 @@ wss.on('connection', (ws, req) => {
       // never actually being attached to any message. Same ordering fix as /post-image and the
       // Scorpture overlays route elsewhere in this file.
       claimUpload(mediaUrl);
+      if (kind === 'checklist' && meta) meta.items.forEach((it) => { it.t = applyWordFilter(slowRoom, it.t); });
 
       let replyToId = null;
       let replyPreview = null;
@@ -9954,7 +10022,7 @@ wss.on('connection', (ws, req) => {
       // supported poll feature and this generic free-text path has no shape validation, so
       // allowing it here would let a user corrupt their own poll the same way the message
       // handler above now guards against on creation.
-      if (!target || target.room_code !== ws.room || !ownsMessage(target, ws) || target.deleted || target.media_type === 'poll' || target.kind === 'roll' || target.kind === 'countdown') return;
+      if (!target || target.room_code !== ws.room || !ownsMessage(target, ws) || target.deleted || target.media_type === 'poll' || target.kind === 'roll' || target.kind === 'countdown' || target.kind === 'checklist' || target.kind === 'icebreaker') return;
       db.updateMessageText(messageId, text);
       const entry = room && room.history.find((m) => m.id === messageId);
       if (entry) { entry.text = text; entry.edited = true; }

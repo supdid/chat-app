@@ -1862,6 +1862,10 @@ function getPollMultiVotes(messageId) {
 
 // Poll messages keep their definition as JSON in `text`; closing a poll rewrites it without
 // marking the message "edited" or saving an edit-history version.
+function setMessageMeta(messageId, meta) {
+  db.prepare('UPDATE messages SET meta = ? WHERE id = ?').run(meta ? JSON.stringify(meta) : null, messageId);
+}
+
 function setPollText(messageId, text) {
   db.prepare('UPDATE messages SET text = ? WHERE id = ?').run(text, messageId);
 }
@@ -3119,6 +3123,7 @@ module.exports = {
   togglePollMultiVote,
   getPollMultiVotes,
   setPollText,
+  setMessageMeta,
   getMessagesBetween,
   getReactionsForMessages,
   getRoomCohosts,

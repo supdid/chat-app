@@ -1069,6 +1069,12 @@ function handleServerMessage(data) {
       rerenderPollCard(data.messageId);
       break;
 
+    case 'checklist-updated': {
+      const holder = document.querySelector(`#msg-${CSS.escape(data.messageId)} .checklist`);
+      if (holder) renderChecklist(holder.parentNode, data.messageId, holder.dataset.title, data.meta);
+      break;
+    }
+
     case 'poll-closed':
       rerenderPollCard(data.messageId, data.text);
       if (myProfile && data.by !== myProfile.name) showAppToast(`📊 ${data.by} ended a poll`);
@@ -2351,6 +2357,18 @@ function renderMessage(data, opts = {}) {
       // Only live messages rain on the screen — not every time history loads.
       if (!opts.history && Date.now() - (data.at || 0) < 15000) playScreenEffect(data.meta.effect);
     }
+    if (data.kind === 'icebreaker') {
+      bubble.classList.add('icebreaker-bubble');
+      const tag = document.createElement('div');
+      tag.className = 'icebreaker-tag';
+      tag.textContent = '🧊 Icebreaker';
+      text.prepend(tag);
+    }
+    if (data.kind === 'checklist' && data.meta && Array.isArray(data.meta.items)) {
+      text.textContent = '';
+      bubble.classList.add('checklist-bubble');
+      renderChecklist(text, data.id, data.text, data.meta);
+    }
     if (data.kind === 'roll') {
       bubble.classList.add('roll-bubble');
       const fair = document.createElement('span');
@@ -2692,7 +2710,7 @@ function makeMessageActions(data) {
     reportBtn.addEventListener('click', () => reportUser(data.name, data.id, data.text));
     actions.appendChild(reportBtn);
   }
-  if (isOwn && !data.mediaUrl && data.kind !== 'roll' && data.kind !== 'countdown') {
+  if (isOwn && !data.mediaUrl && data.kind !== 'roll' && data.kind !== 'countdown' && data.kind !== 'checklist' && data.kind !== 'icebreaker') {
     const editBtn = document.createElement('button');
     editBtn.type = 'button';
     editBtn.className = 'msg-action-btn';
@@ -6592,6 +6610,21 @@ messageForm.addEventListener('submit', (e) => {
     saveDraftNow();
     return;
   }
+  // /poll Question? a, b, c  — a quick poll without opening the poll form.
+  const quickPoll = raw.match(/^\/poll\s+([\s\S]+)$/i);
+  if (quickPoll) {
+    const body = quickPoll[1].trim();
+    const split = body.match(/^(.+?\?)\s*([\s\S]+)$/) || body.match(/^([^:]+):\s*([\s\S]+)$/);
+    const options = split ? split[2].split(/\s*(?:,|\n|\s\bor\b\s)\s*/i).map((o) => o.trim().slice(0, 80)).filter(Boolean).slice(0, 10) : [];
+    if (!split || options.length < 2) {
+      showAppToast('Try: /poll Pizza or tacos? pizza, tacos  (a question, then 2–10 choices)');
+      return;
+    }
+    if (!wsSendOrWarnDisconnected({ type: 'message', text: JSON.stringify({ question: split[1].trim().slice(0, 200), options }), mediaUrl: 'poll', mediaType: 'poll' })) return;
+    messageInput.value = '';
+    saveDraftNow();
+    return;
+  }
   if (/^\/wyr\s*$/i.test(raw)) {
     const [a, b] = WYR_QUESTIONS[Math.floor(Math.random() * WYR_QUESTIONS.length)];
     ws.send(JSON.stringify({ type: 'message', text: JSON.stringify({ question: 'Would you rather…', options: [a, b] }), mediaUrl: 'poll', mediaType: 'poll' }));
@@ -9626,6 +9659,80 @@ function playScreenEffect(effect) {
 }
 
 
+// --- ☑️ Shared checklists (/todo) ---
+function renderChecklist(container, messageId, title, meta) {
+  container.textContent = '';
+  const box = document.createElement('div');
+  box.className = 'checklist';
+  box.dataset.title = title;
+  const items = meta.items || [];
+  const done = items.filter((it) => it.d).length;
+  const head = document.createElement('div');
+  head.className = 'checklist-head';
+  const h = document.createElement('span');
+  h.className = 'checklist-title';
+  h.textContent = `☑️ ${title}`;
+  const count = document.createElement('span');
+  count.className = 'checklist-count';
+  count.textContent = `${done}/${items.length}`;
+  head.append(h, count);
+  const bar = document.createElement('div');
+  bar.className = 'checklist-bar';
+  const fill = document.createElement('span');
+  fill.style.width = items.length ? `${Math.round((done / items.length) * 100)}%` : '0';
+  bar.appendChild(fill);
+  box.append(head, bar);
+  const list = document.createElement('ul');
+  list.className = 'checklist-items';
+  items.forEach((it, i) => {
+    const li = document.createElement('li');
+    const label = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !!it.d;
+    cb.addEventListener('change', () => {
+      cb.checked = !cb.checked; // the server's update decides
+      wsSendOrWarnDisconnected({ type: 'checklist-toggle', messageId, index: i });
+    });
+    const t = document.createElement('span');
+    t.className = 'checklist-text' + (it.d ? ' done' : '');
+    t.textContent = it.t;
+    label.append(cb, t);
+    li.appendChild(label);
+    if (it.d) {
+      const by = document.createElement('span');
+      by.className = 'checklist-by';
+      by.textContent = `✓ ${it.d}`;
+      li.appendChild(by);
+    }
+    list.appendChild(li);
+  });
+  box.appendChild(list);
+  if (items.length < 30) {
+    const add = document.createElement('form');
+    add.className = 'checklist-add';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.maxLength = 120;
+    input.placeholder = '+ Add an item';
+    input.setAttribute('aria-label', `Add an item to ${title}`);
+    add.appendChild(input);
+    add.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const v = input.value.trim();
+      if (v && wsSendOrWarnDisconnected({ type: 'checklist-add', messageId, text: v })) input.value = '';
+    });
+    box.appendChild(add);
+  }
+  if (items.length && done === items.length) {
+    const all = document.createElement('div');
+    all.className = 'checklist-done';
+    all.textContent = '🎉 All done!';
+    box.appendChild(all);
+  }
+  container.appendChild(box);
+}
+
 // --- "/" command suggestions ---
 const SLASH_COMMANDS = [
   ['/roll', '2d6', 'Roll dice (fair — rolled by Valk)'],
@@ -9633,6 +9740,7 @@ const SLASH_COMMANDS = [
   ['/8ball', 'will it snow?', 'Ask the magic 8-ball'],
   ['/pick', 'pizza, tacos or sushi', 'Let Valk choose'],
   ['/me', 'waves', 'Say an action'],
+  ['/todo', 'Groceries: milk, eggs, bread', 'Shared checklist anyone can tick'],
   ['/rps', 'rock', 'Rock paper scissors vs Valk'],
   ['/number', '1-100', 'Random number'],
   ['/teams', '2 Ana, Ben, Cy, Dee', 'Split people into random teams'],
@@ -9641,6 +9749,8 @@ const SLASH_COMMANDS = [
   ['/hearts', '', 'Hearts on everyone’s screen'],
   ['/snow', '', 'Snow on everyone’s screen'],
   ['/stars', '', 'Stars on everyone’s screen'],
+  ['/poll', 'Lunch? pizza, tacos, sushi', 'Quick poll'],
+  ['/icebreaker', '', 'A random question to get people talking'],
   ['/wyr', '', 'Random "Would you rather…" poll'],
   ['/play', 'typerace', 'Invite the room to a game'],
   ['/later', '30m text', 'Send a message later'],

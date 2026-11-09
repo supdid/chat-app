@@ -7855,6 +7855,10 @@ describe('more fair commands (2026-11-09)', () => {
     const everyone = parts.flatMap((p) => p.replace(/^Team \d: /, '').split(', ')).sort();
     assert.deepEqual(everyone, ['Ana', 'Ben', 'Cy', 'Dee', 'Eve']);
 
+    send(a, { type: 'message', text: '/icebreaker' });
+    const ice = await waitFor(b, (m) => m.type === 'message' && m.kind === 'icebreaker');
+    assert.ok(ice.text.length > 10 && /\?$/.test(ice.text), ice.text);
+
     send(a, { type: 'message', text: '/rps banana' });
     const plain = await waitFor(b, (m) => m.type === 'message' && m.text === '/rps banana');
     assert.ok(!plain.kind || plain.kind === 'text', 'an invalid command is sent as plain text');
@@ -7880,6 +7884,41 @@ describe('Minesweeper (2026-11-09)', () => {
     const champs = await waitFor(host, (m) => m.type === 'room-champions');
     assert.equal(champs.games['mines-medium'][0].name, 'Sweeper');
     host.close(); p.close();
+  });
+});
+
+describe('shared checklists (2026-11-09)', () => {
+  test('/todo makes a checklist anyone can tick and add to; it survives a rejoin and cannot be edited', async () => {
+    const { ws: a, code } = await joinRoom('TodoA');
+    const b = await joinExistingRoom('TodoB', code);
+    send(a, { type: 'message', text: '/todo Groceries: milk, eggs, - bread' });
+    const m = await waitFor(b, (x) => x.type === 'message' && x.kind === 'checklist');
+    assert.equal(m.text, 'Groceries');
+    assert.deepEqual(m.meta.items.map((i) => i.t), ['milk', 'eggs', 'bread']);
+
+    send(b, { type: 'checklist-toggle', messageId: m.id, index: 1 });
+    let u = await waitFor(a, (x) => x.type === 'checklist-updated' && x.messageId === m.id);
+    assert.equal(u.meta.items[1].d, 'TodoB');
+    send(a, { type: 'checklist-add', messageId: m.id, text: 'apples' });
+    u = await waitFor(b, (x) => x.type === 'checklist-updated' && x.meta.items.length === 4);
+    assert.equal(u.meta.items[3].t, 'apples');
+    send(b, { type: 'checklist-toggle', messageId: m.id, index: 1 });
+    u = await waitFor(a, (x) => x.type === 'checklist-updated' && x.meta.items[1].d === null);
+
+    send(a, { type: 'checklist-toggle', messageId: m.id, index: 99 });
+    send(a, { type: 'edit-message', messageId: m.id, text: 'hacked' });
+    send(a, { type: 'checklist-toggle', messageId: m.id, index: 0 });
+    await waitFor(b, (x) => x.type === 'checklist-updated' && x.meta.items[0].d === 'TodoA');
+
+    const c = await joinExistingRoom('TodoC', code);
+    send(c, { type: 'leave-room' });
+    await waitFor(c, (x) => x.type === 'left-room');
+    send(c, { type: 'join-room', code });
+    const j = await waitFor(c, (x) => x.type === 'joined-room');
+    const saved = j.messages.find((x) => x.id === m.id);
+    assert.equal(saved.text, 'Groceries', 'edits are refused');
+    assert.deepEqual(saved.meta.items.map((i) => [i.t, i.d]), [['milk', 'TodoA'], ['eggs', null], ['bread', null], ['apples', null]]);
+    a.close(); b.close(); c.close();
   });
 });
 
