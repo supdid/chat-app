@@ -251,7 +251,9 @@ let ws;
 function send(obj) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj)); }
 function requestLeaderboard() { send({ type: 'arcade-leaderboard' }); }
 function joinMsg() {
-  return { type: 'arcade-join', code: roomCode, name: myName, game: `minesweeper-${level}`, accountToken: localStorage.getItem('valk-account-token') };
+  let token = null;
+  try { token = localStorage.getItem('valk-account-token'); } catch {}
+  return { type: 'arcade-join', code: roomCode, name: myName, game: `minesweeper-${level}`, accountToken: token };
 }
 function reconnectForLevel() { if (roomCode) send(joinMsg()); }
 function connect() {

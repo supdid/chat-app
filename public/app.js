@@ -78,6 +78,7 @@ const wordguessLink = document.getElementById('wordguess-link');
 const typeraceLink = document.getElementById('typerace-link');
 const quickdrawLink = document.getElementById('quickdraw-link');
 const minesweeperLink = document.getElementById('minesweeper-link');
+const memoryLink = document.getElementById('memory-link');
 const snakeLink = document.getElementById('snake-link');
 const g2048Link = document.getElementById('g2048-link');
 const whiteboardLink = document.getElementById('whiteboard-link');
@@ -488,7 +489,7 @@ let activeReactionPopover = null;
 
 // --- Minigame activity badges ---
 const roomActivity = new Map(); // name -> game code ('bc'|'gw'|'dg')
-const ACTIVITY_BADGES = { bc: '🏝️', gw: '🔺', dg: '🖍️', wb: '🖌️', tv: '❓', tt: '⭕', ch: '♟️', hm: '🪢', sk: '🐍', tf: '🔢', fp: '🛩️', sw: '🕸️', fg: '🔫', wg: '🟩', sf: '🥊', he: '👋', tr: '⌨️', qd: '⚡', mi: '💣' };
+const ACTIVITY_BADGES = { bc: '🏝️', gw: '🔺', dg: '🖍️', wb: '🖌️', tv: '❓', tt: '⭕', ch: '♟️', hm: '🪢', sk: '🐍', tf: '🔢', fp: '🛩️', sw: '🕸️', fg: '🔫', wg: '🟩', sf: '🥊', he: '👋', tr: '⌨️', qd: '⚡', mi: '💣', mm: '🧠' };
 let lastRoomUsers = [];
 // Found by the room-chat client-side correctness audit: tracks the single currently-open message
 // edit form ({ messageId, restore }), so starting a second edit can auto-cancel the first instead
@@ -3571,6 +3572,7 @@ function updateGameLinks() {
   typeraceLink.href = `typerace.html${params}`;
   quickdrawLink.href = `quickdraw.html${params}`;
   minesweeperLink.href = `minesweeper.html${params}`;
+  memoryLink.href = `memory.html${params}`;
   snakeLink.href = `snake.html${params}`;
   g2048Link.href = `2048.html${params}`;
   whiteboardLink.href = `whiteboard.html${params}`;
@@ -9310,8 +9312,14 @@ function flushOutbox(code) {
 
 
 // --- ✨ What's new (shown once per update to people who've used Valk before) ---
-const WHATS_NEW_VERSION = '2026-11-09';
+const WHATS_NEW_VERSION = '2026-11-09b';
 const WHATS_NEW = [
+  ['☑️', 'Shared checklists', '/todo Groceries: milk, eggs, bread — anyone in the room can tick things off or add more.'],
+  ['💣', 'Minesweeper', 'A new game with Easy, Medium and Hard, and a fastest-times board for each room. /play mines'],
+  ['🧠', 'Memory Match', 'Flip cards and find the pairs, fastest wins. /play match'],
+  ['📊', 'Quick polls', '/poll Lunch? pizza, tacos, sushi — no form needed.'],
+  ['🧊', 'Icebreakers', '/icebreaker posts a fun question to get everyone talking.'],
+  ['✊', 'More fair games', '/rps rock (vs Valk), /number 1-100, /teams 2 Ana, Ben, Cy, Dee.'],
   ['⚡', 'Quick Draw', 'Another new game: wait for green, tap fastest! Menu → ⚡ Play Quick Draw, or /play quick.'],
   ['⌨️', 'Type Race', 'A new game! Everyone types the same sentence — fastest fingers win. Menu → ⌨️ Play Type Race.'],
   ['🛡️', 'Co-hosts', 'Hosts can tap ⭐ next to someone to make them a co-host who helps moderate.'],
@@ -9558,7 +9566,7 @@ const GAME_ALIASES = {
   typerace: ['type', 'typing', 'race'], quickdraw: ['quick', 'quickdraw', 'reaction', 'qd', 'fast'], wordguess: ['wordle', 'word', 'wg'], hangman: ['hang'], trivia: ['quiz'],
   pictionary: ['draw', 'drawing'], chess: [], tictactoe: ['ttt', 'xo', 'connect4', 'connectfour'], blockbattle: ['bb', 'block'],
   buildcraft: ['build', 'craft'], webswing: ['swing', 'spider'], firefight: ['fps', 'shooter'], fighterplane: ['plane', 'planes'],
-  geometrywave: ['geometry', 'gw', 'dash'], stickfighter: ['stick', 'fight'], whiteboard: ['board', 'paint'], hello: [], minesweeper: ['mines', 'mine', 'ms', 'sweeper'],
+  geometrywave: ['geometry', 'gw', 'dash'], stickfighter: ['stick', 'fight'], whiteboard: ['board', 'paint'], hello: [], minesweeper: ['mines', 'mine', 'ms', 'sweeper'], memory: ['match', 'pairs', 'cards', 'mm'],
 };
 const GAME_LABELS = {
   typerace: '⌨️ Type Race (WPM)', quickdraw: '⚡ Quick Draw (1000 − ms)', wordguess: '🟩 Word Guess', hangman: '🪢 Hangman', trivia: '❓ Trivia', snake: '🐍 Snake',
@@ -9568,9 +9576,10 @@ const GAME_LABELS = {
   'gw-easy': '🔺 Geometry Wave (easy)', 'gw-medium': '🔺 Geometry Wave (medium)', 'gw-hard': '🔺 Geometry Wave (hard)',
   'gw-straight': '🔺 Geometry Wave (straight)', 'tictactoe-tictactoe': '⭕ Tic-Tac-Toe', 'tictactoe-connect4': '🔴 Connect Four',
   'mines-easy': '💣 Minesweeper (easy)', 'mines-medium': '💣 Minesweeper (medium)', 'mines-hard': '💣 Minesweeper (hard)',
+  'memory-easy': '🧠 Memory Match (easy)', 'memory-medium': '🧠 Memory Match (medium)', 'memory-hard': '🧠 Memory Match (hard)',
 };
 // Leaderboards that store a time as 100000 − tenths of a second (lower time = higher score).
-const TIME_SCORE_GAMES = new Set(['mines-easy', 'mines-medium', 'mines-hard']);
+const TIME_SCORE_GAMES = new Set(['mines-easy', 'mines-medium', 'mines-hard', 'memory-easy', 'memory-medium', 'memory-hard']);
 
 function renderGameInvite(data) {
   const el = document.createElement('div');

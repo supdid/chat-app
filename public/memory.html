@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Memory Match</title>
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="minesweeper.css">
+<link rel="stylesheet" href="memory.css">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0a1420">
+<link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+</head>
+<body>
+  <a id="back-link" href="index.html">&larr; Back to chat</a>
+
+  <main id="app">
+    <header class="ms-header">
+      <h1>🧠 Memory Match</h1>
+      <p class="tagline">Flip two cards at a time. Find every pair as fast as you can.</p>
+    </header>
+
+    <div class="controls">
+      <div class="levels" role="radiogroup" aria-label="Difficulty">
+        <button type="button" class="level" data-level="easy" role="radio">Easy</button>
+        <button type="button" class="level" data-level="medium" role="radio">Medium</button>
+        <button type="button" class="level" data-level="hard" role="radio">Hard</button>
+      </div>
+      <div class="hud">
+        <span id="pairs-left" title="Pairs found">✅ 0/8</span>
+        <button id="face-btn" type="button" aria-label="New game">🔄</button>
+        <span id="moves" title="Moves">👆 0</span>
+        <span id="timer" title="Time">⏱ 0.0</span>
+      </div>
+    </div>
+
+    <div id="board" class="mm-board" aria-label="Cards"></div>
+    <div id="result" class="result hidden"></div>
+
+    <section class="panel">
+      <h2>🏆 Fastest in this room — <span id="lb-level">Easy</span></h2>
+      <ol id="leaderboard" class="results-list"><li class="muted">Loading…</li></ol>
+    </section>
+  </main>
+
+  <script src="error-report.js"></script>
+  <script src="memory.js"></script>
+  <script src="update-prompt.js"></script>
+</body>
+</html>
