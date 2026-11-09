@@ -163,3 +163,6 @@ button.primary:disabled { opacity: 0.5; cursor: default; }
   .passage { font-size: 1rem; }
   .countdown { font-size: 6rem; }
 }
+
+button.secondary { margin-top: 0.5rem; width: 100%; padding: 0.6rem; font-size: 0.9rem; font-weight: 600; border-radius: 10px; border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.06); color: #eaf6ff; cursor: pointer; }
+button.secondary:disabled { opacity: 0.5; }

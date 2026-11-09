@@ -261,6 +261,15 @@ function renderLeaderboard(scores) {
   }
 }
 
+document.getElementById('invite-btn').addEventListener('click', (e) => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'game-invite', game: 'typerace', code: roomCode, name: myName }));
+  e.currentTarget.disabled = true;
+  e.currentTarget.textContent = '📣 Invite sent!';
+  const btn = e.currentTarget;
+  setTimeout(() => { btn.disabled = false; btn.textContent = '📣 Invite the chat room'; }, 30000);
+});
+
 startBtn.addEventListener('click', () => {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'tr-start' }));
 });

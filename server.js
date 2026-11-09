@@ -8012,6 +8012,24 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    // "X wants to play <game> — Join" in the chat room. From the chat (/play) or a game page.
+    if (msg.type === 'game-invite') {
+      const now = Date.now();
+      if (now - (ws.lastGameInviteAt || 0) < 30 * 1000) { send(ws, { type: 'error', message: 'You just sent an invite — give people a moment!' }); return; }
+      const code = String(msg.code || ws.room || '').toUpperCase().trim().slice(0, 10);
+      const game = INVITE_GAMES[msg.game] ? msg.game : null;
+      const name = (ws.profile && ws.profile.name) || String(msg.name || '').slice(0, 30).trim();
+      const room = code && rooms.get(code);
+      if (!game || !name || !room) return;
+      if (db.isBannedFromRoom(code, ws.accountId || ws.scoreAccountId || null, name)) return;
+      const dbRoom = db.getRoom(code);
+      if (dbRoom && dbRoom.pin_required && ws.room !== code) return; // game pages of PIN rooms: only from the chat itself
+      ws.lastGameInviteAt = now;
+      broadcastRoom(code, { type: 'game-invite', from: name, game, label: INVITE_GAMES[game][1], page: INVITE_GAMES[game][0], at: now });
+      send(ws, { type: 'game-invite-sent', game });
+      return;
+    }
+
     if (!ws.profile) {
       send(ws, { type: 'error', message: 'Not joined' });
       return;
@@ -8978,6 +8996,18 @@ wss.on('connection', (ws, req) => {
         }
       }
       send(ws, { type: 'my-stickers', stickers: db.getAccountStickers(ws.accountId) });
+      return;
+    }
+
+    // 🏆 Room champions: top 3 of every game's leaderboard in this room.
+    if (msg.type === 'get-room-champions' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      const byGame = {};
+      for (const r of db.getRoomLeaderboardAll(ws.room)) {
+        (byGame[r.game] = byGame[r.game] || []);
+        if (byGame[r.game].length < 3) byGame[r.game].push({ name: r.name, score: r.score });
+      }
+      send(ws, { type: 'room-champions', games: byGame });
       return;
     }
 
@@ -9950,6 +9980,15 @@ function sweepDisappearingMessages() {
 setInterval(sweepDisappearingMessages, Number(process.env.DISAPPEAR_SWEEP_MS) || 60 * 1000);
 
 const MAX_MY_STICKERS = 40;
+// Games you can invite the room to (page + display name).
+const INVITE_GAMES = {
+  typerace: ['typerace.html', '⌨️ Type Race'], wordguess: ['wordguess.html', '🟩 Word Guess'],
+  hangman: ['hangman.html', '🪢 Hangman'], trivia: ['trivia.html', '❓ Trivia'], pictionary: ['pictionary.html', '🖍️ Pictionary'],
+  chess: ['chess.html', '♟️ Chess'], tictactoe: ['tictactoe.html', '⭕ Tic-Tac-Toe'], blockbattle: ['blockbattle.html', '🧱 Block Battle'],
+  buildcraft: ['buildcraft.html', '🏝️ Build Craft'], webswing: ['webswing.html', '🕸️ Web Swing'], firefight: ['firefight.html', '🔫 Firefight'],
+  fighterplane: ['fighterplane.html', '🛩️ Fighter Plane'], geometrywave: ['geometrywave.html', '🔺 Geometry Wave'],
+  stickfighter: ['stickfighter.html', '🥊 Stick Fighter'], whiteboard: ['whiteboard.html', '🖌️ Whiteboard'], hello: ['hello.html', '👋 Hello'],
+};
 const ROOM_ACCENTS = ['sunset', 'grape', 'candy', 'fire', 'ocean', 'gold', 'forest', 'mono'];
 const SCHEDULE_MAX_AHEAD_MS = 30 * 24 * 60 * 60 * 1000;
 const SCHEDULE_MAX_PENDING = 10;

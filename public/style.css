@@ -3069,3 +3069,9 @@ button:focus-visible, a:focus-visible, [role="button"]:focus-visible, select:foc
 
 .thread-count-link { display: block; margin-top: 0.3rem; background: none; border: none; padding: 0; color: #3b9dff; font: inherit; font-size: 0.78rem; font-weight: 600; cursor: pointer; }
 .thread-count-link:hover { text-decoration: underline; }
+
+.system.game-invite { display: flex; align-items: center; justify-content: center; gap: 0.5rem; flex-wrap: wrap; }
+.game-invite-join { display: inline-block; padding: 0.2rem 0.8rem; border-radius: 999px; background: linear-gradient(135deg, #34e89e, #3b9dff); color: #06121c; font-weight: 700; text-decoration: none; font-size: 0.8rem; }
+.champ-game { margin-bottom: 0.8rem; }
+.champ-title { font-weight: 700; font-size: 0.9rem; margin-bottom: 0.25rem; }
+.champ-row { display: flex; justify-content: space-between; font-size: 0.88rem; padding: 0.15rem 0; }

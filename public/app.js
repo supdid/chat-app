@@ -1765,6 +1765,17 @@ function handleServerMessage(data) {
       renderMyStickers(data.stickers || [], !!data.signedOut);
       break;
 
+    case 'game-invite':
+      renderGameInvite(data);
+      if (myProfile && data.from !== myProfile.name) {
+        notify(`🎮 ${data.from} wants to play`, data.label);
+      }
+      break;
+
+    case 'room-champions':
+      renderChampions(data.games || {});
+      break;
+
     case 'edit-history':
       showEditHistory(data);
       break;
@@ -6467,6 +6478,19 @@ messageForm.addEventListener('submit', (e) => {
     saveDraftNow();
     return;
   }
+  const playMatch = raw.match(/^\/play(?:\s+(\S+))?\s*$/i);
+  if (playMatch) {
+    const wanted = (playMatch[1] || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const game = Object.keys(GAME_ALIASES).find((g) => g === wanted || GAME_ALIASES[g].includes(wanted));
+    if (!game) {
+      showAppToast('Try: /play typerace, /play wordguess, /play chess, /play trivia, /play blockbattle…');
+      return;
+    }
+    ws.send(JSON.stringify({ type: 'game-invite', game }));
+    messageInput.value = '';
+    saveDraftNow();
+    return;
+  }
   if (/^\/wyr\s*$/i.test(raw)) {
     const [a, b] = WYR_QUESTIONS[Math.floor(Math.random() * WYR_QUESTIONS.length)];
     ws.send(JSON.stringify({ type: 'message', text: JSON.stringify({ question: 'Would you rather…', options: [a, b] }), mediaUrl: 'poll', mediaType: 'poll' }));
@@ -9145,6 +9169,7 @@ const WHATS_NEW = [
   ['🔥', 'Streaks & About me', 'Profile cards show your chat streak and an "about me" you can write.'],
   ['⭐', 'Make your own stickers', 'Open 🙂 stickers → ＋ under My stickers to turn any photo into a sticker.'],
   ['📨', 'Invite friends', 'In 👥 Friends, tap 📨 to invite a friend to the room you’re in.'],
+  ['🎮', 'Game invites', 'Type /play typerace (or chess, trivia, wordle…) to call the room to a game. 🏆 Room champions shows the top players.'],
 ];
 const whatsNewModal = document.getElementById('whats-new-modal');
 function openWhatsNew() {
@@ -9358,4 +9383,78 @@ function setThreadCount(bubble, messageId, n) {
     if (actions) bubble.insertBefore(link, actions); else bubble.appendChild(link);
   }
   link.textContent = `💬 ${n} ${n === 1 ? 'reply' : 'replies'}`;
+}
+
+
+// --- 🎮 Game invites + 🏆 Room champions ---
+const GAME_ALIASES = {
+  typerace: ['type', 'typing', 'race'], wordguess: ['wordle', 'word', 'wg'], hangman: ['hang'], trivia: ['quiz'],
+  pictionary: ['draw', 'drawing'], chess: [], tictactoe: ['ttt', 'xo', 'connect4', 'connectfour'], blockbattle: ['bb', 'block'],
+  buildcraft: ['build', 'craft'], webswing: ['swing', 'spider'], firefight: ['fps', 'shooter'], fighterplane: ['plane', 'planes'],
+  geometrywave: ['geometry', 'gw', 'dash'], stickfighter: ['stick', 'fight'], whiteboard: ['board', 'paint'], hello: [],
+};
+const GAME_LABELS = {
+  typerace: '⌨️ Type Race (WPM)', wordguess: '🟩 Word Guess', hangman: '🪢 Hangman', trivia: '❓ Trivia', snake: '🐍 Snake',
+  g2048: '🔢 2048', fighterplane: '🛩️ Fighter Plane', stickfighter: '🥊 Stick Fighter', sw: '🕸️ Web Swing', hello: '👋 Hello',
+  bblevel: '🧱 Block Battle (level)', bbplaytime: '🧱 Block Battle (minutes played)', bbwave: '🧱 Block Battle (waves)',
+  bbjuggernaut: '🧱 Block Battle (Juggernaut)', bboneshot: '🧱 Block Battle (One Shot)',
+  'gw-easy': '🔺 Geometry Wave (easy)', 'gw-medium': '🔺 Geometry Wave (medium)', 'gw-hard': '🔺 Geometry Wave (hard)',
+  'gw-straight': '🔺 Geometry Wave (straight)', 'tictactoe-tictactoe': '⭕ Tic-Tac-Toe', 'tictactoe-connect4': '🔴 Connect Four',
+};
+
+function renderGameInvite(data) {
+  const el = document.createElement('div');
+  el.className = 'system game-invite';
+  const text = document.createElement('span');
+  text.textContent = `🎮 ${data.from} wants to play ${data.label}!`;
+  const join = document.createElement('a');
+  join.className = 'game-invite-join';
+  join.textContent = 'Join';
+  const params = myProfile ? `?room=${encodeURIComponent(currentRoomCode)}&name=${encodeURIComponent(myProfile.name)}&pin=${encodeURIComponent(currentRoomPin || '')}` : '';
+  join.href = `${data.page}${params}`;
+  el.append(text, ' ', join);
+  messagesEl.appendChild(el);
+  maybeScrollToBottom();
+}
+
+const championsModal = document.getElementById('champions-modal');
+document.getElementById('champions-btn').addEventListener('click', () => {
+  closeMenu();
+  document.getElementById('champions-body').innerHTML = '<p class="search-status">Loading…</p>';
+  championsModal.classList.remove('hidden');
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'get-room-champions' }));
+});
+document.getElementById('champions-close').addEventListener('click', () => championsModal.classList.add('hidden'));
+championsModal.addEventListener('click', (e) => { if (e.target === championsModal) championsModal.classList.add('hidden'); });
+
+function renderChampions(games) {
+  const body = document.getElementById('champions-body');
+  body.textContent = '';
+  const keys = Object.keys(games).sort((a, b) => (GAME_LABELS[a] || a).localeCompare(GAME_LABELS[b] || b));
+  if (!keys.length) {
+    const p = document.createElement('p');
+    p.className = 'search-status';
+    p.textContent = 'No scores in this room yet — play a game from the menu (or /play typerace) to get on the board!';
+    body.appendChild(p);
+    return;
+  }
+  for (const g of keys) {
+    const sec = document.createElement('div');
+    sec.className = 'champ-game';
+    const h = document.createElement('div');
+    h.className = 'champ-title';
+    h.textContent = GAME_LABELS[g] || g;
+    sec.appendChild(h);
+    games[g].forEach((r, i) => {
+      const row = document.createElement('div');
+      row.className = 'champ-row';
+      const n = document.createElement('span');
+      n.textContent = `${['🥇', '🥈', '🥉'][i]} ${r.name}`;
+      const sc = document.createElement('b');
+      sc.textContent = Number(r.score).toLocaleString();
+      row.append(n, sc);
+      sec.appendChild(row);
+    });
+    body.appendChild(sec);
+  }
 }

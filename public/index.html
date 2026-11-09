@@ -223,6 +223,14 @@
     </div>
   </div>
 
+  <div id="champions-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="champions-title">
+    <div class="modal-card">
+      <h2 id="champions-title">🏆 Room champions</h2>
+      <div id="champions-body"></div>
+      <button type="button" id="champions-close">Close</button>
+    </div>
+  </div>
+
   <div id="switcher-modal" class="modal-backdrop switcher-backdrop hidden" role="dialog" aria-modal="true" aria-label="Jump to a room">
     <div class="modal-card switcher-card">
       <input id="switcher-input" type="text" placeholder="Jump to a room — type a name or code" autocomplete="off" maxlength="40">
@@ -255,6 +263,7 @@
         <dt><code>||text||</code></dt><dd>Spoiler</dd>
         <dt><code>/me waves</code></dt><dd>Action message</dd>
         <dt><code>/roll 2d6</code></dt><dd>Roll dice for everyone to see (also /flip, /8ball, /pick a, b)</dd>
+        <dt><code>/play typerace</code></dt><dd>Invite the room to a game</dd>
         <dt><code>/wyr</code></dt><dd>Post a random "Would you rather…" poll</dd>
         <dt><code>/countdown 5m Pizza!</code></dt><dd>A live timer everyone can see</dd>
         <dt><code>/later 1h text</code></dt><dd>Send a message later (/scheduled to see them)</dd>
@@ -556,6 +565,7 @@
       <button id="gallery-btn" class="menu-link" type="button">🖼️ Media gallery</button>
       <button id="poll-btn" class="menu-link" type="button">📊 Create a poll</button>
       <button id="room-stats-btn" class="menu-link" type="button">📈 Room stats</button>
+      <button id="champions-btn" class="menu-link" type="button">🏆 Room champions</button>
       <button id="whats-new-btn" class="menu-link" type="button">✨ What's new</button>
       <button id="mentions-btn" class="menu-link" type="button">＠ Mentions of me</button>
       <button id="events-btn" class="menu-link" type="button">📅 Events</button>

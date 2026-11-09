@@ -1358,6 +1358,10 @@ function countRepliesFor(ids) {
   return out;
 }
 
+function getRoomLeaderboardAll(code) {
+  return db.prepare('SELECT game, name, score FROM leaderboard WHERE room_code = ? ORDER BY game, score DESC').all(code);
+}
+
 function setHostsOnly(code, on) {
   db.prepare('UPDATE rooms SET hosts_only = ? WHERE code = ?').run(on ? 1 : 0, code);
 }
@@ -3063,6 +3067,7 @@ function getAccountByStreamKey(key) {
 }
 
 module.exports = {
+  getRoomLeaderboardAll,
   countRepliesFor,
   getAccountStickers,
   addAccountSticker,

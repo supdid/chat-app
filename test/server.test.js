@@ -8318,3 +8318,29 @@ describe('thread reply counts (2026-11-08)', () => {
     a.close(); b.close();
   });
 });
+
+describe('room champions + game invites (2026-11-08)', () => {
+  test('game invites reach the chat room (rate-limited); champions list top scores per game', async () => {
+    const { ws: chat, code } = await joinRoom('ChampHost');
+    const other = await joinExistingRoom('ChampOther', code);
+    const inv = waitFor(other, (m) => m.type === 'game-invite');
+    send(chat, { type: 'game-invite', game: 'typerace' });
+    const got = await inv;
+    assert.equal(got.from, 'ChampHost');
+    assert.equal(got.page, 'typerace.html');
+    const err = waitFor(chat, (m) => m.type === 'error' && /just sent an invite/.test(m.message));
+    send(chat, { type: 'game-invite', game: 'chess' });
+    await err;
+    // From a game page socket (no chat session): uses code + name.
+    const gamePage = await connectWs();
+    const inv2 = waitFor(other, (m) => m.type === 'game-invite' && m.from === 'Racer');
+    send(gamePage, { type: 'game-invite', game: 'typerace', code, name: 'Racer' });
+    await inv2;
+    send(gamePage, { type: 'game-invite', game: 'notagame', code, name: 'Racer' });
+
+    send(chat, { type: 'get-room-champions' });
+    const champs = await waitFor(chat, (m) => m.type === 'room-champions');
+    assert.equal(typeof champs.games, 'object');
+    chat.close(); other.close(); gamePage.close();
+  });
+});
