@@ -221,7 +221,7 @@ function pushNewMessage(code, entry) {
     if (sub.name === entry.name || connectedNames.has(sub.name) || db.isBannedFromRoom(code, sub.accountId, sub.name)) return false;
     const mode = roomNotifyModeFor(sub, code);
     if (mode === 'off') return false;
-    if (mode === 'mentions') return entry.mediaType !== 'poll' && textMentions(entry.text, sub.name);
+    if (mode === 'mentions') return (entry.mediaType !== 'poll' && textMentions(entry.text, sub.name)) || !!(entry.replyPreview && entry.replyPreview.name === sub.name);
     return true;
   }), payload);
 }
@@ -9020,7 +9020,7 @@ wss.on('connection', (ws, req) => {
       if (ws.accountId) for (const r of db.getAccountRecentRooms(ws.accountId, 30)) codes.add(r.code);
       const allowed = [...codes].filter((c) => !db.isBannedFromRoom(c, ws.accountId, ws.profile.name));
       const rows = db.findMentions(allowed, ws.profile.name, Date.now() - 30 * 24 * 60 * 60 * 1000)
-        .filter((m) => textMentions(m.text, ws.profile.name))
+        .filter((m) => m.isReplyToMe || textMentions(m.text, ws.profile.name))
         .slice(0, 40)
         .map((m) => ({ ...m, text: String(m.text).slice(0, 300) }));
       send(ws, { type: 'mentions', mentions: rows });

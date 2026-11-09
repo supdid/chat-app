@@ -1327,10 +1327,11 @@ function handleServerMessage(data) {
       // feature exists to hide, leaking through every surface that isn't the message list itself.
       if (data.sub !== myProfile.sub && !blockedNames.has(data.name)) {
         const keywordHit = matchesKeywordAlert(data.text);
-        const mentioned = messageHasMention(data.text, myProfile.name) || keywordHit;
+        const repliedToMe = !!(data.replyPreview && data.replyPreview.name === myProfile.name);
+        const mentioned = messageHasMention(data.text, myProfile.name) || keywordHit || repliedToMe;
         const roomMode = currentRoomNotifyMode();
         if (roomMode === 'all' || (roomMode === 'mentions' && mentioned)) {
-          notify(keywordHit ? `🔎 ${data.name} said "${keywordHit}"` : mentioned ? `${data.name} mentioned you` : data.name, notificationPreview(data), { messageId: data.id });
+          notify(repliedToMe ? `↩ ${data.name} replied to you` : keywordHit ? `🔎 ${data.name} said "${keywordHit}"` : mentioned ? `${data.name} mentioned you` : data.name, notificationPreview(data), { messageId: data.id });
           playNotifySound();
         }
         if (document.hidden) {
@@ -8851,7 +8852,7 @@ function renderMentions(list) {
     const meta = document.createElement('div');
     meta.className = 'mention-meta';
     const where = m.roomCode === currentRoomCode ? 'this room' : (m.roomName ? `${m.roomName} (${m.roomCode})` : m.roomCode);
-    meta.textContent = `${m.name} · ${where} · ${formatReminderDue(m.at)}`;
+    meta.textContent = `${m.isReplyToMe ? '↩ ' : ''}${m.name}${m.isReplyToMe ? ' replied' : ''} · ${where} · ${formatReminderDue(m.at)}`;
     const text = document.createElement('div');
     text.className = 'mention-text';
     text.appendChild(renderTextWithMentions(hideSpoilerText(m.text)));

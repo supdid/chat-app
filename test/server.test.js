@@ -8114,9 +8114,14 @@ describe('countdowns + mentions inbox (2026-11-08)', () => {
       send(a, { type: 'message', text: t });
       await waitFor(b, (x) => x.type === 'message' && x.text === t);
     }
+    send(b, { type: 'message', text: 'my own message' });
+    const mine = await waitFor(a, (x) => x.type === 'message' && x.text === 'my own message');
+    send(a, { type: 'message', text: 'a reply to you', replyTo: mine.id });
+    await waitFor(b, (x) => x.type === 'message' && x.text === 'a reply to you');
     send(b, { type: 'get-mentions' });
     const r = await waitFor(b, (x) => x.type === 'mentions');
-    assert.deepEqual(r.mentions.map((x) => x.text).sort(), ['hey @MentB look', 'yo @everyone']);
+    assert.deepEqual(r.mentions.map((x) => x.text).sort(), ['a reply to you', 'hey @MentB look', 'yo @everyone']);
+    assert.equal(r.mentions.find((x) => x.text === 'a reply to you').isReplyToMe, 1);
     assert.equal(r.mentions[0].roomCode, code);
     a.close(); b.close();
   });

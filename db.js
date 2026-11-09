@@ -1272,13 +1272,15 @@ function findMentions(codes, name, since, limit = 60) {
   if (!codes.length) return [];
   const ph = codes.map(() => '?').join(',');
   return db.prepare(
-    `SELECT m.id, m.room_code AS roomCode, r.name AS roomName, m.name, m.text, m.at
+    `SELECT m.id, m.room_code AS roomCode, r.name AS roomName, m.name, m.text, m.at,
+            CASE WHEN p.name = ? THEN 1 ELSE 0 END AS isReplyToMe
      FROM messages m LEFT JOIN rooms r ON r.code = m.room_code
+     LEFT JOIN messages p ON p.id = m.reply_to_id
      WHERE m.room_code IN (${ph}) AND m.at > ? AND m.deleted = 0 AND m.name != ?
        AND (m.media_type IS NULL OR m.media_type != 'poll')
-       AND (m.text LIKE ? OR m.text LIKE '%@everyone%')
+       AND (m.text LIKE ? OR m.text LIKE '%@everyone%' OR p.name = ?)
      ORDER BY m.at DESC LIMIT ?`
-  ).all(...codes, since, name, `%@${name.replace(/[%_]/g, '')}%`, limit);
+  ).all(name, ...codes, since, name, `%@${name.replace(/[%_]/g, '')}%`, name, limit);
 }
 
 function setRoomIcon(code, icon) {
