@@ -1772,7 +1772,7 @@ function handleServerMessage(data) {
       // element — renderMessage never generates a link-preview card alongside one, so this stays
       // consistent with that rule rather than growing a new "media message got a card" case.
       if (bubble && !bubble.querySelector('.media')) {
-        const oldCard = bubble.querySelector('.link-preview-card');
+        const oldCard = bubble.querySelector('.link-preview-card, .yt-card');
         if (oldCard) oldCard.remove();
         const urlMatch = data.text.includes('||') ? null : data.text.match(/https?:\/\/[^\s<]+/i);
         if (urlMatch) renderLinkPreview(bubble, trimTrailingUrlPunctuation(urlMatch[0]));
@@ -1990,7 +1990,78 @@ function trimTrailingUrlPunctuation(url) {
 
 // --- Link previews (URL unfurl) --- session-only cache, avoids re-fetching the same URL twice.
 const linkPreviewCache = new Map();
+// youtube.com/watch?v=ID, youtu.be/ID, youtube.com/shorts/ID, m.youtube.com, music.youtube.com
+function youTubeIdFromUrl(url) {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^(www\.|m\.|music\.)/, '');
+    let id = null;
+    if (host === 'youtu.be') id = u.pathname.slice(1).split('/')[0];
+    else if (host === 'youtube.com' || host === 'youtube-nocookie.com') {
+      if (u.pathname === '/watch') id = u.searchParams.get('v');
+      else {
+        const m = u.pathname.match(/^\/(shorts|embed|live)\/([^/?#]+)/);
+        if (m) id = m[2];
+      }
+    }
+    if (!id || !/^[A-Za-z0-9_-]{11}$/.test(id)) return null;
+    const t = u.searchParams.get('t') || u.searchParams.get('start');
+    const start = t ? (parseInt(t, 10) || 0) : 0;
+    return { id, start, isShort: u.pathname.startsWith('/shorts/') };
+  } catch (err) {
+    return null;
+  }
+}
+
+// A thumbnail with ▶ — the real player (an iframe) only loads when tapped, so a chat full of
+// links doesn't pull in YouTube until someone actually wants to watch.
+function renderYouTubeCard(bubble, yt, url) {
+  const wrap = document.createElement('div');
+  wrap.className = 'yt-card' + (yt.isShort ? ' yt-short' : '');
+  const thumb = document.createElement('button');
+  thumb.type = 'button';
+  thumb.className = 'yt-thumb';
+  thumb.setAttribute('aria-label', 'Play YouTube video');
+  const img = document.createElement('img');
+  img.src = `https://i.ytimg.com/vi/${yt.id}/hqdefault.jpg`;
+  img.alt = '';
+  img.loading = 'lazy';
+  const play = document.createElement('span');
+  play.className = 'yt-play';
+  play.textContent = '▶';
+  thumb.append(img, play);
+  thumb.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const iframe = document.createElement('iframe');
+    iframe.src = `https://www.youtube-nocookie.com/embed/${yt.id}?autoplay=1&playsinline=1${yt.start ? `&start=${yt.start}` : ''}`;
+    iframe.allow = 'autoplay; encrypted-media; picture-in-picture; fullscreen';
+    iframe.allowFullscreen = true;
+    iframe.referrerPolicy = 'strict-origin-when-cross-origin';
+    iframe.title = 'YouTube video';
+    thumb.replaceWith(iframe);
+  });
+  const link = document.createElement('a');
+  link.className = 'yt-link';
+  link.href = url;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.textContent = 'Open on YouTube ↗';
+  wrap.append(thumb, link);
+  bubble.appendChild(wrap);
+  // Fill in the title from the normal link-preview fetch, if it has one.
+  fetch(`/link-preview?url=${encodeURIComponent(url)}`).then((r) => (r.ok ? r.json() : null)).then((data) => {
+    if (data && data.title) {
+      const title = document.createElement('div');
+      title.className = 'yt-title';
+      title.textContent = data.title;
+      wrap.insertBefore(title, link);
+    }
+  }).catch(() => {});
+}
+
 function renderLinkPreview(bubble, url) {
+  const yt = youTubeIdFromUrl(url);
+  if (yt) { renderYouTubeCard(bubble, yt, url); return; }
   const card = document.createElement('a');
   card.className = 'link-preview-card hidden';
   card.href = url;
@@ -2445,6 +2516,17 @@ function makeMessageActions(data) {
   saveBtn.setAttribute('aria-label', 'Save message');
   saveBtn.addEventListener('click', () => toggleSaveMessage(data));
   actions.appendChild(saveBtn);
+
+  if (accountToken && data.mediaType !== 'poll') {
+    const fwdBtn = document.createElement('button');
+    fwdBtn.type = 'button';
+    fwdBtn.className = 'msg-action-btn';
+    fwdBtn.textContent = '↪️';
+    fwdBtn.setAttribute('aria-label', 'Forward to a friend');
+    fwdBtn.title = 'Forward to a friend';
+    fwdBtn.addEventListener('click', (e) => { e.stopPropagation(); openForward(data); });
+    actions.appendChild(fwdBtn);
+  }
 
   const linkBtn = document.createElement('button');
   linkBtn.type = 'button';
@@ -8631,3 +8713,60 @@ messagesEl.addEventListener('touchend', (e) => {
   }
 });
 function roomHostsOnlyLocked() { return roomHostsOnly && !isMod(); }
+
+
+// --- Forward a message to a friend (as a private DM) ---
+const forwardModal = document.getElementById('forward-modal');
+const forwardList = document.getElementById('forward-list');
+document.getElementById('forward-close').addEventListener('click', () => forwardModal.classList.add('hidden'));
+forwardModal.addEventListener('click', (e) => { if (e.target === forwardModal) forwardModal.classList.add('hidden'); });
+
+function forwardText(data) {
+  const where = currentRoomName ? `${currentRoomName} (${currentRoomCode})` : currentRoomCode;
+  let body = data.text || '';
+  if (data.kind === 'me') body = `* ${data.name} ${body}`;
+  if (data.mediaUrl) body = `${body ? body + '\n' : ''}${location.origin}${data.mediaUrl}`;
+  const link = data.id ? `\n${location.origin}/?room=${encodeURIComponent(currentRoomCode)}&msg=${encodeURIComponent(data.id)}` : '';
+  return `↪️ ${data.name} in ${where}:\n${body}${link}`.slice(0, 500);
+}
+
+async function openForward(data) {
+  if (!accountToken) { showAppToast('Sign in to forward messages to friends'); return; }
+  const preview = document.getElementById('forward-preview');
+  preview.textContent = (data.text || (data.mediaUrl ? '(photo/video)' : '')).slice(0, 160);
+  forwardList.innerHTML = '<li class="search-status">Loading friends…</li>';
+  forwardModal.classList.remove('hidden');
+  let friends = [];
+  try {
+    const res = await fetch('/friends', { headers: { Authorization: `Bearer ${accountToken}` } });
+    if (res.ok) friends = (await res.json()).friends || [];
+  } catch (err) { /* offline */ }
+  forwardList.textContent = '';
+  if (!friends.length) {
+    const li = document.createElement('li');
+    li.className = 'search-status';
+    li.textContent = 'No friends yet — add some from 👥 Friends.';
+    forwardList.appendChild(li);
+    return;
+  }
+  for (const f of friends) {
+    const li = document.createElement('li');
+    li.setAttribute('role', 'button');
+    li.tabIndex = 0;
+    const name = document.createElement('span');
+    name.textContent = f.username;
+    const go = document.createElement('span');
+    go.className = 'sw-code';
+    go.textContent = 'Send ↪️';
+    li.append(name, go);
+    const send = () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) { showAppToast("Not connected — it wasn't sent."); return; }
+      ws.send(JSON.stringify({ type: 'friend-dm', toUsername: f.username, text: forwardText(data) }));
+      forwardModal.classList.add('hidden');
+      showAppToast(`↪️ Forwarded to ${f.username}`);
+    };
+    li.addEventListener('click', send);
+    li.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+    forwardList.appendChild(li);
+  }
+}

@@ -2964,3 +2964,18 @@ body.ts-xl .bubble .meta { font-size: 0.9rem; }
 .bubble { position: relative; }
 .double-tap-heart { position: absolute; left: 50%; top: 50%; font-size: 2.4rem; transform: translate(-50%, -50%) scale(0.4); animation: dt-heart 0.7s ease-out forwards; pointer-events: none; }
 @keyframes dt-heart { 0% { transform: translate(-50%, -50%) scale(0.4); opacity: 0; } 30% { transform: translate(-50%, -50%) scale(1.15); opacity: 1; } 100% { transform: translate(-50%, -80%) scale(1); opacity: 0; } }
+
+/* ---- Inline YouTube ---- */
+.yt-card { margin-top: 0.4rem; width: min(360px, 100%); }
+.yt-thumb, .yt-card iframe { display: block; width: 100%; aspect-ratio: 16 / 9; border: none; border-radius: 10px; overflow: hidden; background: #000; }
+.yt-short .yt-thumb, .yt-short iframe { aspect-ratio: 9 / 16; width: min(220px, 100%); }
+.yt-thumb { position: relative; padding: 0; cursor: pointer; }
+.yt-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.yt-play { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 62px; height: 44px; border-radius: 12px; background: rgba(255, 0, 0, 0.9); color: #fff; font-size: 1.3rem; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 14px rgba(0,0,0,0.4); }
+.yt-thumb:hover .yt-play { background: #ff0000; }
+.yt-title { font-size: 0.85rem; font-weight: 600; margin-top: 0.3rem; }
+.yt-link { display: inline-block; font-size: 0.75rem; color: var(--text-subtle); margin-top: 0.2rem; }
+.yt-short .yt-thumb img { transform: scale(1.36); }
+
+.forward-preview { font-size: 0.85rem; color: var(--text-subtle); border-left: 3px solid var(--input-border); padding: 0.3rem 0.6rem; margin-bottom: 0.6rem; white-space: pre-wrap; word-break: break-word; max-height: 5em; overflow: hidden; }
+.message-actions { flex-wrap: wrap; }
