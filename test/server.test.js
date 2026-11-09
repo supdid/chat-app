@@ -3019,13 +3019,16 @@ describe('Word Guess', () => {
     }
     assert.ok(revealed, 'six distinct guesses must exhaust WG_MAX_GUESSES and reveal the word');
 
+    // Listen for round-end BEFORE guessing: the server sends it right behind the guess result,
+    // often in the same network chunk, so attaching the listener afterwards could miss it.
+    const roundEndP = waitFor(solver, (m) => m.type === 'wg-round-end');
     send(solver, { type: 'wg-guess', guess: revealed });
     const solved = await waitFor(solver, (m) => m.type === 'wg-guess-result');
     assert.equal(solved.solved, true);
     assert.ok(solved.feedback.every((f) => f === 'correct'));
 
     // Both players are now done, so the shared round should end for the whole room.
-    const roundEnd = await waitFor(solver, (m) => m.type === 'wg-round-end');
+    const roundEnd = await roundEndP;
     assert.equal(roundEnd.word, revealed);
 
     send(solver, { type: 'wg-leaderboard' });
@@ -8112,5 +8115,71 @@ describe('countdowns + mentions inbox (2026-11-08)', () => {
     assert.deepEqual(r.mentions.map((x) => x.text).sort(), ['hey @MentB look', 'yo @everyone']);
     assert.equal(r.mentions[0].roomCode, code);
     a.close(); b.close();
+  });
+});
+
+describe('Type Race (2026-11-08)', () => {
+  const trJoin = async (name, code) => {
+    const ws = await connectWs();
+    send(ws, { type: 'tr-join', code, name });
+    const init = await waitFor(ws, (m) => m.type === 'tr-init');
+    return { ws, init };
+  };
+  test('a race starts with a countdown, caps impossible speed, ranks finishers and records best WPM', async () => {
+    const { code, ws: host } = await joinRoom('TrHost');
+    const a = await trJoin('TrA', code);
+    const b = await trJoin('TrB', code);
+    assert.equal(a.init.state, 'idle');
+    const startA = waitFor(a.ws, (m) => m.type === 'tr-race-start');
+    send(b.ws, { type: 'tr-start' });
+    const race = await startA;
+    assert.ok(race.text.length > 40);
+    assert.ok(race.startAt > race.now + 3000);
+
+    // Progress during the countdown is ignored.
+    send(a.ws, { type: 'tr-progress', chars: 10 });
+    await sleep(3600);
+    // Claiming the whole passage 0.1s after GO is clamped to what a human could type.
+    const prog = waitFor(b.ws, (m) => m.type === 'tr-progress' && m.id === a.init.id);
+    send(a.ws, { type: 'tr-progress', chars: race.text.length });
+    const p = await prog;
+    assert.ok(p.chars < 30, `clamped to ${p.chars}`);
+
+    // Fast-forward: wait until a real typist could have finished, then finish A then B.
+    const needMs = Math.ceil((race.text.length / 22) * 1000) + 200;
+    await sleep(needMs);
+    const finA = waitFor(b.ws, (m) => m.type === 'tr-finished' && m.id === a.init.id);
+    send(a.ws, { type: 'tr-progress', chars: race.text.length });
+    const fa = await finA;
+    assert.equal(fa.place, 1);
+    assert.ok(fa.wpm > 0);
+    await sleep(150);
+    const end = waitFor(a.ws, (m) => m.type === 'tr-race-end');
+    send(b.ws, { type: 'tr-progress', chars: race.text.length });
+    const results = (await end).results;
+    assert.deepEqual(results.map((r) => r.name), ['TrA', 'TrB']);
+    assert.equal(results[1].place, 2);
+
+    send(a.ws, { type: 'tr-leaderboard' });
+    const lb = await waitFor(a.ws, (m) => m.type === 'tr-leaderboard-result');
+    assert.equal(lb.scores[0].name, 'TrA');
+    a.ws.close(); b.ws.close(); host.close();
+  });
+
+  test('the last unfinished racer leaving ends the race for everyone else', async () => {
+    const { code, ws: host } = await joinRoom('TrLeaveHost');
+    const a = await trJoin('TrLA', code);
+    const b = await trJoin('TrLB', code);
+    const started = waitFor(a.ws, (m) => m.type === 'tr-race-start');
+    send(a.ws, { type: 'tr-start' });
+    const race = await started;
+    await sleep(3600 + Math.ceil((race.text.length / 22) * 1000) + 200);
+    send(a.ws, { type: 'tr-progress', chars: race.text.length });
+    await waitFor(a.ws, (m) => m.type === 'tr-finished');
+    const end = waitFor(a.ws, (m) => m.type === 'tr-race-end');
+    b.ws.close();
+    const r = await end;
+    assert.equal(r.results.length, 1);
+    a.ws.close(); host.close();
   });
 });

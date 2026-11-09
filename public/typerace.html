@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Type Race</title>
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="typerace.css">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0a1420">
+<link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+</head>
+<body>
+  <a id="back-link" href="index.html">&larr; Back to chat</a>
+
+  <main id="app">
+    <header class="tr-header">
+      <h1>⌨️ Type Race</h1>
+      <p class="tagline">Everyone types the same sentence. Fastest fingers win.</p>
+    </header>
+
+    <section id="lanes" class="lanes" aria-label="Race track"></section>
+
+    <section id="race" class="race-box">
+      <div id="status" class="status">Connecting…</div>
+      <div id="passage" class="passage" aria-live="off"></div>
+      <input id="type-input" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Wait for the race to start…" disabled>
+      <div class="race-stats">
+        <span id="my-wpm">0 WPM</span>
+        <span id="my-acc">100% accuracy</span>
+        <span id="my-time"></span>
+      </div>
+      <button id="start-btn" class="primary">Start a race</button>
+    </section>
+
+    <section id="results" class="panel hidden">
+      <h2>🏁 Results</h2>
+      <ol id="results-list" class="results-list"></ol>
+    </section>
+
+    <section class="panel">
+      <h2>🏆 Fastest in this room</h2>
+      <ol id="leaderboard" class="results-list"><li class="muted">Loading…</li></ol>
+    </section>
+  </main>
+
+  <div id="countdown" class="countdown hidden">3</div>
+
+  <script src="error-report.js"></script>
+  <script src="typerace.js"></script>
+  <script src="update-prompt.js"></script>
+</body>
+</html>

@@ -5286,6 +5286,87 @@ function wgProgress(wg) {
   }));
 }
 
+// ---- Type Race: everyone types the same passage; live progress, server-timed WPM. ----
+const TR_PASSAGES = [
+  'The quick brown fox jumps over the lazy dog while the sleepy cat watches from a sunny window.',
+  'Every great adventure starts with a single step, a packed lunch, and a really good pair of shoes.',
+  'My robot learned to make pancakes, but now it only makes pancakes, and the kitchen is full of them.',
+  'The dragon was not scary at all. It just wanted someone to share its giant bowl of popcorn with.',
+  'If you stack enough pillows on the couch, you can build a castle that no grown up can enter.',
+  'Stars are just faraway suns, which means somewhere out there it is always the middle of the day.',
+  'The pizza arrived with extra cheese, extra sauce, and somehow an extra pizza we never ordered.',
+  'Penguins cannot fly through the air, but they zoom through the water faster than you can blink.',
+  'Our team won the game in the last second, and the whole crowd jumped up and screamed with joy.',
+  'Never trust a squirrel with your snacks. It will smile, nod politely, and then run off with them.',
+  'A good friend is someone who laughs at your jokes even when they are not that funny at all.',
+  'The volcano rumbled loudly, so the scientists packed up their notes and ran down the hill.',
+  'Practice every day and your fingers will learn to fly across the keyboard like tiny ninjas.',
+  'The library was so quiet that you could hear a page turn from all the way across the room.',
+  'We built a snowman with a carrot nose, two button eyes, and a scarf that was way too long.',
+  'Space explorers float around their ship, eat food from little bags, and sleep tied to the wall.',
+  'The thunderstorm knocked the power out, so we played board games by flashlight until midnight.',
+  'Octopuses have three hearts and blue blood, which honestly sounds like a superhero origin story.',
+  'My little brother tried to cook breakfast and somehow set off every smoke alarm in the house.',
+  'The best part of a road trip is singing loudly to songs you only know half of the words to.',
+  'A tiny seed can grow into a giant tree if it gets enough sunlight, water, and lots of patience.',
+  'The museum had a real dinosaur skeleton that was taller than our whole school building.',
+  'Learning to ride a bike takes a few wobbles and scraped knees, but then you never forget it.',
+  'The cookies came out of the oven warm and gooey, and the whole kitchen smelled like heaven.',
+  'Some people say that if you listen closely to a seashell, you can hear the ocean inside it.',
+  'The game was tied, the clock was ticking, and everyone held their breath for the final shot.',
+  'Cats sleep for most of the day so they have plenty of energy to knock things off the table.',
+  'When the bell rang, the whole class rushed outside to play in the first snow of the winter.',
+  'The treasure map led us to an old oak tree, a muddy hole, and a box full of bottle caps.',
+  'Bees dance to tell each other where the best flowers are, which is honestly very impressive.',
+];
+const TR_RACE_MAX_MS = 3 * 60 * 1000;
+const TR_COUNTDOWN_MS = 3500;
+const TR_MAX_CPS = 22; // ~260 WPM — anything faster is clamped, not believed
+
+function broadcastTr(code, data, exclude) {
+  const room = rooms.get(code);
+  if (!room || !room.tr) return;
+  const payload = JSON.stringify(data);
+  for (const client of room.tr.players.keys()) {
+    if (client !== exclude && client.readyState === client.OPEN) client.send(payload);
+  }
+}
+function trPlayers(tr) {
+  return [...tr.players.values()].map((p) => ({ id: p.id, name: p.name, chars: p.chars, wpm: p.wpm, place: p.place, racing: p.racing }));
+}
+function trWpm(chars, ms) {
+  return ms > 0 ? Math.round((chars / 5) / (ms / 60000)) : 0;
+}
+function endTrRace(code) {
+  const room = rooms.get(code);
+  const tr = room && room.tr;
+  if (!tr || tr.state === 'idle') return;
+  clearTimeout(tr.endTimer);
+  tr.state = 'idle';
+  const results = [...tr.players.values()].filter((p) => p.racing)
+    .map((p) => ({ id: p.id, name: p.name, wpm: p.place ? p.wpm : trWpm(p.chars, Date.now() - tr.startAt), place: p.place || null, finished: !!p.place, chars: p.chars }))
+    .sort((a, b) => (a.place || 99) - (b.place || 99) || b.chars - a.chars);
+  broadcastTr(code, { type: 'tr-race-end', results, textLength: tr.text.length });
+}
+function leaveTr(ws) {
+  const code = ws.trRoom;
+  if (!code) return;
+  const room = rooms.get(code);
+  if (room && room.tr) {
+    const tr = room.tr;
+    const me = tr.players.get(ws);
+    tr.players.delete(ws);
+    if (me) {
+      broadcastTr(code, { type: 'tr-player-left', id: me.id });
+      clearRoomActivity(code, me.name);
+    }
+    if (tr.state !== 'idle' && ![...tr.players.values()].some((p) => p.racing && !p.place)) endTrRace(code);
+    if (tr.players.size === 0) { clearTimeout(tr.endTimer); delete room.tr; }
+  }
+  ws.trRoom = null;
+  ws.trId = null;
+}
+
 function leaveWg(ws) {
   const code = ws.wgRoom;
   if (!code) return;
@@ -7170,6 +7251,92 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'hm-leave') {
       leaveHm(ws);
+      return;
+    }
+
+    if (msg.type === 'tr-join') {
+      if (isWsMsgRateLimited(ws)) return;
+      const code = String(msg.code || '').toUpperCase().trim();
+      const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
+      if (!code) return;
+      if (db.isBannedFromRoom(code, ws.accountId || null, name)) {
+        send(ws, { type: 'tr-join-error', message: "You've been banned from this room" });
+        return;
+      }
+      if (ws.trRoom === code) return;
+      if (ws.trRoom) leaveTr(ws);
+      const room = getOrCreateRoom(code);
+      if (!room.tr) room.tr = { players: new Map(), state: 'idle', text: '', startAt: 0, finishers: 0, endTimer: null };
+      const tr = room.tr;
+      if (tr.players.size >= MAX_GAME_PLAYERS) {
+        send(ws, { type: 'tr-full' });
+        return;
+      }
+      const id = crypto.randomUUID();
+      ws.trRoom = code;
+      ws.trId = id;
+      tr.players.set(ws, { id, name, chars: 0, wpm: 0, place: null, racing: false });
+      send(ws, { type: 'tr-init', id, players: trPlayers(tr), state: tr.state, text: tr.state === 'idle' ? null : tr.text, startAt: tr.startAt, now: Date.now() });
+      broadcastTr(code, { type: 'tr-player-joined', id, name }, ws);
+      setRoomActivity(code, name, 'tr');
+      return;
+    }
+
+    if (msg.type === 'tr-start' && ws.trRoom) {
+      if (isWsMsgRateLimited(ws)) return;
+      const room = rooms.get(ws.trRoom);
+      const tr = room && room.tr;
+      if (!tr || tr.state !== 'idle') return;
+      let text = TR_PASSAGES[crypto.randomInt(TR_PASSAGES.length)];
+      if (text === tr.text && TR_PASSAGES.length > 1) text = TR_PASSAGES[(TR_PASSAGES.indexOf(text) + 1) % TR_PASSAGES.length];
+      tr.text = text;
+      tr.state = 'racing';
+      tr.startAt = Date.now() + TR_COUNTDOWN_MS;
+      tr.finishers = 0;
+      for (const p of tr.players.values()) { p.chars = 0; p.wpm = 0; p.place = null; p.racing = true; }
+      const code = ws.trRoom;
+      clearTimeout(tr.endTimer);
+      tr.endTimer = setTimeout(() => endTrRace(code), TR_COUNTDOWN_MS + TR_RACE_MAX_MS);
+      broadcastTr(code, { type: 'tr-race-start', text, startAt: tr.startAt, now: Date.now(), players: trPlayers(tr), by: tr.players.get(ws).name });
+      return;
+    }
+
+    if (msg.type === 'tr-progress' && ws.trRoom) {
+      const room = rooms.get(ws.trRoom);
+      const tr = room && room.tr;
+      const me = tr && tr.players.get(ws);
+      if (!tr || tr.state !== 'racing' || !me || !me.racing || me.place) return;
+      const now = Date.now();
+      if (now < tr.startAt) return;
+      if (now - (ws.trLastProgress || 0) < 80) return;
+      ws.trLastProgress = now;
+      const elapsed = now - tr.startAt;
+      let chars = Math.floor(Number(msg.chars));
+      if (!Number.isFinite(chars) || chars < me.chars) return;
+      chars = Math.min(chars, tr.text.length, Math.floor((elapsed / 1000) * TR_MAX_CPS) + 3);
+      me.chars = chars;
+      me.wpm = trWpm(chars, elapsed);
+      if (chars >= tr.text.length) {
+        tr.finishers += 1;
+        me.place = tr.finishers;
+        me.wpm = trWpm(tr.text.length, elapsed);
+        db.bumpLeaderboard(ws.trRoom, 'typerace', me.name, me.wpm, ws.scoreAccountId);
+        broadcastTr(ws.trRoom, { type: 'tr-finished', id: me.id, name: me.name, place: me.place, wpm: me.wpm, ms: elapsed });
+        if (![...tr.players.values()].some((p) => p.racing && !p.place)) endTrRace(ws.trRoom);
+      } else {
+        broadcastTr(ws.trRoom, { type: 'tr-progress', id: me.id, chars: me.chars, wpm: me.wpm });
+      }
+      return;
+    }
+
+    if (msg.type === 'tr-leaderboard' && ws.trRoom) {
+      if (isWsMsgRateLimited(ws)) return;
+      send(ws, { type: 'tr-leaderboard-result', scores: db.getLeaderboard(ws.trRoom, 'typerace', 10) });
+      return;
+    }
+
+    if (msg.type === 'tr-leave') {
+      leaveTr(ws);
       return;
     }
 
@@ -9584,6 +9751,7 @@ wss.on('connection', (ws, req) => {
     if (ws.chRoom) leaveCh(ws);
     if (ws.hmRoom) leaveHm(ws);
     if (ws.wgRoom) leaveWg(ws);
+    if (ws.trRoom) leaveTr(ws);
     if (ws.arcadeRoom && ws.arcadeName) clearRoomActivity(ws.arcadeRoom, ws.arcadeName);
     // Only end the stream if this closing socket is the one actually on file — see the identity
     // guard added to scorpture-go-live/scorpture-end-live above; without it, a stale tab that had
