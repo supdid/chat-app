@@ -8078,3 +8078,39 @@ describe('room notifications, unread counts, bio, stats (2026-11-08)', () => {
     host.close(); me.close();
   });
 });
+
+describe('countdowns + mentions inbox (2026-11-08)', () => {
+  test('/countdown makes a non-editable countdown with an end time that survives history', async () => {
+    const { ws: a, code } = await joinRoom('CountA');
+    const before = Date.now();
+    send(a, { type: 'message', text: '/countdown 2m Pizza time!' });
+    const m = await waitFor(a, (x) => x.type === 'message' && x.kind === 'countdown');
+    assert.equal(m.text, 'Pizza time!');
+    assert.ok(m.meta.endsAt >= before + 119000 && m.meta.endsAt <= Date.now() + 121000);
+    send(a, { type: 'message', text: '/countdown 1s too short' });
+    const plain = await waitFor(a, (x) => x.type === 'message' && /too short/.test(x.text));
+    assert.equal(plain.kind, null, 'under 5 seconds is just a normal message');
+    const b = await connectWs();
+    send(b, { type: 'join-server', username: 'CountB' });
+    await waitFor(b, (x) => x.type === 'joined-server');
+    send(b, { type: 'join-room', code });
+    const j = await waitFor(b, (x) => x.type === 'joined-room');
+    const h = j.messages.find((x) => x.kind === 'countdown');
+    assert.equal(h.meta.endsAt, m.meta.endsAt);
+    a.close(); b.close();
+  });
+
+  test('mentions inbox lists @you and @everyone from rooms you have been in', async () => {
+    const { ws: a, code } = await joinRoom('MentA');
+    const b = await joinExistingRoom('MentB', code);
+    for (const t of ['hey @MentB look', 'unrelated', 'yo @everyone', 'not @MentBee']) {
+      send(a, { type: 'message', text: t });
+      await waitFor(b, (x) => x.type === 'message' && x.text === t);
+    }
+    send(b, { type: 'get-mentions' });
+    const r = await waitFor(b, (x) => x.type === 'mentions');
+    assert.deepEqual(r.mentions.map((x) => x.text).sort(), ['hey @MentB look', 'yo @everyone']);
+    assert.equal(r.mentions[0].roomCode, code);
+    a.close(); b.close();
+  });
+});

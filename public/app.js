@@ -1073,6 +1073,11 @@ function handleServerMessage(data) {
       roomCohosts = data.cohosts || [];
       roomWelcomeText = data.welcome || null;
       roomHostsOnly = !!data.hostsOnly;
+      // Each room keeps its own unsent draft (survives switching rooms and reloading).
+      saveDraftNow(); // flush the previous room's draft first
+      draftRoomCode = data.code;
+      messageInput.value = loadDraft(data.code);
+      requestAnimationFrame(autoGrowComposer);
       loadRoomNotifyPref(data.code, data.notifyPref);
       sentAway = false;
       lastActivityAt = Date.now();
@@ -1724,6 +1729,10 @@ function handleServerMessage(data) {
       if (data.code === currentRoomCode) renderRoomStats(data);
       break;
 
+    case 'mentions':
+      renderMentions(data.mentions || []);
+      break;
+
     case 'edit-history':
       showEditHistory(data);
       break;
@@ -2131,6 +2140,19 @@ function renderMessage(data, opts = {}) {
     }
     text.appendChild(renderTextWithMentions(data.text));
     bubble.appendChild(text);
+    if (data.kind === 'countdown' && data.meta && data.meta.endsAt) {
+      text.textContent = '';
+      bubble.classList.add('countdown-bubble');
+      const label = document.createElement('div');
+      label.className = 'countdown-label';
+      label.appendChild(renderTextWithMentions(data.text));
+      const clock = document.createElement('div');
+      clock.className = 'countdown-clock';
+      clock.dataset.endsAt = String(data.meta.endsAt);
+      text.append(label, clock);
+      tickCountdown(clock);
+      ensureCountdownTicker();
+    }
     if (data.kind === 'roll') {
       bubble.classList.add('roll-bubble');
       const fair = document.createElement('span');
@@ -2320,6 +2342,7 @@ function highlightMentionItem(index) {
 }
 
 function updateMentionDropdown() {
+  if (updateEmojiSuggestions()) return;
   const query = currentMentionQuery();
   let matches = query === null ? [] : lastRoomUsers.filter((u) => u.name.toLowerCase().startsWith(query.toLowerCase())).slice(0, 5);
   if (query !== null && 'everyone'.startsWith(query.toLowerCase())) matches = [{ name: 'everyone' }, ...matches].slice(0, 5);
@@ -2476,7 +2499,7 @@ function makeMessageActions(data) {
     reportBtn.addEventListener('click', () => reportUser(data.name, data.id, data.text));
     actions.appendChild(reportBtn);
   }
-  if (isOwn && !data.mediaUrl && data.kind !== 'roll') {
+  if (isOwn && !data.mediaUrl && data.kind !== 'roll' && data.kind !== 'countdown') {
     const editBtn = document.createElement('button');
     editBtn.type = 'button';
     editBtn.className = 'msg-action-btn';
@@ -6286,6 +6309,7 @@ messageForm.addEventListener('submit', (e) => {
   }
   if (handleReminderCommand(raw)) {
     messageInput.value = '';
+    saveDraftNow();
     return;
   }
   if (roomSlowMode && !isMod() && Date.now() < slowModeReadyAt) {
@@ -6298,6 +6322,7 @@ messageForm.addEventListener('submit', (e) => {
   if (replyingTo) payload.replyTo = replyingTo.id;
   ws.send(JSON.stringify(payload));
   messageInput.value = '';
+  saveDraftNow();
   clearReplyingTo();
   // The dropdown could still be showing stale matches from the just-sent text (e.g. the message
   // ended with an unfinished "@al") — previously nothing here hid it, so it stayed visible over
@@ -6321,7 +6346,9 @@ messageInput.addEventListener('keydown', (e) => {
     highlightMentionItem(mentionHighlightIndex - 1);
   } else if (e.key === 'Enter' || e.key === 'Tab') {
     e.preventDefault();
-    const label = items[mentionHighlightIndex] && items[mentionHighlightIndex].querySelector('span');
+    const picked = items[mentionHighlightIndex];
+    if (picked && picked.dataset.insert) { insertEmojiSuggestion(picked.dataset.insert); return; }
+    const label = picked && picked.querySelector('span');
     if (label) insertMention(label.textContent);
   } else if (e.key === 'Escape') {
     e.preventDefault();
@@ -6354,6 +6381,7 @@ messageForm.addEventListener('submit', () => requestAnimationFrame(autoGrowCompo
 
 messageInput.addEventListener('input', () => {
   autoGrowComposer();
+  scheduleDraftSave();
   updateMentionDropdown();
   const now = Date.now();
   if (now - lastTypingSentAt < 2000) return;
@@ -7294,7 +7322,7 @@ if ('serviceWorker' in navigator) {
 const rejoinRoom = rejoinParams.get('room');
 // ?room=CODE&msg=ID (a copied message link) — jump to that message once the room is joined.
 let pendingLinkMsgId = rejoinParams.get('msg') || null;
-const pendingLinkRoom = rejoinRoom ? rejoinRoom.trim().toUpperCase() : null;
+let pendingLinkRoom = rejoinRoom ? rejoinRoom.trim().toUpperCase() : null;
 const rejoinName = rejoinParams.get('name');
 if (rejoinRoom) {
   currentRoomCode = rejoinRoom.trim().toUpperCase();
@@ -8344,4 +8372,185 @@ function renderRoomStats(s) {
   foot.className = 'search-status';
   foot.textContent = `${Number(s.total).toLocaleString()} messages all time${s.firstMessageAt ? ` · first one on ${new Date(s.firstMessageAt).toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' })}` : ''}`;
   statsBody.appendChild(foot);
+}
+
+
+// --- Per-room drafts ---
+function draftKey(code) { return `valk-draft:${code}`; }
+// The room the composer's current text belongs to (currentRoomCode changes first on a switch).
+let draftRoomCode = null;
+function loadDraft(code) {
+  try { return localStorage.getItem(draftKey(code)) || ''; } catch (err) { return ''; }
+}
+let draftTimer = null;
+function saveDraftNow() {
+  clearTimeout(draftTimer);
+  if (!draftRoomCode) return;
+  try {
+    const v = messageInput.value;
+    if (v.trim()) localStorage.setItem(draftKey(draftRoomCode), v.slice(0, 2000));
+    else localStorage.removeItem(draftKey(draftRoomCode));
+  } catch (err) { /* storage full / private mode */ }
+}
+function scheduleDraftSave() {
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(saveDraftNow, 400);
+}
+window.addEventListener('pagehide', saveDraftNow);
+
+
+// --- :emoji autocomplete — type ":fire" and pick 🔥 (or a room's own :custom: emoji) ---
+const EMOJI_SHORTCODES = {
+  smile: '😄', grin: '😁', joy: '😂', rofl: '🤣', laugh: '😆', sweat_smile: '😅', wink: '😉', blush: '😊',
+  innocent: '😇', heart_eyes: '😍', star_struck: '🤩', kiss: '😘', yum: '😋', tongue: '😛', crazy: '🤪',
+  thinking: '🤔', shush: '🤫', zipper: '🤐', neutral: '😐', expressionless: '😑', smirk: '😏', unamused: '😒',
+  eyeroll: '🙄', grimace: '😬', relieved: '😌', pensive: '😔', sleepy: '😪', sleeping: '😴', drool: '🤤',
+  mask: '😷', sick: '🤢', vomit: '🤮', hot: '🥵', cold: '🥶', dizzy: '😵', mindblown: '🤯', cowboy: '🤠',
+  party: '🥳', cool: '😎', nerd: '🤓', monocle: '🧐', confused: '😕', worried: '😟', frown: '☹️',
+  open_mouth: '😮', hushed: '😯', astonished: '😲', flushed: '😳', pleading: '🥺', cry: '😢', sob: '😭',
+  scream: '😱', angry: '😠', rage: '😡', skull: '💀', poop: '💩', clown: '🤡', ghost: '👻', alien: '👽',
+  robot: '🤖', devil: '😈', cat: '🐱', dog: '🐶', fox: '🦊', panda: '🐼', frog: '🐸', monkey: '🐵',
+  see_no_evil: '🙈', unicorn: '🦄', dragon: '🐉', shark: '🦈', snake: '🐍', turtle: '🐢', bee: '🐝',
+  heart: '❤️', orange_heart: '🧡', yellow_heart: '💛', green_heart: '💚', blue_heart: '💙', purple_heart: '💜',
+  black_heart: '🖤', broken_heart: '💔', sparkling_heart: '💖', hundred: '💯', fire: '🔥', sparkles: '✨',
+  star: '⭐', boom: '💥', zap: '⚡', rainbow: '🌈', sun: '☀️', moon: '🌙', snowflake: '❄️', cloud: '☁️',
+  thumbsup: '👍', thumbsdown: '👎', ok: '👌', clap: '👏', wave: '👋', pray: '🙏', muscle: '💪', fist: '✊',
+  punch: '👊', v: '✌️', crossed_fingers: '🤞', point_up: '☝️', point_right: '👉', eyes: '👀', brain: '🧠',
+  raised_hands: '🙌', shrug: '🤷', facepalm: '🤦', salute: '🫡', handshake: '🤝', writing: '✍️',
+  pizza: '🍕', burger: '🍔', fries: '🍟', taco: '🌮', popcorn: '🍿', cake: '🎂', cookie: '🍪', donut: '🍩',
+  icecream: '🍦', candy: '🍬', apple: '🍎', banana: '🍌', watermelon: '🍉', coffee: '☕', boba: '🧋',
+  tada: '🎉', confetti: '🎊', gift: '🎁', balloon: '🎈', trophy: '🏆', medal: '🏅', crown: '👑', gem: '💎',
+  money: '💰', moneybag: '💰', rocket: '🚀', car: '🚗', plane: '✈️', soccer: '⚽', basketball: '🏀',
+  football: '🏈', game: '🎮', controller: '🎮', dice: '🎲', music: '🎵', guitar: '🎸', microphone: '🎤',
+  headphones: '🎧', camera: '📷', phone: '📱', laptop: '💻', bulb: '💡', book: '📖', pencil: '✏️',
+  lock: '🔒', key: '🔑', bell: '🔔', check: '✅', x: '❌', warning: '⚠️', question: '❓', exclamation: '❗',
+  stop: '🛑', clock: '⏰', hourglass: '⏳', calendar: '📅', pin: '📌', link: '🔗', bomb: '💣', sword: '⚔️',
+  shield: '🛡️', magic: '🪄', earth: '🌍', mountain: '⛰️', tree: '🌳', flower: '🌸', rose: '🌹', sunflower: '🌻',
+  cactus: '🌵', mushroom: '🍄', snowman: '⛄', christmas_tree: '🎄', jackolantern: '🎃', goat: '🐐',
+  cap: '🧢', sus: '🤨', raised_eyebrow: '🤨', melting: '🫠', saluting: '🫡', nail_care: '💅', moai: '🗿',
+};
+const EMOJI_NAMES = Object.keys(EMOJI_SHORTCODES);
+
+function currentEmojiQuery() {
+  const cursor = messageInput.selectionStart;
+  const m = messageInput.value.slice(0, cursor).match(/(?:^|\s):([a-z0-9_+-]{2,20})$/i);
+  return m ? m[1].toLowerCase() : null;
+}
+
+function updateEmojiSuggestions() {
+  const q = currentEmojiQuery();
+  if (!q) return false;
+  const custom = [...roomEmojis.keys()].filter((n) => n.includes(q)).sort((a, b) => a.indexOf(q) - b.indexOf(q)).slice(0, 4)
+    .map((n) => ({ name: n, custom: true }));
+  const builtIn = EMOJI_NAMES.filter((n) => n.includes(q))
+    .sort((a, b) => (a.startsWith(q) ? 0 : 1) - (b.startsWith(q) ? 0 : 1) || a.length - b.length)
+    .slice(0, 6 - custom.length).map((n) => ({ name: n, char: EMOJI_SHORTCODES[n] }));
+  const matches = [...custom, ...builtIn];
+  if (!matches.length) return false;
+  mentionDropdownEl.innerHTML = '';
+  for (const mt of matches) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'mention-dropdown-item emoji-suggest-item';
+    item.dataset.insert = mt.custom ? `:${mt.name}:` : mt.char;
+    const icon = mt.custom ? makeCustomEmojiImg(mt.name) : document.createElement('b');
+    if (!mt.custom) icon.textContent = mt.char;
+    const label = document.createElement('span');
+    label.textContent = `:${mt.name}:`;
+    item.append(icon, label);
+    item.addEventListener('mousedown', (e) => { e.preventDefault(); insertEmojiSuggestion(item.dataset.insert); });
+    mentionDropdownEl.appendChild(item);
+  }
+  mentionDropdownEl.classList.remove('hidden');
+  highlightMentionItem(0);
+  return true;
+}
+
+function insertEmojiSuggestion(text) {
+  const value = messageInput.value;
+  const cursor = messageInput.selectionStart;
+  const before = value.slice(0, cursor).replace(/:([a-z0-9_+-]{2,20})$/i, `${text} `);
+  messageInput.value = before + value.slice(cursor);
+  mentionDropdownEl.classList.add('hidden');
+  mentionHighlightIndex = -1;
+  messageInput.setSelectionRange(before.length, before.length);
+  messageInput.focus();
+  autoGrowComposer();
+  scheduleDraftSave();
+}
+
+
+// --- Mentions inbox ---
+const mentionsModal = document.getElementById('mentions-modal');
+const mentionsList = document.getElementById('mentions-list');
+document.getElementById('mentions-btn').addEventListener('click', () => {
+  closeMenu();
+  mentionsList.innerHTML = '<li class="search-status">Loading…</li>';
+  mentionsModal.classList.remove('hidden');
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'get-mentions' }));
+});
+document.getElementById('mentions-close').addEventListener('click', () => mentionsModal.classList.add('hidden'));
+mentionsModal.addEventListener('click', (e) => { if (e.target === mentionsModal) mentionsModal.classList.add('hidden'); });
+
+function renderMentions(list) {
+  mentionsList.textContent = '';
+  if (!list.length) {
+    const li = document.createElement('li');
+    li.className = 'search-status';
+    li.textContent = accountToken
+      ? 'Nobody has @mentioned you in the last 30 days.'
+      : 'Nobody has @mentioned you here in the last 30 days. (Sign in to see mentions from all your rooms.)';
+    mentionsList.appendChild(li);
+    return;
+  }
+  for (const m of list) {
+    const li = document.createElement('li');
+    const meta = document.createElement('div');
+    meta.className = 'mention-meta';
+    const where = m.roomCode === currentRoomCode ? 'this room' : (m.roomName ? `${m.roomName} (${m.roomCode})` : m.roomCode);
+    meta.textContent = `${m.name} · ${where} · ${formatReminderDue(m.at)}`;
+    const text = document.createElement('div');
+    text.className = 'mention-text';
+    text.appendChild(renderTextWithMentions(hideSpoilerText(m.text)));
+    li.append(meta, text);
+    li.addEventListener('click', () => {
+      mentionsModal.classList.add('hidden');
+      if (m.roomCode === currentRoomCode) { jumpToMessage(m.id); return; }
+      pendingLinkMsgId = m.id;
+      pendingLinkRoom = m.roomCode;
+      joinFriendRoom(m.roomCode);
+    });
+    mentionsList.appendChild(li);
+  }
+}
+
+
+// --- /countdown timers: tick once a second while any are on screen ---
+let countdownTicker = null;
+function tickCountdown(clock) {
+  const left = Number(clock.dataset.endsAt) - Date.now();
+  if (left <= 0) {
+    if (!clock.classList.contains('done')) {
+      clock.classList.add('done');
+      clock.textContent = "🎉 Time's up!";
+      // Only chime for countdowns that finish while you're watching (not old ones in history).
+      if (clock.dataset.live === '1' && left > -3000) { try { playNotifySound(); } catch (err) { /* ignore */ } }
+    }
+    return false;
+  }
+  clock.dataset.live = '1';
+  const s = Math.ceil(left / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  clock.textContent = `⏳ ${h ? `${h}:${String(m).padStart(2, '0')}` : m}:${String(sec).padStart(2, '0')}`;
+  return true;
+}
+function ensureCountdownTicker() {
+  if (countdownTicker) return;
+  countdownTicker = setInterval(() => {
+    let any = false;
+    document.querySelectorAll('.countdown-clock:not(.done)').forEach((c) => { if (tickCountdown(c)) any = true; });
+    if (!any) { clearInterval(countdownTicker); countdownTicker = null; }
+  }, 1000);
 }

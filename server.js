@@ -5445,6 +5445,14 @@ function resolveServerCommand(text) {
     const options = pick[1].split(/\s*(?:,|\bor\b)\s*/i).map((o) => o.trim()).filter(Boolean).slice(0, 20);
     if (options.length >= 2) return { kind: 'roll', text: `🤔 picked from ${options.join(', ')}: **${options[crypto.randomInt(options.length)]}**` };
   }
+  const cd = text.match(/^\/countdown\s+(\d+(?:\.\d+)?)\s*(s|secs?|seconds?|m|mins?|minutes?|h|hrs?|hours?)\b\s*([\s\S]*)$/i);
+  if (cd) {
+    const unit = { s: 1000, m: 60000, h: 3600000 }[cd[2][0].toLowerCase()];
+    const ms = Math.round(parseFloat(cd[1]) * unit);
+    if (ms >= 5000 && ms <= 24 * 3600000) {
+      return { kind: 'countdown', text: cd[3].trim().slice(0, 200) || 'Countdown', meta: { endsAt: Date.now() + ms } };
+    }
+  }
   const me = text.match(/^\/me\s+(.+)$/is);
   if (me) return { kind: 'me', text: me[1].trim() };
   return null;
@@ -8705,6 +8713,21 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    // Mentions inbox: @you / @everyone in the last 30 days. Only rooms you've actually been in —
+    // your account's recent rooms (so PIN rooms you got into count) plus the one you're in now.
+    if (msg.type === 'get-mentions' && ws.profile) {
+      if (isWsMsgRateLimited(ws)) return;
+      const codes = new Set(ws.room ? [ws.room] : []);
+      if (ws.accountId) for (const r of db.getAccountRecentRooms(ws.accountId, 30)) codes.add(r.code);
+      const allowed = [...codes].filter((c) => !db.isBannedFromRoom(c, ws.accountId, ws.profile.name));
+      const rows = db.findMentions(allowed, ws.profile.name, Date.now() - 30 * 24 * 60 * 60 * 1000)
+        .filter((m) => textMentions(m.text, ws.profile.name))
+        .slice(0, 40)
+        .map((m) => ({ ...m, text: String(m.text).slice(0, 300) }));
+      send(ws, { type: 'mentions', mentions: rows });
+      return;
+    }
+
     if (msg.type === 'set-hosts-only' && ws.room) {
       if (isWsMsgRateLimited(ws)) return;
       const dbRoom = db.getRoom(ws.room);
@@ -9305,9 +9328,10 @@ wss.on('connection', (ws, req) => {
       // /roll, /flip, /8ball are rolled HERE (not in the browser) so nobody can fake a result;
       // kind 'roll' tells clients to show it as a verified roll. /me becomes an action line.
       let kind = null;
+      let meta = null;
       if (!msg.mediaType && !msg.gifId) {
         const cmd = resolveServerCommand(text);
-        if (cmd) { text = cmd.text; kind = cmd.kind; }
+        if (cmd) { text = cmd.text; kind = cmd.kind; meta = cmd.meta || null; }
       }
       // A GIF from the GIF picker arrives as just its GIPHY id; the URL is built here.
       const gifUrl = typeof msg.gifId === 'string' && GIF_ID_RE.test(msg.gifId) ? gifUrlForId(msg.gifId) : null;
@@ -9358,11 +9382,12 @@ wss.on('connection', (ws, req) => {
         replyPreview,
         at: Date.now(),
         kind,
+        meta,
         flair: db.accountFlair(ws.accountId),
       };
       room.history.push(entry);
       if (room.history.length > HISTORY_LIMIT) room.history.shift();
-      db.insertMessage({ id: entry.id, roomCode: ws.room, name: entry.name, text: entry.text, mediaUrl: entry.mediaUrl, mediaType: entry.mediaType, replyToId, at: entry.at, accountId: ws.accountId || null, kind });
+      db.insertMessage({ id: entry.id, roomCode: ws.room, name: entry.name, text: entry.text, mediaUrl: entry.mediaUrl, mediaType: entry.mediaType, replyToId, at: entry.at, accountId: ws.accountId || null, kind, meta });
       db.upsertRoom(ws.room);
       broadcastRoom(ws.room, entry);
       pushNewMessage(ws.room, entry);
@@ -9392,7 +9417,7 @@ wss.on('connection', (ws, req) => {
       // supported poll feature and this generic free-text path has no shape validation, so
       // allowing it here would let a user corrupt their own poll the same way the message
       // handler above now guards against on creation.
-      if (!target || target.room_code !== ws.room || !ownsMessage(target, ws) || target.deleted || target.media_type === 'poll' || target.kind === 'roll') return;
+      if (!target || target.room_code !== ws.room || !ownsMessage(target, ws) || target.deleted || target.media_type === 'poll' || target.kind === 'roll' || target.kind === 'countdown') return;
       db.updateMessageText(messageId, text);
       const entry = room && room.history.find((m) => m.id === messageId);
       if (entry) { entry.text = text; entry.edited = true; }
@@ -9682,10 +9707,11 @@ function sendDueScheduledMessages() {
         replyPreview: null,
         at: Date.now(),
         kind: cmd ? cmd.kind : null,
+        meta: cmd ? cmd.meta || null : null,
         scheduled: true,
         flair: db.accountFlair(r.account_id),
       };
-      db.insertMessage({ id: entry.id, roomCode: r.room_code, name: entry.name, text: entry.text, mediaUrl: null, mediaType: null, replyToId: null, at: entry.at, accountId: r.account_id || null, kind: entry.kind });
+      db.insertMessage({ id: entry.id, roomCode: r.room_code, name: entry.name, text: entry.text, mediaUrl: null, mediaType: null, replyToId: null, at: entry.at, accountId: r.account_id || null, kind: entry.kind, meta: entry.meta });
       db.upsertRoom(r.room_code);
       if (room) {
         room.history.push(entry);

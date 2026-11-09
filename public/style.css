@@ -2924,3 +2924,39 @@ body.ts-xl .bubble .meta { font-size: 0.9rem; }
 .stats-hours-labels { display: flex; justify-content: space-between; font-size: 0.68rem; color: var(--text-subtle); }
 .stats-reactions { display: flex; gap: 0.75rem; flex-wrap: wrap; font-size: 1.1rem; }
 .stats-reactions span small { font-size: 0.75rem; color: var(--text-subtle); margin-left: 0.15rem; }
+
+/* A wide ```code block``` (or long unbroken text) used to stretch its bubble past the screen
+   edge — the bubble sized itself to the <pre>'s full line width. Let the bubble shrink inside the
+   message row and make the code block scroll sideways instead. */
+.message .bubble { min-width: 0; max-width: 100%; }
+.bubble .text { min-width: 0; }
+.fenced-code { width: 100%; box-sizing: border-box; }
+.message:has(.fenced-code) { max-width: min(92%, 720px); }
+.message:has(.fenced-code) .bubble { flex: 1 1 auto; overflow: hidden; }
+
+/* The two newer menu dropdowns match the notification-sound one. */
+#room-notify-select,
+#text-size-select {
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  color: var(--text-color);
+  font-size: 0.9rem;
+}
+
+.emoji-suggest-item b { font-size: 1.25rem; font-weight: normal; width: 1.6rem; text-align: center; }
+.emoji-suggest-item .custom-emoji { width: 1.4rem; height: 1.4rem; }
+
+.mentions-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.45rem; }
+.mentions-list li { padding: 0.55rem 0.65rem; border: 1px solid var(--input-border); border-radius: 8px; cursor: pointer; }
+.mentions-list li:hover { background: var(--icon-hover-bg); }
+.mentions-list li.search-status { cursor: default; border: none; }
+.mentions-list .mention-meta { font-size: 0.75rem; color: var(--text-subtle); margin-bottom: 0.15rem; }
+.mentions-list .mention-text { white-space: pre-wrap; word-break: break-word; font-size: 0.9rem; max-height: 4.5em; overflow: hidden; }
+
+.countdown-bubble { border-left: 3px solid #ff8a3d; }
+.countdown-label { font-weight: 600; }
+.countdown-clock { font-size: 1.6em; font-variant-numeric: tabular-nums; font-weight: 700; margin-top: 0.15rem; }
+.countdown-clock.done { font-size: 1.15em; color: #34e89e; }

@@ -158,6 +158,8 @@ ensureColumn('messages', 'deleted', 'INTEGER DEFAULT 0');
 ensureColumn('messages', 'account_id', 'TEXT');
 // 'roll' (server-rolled /roll /flip /8ball — can't be faked) or 'me' (/me action), else NULL.
 ensureColumn('messages', 'kind', 'TEXT');
+// Small JSON extras for special kinds, e.g. a /countdown's {"endsAt": ms}.
+ensureColumn('messages', 'meta', 'TEXT');
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_account ON messages(account_id)');
 ensureColumn('rooms', 'host_name', 'TEXT');
 ensureColumn('rooms', 'host_account_id', 'TEXT');
@@ -1039,8 +1041,8 @@ function setWallpaper(code, url) {
 
 function insertMessage(entry) {
   db.prepare(
-    `INSERT INTO messages (id, room_code, name, text, media_url, media_type, reply_to_id, at, account_id, kind)
-     VALUES (@id, @roomCode, @name, @text, @mediaUrl, @mediaType, @replyToId, @at, @accountId, @kind)`
+    `INSERT INTO messages (id, room_code, name, text, media_url, media_type, reply_to_id, at, account_id, kind, meta)
+     VALUES (@id, @roomCode, @name, @text, @mediaUrl, @mediaType, @replyToId, @at, @accountId, @kind, @meta)`
   ).run({
     id: entry.id,
     roomCode: entry.roomCode,
@@ -1057,6 +1059,7 @@ function insertMessage(entry) {
     // have no such identity to bind to — unchanged, name-only behavior for them.
     accountId: entry.accountId || null,
     kind: entry.kind || null,
+    meta: entry.meta ? JSON.stringify(entry.meta) : null,
   });
 }
 
@@ -1232,6 +1235,21 @@ function getRoomStats(code, now = Date.now()) {
   return { total, today, week, topChatters, people30, hoursUtc: hours, topReactions, firstMessageAt: first || null };
 }
 
+// Messages that @mention `name` (or @everyone) in the given rooms since `since`, newest first.
+// LIKE pre-filters cheaply; the caller confirms it's a real mention token.
+function findMentions(codes, name, since, limit = 60) {
+  if (!codes.length) return [];
+  const ph = codes.map(() => '?').join(',');
+  return db.prepare(
+    `SELECT m.id, m.room_code AS roomCode, r.name AS roomName, m.name, m.text, m.at
+     FROM messages m LEFT JOIN rooms r ON r.code = m.room_code
+     WHERE m.room_code IN (${ph}) AND m.at > ? AND m.deleted = 0 AND m.name != ?
+       AND (m.media_type IS NULL OR m.media_type != 'poll')
+       AND (m.text LIKE ? OR m.text LIKE '%@everyone%')
+     ORDER BY m.at DESC LIMIT ?`
+  ).all(...codes, since, name, `%@${name.replace(/[%_]/g, '')}%`, limit);
+}
+
 function setHostsOnly(code, on) {
   db.prepare('UPDATE rooms SET hosts_only = ? WHERE code = ?').run(on ? 1 : 0, code);
 }
@@ -1358,6 +1376,7 @@ function rowToHistoryEntry(r) {
     edited: !!r.edited,
     deleted: !!r.deleted,
     kind: r.kind || null,
+    meta: r.meta ? (() => { try { return JSON.parse(r.meta); } catch { return null; } })() : null,
     flair: r.account_id ? accountFlair(r.account_id) : null,
   };
 }
@@ -2916,6 +2935,7 @@ function getAccountByStreamKey(key) {
 }
 
 module.exports = {
+  findMentions,
   getRoomStats,
   setAccountBio,
   countUnreadSince,
