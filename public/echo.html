@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Echo</title>
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="minesweeper.css">
+<link rel="stylesheet" href="echo.css">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0a1420">
+<link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+</head>
+<body>
+  <a id="back-link" href="index.html">&larr; Back to chat</a>
+
+  <main id="app">
+    <header class="ms-header">
+      <h1>🔁 Echo</h1>
+      <p class="tagline">Watch the pads light up, then play the pattern back. It grows by one every round.</p>
+    </header>
+
+    <div class="hud echo-hud">
+      <span id="round">Round 0</span>
+      <span id="best">Best: 0</span>
+      <button id="sound-btn" type="button" aria-pressed="true">🔊 Sound on</button>
+    </div>
+
+    <div id="pads" class="pads" aria-label="Echo pads">
+      <button type="button" class="pad" data-pad="0" aria-label="Green pad (key 1)"></button>
+      <button type="button" class="pad" data-pad="1" aria-label="Red pad (key 2)"></button>
+      <button type="button" class="pad" data-pad="2" aria-label="Yellow pad (key 3)"></button>
+      <button type="button" class="pad" data-pad="3" aria-label="Blue pad (key 4)"></button>
+      <button type="button" id="start-btn" class="echo-center">Start</button>
+    </div>
+    <div id="status" class="echo-status" aria-live="polite">Press Start. Keys 1–4 work too.</div>
+
+    <section class="panel">
+      <h2>🏆 Longest patterns in this room</h2>
+      <ol id="leaderboard" class="results-list"><li class="muted">Loading…</li></ol>
+    </section>
+  </main>
+
+  <script src="error-report.js"></script>
+  <script src="echo.js"></script>
+  <script src="update-prompt.js"></script>
+</body>
+</html>

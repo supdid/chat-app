@@ -4223,6 +4223,7 @@ const ARCADE_LEADERBOARD_KEY = {
   bblevel: 'bblevel', bbplaytime: 'bbplaytime', hello: 'hello',
   'minesweeper-easy': 'mines-easy', 'minesweeper-medium': 'mines-medium', 'minesweeper-hard': 'mines-hard',
   'memory-easy': 'memory-easy', 'memory-medium': 'memory-medium', 'memory-hard': 'memory-hard',
+  echo: 'echo',
 };
 const ARCADE_ACTIVITY_CODE = {
   snake: 'sk', '2048': 'tf', fighterplane: 'fp', stickfighter: 'sf',
@@ -4231,6 +4232,7 @@ const ARCADE_ACTIVITY_CODE = {
   bblevel: 'bb', bbplaytime: 'bb', hello: 'he',
   'minesweeper-easy': 'mi', 'minesweeper-medium': 'mi', 'minesweeper-hard': 'mi',
   'memory-easy': 'mm', 'memory-medium': 'mm', 'memory-hard': 'mm',
+  echo: 'ec',
 };
 // arcade-submit-score is fully client-computed (flagged in review as a known, accepted, low-
 // severity gap — a real fix needs server-side gameplay simulation, out of scope) but had no
@@ -10334,6 +10336,7 @@ const INVITE_GAMES = {
   fighterplane: ['fighterplane.html', '🛩️ Fighter Plane'], geometrywave: ['geometrywave.html', '🔺 Geometry Wave'],
   stickfighter: ['stickfighter.html', '🥊 Stick Fighter'], whiteboard: ['whiteboard.html', '🖌️ Whiteboard'], hello: ['hello.html', '👋 Hello'],
   minesweeper: ['minesweeper.html', '💣 Minesweeper'], memory: ['memory.html', '🧠 Memory Match'],
+  echo: ['echo.html', '🔁 Echo'],
 };
 const ROOM_ACCENTS = ['sunset', 'grape', 'candy', 'fire', 'ocean', 'gold', 'forest', 'mono'];
 const SCHEDULE_MAX_AHEAD_MS = 30 * 24 * 60 * 60 * 1000;

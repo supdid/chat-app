@@ -79,6 +79,7 @@ const typeraceLink = document.getElementById('typerace-link');
 const quickdrawLink = document.getElementById('quickdraw-link');
 const minesweeperLink = document.getElementById('minesweeper-link');
 const memoryLink = document.getElementById('memory-link');
+const echoLink = document.getElementById('echo-link');
 const snakeLink = document.getElementById('snake-link');
 const g2048Link = document.getElementById('g2048-link');
 const whiteboardLink = document.getElementById('whiteboard-link');
@@ -489,7 +490,7 @@ let activeReactionPopover = null;
 
 // --- Minigame activity badges ---
 const roomActivity = new Map(); // name -> game code ('bc'|'gw'|'dg')
-const ACTIVITY_BADGES = { bc: '🏝️', gw: '🔺', dg: '🖍️', wb: '🖌️', tv: '❓', tt: '⭕', ch: '♟️', hm: '🪢', sk: '🐍', tf: '🔢', fp: '🛩️', sw: '🕸️', fg: '🔫', wg: '🟩', sf: '🥊', he: '👋', tr: '⌨️', qd: '⚡', mi: '💣', mm: '🧠' };
+const ACTIVITY_BADGES = { bc: '🏝️', gw: '🔺', dg: '🖍️', wb: '🖌️', tv: '❓', tt: '⭕', ch: '♟️', hm: '🪢', sk: '🐍', tf: '🔢', fp: '🛩️', sw: '🕸️', fg: '🔫', wg: '🟩', sf: '🥊', he: '👋', tr: '⌨️', qd: '⚡', mi: '💣', mm: '🧠', ec: '🔁' };
 let lastRoomUsers = [];
 // Found by the room-chat client-side correctness audit: tracks the single currently-open message
 // edit form ({ messageId, restore }), so starting a second edit can auto-cancel the first instead
@@ -3601,6 +3602,7 @@ function updateGameLinks() {
   quickdrawLink.href = `quickdraw.html${params}`;
   minesweeperLink.href = `minesweeper.html${params}`;
   memoryLink.href = `memory.html${params}`;
+  echoLink.href = `echo.html${params}`;
   snakeLink.href = `snake.html${params}`;
   g2048Link.href = `2048.html${params}`;
   whiteboardLink.href = `whiteboard.html${params}`;
@@ -6740,6 +6742,19 @@ function autoGrowComposer() {
 // doesn't fire 'input', so re-measure on the next frame after a submit too.
 messageForm.addEventListener('submit', () => requestAnimationFrame(autoGrowComposer));
 
+// Shows "1,850 / 2,000" once a message gets close to the limit.
+const charCountEl = document.getElementById('char-count');
+const MESSAGE_MAX_CHARS = 2000;
+function updateCharCount() {
+  const n = messageInput.value.length;
+  const show = n >= MESSAGE_MAX_CHARS - 300;
+  charCountEl.classList.toggle('hidden', !show);
+  if (show) charCountEl.textContent = `${n.toLocaleString()} / ${MESSAGE_MAX_CHARS.toLocaleString()}`;
+  charCountEl.classList.toggle('full', n >= MESSAGE_MAX_CHARS);
+}
+messageInput.addEventListener('input', updateCharCount);
+messageForm.addEventListener('submit', () => setTimeout(updateCharCount, 0));
+
 messageInput.addEventListener('input', () => {
   autoGrowComposer();
   scheduleDraftSave();
@@ -9437,6 +9452,7 @@ function flushOutbox(code) {
 // --- ✨ What's new (shown once per update to people who've used Valk before) ---
 const WHATS_NEW_VERSION = '2026-11-09b';
 const WHATS_NEW = [
+  ['🔁', 'Echo', 'New game: repeat the light-and-sound pattern as it grows. /play echo'],
   ['🔗', 'Links tab', 'Menu → 🖼️ Media gallery → 🔗 Links lists every link shared in the room.'],
   ['📅', 'Date dividers', 'Chat now shows Today, Yesterday and the date between days. Emoji-only messages show big 😂'],
   ['🎂', 'Birthdays', 'Tap your name → 🎂 Set to add your birthday. On the day, the room gets confetti and a heads-up.'],
@@ -9693,7 +9709,7 @@ const GAME_ALIASES = {
   typerace: ['type', 'typing', 'race'], quickdraw: ['quick', 'quickdraw', 'reaction', 'qd', 'fast'], wordguess: ['wordle', 'word', 'wg'], hangman: ['hang'], trivia: ['quiz'],
   pictionary: ['draw', 'drawing'], chess: [], tictactoe: ['ttt', 'xo', 'connect4', 'connectfour'], blockbattle: ['bb', 'block'],
   buildcraft: ['build', 'craft'], webswing: ['swing', 'spider'], firefight: ['fps', 'shooter'], fighterplane: ['plane', 'planes'],
-  geometrywave: ['geometry', 'gw', 'dash'], stickfighter: ['stick', 'fight'], whiteboard: ['board', 'paint'], hello: [], minesweeper: ['mines', 'mine', 'ms', 'sweeper'], memory: ['match', 'pairs', 'cards', 'mm'],
+  geometrywave: ['geometry', 'gw', 'dash'], stickfighter: ['stick', 'fight'], whiteboard: ['board', 'paint'], hello: [], minesweeper: ['mines', 'mine', 'ms', 'sweeper'], memory: ['match', 'pairs', 'cards', 'mm'], echo: ['pattern', 'sequence', 'simon'],
 };
 const GAME_LABELS = {
   typerace: '⌨️ Type Race (WPM)', quickdraw: '⚡ Quick Draw (1000 − ms)', wordguess: '🟩 Word Guess', hangman: '🪢 Hangman', trivia: '❓ Trivia', snake: '🐍 Snake',
@@ -9704,6 +9720,7 @@ const GAME_LABELS = {
   'gw-straight': '🔺 Geometry Wave (straight)', 'tictactoe-tictactoe': '⭕ Tic-Tac-Toe', 'tictactoe-connect4': '🔴 Connect Four',
   'mines-easy': '💣 Minesweeper (easy)', 'mines-medium': '💣 Minesweeper (medium)', 'mines-hard': '💣 Minesweeper (hard)',
   'memory-easy': '🧠 Memory Match (easy)', 'memory-medium': '🧠 Memory Match (medium)', 'memory-hard': '🧠 Memory Match (hard)',
+  echo: '🔁 Echo (in a row)',
 };
 // Leaderboards that store a time as 100000 − tenths of a second (lower time = higher score).
 const TIME_SCORE_GAMES = new Set(['mines-easy', 'mines-medium', 'mines-hard', 'memory-easy', 'memory-medium', 'memory-hard']);

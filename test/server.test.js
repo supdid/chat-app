@@ -7883,6 +7883,9 @@ describe('Minesweeper (2026-11-09)', () => {
     send(p, { type: 'arcade-join', code, name: 'Sweeper', game: 'memory-hard' });
     assert.deepEqual((await waitFor(p, (m) => m.type === 'arcade-leaderboard')).scores, [], 'Memory Match has its own boards');
 
+    send(p, { type: 'arcade-join', code, name: 'Sweeper', game: 'echo' });
+    assert.deepEqual((await waitFor(p, (m) => m.type === 'arcade-leaderboard')).scores, [], 'Echo has its own board');
+
     send(host, { type: 'get-room-champions' });
     const champs = await waitFor(host, (m) => m.type === 'room-champions');
     assert.equal(champs.games['mines-medium'][0].name, 'Sweeper');

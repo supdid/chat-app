@@ -1196,7 +1196,9 @@ body {
 }
 #message-input::placeholder { color: var(--text-placeholder); }
 #message-input:focus { outline: none; border-color: #3b9dff; }
-#message-form { align-items: flex-end; }
+#message-form { align-items: flex-end; position: relative; }
+.char-count { position: absolute; right: 1.5rem; top: -1.6rem; padding: 0.1rem 0.55rem; border-radius: 999px; font-size: 0.75rem; font-weight: 700; font-variant-numeric: tabular-nums; background: var(--badge-bg); border: 1px solid var(--panel-border); color: var(--text-muted); pointer-events: none; }
+.char-count.full { color: #fff; background: #d63c3c; border-color: #d63c3c; }
 
 .fenced-code {
   display: block;
