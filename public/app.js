@@ -9729,3 +9729,32 @@ function timeAgo(t) {
   const d = Math.round(h / 24);
   return `${d} day${d === 1 ? '' : 's'} ago`;
 }
+
+
+// --- 📲 Install as an app ---
+const installBtn = document.getElementById('install-app-btn');
+let deferredInstallPrompt = null;
+const isStandalone = () => (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.MSStream;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  if (!isStandalone()) installBtn.classList.remove('hidden');
+});
+window.addEventListener('appinstalled', () => {
+  deferredInstallPrompt = null;
+  installBtn.classList.add('hidden');
+  showAppToast('📲 Valk is installed — find it on your home screen');
+});
+// iPhone/iPad Safari never fires beforeinstallprompt; show how to do it by hand.
+if (isIos && !isStandalone()) installBtn.classList.remove('hidden');
+installBtn.addEventListener('click', async () => {
+  if (deferredInstallPrompt) {
+    deferredInstallPrompt.prompt();
+    try { await deferredInstallPrompt.userChoice; } catch (err) { /* ignore */ }
+    deferredInstallPrompt = null;
+    installBtn.classList.add('hidden');
+  } else if (isIos) {
+    alert('To install Valk: tap the Share button (the square with an arrow) at the bottom of Safari, then "Add to Home Screen".');
+  }
+});

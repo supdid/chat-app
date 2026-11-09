@@ -1,7 +1,7 @@
 {
   "name": "Valk",
   "short_name": "Valk",
-  "description": "Room-code chat with Build Craft and Geometry Wave mini-games",
+  "description": "Chat rooms with friends, voice calls, polls, stickers and 20 mini-games",
   "start_url": "/index.html",
   "scope": "/",
   "display": "standalone",
