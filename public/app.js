@@ -6388,6 +6388,13 @@ messageForm.addEventListener('submit', (e) => {
     saveDraftNow();
     return;
   }
+  if (/^\/wyr\s*$/i.test(raw)) {
+    const [a, b] = WYR_QUESTIONS[Math.floor(Math.random() * WYR_QUESTIONS.length)];
+    ws.send(JSON.stringify({ type: 'message', text: JSON.stringify({ question: 'Would you rather…', options: [a, b] }), mediaUrl: 'poll', mediaType: 'poll' }));
+    messageInput.value = '';
+    saveDraftNow();
+    return;
+  }
   if (roomSlowMode && !isMod() && Date.now() < slowModeReadyAt) {
     showAppToast(`🐢 Slow mode — you can send again in ${Math.ceil((slowModeReadyAt - Date.now()) / 1000)}s`);
     return;
@@ -8894,3 +8901,28 @@ keywordInput.addEventListener('change', () => {
   showAppToast(keywordAlerts.length ? `🔎 You'll be alerted for: ${keywordAlerts.join(', ')}` : '🔎 Keyword alerts off');
 });
 loadKeywordAlerts();
+
+
+// /wyr — posts a random "Would you rather…" as a two-option poll.
+const WYR_QUESTIONS = [
+  ['be able to fly', 'be invisible'], ['live in a treehouse', 'live in a submarine'],
+  ['have a pet dragon', 'have a pet robot'], ['only eat pizza forever', 'only eat tacos forever'],
+  ['be really fast', 'be really strong'], ['talk to animals', 'speak every language'],
+  ['explore space', 'explore the deep ocean'], ['never have homework', 'never have chores'],
+  ['be a famous gamer', 'be a famous musician'], ['have summer all year', 'have winter all year'],
+  ['ride a giant cat', 'ride a tiny horse'], ['have a rewind button', 'have a pause button for life'],
+  ['always be 10 minutes early', 'always be 10 minutes late'], ['live in a castle', 'live in a spaceship'],
+  ['have super hearing', 'have night vision'], ['be the funniest person', 'be the smartest person'],
+  ['eat a bug', 'sing in front of the whole school'], ['have a personal chef', 'have a personal driver'],
+  ['go back to the dinosaurs', 'go forward 1000 years'], ['never use a phone again', 'never watch TV again'],
+  ['have unlimited snacks', 'have unlimited games'], ['be a wizard', 'be a superhero'],
+  ['live on the moon', 'live under the sea'], ['have hands for feet', 'have feet for hands'],
+  ['know every song', 'know every movie by heart'], ['have a slide instead of stairs', 'have a trampoline floor'],
+  ['teleport anywhere', 'read minds'], ['be a cat for a day', 'be a dog for a day'],
+  ['have a snowball fight', 'have a water balloon fight'], ['build a giant LEGO city', 'build a giant snow fort'],
+  ['be in a movie', 'be in a video game'], ['only whisper', 'only shout'],
+  ['have rainbow hair', 'have glow-in-the-dark skin'], ['win a cooking contest', 'win a dance contest'],
+  ['have a robot best friend', 'have an alien best friend'], ['never get tired', 'never get hungry'],
+  ['live in a candy house', 'live in a bouncy castle'], ['find a treasure map', 'find a magic wand'],
+  ['be a pro skateboarder', 'be a pro snowboarder'], ['shrink to ant size', 'grow to giant size'],
+];

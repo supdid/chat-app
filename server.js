@@ -956,8 +956,9 @@ app.post('/search', (req, res) => {
   if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many requests too quickly' });
   const body = req.body || {};
   const code = String(body.code || '').toUpperCase().trim();
-  const q = String(body.q || '').trim();
-  if (!code || !q) return res.json({ results: [] });
+  const q = String(body.q || '').trim().slice(0, 200);
+  const parsedQuery = parseSearchQuery(q);
+  if (!code || (!parsedQuery.text && !parsedQuery.from && !parsedQuery.has && !parsedQuery.before && !parsedQuery.after)) return res.json({ results: [] });
   const dbRoom = db.getRoom(code);
   if (!rooms.has(code) && !dbRoom) return res.status(404).json({ error: 'Room not found' });
   // Same "no live WS session to check ban status on" fix as /export just below — found by the
@@ -968,8 +969,32 @@ app.post('/search', (req, res) => {
     return res.status(403).json({ error: "You've been banned from this room" });
   }
   if (!roomPinOk(dbRoom, body.pin)) return res.status(403).json({ error: 'Incorrect or missing room PIN' });
-  res.json({ results: db.searchMessages(code, q, 50) });
+  res.json({ results: db.searchMessages(code, parsedQuery, 50) });
 });
+
+// Search filters: from:name (or from:"two words"), has:image|video|audio|link|poll|media,
+// before:2026-11-01, after:2026-10-01 — everything else is the text to look for.
+function parseSearchQuery(q) {
+  const out = { text: '', from: null, has: null, before: null, after: null };
+  const rest = q.replace(/\b(from|has|before|after):(?:"([^"]+)"|(\S+))/gi, (_, key, quoted, plain) => {
+    const v = (quoted || plain || '').trim();
+    const k = key.toLowerCase();
+    if (k === 'from') out.from = v.replace(/^@/, '').slice(0, 30);
+    else if (k === 'has') {
+      const h = v.toLowerCase().replace(/s$/, '');
+      out.has = { photo: 'image', picture: 'image', pic: 'image', image: 'image', video: 'video', audio: 'audio', voice: 'audio', link: 'link', url: 'link', poll: 'poll', media: 'media', file: 'media' }[h] || null;
+    } else {
+      const t = Date.parse(v);
+      if (Number.isFinite(t)) {
+        if (k === 'before') out.before = t;
+        else out.after = t;
+      }
+    }
+    return ' ';
+  });
+  out.text = rest.replace(/\s+/g, ' ').trim();
+  return out;
+}
 
 // Plain-text transcript download — reuses the same room-existence check as /search,
 // and reads full history from SQLite rather than the in-memory 50-message window.

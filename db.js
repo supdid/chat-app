@@ -1353,14 +1353,33 @@ function getAllMessagesForExport(code) {
   return db.prepare('SELECT * FROM messages WHERE room_code = ? ORDER BY at ASC').all(code).map(rowToHistoryEntry);
 }
 
+// query: a string, or { text, from, has, before, after } (see server.js parseSearchQuery).
+// `%`/`_` in the typed text are matched literally now (they used to act as LIKE wildcards).
 function searchMessages(code, query, limit) {
-  const rows = db
-    .prepare(
-      `SELECT * FROM messages WHERE room_code = ? AND text LIKE ? COLLATE NOCASE
-       ORDER BY at DESC LIMIT ?`
-    )
-    .all(code, `%${query}%`, limit);
-  return rows.map((r) => ({ id: r.id, name: r.name, text: r.text, at: r.at }));
+  const f = typeof query === 'string' ? { text: query } : query;
+  const where = ['room_code = ?', 'deleted = 0'];
+  const args = [code];
+  const likeEsc = (s) => s.replace(/[\\%_]/g, (c) => `\\${c}`);
+  if (f.text) {
+    where.push("text LIKE ? ESCAPE '\\' COLLATE NOCASE");
+    args.push(`%${likeEsc(f.text)}%`);
+  }
+  if (f.from) { where.push('name = ? COLLATE NOCASE'); args.push(f.from); }
+  if (f.has === 'image') where.push("media_type = 'image'");
+  else if (f.has === 'video') where.push("media_type = 'video'");
+  else if (f.has === 'audio') where.push("media_type = 'audio'");
+  else if (f.has === 'poll') where.push("media_type = 'poll'");
+  else if (f.has === 'link') where.push("text LIKE '%http%'");
+  else if (f.has === 'media') where.push("media_type IN ('image','video','audio')");
+  if (f.before) { where.push('at < ?'); args.push(f.before); }
+  if (f.after) { where.push('at >= ?'); args.push(f.after); }
+  const rows = db.prepare(`SELECT * FROM messages WHERE ${where.join(' AND ')} ORDER BY at DESC LIMIT ?`).all(...args, limit);
+  return rows.map((r) => {
+    let text = r.text;
+    if (r.media_type === 'poll') { try { text = `📊 ${JSON.parse(r.text).question}`; } catch { text = '📊 Poll'; } }
+    else if (!text && r.media_type) text = r.media_type === 'image' ? '🖼️ Photo' : r.media_type === 'video' ? '🎬 Video' : '🔊 Audio';
+    return { id: r.id, name: r.name, text, at: r.at, mediaType: r.media_type || null };
+  });
 }
 
 function rowToHistoryEntry(r) {

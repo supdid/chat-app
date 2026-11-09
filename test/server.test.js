@@ -8190,3 +8190,20 @@ describe('Type Race (2026-11-08)', () => {
     a.ws.close(); host.close();
   });
 });
+
+describe('search filters (2026-11-08)', () => {
+  test('from:, has:, and literal % / _ in search text', async () => {
+    const { ws: a, code } = await joinRoom('SrchA');
+    const b = await joinExistingRoom('SrchB', code);
+    for (const [ws, t] of [[a, 'pizza tonight'], [b, 'pizza is great'], [a, 'see https://example.com'], [b, '100% sure'], [a, '100 percent']]) {
+      send(ws, { type: 'message', text: t });
+      await waitFor(a, (m) => m.type === 'message' && m.text === t);
+    }
+    const search = (q) => fetch(`${BASE_URL}/search`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code, q, name: 'SrchA' }) }).then((r) => r.json()).then((d) => d.results.map((r) => r.text).sort());
+    assert.deepEqual(await search('pizza from:SrchB'), ['pizza is great']);
+    assert.deepEqual(await search('from:srcha has:link'), ['see https://example.com']);
+    assert.deepEqual(await search('100%'), ['100% sure']);
+    assert.deepEqual(await search('pizza'), ['pizza is great', 'pizza tonight']);
+    a.close(); b.close();
+  });
+});
