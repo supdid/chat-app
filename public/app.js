@@ -77,6 +77,7 @@ const hangmanLink = document.getElementById('hangman-link');
 const wordguessLink = document.getElementById('wordguess-link');
 const typeraceLink = document.getElementById('typerace-link');
 const quickdrawLink = document.getElementById('quickdraw-link');
+const minesweeperLink = document.getElementById('minesweeper-link');
 const snakeLink = document.getElementById('snake-link');
 const g2048Link = document.getElementById('g2048-link');
 const whiteboardLink = document.getElementById('whiteboard-link');
@@ -487,7 +488,7 @@ let activeReactionPopover = null;
 
 // --- Minigame activity badges ---
 const roomActivity = new Map(); // name -> game code ('bc'|'gw'|'dg')
-const ACTIVITY_BADGES = { bc: '🏝️', gw: '🔺', dg: '🖍️', wb: '🖌️', tv: '❓', tt: '⭕', ch: '♟️', hm: '🪢', sk: '🐍', tf: '🔢', fp: '🛩️', sw: '🕸️', fg: '🔫', wg: '🟩', sf: '🥊', he: '👋', tr: '⌨️', qd: '⚡' };
+const ACTIVITY_BADGES = { bc: '🏝️', gw: '🔺', dg: '🖍️', wb: '🖌️', tv: '❓', tt: '⭕', ch: '♟️', hm: '🪢', sk: '🐍', tf: '🔢', fp: '🛩️', sw: '🕸️', fg: '🔫', wg: '🟩', sf: '🥊', he: '👋', tr: '⌨️', qd: '⚡', mi: '💣' };
 let lastRoomUsers = [];
 // Found by the room-chat client-side correctness audit: tracks the single currently-open message
 // edit form ({ messageId, restore }), so starting a second edit can auto-cancel the first instead
@@ -3551,6 +3552,7 @@ function updateGameLinks() {
   wordguessLink.href = `wordguess.html${params}`;
   typeraceLink.href = `typerace.html${params}`;
   quickdrawLink.href = `quickdraw.html${params}`;
+  minesweeperLink.href = `minesweeper.html${params}`;
   snakeLink.href = `snake.html${params}`;
   g2048Link.href = `2048.html${params}`;
   whiteboardLink.href = `whiteboard.html${params}`;
@@ -9523,7 +9525,7 @@ const GAME_ALIASES = {
   typerace: ['type', 'typing', 'race'], quickdraw: ['quick', 'quickdraw', 'reaction', 'qd', 'fast'], wordguess: ['wordle', 'word', 'wg'], hangman: ['hang'], trivia: ['quiz'],
   pictionary: ['draw', 'drawing'], chess: [], tictactoe: ['ttt', 'xo', 'connect4', 'connectfour'], blockbattle: ['bb', 'block'],
   buildcraft: ['build', 'craft'], webswing: ['swing', 'spider'], firefight: ['fps', 'shooter'], fighterplane: ['plane', 'planes'],
-  geometrywave: ['geometry', 'gw', 'dash'], stickfighter: ['stick', 'fight'], whiteboard: ['board', 'paint'], hello: [],
+  geometrywave: ['geometry', 'gw', 'dash'], stickfighter: ['stick', 'fight'], whiteboard: ['board', 'paint'], hello: [], minesweeper: ['mines', 'mine', 'ms', 'sweeper'],
 };
 const GAME_LABELS = {
   typerace: '⌨️ Type Race (WPM)', quickdraw: '⚡ Quick Draw (1000 − ms)', wordguess: '🟩 Word Guess', hangman: '🪢 Hangman', trivia: '❓ Trivia', snake: '🐍 Snake',
@@ -9532,7 +9534,10 @@ const GAME_LABELS = {
   bbjuggernaut: '🧱 Block Battle (Juggernaut)', bboneshot: '🧱 Block Battle (One Shot)',
   'gw-easy': '🔺 Geometry Wave (easy)', 'gw-medium': '🔺 Geometry Wave (medium)', 'gw-hard': '🔺 Geometry Wave (hard)',
   'gw-straight': '🔺 Geometry Wave (straight)', 'tictactoe-tictactoe': '⭕ Tic-Tac-Toe', 'tictactoe-connect4': '🔴 Connect Four',
+  'mines-easy': '💣 Minesweeper (easy)', 'mines-medium': '💣 Minesweeper (medium)', 'mines-hard': '💣 Minesweeper (hard)',
 };
+// Leaderboards that store a time as 100000 − tenths of a second (lower time = higher score).
+const TIME_SCORE_GAMES = new Set(['mines-easy', 'mines-medium', 'mines-hard']);
 
 function renderGameInvite(data) {
   const el = document.createElement('div');
@@ -9583,7 +9588,7 @@ function renderChampions(games) {
       const n = document.createElement('span');
       n.textContent = `${['🥇', '🥈', '🥉'][i]} ${r.name}`;
       const sc = document.createElement('b');
-      sc.textContent = Number(r.score).toLocaleString();
+      sc.textContent = TIME_SCORE_GAMES.has(g) ? `${((100000 - r.score) / 10).toFixed(1)}s` : Number(r.score).toLocaleString();
       row.append(n, sc);
       sec.appendChild(row);
     });
@@ -9628,6 +9633,9 @@ const SLASH_COMMANDS = [
   ['/8ball', 'will it snow?', 'Ask the magic 8-ball'],
   ['/pick', 'pizza, tacos or sushi', 'Let Valk choose'],
   ['/me', 'waves', 'Say an action'],
+  ['/rps', 'rock', 'Rock paper scissors vs Valk'],
+  ['/number', '1-100', 'Random number'],
+  ['/teams', '2 Ana, Ben, Cy, Dee', 'Split people into random teams'],
   ['/countdown', '5m Lunch!', 'Live timer for everyone'],
   ['/confetti', 'Happy birthday!', 'Confetti on everyone’s screen'],
   ['/hearts', '', 'Hearts on everyone’s screen'],

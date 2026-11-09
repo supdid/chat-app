@@ -7830,6 +7830,59 @@ describe('server-rolled dice + /me (2026-11-08)', () => {
   });
 });
 
+describe('more fair commands (2026-11-09)', () => {
+  test('/rps, /number and /teams are decided by the server', async () => {
+    const { ws: a, code } = await joinRoom('RpsA');
+    const b = await joinExistingRoom('RpsB', code);
+    send(a, { type: 'message', text: '/rps paper' });
+    const r = await waitFor(b, (m) => m.type === 'message' && /✊/.test(m.text));
+    assert.equal(r.kind, 'roll');
+    assert.match(r.text, /^✊ played 📄 paper vs Valk's \S+ (rock|paper|scissors) — (It's a tie!|They win! 🏆|Valk wins! 🤖)$/);
+    const valk = r.text.match(/Valk's \S+ (\w+)/)[1];
+    const expect = valk === 'paper' ? "tie" : valk === 'rock' ? 'They win' : 'Valk wins';
+    assert.ok(r.text.includes(expect), r.text);
+
+    send(a, { type: 'message', text: '/number 5-7' });
+    const n = await waitFor(b, (m) => m.type === 'message' && /🔢/.test(m.text));
+    assert.match(n.text, /from 5 to 7: \*\*[567]\*\*$/);
+    send(a, { type: 'message', text: '/number' });
+    assert.match((await waitFor(b, (m) => m.type === 'message' && /from 1 to 100/.test(m.text))).text, /\*\*\d+\*\*$/);
+
+    send(a, { type: 'message', text: '/teams 2 Ana, Ben, Cy, Dee, Eve' });
+    const t = await waitFor(b, (m) => m.type === 'message' && /👥/.test(m.text));
+    const parts = t.text.split(' — ')[1].split(' · ');
+    assert.equal(parts.length, 2);
+    const everyone = parts.flatMap((p) => p.replace(/^Team \d: /, '').split(', ')).sort();
+    assert.deepEqual(everyone, ['Ana', 'Ben', 'Cy', 'Dee', 'Eve']);
+
+    send(a, { type: 'message', text: '/rps banana' });
+    const plain = await waitFor(b, (m) => m.type === 'message' && m.text === '/rps banana');
+    assert.ok(!plain.kind || plain.kind === 'text', 'an invalid command is sent as plain text');
+    a.close(); b.close();
+  });
+});
+
+describe('Minesweeper (2026-11-09)', () => {
+  test('each difficulty has its own room leaderboard, and it shows up in room champions', async () => {
+    const { ws: host, code } = await joinRoom('MinesHost');
+    const p = await connectWs();
+    send(p, { type: 'arcade-join', code, name: 'Sweeper', game: 'minesweeper-medium' });
+    assert.deepEqual((await waitFor(p, (m) => m.type === 'arcade-leaderboard')).scores, []);
+    await sleep(3100);
+    send(p, { type: 'arcade-submit-score', score: 100000 - 423 }); // 42.3 seconds
+    const lb = await waitFor(p, (m) => m.type === 'arcade-leaderboard' && m.scores.length);
+    assert.deepEqual(lb.scores.map((s) => [s.name, s.score]), [['Sweeper', 99577]]);
+
+    send(p, { type: 'arcade-join', code, name: 'Sweeper', game: 'minesweeper-easy' });
+    assert.deepEqual((await waitFor(p, (m) => m.type === 'arcade-leaderboard')).scores, [], 'easy is a separate board');
+
+    send(host, { type: 'get-room-champions' });
+    const champs = await waitFor(host, (m) => m.type === 'room-champions');
+    assert.equal(champs.games['mines-medium'][0].name, 'Sweeper');
+    host.close(); p.close();
+  });
+});
+
 describe('poll upgrades (2026-11-08)', () => {
   const postPoll = (ws, def) => send(ws, { type: 'message', text: JSON.stringify(def), mediaUrl: 'poll', mediaType: 'poll' });
 

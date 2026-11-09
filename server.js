@@ -4220,12 +4220,14 @@ const ARCADE_LEADERBOARD_KEY = {
   bbwave: 'bbwave', bbfs: 'bbfs', bboneshot: 'bboneshot', bbheadhunter: 'bbheadhunter',
   bbjuggernaut: 'bbjuggernaut', bbberserker: 'bbberserker', bbvampire: 'bbvampire', bbswarm: 'bbswarm',
   bblevel: 'bblevel', bbplaytime: 'bbplaytime', hello: 'hello',
+  'minesweeper-easy': 'mines-easy', 'minesweeper-medium': 'mines-medium', 'minesweeper-hard': 'mines-hard',
 };
 const ARCADE_ACTIVITY_CODE = {
   snake: 'sk', '2048': 'tf', fighterplane: 'fp', stickfighter: 'sf',
   bbwave: 'bb', bbfs: 'bb', bboneshot: 'bb', bbheadhunter: 'bb',
   bbjuggernaut: 'bb', bbberserker: 'bb', bbvampire: 'bb', bbswarm: 'bb',
   bblevel: 'bb', bbplaytime: 'bb', hello: 'he',
+  'minesweeper-easy': 'mi', 'minesweeper-medium': 'mi', 'minesweeper-hard': 'mi',
 };
 // arcade-submit-score is fully client-computed (flagged in review as a known, accepted, low-
 // severity gap — a real fix needs server-side gameplay simulation, out of scope) but had no
@@ -5681,6 +5683,34 @@ function resolveServerCommand(text) {
     const effect = fx[1].toLowerCase();
     const label = { confetti: '🎉', hearts: '💖', snow: '❄️', stars: '✨' }[effect];
     return { kind: 'effect', text: fx[2].trim().slice(0, 300) || label, meta: { effect } };
+  }
+  const rps = text.match(/^\/rps\s+(rock|paper|scissors|r|p|s)\s*$/i);
+  if (rps) {
+    const names = ['rock', 'paper', 'scissors'];
+    const icon = { rock: '🪨', paper: '📄', scissors: '✂️' };
+    const mine = names.find((n) => n[0] === rps[1][0].toLowerCase());
+    const valk = names[crypto.randomInt(3)];
+    const diff = (names.indexOf(mine) - names.indexOf(valk) + 3) % 3;
+    const result = diff === 0 ? "It's a tie!" : diff === 1 ? 'They win! 🏆' : 'Valk wins! 🤖';
+    return { kind: 'roll', text: `✊ played ${icon[mine]} ${mine} vs Valk's ${icon[valk]} ${valk} — ${result}` };
+  }
+  const num = text.match(/^\/number(?:\s+(-?\d{1,9})\s*(?:-|to|\s)\s*(-?\d{1,9}))?\s*$/i);
+  if (num) {
+    let lo = num[1] != null ? parseInt(num[1], 10) : 1;
+    let hi = num[2] != null ? parseInt(num[2], 10) : 100;
+    if (lo > hi) [lo, hi] = [hi, lo];
+    if (hi > lo) return { kind: 'roll', text: `🔢 picked a number from ${lo} to ${hi}: **${crypto.randomInt(lo, hi + 1)}**` };
+  }
+  const teams = text.match(/^\/teams\s+(\d{1,2})\s+(.+)$/is);
+  if (teams) {
+    const n = parseInt(teams[1], 10);
+    const people = teams[2].split(/\s*,\s*|\s+/).map((x) => x.trim()).filter(Boolean).slice(0, 40);
+    if (n >= 2 && n <= 10 && people.length >= n) {
+      for (let i = people.length - 1; i > 0; i--) { const j = crypto.randomInt(i + 1); [people[i], people[j]] = [people[j], people[i]]; }
+      const groups = Array.from({ length: n }, () => []);
+      people.forEach((p, i) => groups[i % n].push(p));
+      return { kind: 'roll', text: `👥 split into ${n} teams — ` + groups.map((g, i) => `Team ${i + 1}: ${g.join(', ')}`).join(' · ') };
+    }
   }
   const me = text.match(/^\/me\s+(.+)$/is);
   if (me) return { kind: 'me', text: me[1].trim() };
@@ -10197,6 +10227,7 @@ const INVITE_GAMES = {
   buildcraft: ['buildcraft.html', '🏝️ Build Craft'], webswing: ['webswing.html', '🕸️ Web Swing'], firefight: ['firefight.html', '🔫 Firefight'],
   fighterplane: ['fighterplane.html', '🛩️ Fighter Plane'], geometrywave: ['geometrywave.html', '🔺 Geometry Wave'],
   stickfighter: ['stickfighter.html', '🥊 Stick Fighter'], whiteboard: ['whiteboard.html', '🖌️ Whiteboard'], hello: ['hello.html', '👋 Hello'],
+  minesweeper: ['minesweeper.html', '💣 Minesweeper'],
 };
 const ROOM_ACCENTS = ['sunset', 'grape', 'candy', 'fire', 'ocean', 'gold', 'forest', 'mono'];
 const SCHEDULE_MAX_AHEAD_MS = 30 * 24 * 60 * 60 * 1000;
