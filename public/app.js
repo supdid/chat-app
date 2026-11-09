@@ -394,9 +394,8 @@ document.getElementById('edit-history-close').addEventListener('click', () => ed
 editHistoryModal.addEventListener('click', (e) => { if (e.target === editHistoryModal) editHistoryModal.classList.add('hidden'); });
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
-  welcomeModal.classList.add('hidden');
-  editHistoryModal.classList.add('hidden');
-  document.getElementById('scheduled-modal').classList.add('hidden');
+  // Every pop-up card (welcome, edit history, scheduled, stats, shortcuts, room switcher).
+  document.querySelectorAll('.modal-backdrop').forEach((m) => m.classList.add('hidden'));
 });
 
 function makeEditedTag(messageId) {
@@ -1074,6 +1073,7 @@ function handleServerMessage(data) {
       roomCohosts = data.cohosts || [];
       roomWelcomeText = data.welcome || null;
       roomHostsOnly = !!data.hostsOnly;
+      loadRoomNotifyPref(data.code, data.notifyPref);
       sentAway = false;
       lastActivityAt = Date.now();
       document.getElementById('hosts-only-input').checked = roomHostsOnly;
@@ -1302,8 +1302,11 @@ function handleServerMessage(data) {
       // feature exists to hide, leaking through every surface that isn't the message list itself.
       if (data.sub !== myProfile.sub && !blockedNames.has(data.name)) {
         const mentioned = messageHasMention(data.text, myProfile.name);
-        notify(mentioned ? `${data.name} mentioned you` : data.name, data.text, { messageId: data.id });
-        playNotifySound();
+        const roomMode = currentRoomNotifyMode();
+        if (roomMode === 'all' || (roomMode === 'mentions' && mentioned)) {
+          notify(mentioned ? `${data.name} mentioned you` : data.name, notificationPreview(data), { messageId: data.id });
+          playNotifySound();
+        }
         if (document.hidden) {
           unreadCount++;
           updateUnreadBadge();
@@ -1694,6 +1697,31 @@ function handleServerMessage(data) {
 
     case 'account-deleted':
       signOutAccount('Your account was deleted');
+      break;
+
+    case 'room-notify-updated':
+      showAppToast(data.mode === 'all' ? '🔔 Notifications on for this room'
+        : data.mode === 'mentions' ? '🔔 Only @mentions will notify you here'
+        : data.until ? `🔕 Muted until ${formatReminderDue(data.until)}` : '🔕 This room is muted');
+      break;
+
+    case 'recent-unread':
+      recentRoomsList.querySelectorAll('.recent-room-chip').forEach((chip) => {
+        const n = data.counts && data.counts[chip.dataset.code];
+        let badge = chip.querySelector('.recent-unread-badge');
+        if (!n) { if (badge) badge.remove(); return; }
+        if (!badge) { badge = document.createElement('span'); badge.className = 'recent-unread-badge'; chip.appendChild(badge); }
+        badge.textContent = n >= 100 ? '99+' : String(n);
+        badge.title = `${n >= 100 ? '99+' : n} new message${n === 1 ? '' : 's'}`;
+      });
+      break;
+
+    case 'bio-updated':
+      showAppToast('✏️ About me saved');
+      break;
+
+    case 'room-stats':
+      if (data.code === currentRoomCode) renderRoomStats(data);
       break;
 
     case 'edit-history':
@@ -2638,6 +2666,12 @@ function applyReaction(messageId, emoji, name, added) {
   if (bubble) renderReactionPills(bubble, messageId);
 }
 
+function reactorsLabel(names) {
+  const shown = names.map((n) => (myProfile && n === myProfile.name ? 'You' : n));
+  if (shown.length <= 4) return shown.length > 1 ? `${shown.slice(0, -1).join(', ')} and ${shown[shown.length - 1]}` : shown[0];
+  return `${shown.slice(0, 3).join(', ')} and ${shown.length - 3} others`;
+}
+
 function renderReactionPills(bubble, messageId) {
   let row = bubble.querySelector('.reaction-pills');
   if (!row) {
@@ -2665,7 +2699,27 @@ function renderReactionPills(bubble, messageId) {
     } else {
       pill.textContent = `${emoji} ${visibleNames.length}`;
     }
-    pill.addEventListener('click', () => toggleReaction(messageId, emoji));
+    // Who reacted: hover tooltip on desktop; press-and-hold on phones shows it as a toast
+    // (and doesn't toggle your own reaction).
+    const who = reactorsLabel(visibleNames);
+    pill.title = `${who} reacted with ${emoji}`;
+    pill.setAttribute('aria-label', `${emoji}: ${who}`);
+    let holdTimer = null;
+    let held = false;
+    pill.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'mouse') return;
+      held = false;
+      holdTimer = setTimeout(() => { held = true; showAppToast(`${emoji} ${who}`); }, 450);
+    });
+    const cancelHold = () => clearTimeout(holdTimer);
+    pill.addEventListener('pointerup', cancelHold);
+    pill.addEventListener('pointerleave', cancelHold);
+    pill.addEventListener('pointercancel', cancelHold);
+    pill.addEventListener('contextmenu', (e) => e.preventDefault());
+    pill.addEventListener('click', () => {
+      if (held) { held = false; return; }
+      toggleReaction(messageId, emoji);
+    });
     row.appendChild(pill);
   }
 }
@@ -3331,8 +3385,12 @@ function renderRecentRooms() {
       roomPinInput.classList.add('hidden');
       wsSendOrWarnDisconnected({ type: 'join-room', code: r.code });
     });
+    chip.dataset.code = r.code;
     recentRoomsList.appendChild(chip);
   });
+  if (list.length && myProfile && ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'recent-unread', codes: list.map((r) => r.code) }));
+  }
 }
 
 // --- Account (optional — signing in doesn't gate anything else in the app, it only makes the
@@ -7397,6 +7455,7 @@ function renderProfileCard(data) {
   sub.className = 'profile-card-sub';
   const bits = [data.online ? '🟢 Online' : '⚪ Not here right now'];
   if (data.isHost) bits.push('👑 Room host');
+  else if (data.isCohost) bits.push('🛡️ Co-host');
   sub.textContent = bits.join(' · ');
   profileCardBody.appendChild(sub);
   if (data.status) {
@@ -7415,6 +7474,48 @@ function renderProfileCard(data) {
     info.textContent = 'Guest (no Valk account)';
   }
   profileCardBody.appendChild(info);
+
+  if (acct && (acct.bio || acct.friendStatus === 'self')) {
+    const bioWrap = document.createElement('div');
+    bioWrap.className = 'profile-card-bio';
+    const bioText = document.createElement('div');
+    bioText.className = 'profile-bio-text';
+    bioText.textContent = acct.bio || 'Add a little "about me" so people know who you are.';
+    if (!acct.bio) bioText.classList.add('empty');
+    bioWrap.appendChild(bioText);
+    if (acct.friendStatus === 'self') {
+      const editBtn = document.createElement('button');
+      editBtn.type = 'button';
+      editBtn.className = 'small-btn-link';
+      editBtn.textContent = acct.bio ? '✏️ Edit about me' : '✏️ Write about me';
+      editBtn.addEventListener('click', () => {
+        const ta = document.createElement('textarea');
+        ta.maxLength = 300;
+        ta.rows = 3;
+        ta.value = acct.bio || '';
+        ta.placeholder = 'Hobbies, favorite games, what you like to chat about… (300 characters)';
+        const save = document.createElement('button');
+        save.type = 'button';
+        save.className = 'small-btn';
+        save.textContent = 'Save';
+        save.addEventListener('click', () => {
+          if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'set-bio', bio: ta.value }));
+          acct.bio = ta.value.trim() || null;
+          bioText.textContent = acct.bio || 'Add a little "about me" so people know who you are.';
+          bioText.classList.toggle('empty', !acct.bio);
+          ta.replaceWith(bioText);
+          save.remove();
+          editBtn.hidden = false;
+        });
+        bioText.replaceWith(ta);
+        editBtn.hidden = true;
+        bioWrap.appendChild(save);
+        ta.focus();
+      });
+      bioWrap.appendChild(editBtn);
+    }
+    profileCardBody.appendChild(bioWrap);
+  }
 
   if (acct) {
     const badges = document.createElement('div');
@@ -7954,3 +8055,293 @@ accountDeleteForm.addEventListener('submit', async (e) => {
     fail('Could not reach the server — try again');
   }
 });
+
+
+// --- Photo viewer: tap a photo to see it big; zoom (wheel / pinch / double-tap), pan, swipe or
+// arrow keys between the room's photos, download. ---
+const viewerEl = document.getElementById('viewer');
+const viewerImg = document.getElementById('viewer-img');
+const viewerPrev = document.getElementById('viewer-prev');
+const viewerNext = document.getElementById('viewer-next');
+let viewerList = [];
+let viewerIndex = 0;
+let vz = { scale: 1, x: 0, y: 0 };
+const vPointers = new Map();
+let vPinchStart = null;
+let vDragStart = null;
+let vSwipeStart = null;
+
+function applyViewerTransform() {
+  viewerImg.style.transform = `translate(${vz.x}px, ${vz.y}px) scale(${vz.scale})`;
+  viewerEl.classList.toggle('zoomed', vz.scale > 1.01);
+}
+function resetViewerZoom() { vz = { scale: 1, x: 0, y: 0 }; applyViewerTransform(); }
+function showViewerImage(i) {
+  viewerIndex = (i + viewerList.length) % viewerList.length;
+  const src = viewerList[viewerIndex];
+  viewerImg.src = src;
+  const dl = document.getElementById('viewer-download');
+  dl.href = src;
+  dl.setAttribute('download', src.split('/').pop() || 'photo');
+  document.getElementById('viewer-count').textContent = viewerList.length > 1 ? `${viewerIndex + 1} / ${viewerList.length}` : '';
+  viewerPrev.hidden = viewerNext.hidden = viewerList.length < 2;
+  resetViewerZoom();
+}
+function openViewer(src) {
+  viewerList = [...messagesEl.querySelectorAll('.bubble img.media')].map((img) => img.getAttribute('src')).filter(Boolean);
+  let i = viewerList.indexOf(src);
+  if (i < 0) { viewerList.push(src); i = viewerList.length - 1; }
+  viewerEl.classList.remove('hidden');
+  showViewerImage(i);
+}
+function closeViewer() { viewerEl.classList.add('hidden'); viewerImg.removeAttribute('src'); vPointers.clear(); }
+
+messagesEl.addEventListener('click', (e) => {
+  const img = e.target.closest('.bubble img.media');
+  if (!img || img.closest('.poll-card')) return;
+  e.preventDefault();
+  openViewer(img.getAttribute('src'));
+});
+document.getElementById('viewer-close').addEventListener('click', closeViewer);
+viewerPrev.addEventListener('click', (e) => { e.stopPropagation(); showViewerImage(viewerIndex - 1); });
+viewerNext.addEventListener('click', (e) => { e.stopPropagation(); showViewerImage(viewerIndex + 1); });
+viewerEl.addEventListener('click', (e) => { if (e.target === viewerEl) closeViewer(); });
+document.addEventListener('keydown', (e) => {
+  if (viewerEl.classList.contains('hidden')) return;
+  if (e.key === 'Escape') { e.stopPropagation(); closeViewer(); }
+  else if (e.key === 'ArrowLeft') showViewerImage(viewerIndex - 1);
+  else if (e.key === 'ArrowRight') showViewerImage(viewerIndex + 1);
+}, true);
+
+function zoomViewerAt(newScale, cx, cy) {
+  newScale = Math.min(6, Math.max(1, newScale));
+  const rect = viewerEl.getBoundingClientRect();
+  const ox = cx - rect.width / 2;
+  const oy = cy - rect.height / 2;
+  // Keep the point under the cursor/fingers where it is.
+  vz.x = ox - ((ox - vz.x) * newScale) / vz.scale;
+  vz.y = oy - ((oy - vz.y) * newScale) / vz.scale;
+  vz.scale = newScale;
+  if (newScale === 1) { vz.x = 0; vz.y = 0; }
+  applyViewerTransform();
+}
+viewerEl.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  zoomViewerAt(vz.scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX, e.clientY);
+}, { passive: false });
+viewerImg.addEventListener('dblclick', (e) => zoomViewerAt(vz.scale > 1.01 ? 1 : 2.5, e.clientX, e.clientY));
+
+viewerImg.addEventListener('pointerdown', (e) => {
+  viewerImg.setPointerCapture(e.pointerId);
+  vPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (vPointers.size === 2) {
+    const [a, b] = [...vPointers.values()];
+    vPinchStart = { dist: Math.hypot(a.x - b.x, a.y - b.y), scale: vz.scale };
+    vDragStart = null;
+    vSwipeStart = null;
+  } else if (vPointers.size === 1) {
+    if (vz.scale > 1.01) vDragStart = { x: e.clientX, y: e.clientY, vx: vz.x, vy: vz.y };
+    else vSwipeStart = { x: e.clientX, y: e.clientY, t: Date.now() };
+  }
+});
+viewerImg.addEventListener('pointermove', (e) => {
+  if (!vPointers.has(e.pointerId)) return;
+  vPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (vPointers.size === 2 && vPinchStart) {
+    const [a, b] = [...vPointers.values()];
+    const dist = Math.hypot(a.x - b.x, a.y - b.y);
+    zoomViewerAt(vPinchStart.scale * (dist / vPinchStart.dist), (a.x + b.x) / 2, (a.y + b.y) / 2);
+  } else if (vDragStart) {
+    vz.x = vDragStart.vx + (e.clientX - vDragStart.x);
+    vz.y = vDragStart.vy + (e.clientY - vDragStart.y);
+    applyViewerTransform();
+  }
+});
+function endViewerPointer(e) {
+  vPointers.delete(e.pointerId);
+  if (vPointers.size < 2) vPinchStart = null;
+  if (vSwipeStart && vPointers.size === 0) {
+    const dx = e.clientX - vSwipeStart.x;
+    const dy = e.clientY - vSwipeStart.y;
+    if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5 && Date.now() - vSwipeStart.t < 800) showViewerImage(viewerIndex + (dx < 0 ? 1 : -1));
+    else if (dy > 110 && Math.abs(dy) > Math.abs(dx) * 1.5) closeViewer(); // swipe down to close
+  }
+  if (vPointers.size === 0) { vDragStart = null; vSwipeStart = null; }
+}
+viewerImg.addEventListener('pointerup', endViewerPointer);
+viewerImg.addEventListener('pointercancel', endViewerPointer);
+
+// Voice messages / audio clips: tap the speed pill to cycle 1× → 1.5× → 2×.
+const AUDIO_SPEEDS = [1, 1.5, 2];
+new MutationObserver((muts) => {
+  for (const m of muts) {
+    for (const node of m.addedNodes) {
+      if (!(node instanceof Element)) continue;
+      node.querySelectorAll && node.querySelectorAll('audio.media.audio-clip').forEach((audio) => {
+        if (audio.dataset.speedBtn) return;
+        audio.dataset.speedBtn = '1';
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'audio-speed-btn';
+        btn.textContent = '1×';
+        btn.title = 'Playback speed';
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const next = AUDIO_SPEEDS[(AUDIO_SPEEDS.indexOf(audio.playbackRate) + 1) % AUDIO_SPEEDS.length] || 1;
+          audio.playbackRate = next;
+          btn.textContent = `${next}×`;
+        });
+        audio.after(btn);
+      });
+    }
+  }
+}).observe(messagesEl, { childList: true, subtree: true });
+
+
+// --- Per-room notifications (Every message / Only @mentions / Off) ---
+const roomNotifySelect = document.getElementById('room-notify-select');
+let roomNotify = { mode: 'all', until: 0 };
+function roomNotifyKey(code) { return `valk-room-notify:${code}`; }
+function currentRoomNotifyMode() {
+  if (roomNotify.until && roomNotify.until <= Date.now()) roomNotify = { mode: 'all', until: 0 };
+  return roomNotify.mode || 'all';
+}
+function loadRoomNotifyPref(code, serverPref) {
+  roomNotify = { mode: 'all', until: 0 };
+  try { const v = JSON.parse(localStorage.getItem(roomNotifyKey(code)) || 'null'); if (v && v.mode) roomNotify = v; } catch (err) { /* ignore */ }
+  if (serverPref && serverPref.mode) roomNotify = { mode: serverPref.mode, until: serverPref.until || 0 };
+  const mode = currentRoomNotifyMode();
+  roomNotifySelect.value = mode === 'off' ? 'off' : mode;
+}
+roomNotifySelect.addEventListener('change', async () => {
+  const [mode, dur] = roomNotifySelect.value.split(':');
+  roomNotify = { mode, until: dur ? Date.now() + Number(dur) : 0 };
+  try { localStorage.setItem(roomNotifyKey(currentRoomCode), JSON.stringify(roomNotify)); } catch (err) { /* ignore */ }
+  let endpoint = null;
+  try {
+    const reg = 'serviceWorker' in navigator ? await navigator.serviceWorker.getRegistration() : null;
+    const sub = reg && reg.pushManager ? await reg.pushManager.getSubscription() : null;
+    endpoint = sub ? sub.endpoint : null;
+  } catch (err) { /* no push on this device — the setting still silences this tab */ }
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'set-room-notify', mode, until: roomNotify.until, endpoint }));
+});
+
+function notificationPreview(data) {
+  if (data.mediaType === 'poll') {
+    try { return `📊 Poll: ${JSON.parse(data.text).question}`; } catch (err) { return '📊 Poll'; }
+  }
+  if (data.kind === 'me') return `* ${data.name} ${data.text}`;
+  return data.text || (data.mediaType ? `sent a${data.mediaType === 'image' ? 'n' : ''} ${data.mediaType}` : '');
+}
+
+// --- Text size ---
+const textSizeSelect = document.getElementById('text-size-select');
+function applyTextSize(size) {
+  document.body.classList.remove('ts-small', 'ts-large', 'ts-xl');
+  if (size && size !== 'normal') document.body.classList.add(`ts-${size}`);
+}
+let savedTextSize = 'normal';
+try { savedTextSize = localStorage.getItem('valk-text-size') || 'normal'; } catch (err) { /* ignore */ }
+textSizeSelect.value = savedTextSize;
+applyTextSize(savedTextSize);
+textSizeSelect.addEventListener('change', () => {
+  applyTextSize(textSizeSelect.value);
+  try { localStorage.setItem('valk-text-size', textSizeSelect.value); } catch (err) { /* ignore */ }
+});
+
+
+// --- Room stats ---
+const statsModal = document.getElementById('stats-modal');
+const statsBody = document.getElementById('stats-body');
+document.getElementById('room-stats-btn').addEventListener('click', () => {
+  closeMenu();
+  statsBody.innerHTML = '<p class="search-status">Loading…</p>';
+  statsModal.classList.remove('hidden');
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'get-room-stats' }));
+});
+document.getElementById('stats-close').addEventListener('click', () => statsModal.classList.add('hidden'));
+statsModal.addEventListener('click', (e) => { if (e.target === statsModal) statsModal.classList.add('hidden'); });
+
+function renderRoomStats(s) {
+  statsBody.textContent = '';
+  const tiles = document.createElement('div');
+  tiles.className = 'stats-tiles';
+  for (const [n, label] of [[s.today, 'messages today'], [s.week, 'this week'], [s.people30, 'people this month']]) {
+    const t = document.createElement('div');
+    t.className = 'stats-tile';
+    const b = document.createElement('b');
+    b.textContent = Number(n || 0).toLocaleString();
+    const sp = document.createElement('span');
+    sp.textContent = label;
+    t.append(b, sp);
+    tiles.appendChild(t);
+  }
+  statsBody.appendChild(tiles);
+
+  const h = (text) => { const el = document.createElement('h3'); el.textContent = text; statsBody.appendChild(el); };
+  h('🏆 Top chatters this week');
+  if (!s.topChatters.length) {
+    const p = document.createElement('p'); p.className = 'search-status'; p.textContent = 'Nobody has said anything this week yet.'; statsBody.appendChild(p);
+  }
+  const max = Math.max(1, ...s.topChatters.map((c) => c.n));
+  s.topChatters.forEach((c, i) => {
+    const row = document.createElement('div');
+    row.className = 'stats-row';
+    const name = document.createElement('span');
+    name.className = 'stats-name';
+    name.textContent = `${['🥇', '🥈', '🥉', '4.', '5.'][i]} ${c.name}`;
+    const barWrap = document.createElement('div');
+    const bar = document.createElement('div');
+    bar.className = 'stats-bar';
+    bar.style.width = `${(c.n / max) * 100}%`;
+    barWrap.appendChild(bar);
+    const n = document.createElement('span');
+    n.className = 'stats-n';
+    n.textContent = c.n;
+    row.append(name, barWrap, n);
+    statsBody.appendChild(row);
+  });
+
+  // Shift UTC hour buckets into this browser's local time.
+  const offsetH = -new Date().getTimezoneOffset() / 60;
+  const local = Array(24).fill(0);
+  s.hoursUtc.forEach((n, utcH) => { local[((Math.round(utcH + offsetH) % 24) + 24) % 24] += n; });
+  const peak = local.indexOf(Math.max(...local));
+  const fmtHour = (hr) => new Date(2000, 0, 1, hr).toLocaleTimeString([], { hour: 'numeric' });
+  h(`⏰ Busiest time (last 30 days)${Math.max(...local) ? `: around ${fmtHour(peak)}` : ''}`);
+  const hours = document.createElement('div');
+  hours.className = 'stats-hours';
+  const hmax = Math.max(1, ...local);
+  local.forEach((n, hr) => {
+    const bar = document.createElement('div');
+    bar.style.height = `${(n / hmax) * 100}%`;
+    bar.title = `${fmtHour(hr)}: ${n} message${n === 1 ? '' : 's'}`;
+    hours.appendChild(bar);
+  });
+  statsBody.appendChild(hours);
+  const labels = document.createElement('div');
+  labels.className = 'stats-hours-labels';
+  for (const hr of [0, 6, 12, 18, 23]) { const sp = document.createElement('span'); sp.textContent = fmtHour(hr); labels.appendChild(sp); }
+  statsBody.appendChild(labels);
+
+  if (s.topReactions.length) {
+    h('😀 Favorite reactions');
+    const wrap = document.createElement('div');
+    wrap.className = 'stats-reactions';
+    for (const r of s.topReactions) {
+      const sp = document.createElement('span');
+      const custom = r.emoji.match(/^:([a-z0-9_]{2,20}):$/);
+      if (custom && roomEmojis.has(custom[1])) sp.appendChild(makeCustomEmojiImg(custom[1]));
+      else sp.appendChild(document.createTextNode(r.emoji));
+      const small = document.createElement('small');
+      small.textContent = `×${r.n}`;
+      sp.appendChild(small);
+      wrap.appendChild(sp);
+    }
+    statsBody.appendChild(wrap);
+  }
+  const foot = document.createElement('p');
+  foot.className = 'search-status';
+  foot.textContent = `${Number(s.total).toLocaleString()} messages all time${s.firstMessageAt ? ` · first one on ${new Date(s.firstMessageAt).toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' })}` : ''}`;
+  statsBody.appendChild(foot);
+}

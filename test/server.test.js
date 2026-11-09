@@ -8019,3 +8019,62 @@ describe('delete my account (2026-11-08)', () => {
     aWs.close(); c.close();
   });
 });
+
+describe('room notifications, unread counts, bio, stats (2026-11-08)', () => {
+  test("recent-unread counts others' messages since your last read; skips PIN rooms", async () => {
+    const { ws: a, code } = await joinRoom('UnreadA');
+    const b = await joinExistingRoom('UnreadB', code);
+    send(b, { type: 'message', text: 'first' });
+    const first = await waitFor(b, (m) => m.type === 'message' && m.text === 'first');
+    send(b, { type: 'read', messageId: first.id });
+    await sleep(150);
+    b.close();
+    for (const t of ['one', 'two', 'three']) {
+      send(a, { type: 'message', text: t });
+      await waitFor(a, (m) => m.type === 'message' && m.text === t);
+    }
+    const c = await connectWs();
+    send(c, { type: 'join-server', username: 'UnreadB' });
+    await waitFor(c, (m) => m.type === 'joined-server');
+    send(c, { type: 'recent-unread', codes: [code, 'ZZZZZ'] });
+    const r = await waitFor(c, (m) => m.type === 'recent-unread');
+    assert.equal(r.counts[code], 3);
+    send(a, { type: 'set-room-pin', pin: '9999' });
+    await sleep(200);
+    send(c, { type: 'recent-unread', codes: [code] });
+    assert.equal((await waitFor(c, (m) => m.type === 'recent-unread')).counts[code], undefined);
+    a.close(); c.close();
+  });
+
+  test('room stats and set-room-notify', async () => {
+    const { ws: a, code } = await joinRoom('StatsA');
+    for (const t of ['x', 'y']) {
+      send(a, { type: 'message', text: t });
+      await waitFor(a, (m) => m.type === 'message' && m.text === t);
+    }
+    send(a, { type: 'get-room-stats' });
+    const s = await waitFor(a, (m) => m.type === 'room-stats');
+    assert.equal(s.code, code);
+    assert.equal(s.today, 2);
+    assert.equal(s.topChatters[0].name, 'StatsA');
+    assert.equal(s.hoursUtc.reduce((x, y) => x + y, 0), 2);
+    send(a, { type: 'set-room-notify', mode: 'mentions', until: 0 });
+    assert.equal((await waitFor(a, (m) => m.type === 'room-notify-updated')).mode, 'mentions');
+    a.close();
+  });
+
+  test('signed-in users can set an about-me that shows on their profile card', async () => {
+    const acct = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'BioUser', password: 'pass1234', email: 'biouser@test.com' }),
+    }).then((r) => r.json());
+    const { ws: host, code } = await joinRoom('BioHost');
+    const me = await joinAsAccount('BioUser', acct.token, code);
+    send(me, { type: 'set-bio', bio: 'I like trains 🚂' });
+    await waitFor(me, (m) => m.type === 'bio-updated');
+    send(host, { type: 'get-profile-card', name: 'BioUser' });
+    const card = await waitFor(host, (m) => m.type === 'profile-card');
+    assert.equal(card.account.bio, 'I like trains 🚂');
+    host.close(); me.close();
+  });
+});

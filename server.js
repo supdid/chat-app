@@ -177,17 +177,53 @@ function sendPushToSubs(subs, payload, onGone = (endpoint) => db.removePushSubsc
 // subscribers who aren't currently an open WS client in that room — if they're connected,
 // they already got the message live plus the in-tab Notification, so a system push on top
 // would just be a duplicate popup.
+// "Mute this room" / "mentions only", per device (ep:) or per account (acct:).
+const roomNotifyPrefs = new Map(); // `${key}|${code}` -> { mode, until }
+for (const r of db.getAllRoomNotifyPrefs()) roomNotifyPrefs.set(`${r.key}|${r.room_code}`, { mode: r.mode, until: r.until || 0 });
+function roomNotifyModeFor(sub, code, now = Date.now()) {
+  for (const key of [sub.accountId ? `acct:${sub.accountId}` : null, `ep:${sub.endpoint}`]) {
+    if (!key) continue;
+    const p = roomNotifyPrefs.get(`${key}|${code}`);
+    if (p && (!p.until || p.until > now)) return p.mode;
+  }
+  return 'all';
+}
+function textMentions(text, name) {
+  if (!text || !name) return false;
+  const re = /@(\S+)/g;
+  let m;
+  while ((m = re.exec(text))) {
+    const token = m[1].replace(/[.,!?;:]+$/, '').toLowerCase();
+    if (token === name.toLowerCase() || token === 'everyone') return true;
+  }
+  return false;
+}
+// What a notification should say for a message (polls store JSON in text, /me is an action).
+function messagePreviewText(entry) {
+  if (entry.mediaType === 'poll') {
+    try { return `📊 Poll: ${JSON.parse(entry.text).question}`; } catch { return '📊 Poll'; }
+  }
+  if (entry.kind === 'me') return `* ${entry.name} ${entry.text}`;
+  return entry.text || (entry.mediaType ? `sent a${entry.mediaType === 'image' ? 'n' : ''} ${entry.mediaType}` : '');
+}
+
 function pushNewMessage(code, entry) {
   const room = rooms.get(code);
   const connectedNames = new Set(room ? [...room.clients].map((c) => c.profile.name) : []);
   const subs = db.getPushSubscriptionsForRoom(code);
-  const body = entry.text || (entry.mediaType ? `sent a${entry.mediaType === 'image' ? 'n' : ''} ${entry.mediaType}` : '');
+  const body = messagePreviewText(entry);
   const payload = JSON.stringify({ title: entry.name, body, roomCode: code, messageId: entry.id });
   // A ban is meant to cut someone off from a room entirely — without this, a banned person's
   // stale subscription row keeps matching every future message forever, since they can never
   // reconnect to appear in connectedNames. Checked at send time (not deleted on ban) so it also
   // self-heals correctly if they're later unbanned, with no separate restore-on-unban path needed.
-  sendPushToSubs(subs.filter((sub) => sub.name !== entry.name && !connectedNames.has(sub.name) && !db.isBannedFromRoom(code, sub.accountId, sub.name)), payload);
+  sendPushToSubs(subs.filter((sub) => {
+    if (sub.name === entry.name || connectedNames.has(sub.name) || db.isBannedFromRoom(code, sub.accountId, sub.name)) return false;
+    const mode = roomNotifyModeFor(sub, code);
+    if (mode === 'off') return false;
+    if (mode === 'mentions') return entry.mediaType !== 'poll' && textMentions(entry.text, sub.name);
+    return true;
+  }), payload);
 }
 
 // Matches an email address typed inline in a chat message, e.g. "jondoe@gmail.com" — used to
@@ -8176,6 +8212,10 @@ wss.on('connection', (ws, req) => {
         cohosts: db.getRoomCohosts(code).map((c) => c.name),
         welcome: dbRoom ? dbRoom.welcome_text || null : null,
         hostsOnly: !!(dbRoom && dbRoom.hosts_only),
+        notifyPref: (() => {
+          const p = ws.accountId ? roomNotifyPrefs.get(`acct:${ws.accountId}|${code}`) : null;
+          return p && (!p.until || p.until > Date.now()) ? p : null;
+        })(),
         announcement: dbRoom ? dbRoom.announcement : null,
         wallpaperUrl: dbRoom ? dbRoom.wallpaper_url : null,
         slowMode: dbRoom ? dbRoom.slow_mode || 0 : 0,
@@ -8375,7 +8415,7 @@ wss.on('connection', (ws, req) => {
               else if (f && f.status === 'pending') friendStatus = f.requester_id === ws.accountId ? 'pending-out' : 'pending-in';
             }
           }
-          account = { username: a.username, joinedAt: a.created_at, flair: db.accountFlair(a.id), badges: db.getAccountBadges(a.id), friendStatus };
+          account = { username: a.username, joinedAt: a.created_at, flair: db.accountFlair(a.id), badges: db.getAccountBadges(a.id), friendStatus, bio: friendStatus === 'blocked' ? null : a.bio || null };
         }
       }
       send(ws, {
@@ -8385,6 +8425,7 @@ wss.on('connection', (ws, req) => {
         status: profile ? profile.status || null : null,
         online,
         isHost: !!dbRoom && (dbRoom.host_account_id ? !!accountId && dbRoom.host_account_id === accountId : dbRoom.host_name === name),
+        isCohost: !!(accountId && db.isRoomCohost(ws.room, accountId)),
         account,
       });
       return;
@@ -8615,6 +8656,52 @@ wss.on('connection', (ws, req) => {
       mintTurnCredential().then((cred) => {
         send(ws, { type: 'turn-credential', iceServer: cred ? { urls: cred.urls, username: cred.username, credential: cred.credential } : null });
       });
+      return;
+    }
+
+    if (msg.type === 'set-room-notify' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      const mode = ['all', 'mentions', 'off'].includes(msg.mode) ? msg.mode : 'all';
+      let until = Math.round(Number(msg.until) || 0);
+      if (until && (until < Date.now() || until > Date.now() + 366 * 24 * 60 * 60 * 1000)) until = 0;
+      const ep = typeof msg.endpoint === 'string' && msg.endpoint.startsWith('https://') && msg.endpoint.length < 1000 ? msg.endpoint : null;
+      const keys = [ws.accountId ? `acct:${ws.accountId}` : null, ep ? `ep:${ep}` : null].filter(Boolean);
+      for (const key of keys) {
+        if (mode === 'all') roomNotifyPrefs.delete(`${key}|${ws.room}`);
+        else roomNotifyPrefs.set(`${key}|${ws.room}`, { mode, until });
+        db.saveRoomNotifyPref(key, ws.room, mode, until);
+      }
+      send(ws, { type: 'room-notify-updated', mode, until });
+      return;
+    }
+
+    // Unread counts for the room picker's "recent rooms" chips. PIN rooms are skipped (no leaking
+    // activity to someone who only knows the code).
+    if (msg.type === 'recent-unread' && ws.profile) {
+      if (isWsMsgRateLimited(ws)) return;
+      const codes = Array.isArray(msg.codes) ? msg.codes.slice(0, 20).map((c) => String(c).toUpperCase().slice(0, 10)) : [];
+      const counts = {};
+      for (const c of codes) {
+        const r = db.getRoom(c);
+        if (!r || r.pin_required) continue;
+        const n = db.countUnreadSince(c, ws.profile.name);
+        if (n) counts[c] = n;
+      }
+      send(ws, { type: 'recent-unread', counts });
+      return;
+    }
+
+    if (msg.type === 'set-bio') {
+      if (!ws.accountId || isWsMsgRateLimited(ws)) return;
+      const bio = String(msg.bio || '').replace(/\s+\n/g, '\n').slice(0, 300).trim() || null;
+      db.setAccountBio(ws.accountId, bio);
+      send(ws, { type: 'bio-updated', bio });
+      return;
+    }
+
+    if (msg.type === 'get-room-stats' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      send(ws, { type: 'room-stats', code: ws.room, ...db.getRoomStats(ws.room) });
       return;
     }
 

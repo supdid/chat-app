@@ -170,6 +170,25 @@
     </div>
   </div>
 
+  <div id="viewer" class="viewer hidden" role="dialog" aria-modal="true" aria-label="Photo viewer">
+    <img id="viewer-img" alt="">
+    <div class="viewer-bar">
+      <span id="viewer-count"></span>
+      <a id="viewer-download" class="viewer-btn" download title="Download">⬇</a>
+      <button type="button" id="viewer-close" class="viewer-btn" title="Close (Esc)">✕</button>
+    </div>
+    <button type="button" id="viewer-prev" class="viewer-nav viewer-prev" aria-label="Previous photo">‹</button>
+    <button type="button" id="viewer-next" class="viewer-nav viewer-next" aria-label="Next photo">›</button>
+  </div>
+
+  <div id="stats-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="stats-title">
+    <div class="modal-card stats-card">
+      <h2 id="stats-title">📈 Room stats</h2>
+      <div id="stats-body"><p class="search-status">Loading…</p></div>
+      <button type="button" id="stats-close">Close</button>
+    </div>
+  </div>
+
   <div id="switcher-modal" class="modal-backdrop switcher-backdrop hidden" role="dialog" aria-modal="true" aria-label="Jump to a room">
     <div class="modal-card switcher-card">
       <input id="switcher-input" type="text" placeholder="Jump to a room — type a name or code" autocomplete="off" maxlength="40">
@@ -319,6 +338,26 @@
           <button id="notify-sound-test-btn" class="icon-btn" type="button" aria-label="Test sound">▶️</button>
         </div>
       </div>
+      <div class="notify-sound-row">
+        <label for="room-notify-select">🔕 Notifications for this room</label>
+        <select id="room-notify-select">
+          <option value="all">Every message</option>
+          <option value="mentions">Only @mentions</option>
+          <option value="off:3600000">Off for 1 hour</option>
+          <option value="off:28800000">Off for 8 hours</option>
+          <option value="off:86400000">Off for 1 day</option>
+          <option value="off">Off</option>
+        </select>
+      </div>
+      <div class="notify-sound-row">
+        <label for="text-size-select">🔠 Text size</label>
+        <select id="text-size-select">
+          <option value="small">Small</option>
+          <option value="normal">Normal</option>
+          <option value="large">Large</option>
+          <option value="xl">Extra large</option>
+        </select>
+      </div>
       <p>Room code: <strong id="menu-room-code"></strong></p>
       <form id="rename-room-form" class="rename-room-form hidden">
         <input id="rename-room-input" type="text" placeholder="Give this room a name" maxlength="50" autocomplete="off">
@@ -461,6 +500,7 @@
       <button id="search-btn" class="menu-link" type="button">🔍 Search messages</button>
       <button id="gallery-btn" class="menu-link" type="button">🖼️ Media gallery</button>
       <button id="poll-btn" class="menu-link" type="button">📊 Create a poll</button>
+      <button id="room-stats-btn" class="menu-link" type="button">📈 Room stats</button>
       <button id="events-btn" class="menu-link" type="button">📅 Events</button>
       <button id="dnd-btn" class="menu-link" type="button">🔕 Do Not Disturb</button>
       <button id="saved-btn" class="menu-link" type="button">🔖 Saved messages</button>

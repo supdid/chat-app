@@ -356,6 +356,15 @@ db.exec(`
     at INTEGER,
     PRIMARY KEY (room_code, account_id)
   );
+  -- Per-room notification setting: mode 'mentions' or 'off' (no row = all). until = 0 means
+  -- until changed; otherwise it lapses back to "all" at that time. key = acct:<id> or ep:<endpoint>.
+  CREATE TABLE IF NOT EXISTS room_notify_prefs (
+    key TEXT,
+    room_code TEXT,
+    mode TEXT,
+    until INTEGER,
+    PRIMARY KEY (key, room_code)
+  );
   -- "/later 30m text": a message that posts itself at send_at.
   CREATE TABLE IF NOT EXISTS scheduled_messages (
     id TEXT PRIMARY KEY,
@@ -595,6 +604,7 @@ db.exec(`
 // brand-new database (no accounts table on disk yet) throws "no such table: accounts".
 ensureColumn('accounts', 'email', 'TEXT');
 ensureColumn('accounts', 'google_id', 'TEXT');
+ensureColumn('accounts', 'bio', 'TEXT');
 ensureColumn('accounts', 'scorpture_banner_url', 'TEXT');
 ensureColumn('accounts', 'scorpture_avatar_url', 'TEXT');
 ensureColumn('accounts', 'scorpture_description', 'TEXT');
@@ -1114,6 +1124,7 @@ const deleteAccountCascade = db.transaction((accountId) => {
   db.prepare('DELETE FROM push_subscriptions WHERE account_id = ?').run(accountId);
   db.prepare('DELETE FROM reminders WHERE account_id = ?').run(accountId);
   db.prepare('DELETE FROM dnd_settings WHERE key = ?').run(`acct:${accountId}`);
+  db.prepare('DELETE FROM room_notify_prefs WHERE key = ?').run(`acct:${accountId}`);
   db.prepare('DELETE FROM room_cohosts WHERE account_id = ?').run(accountId);
   db.prepare('DELETE FROM scheduled_messages WHERE account_id = ?').run(accountId);
   db.prepare('DELETE FROM room_event_rsvps WHERE account_id = ?').run(accountId);
@@ -1169,6 +1180,57 @@ const takeDueScheduledMessages = db.transaction((now) => {
   for (const r of rows) del.run(r.id);
   return rows;
 });
+
+function getAllRoomNotifyPrefs() {
+  return db.prepare('SELECT * FROM room_notify_prefs').all();
+}
+function saveRoomNotifyPref(key, code, mode, until) {
+  if (mode === 'all') {
+    db.prepare('DELETE FROM room_notify_prefs WHERE key = ? AND room_code = ?').run(key, code);
+    return;
+  }
+  db.prepare(
+    `INSERT INTO room_notify_prefs (key, room_code, mode, until) VALUES (?, ?, ?, ?)
+     ON CONFLICT(key, room_code) DO UPDATE SET mode = excluded.mode, until = excluded.until`
+  ).run(key, code, mode, until || 0);
+}
+
+// New messages since this name's read receipt in a room (others' only), capped at 100.
+// null if they've never read anything there.
+function countUnreadSince(code, name) {
+  const r = db.prepare('SELECT last_read_message_id AS id FROM read_receipts WHERE room_code = ? AND name = ?').get(code, name);
+  if (!r) return null;
+  const m = db.prepare('SELECT at FROM messages WHERE id = ?').get(r.id);
+  if (!m) return null;
+  return db.prepare('SELECT COUNT(*) AS n FROM (SELECT 1 FROM messages WHERE room_code = ? AND at > ? AND name != ? AND deleted = 0 LIMIT 100)').get(code, m.at, name).n;
+}
+
+function setAccountBio(accountId, bio) {
+  db.prepare('UPDATE accounts SET bio = ? WHERE id = ?').run(bio, accountId);
+}
+
+// Room stats panel. Hour buckets are UTC; the browser shifts them to local time.
+function getRoomStats(code, now = Date.now()) {
+  const DAY = 24 * 60 * 60 * 1000;
+  const q = (sql, ...a) => db.prepare(sql).get(...a);
+  const total = q('SELECT COUNT(*) AS n FROM messages WHERE room_code = ? AND deleted = 0', code).n;
+  const today = q('SELECT COUNT(*) AS n FROM messages WHERE room_code = ? AND deleted = 0 AND at > ?', code, now - DAY).n;
+  const week = q('SELECT COUNT(*) AS n FROM messages WHERE room_code = ? AND deleted = 0 AND at > ?', code, now - 7 * DAY).n;
+  const topChatters = db.prepare(
+    'SELECT name, COUNT(*) AS n FROM messages WHERE room_code = ? AND deleted = 0 AND at > ? GROUP BY name ORDER BY n DESC LIMIT 5'
+  ).all(code, now - 7 * DAY);
+  const people30 = q('SELECT COUNT(DISTINCT name) AS n FROM messages WHERE room_code = ? AND at > ?', code, now - 30 * DAY).n;
+  const hours = Array(24).fill(0);
+  for (const r of db.prepare(
+    "SELECT CAST(strftime('%H', at / 1000, 'unixepoch') AS INTEGER) AS h, COUNT(*) AS n FROM messages WHERE room_code = ? AND at > ? GROUP BY h"
+  ).all(code, now - 30 * DAY)) hours[r.h] = r.n;
+  const topReactions = db.prepare(
+    `SELECT r.emoji, COUNT(*) AS n FROM reactions r WHERE r.message_id IN (SELECT id FROM messages WHERE room_code = ? AND at > ?)
+     GROUP BY r.emoji ORDER BY n DESC LIMIT 5`
+  ).all(code, now - 30 * DAY);
+  const first = q('SELECT MIN(at) AS at FROM messages WHERE room_code = ?', code).at;
+  return { total, today, week, topChatters, people30, hoursUtc: hours, topReactions, firstMessageAt: first || null };
+}
 
 function setHostsOnly(code, on) {
   db.prepare('UPDATE rooms SET hosts_only = ? WHERE code = ?').run(on ? 1 : 0, code);
@@ -2569,6 +2631,7 @@ const deleteRoomCascade = db.transaction((code) => {
   db.prepare('DELETE FROM room_emojis WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM room_cohosts WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM scheduled_messages WHERE room_code = ?').run(code);
+  db.prepare('DELETE FROM room_notify_prefs WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM room_invite_uses WHERE token IN (SELECT token FROM room_invites WHERE room_code = ?)').run(code);
   db.prepare('DELETE FROM room_invites WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM room_event_rsvps WHERE event_id IN (SELECT id FROM room_events WHERE room_code = ?)').run(code);
@@ -2853,6 +2916,11 @@ function getAccountByStreamKey(key) {
 }
 
 module.exports = {
+  getRoomStats,
+  setAccountBio,
+  countUnreadSince,
+  getAllRoomNotifyPrefs,
+  saveRoomNotifyPref,
   deleteAccountCascade,
   addScheduledMessage,
   listScheduledMessages,
