@@ -3645,6 +3645,7 @@ function normalizePollText(text) {
   const parsed = JSON.parse(text);
   const out = { question: parsed.question.trim().slice(0, 200), options: parsed.options.map((o) => o.trim().slice(0, 80)) };
   if (parsed.multi === true) out.multi = true;
+  if (parsed.public === true) out.public = true; // voters' names are shown (the creator chose this)
   const endsAt = Number(parsed.endsAt);
   if (Number.isFinite(endsAt) && endsAt > Date.now() && endsAt <= Date.now() + POLL_MAX_DURATION_MS) out.endsAt = Math.round(endsAt);
   return JSON.stringify(out);
@@ -3662,12 +3663,17 @@ function pollStateFor(messageId, poll, forName) {
     const counts = Array.from({ length: optionCount }, (_, i) => votes.filter((v) => v.optionIndex === i).length);
     const voters = new Set(votes.map((v) => v.name)).size;
     const myVotes = votes.filter((v) => v.name === forName).map((v) => v.optionIndex);
-    return { counts, myVote: null, myVotes, voters };
+    const out = { counts, myVote: null, myVotes, voters };
+    if (poll.public) out.voterNames = Array.from({ length: optionCount }, (_, i) => votes.filter((v) => v.optionIndex === i).map((v) => v.name).slice(0, 50));
+    return out;
   }
   const votes = db.getPollVotes(messageId);
   const counts = Array.from({ length: optionCount }, (_, i) => votes.filter((v) => v.optionIndex === i).length);
   const mine = votes.find((v) => v.name === forName);
-  return { counts, myVote: mine ? mine.optionIndex : null, myVotes: mine ? [mine.optionIndex] : [], voters: votes.length };
+  const out = { counts, myVote: mine ? mine.optionIndex : null, myVotes: mine ? [mine.optionIndex] : [], voters: votes.length };
+  // Only for polls whose creator ticked "show who voted" — everything else stays anonymous.
+  if (poll.public) out.voterNames = Array.from({ length: optionCount }, (_, i) => votes.filter((v) => v.optionIndex === i).map((v) => v.name).slice(0, 50));
+  return out;
 }
 
 function isValidPollText(text) {

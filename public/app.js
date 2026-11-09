@@ -7201,6 +7201,7 @@ pollBtn.addEventListener('click', () => {
   pollQuestionInput.value = '';
   pollOptionsListEl.innerHTML = '';
   document.getElementById('poll-multi-input').checked = false;
+  document.getElementById('poll-public-input').checked = false;
   document.getElementById('poll-ends-select').value = '0';
   addPollOptionRow();
   addPollOptionRow();
@@ -7222,6 +7223,7 @@ pollCreateForm.addEventListener('submit', (e) => {
   if (!question || options.length < 2 || !ws || ws.readyState !== WebSocket.OPEN) return;
   const pollDef = { question, options };
   if (document.getElementById('poll-multi-input').checked) pollDef.multi = true;
+  if (document.getElementById('poll-public-input').checked) pollDef.public = true;
   const endsIn = Number(document.getElementById('poll-ends-select').value) || 0;
   if (endsIn > 0) pollDef.endsAt = Date.now() + endsIn;
   ws.send(JSON.stringify({
@@ -7240,6 +7242,7 @@ function seedPollVotes(messageId, data) {
     myVote,
     myVotes: data && Array.isArray(data.myVotes) ? data.myVotes : (myVote != null ? [myVote] : []),
     voters: data && Number.isFinite(data.voters) ? data.voters : null,
+    voterNames: data && Array.isArray(data.voterNames) ? data.voterNames : null,
   });
 }
 
@@ -7310,6 +7313,12 @@ function renderPoll(container, data) {
     countText.textContent = total > 0 ? `${pct}% (${counts[i]})` : '';
     labelRow.append(labelText, countText);
     opt.append(fill, labelRow);
+    if (poll.public && state.voterNames && state.voterNames[i] && state.voterNames[i].length) {
+      const who = document.createElement('div');
+      who.className = 'poll-voters';
+      who.textContent = state.voterNames[i].join(', ');
+      opt.appendChild(who);
+    }
     if (!ended) {
       opt.addEventListener('click', () => {
         if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'vote-poll', messageId: data.id, optionIndex: i }));
@@ -7322,6 +7331,7 @@ function renderPoll(container, data) {
   footer.className = 'poll-total-votes';
   const voters = poll.multi ? (state.voters != null ? state.voters : total) : total;
   let footText = `${voters} ${poll.multi ? 'voter' : 'vote'}${voters === 1 ? '' : 's'}`;
+  if (poll.public) footText += ' · 👀 votes are public';
   if (ended) footText += ' · Final results';
   else if (poll.endsAt) footText += ` · ends in ${formatTimeLeft(poll.endsAt - Date.now())}`;
   footer.textContent = footText;

@@ -8344,3 +8344,22 @@ describe('room champions + game invites (2026-11-08)', () => {
     chat.close(); other.close(); gamePage.close();
   });
 });
+
+describe('public polls (2026-11-09)', () => {
+  test('voter names are sent only for polls marked public', async () => {
+    const { ws: a, code } = await joinRoom('PubPollA');
+    const b = await joinExistingRoom('PubPollB', code);
+    const post = (def) => send(a, { type: 'message', text: JSON.stringify(def), mediaUrl: 'poll', mediaType: 'poll' });
+    post({ question: 'Public?', options: ['yes', 'no'], public: true });
+    const pub = await waitFor(b, (m) => m.type === 'message' && /Public\?/.test(m.text));
+    send(b, { type: 'vote-poll', messageId: pub.id, optionIndex: 0 });
+    const v = await waitFor(a, (m) => m.type === 'poll-voted' && m.messageId === pub.id);
+    assert.deepEqual(v.voterNames, [['PubPollB'], []]);
+    post({ question: 'Secret?', options: ['yes', 'no'] });
+    const sec = await waitFor(b, (m) => m.type === 'message' && /Secret\?/.test(m.text));
+    send(b, { type: 'vote-poll', messageId: sec.id, optionIndex: 1 });
+    const v2 = await waitFor(a, (m) => m.type === 'poll-voted' && m.messageId === sec.id);
+    assert.equal(v2.voterNames, undefined);
+    a.close(); b.close();
+  });
+});
