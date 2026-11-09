@@ -3051,3 +3051,7 @@ body.ts-xl .bubble .meta { font-size: 0.9rem; }
 .whats-new-card { display: flex; flex-direction: column; overflow: hidden; }
 .whats-new-list { overflow-y: auto; min-height: 0; flex: 1 1 auto; padding-right: 0.3rem; scrollbar-width: thin; scrollbar-color: rgba(127, 140, 155, 0.45) transparent; }
 .whats-new-card > button { flex-shrink: 0; }
+
+.mod-log-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.45rem; }
+.mod-log-list li { font-size: 0.88rem; word-break: break-word; padding-bottom: 0.4rem; border-bottom: 1px solid var(--input-border); }
+.mod-log-list li .eh-when { display: block; font-size: 0.72rem; color: var(--text-subtle); }

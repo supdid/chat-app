@@ -8812,6 +8812,7 @@ wss.on('connection', (ws, req) => {
       db.setWordFilter(ws.room, !!msg.useDefault, words);
       broadcastRoom(ws.room, { type: 'word-filter-updated', useDefault: !!msg.useDefault, count: words.length, by: ws.profile.name });
       send(ws, { type: 'word-filter-settings', useDefault: !!msg.useDefault, words });
+      db.addModLog(ws.room, ws.profile.name, 'word-filter');
       return;
     }
 
@@ -8821,6 +8822,7 @@ wss.on('connection', (ws, req) => {
       if (!isRoomMod(dbRoom, ws)) return;
       const seconds = SLOW_MODE_OPTIONS.includes(+msg.seconds) ? +msg.seconds : 0;
       db.setSlowMode(ws.room, seconds);
+      db.addModLog(ws.room, ws.profile.name, 'slow-mode', null, seconds ? `${seconds}s` : 'off');
       const room = rooms.get(ws.room);
       if (room) room.slowLast = new Map();
       broadcastRoom(ws.room, { type: 'slow-mode-updated', seconds, by: ws.profile.name });
@@ -8933,12 +8935,20 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    if (msg.type === 'get-mod-log' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      if (!isRoomMod(db.getRoom(ws.room), ws)) return;
+      send(ws, { type: 'mod-log', entries: db.getModLog(ws.room) });
+      return;
+    }
+
     if (msg.type === 'set-hosts-only' && ws.room) {
       if (isWsMsgRateLimited(ws)) return;
       const dbRoom = db.getRoom(ws.room);
       if (!isRoomHost(dbRoom, ws)) return;
       const on = !!msg.on;
       db.setHostsOnly(ws.room, on);
+      db.addModLog(ws.room, ws.profile.name, 'announcement-only', null, on ? 'on' : 'off');
       broadcastRoom(ws.room, { type: 'hosts-only-updated', on, by: ws.profile.name });
       return;
     }
@@ -8974,6 +8984,7 @@ wss.on('connection', (ws, req) => {
           return;
         }
         db.addRoomCohost(ws.room, target.accountId, targetName, ws.profile.name);
+        db.addModLog(ws.room, ws.profile.name, 'add-cohost', targetName);
         broadcastRoom(ws.room, { type: 'system', text: `${ws.profile.name} made ${targetName} a co-host`, at: Date.now() });
       } else {
         const targetName = String(msg.name || '').trim();
@@ -8982,6 +8993,7 @@ wss.on('connection', (ws, req) => {
         const acct = (live && live.accountId) || (row && row.accountId);
         if (!acct || !db.isRoomCohost(ws.room, acct)) return;
         db.removeRoomCohost(ws.room, acct);
+        db.addModLog(ws.room, ws.profile.name, 'remove-cohost', targetName);
         broadcastRoom(ws.room, { type: 'system', text: `${targetName} is no longer a co-host`, at: Date.now() });
       }
       sendCohostsUpdate(ws.room);
@@ -9019,6 +9031,7 @@ wss.on('connection', (ws, req) => {
       if (!isRoomMod(dbRoom, ws)) return;
       const text = String(msg.text || '').slice(0, 200).trim() || null;
       db.setAnnouncement(ws.room, text);
+      db.addModLog(ws.room, ws.profile.name, 'announcement', null, text || '(cleared)');
       broadcastRoom(ws.room, { type: 'announcement-updated', text });
       return;
     }
@@ -9038,6 +9051,7 @@ wss.on('connection', (ws, req) => {
           leaveRoom(client);
         }
       }
+      db.addModLog(ws.room, ws.profile.name, 'kick', targetName);
       evictAccountFromRoomSessions(targetAccountId, ws.room);
       return;
     }
@@ -9061,6 +9075,7 @@ wss.on('connection', (ws, req) => {
       if (targetAccountId) {
         db.addPersistentMute(ws.room, targetAccountId, targetName, ws.profile.name);
       }
+      db.addModLog(ws.room, ws.profile.name, 'mute', targetName);
       broadcastRoom(ws.room, { type: 'user-muted', name: targetName });
       // Without this, the host's own mute button never flipped to "unmute" until some unrelated
       // event (someone else joining/leaving) happened to trigger the next presence refresh —
@@ -9081,6 +9096,7 @@ wss.on('connection', (ws, req) => {
         ? targetClient.accountId
         : (db.getPersistentMuteByName(ws.room, targetName) || {}).target_account_id;
       if (targetAccountId) db.removePersistentMute(ws.room, targetAccountId);
+      db.addModLog(ws.room, ws.profile.name, 'unmute', targetName);
       broadcastRoom(ws.room, { type: 'user-unmuted', name: targetName });
       broadcastRoom(ws.room, { type: 'presence', users: roomUsers(ws.room) });
       return;
@@ -9137,6 +9153,7 @@ wss.on('connection', (ws, req) => {
         leaveRoom(targetClient);
       }
       evictAccountFromRoomSessions(targetAccountId, ws.room);
+      db.addModLog(ws.room, ws.profile.name, 'ban', targetName);
       broadcastRoom(ws.room, { type: 'user-banned', name: targetName });
       return;
     }
@@ -9147,7 +9164,9 @@ wss.on('connection', (ws, req) => {
       if (!isRoomMod(dbRoom, ws)) return;
       const banId = String(msg.banId || '');
       if (!banId) return;
+      const unbanned = db.getRoomBans(ws.room).find((b) => b.id === banId);
       db.unbanFromRoom(banId, ws.room);
+      db.addModLog(ws.room, ws.profile.name, 'unban', unbanned ? (unbanned.targetName || unbanned.target_name || null) : null);
       send(ws, { type: 'bans-result', bans: db.getRoomBans(ws.room) });
       return;
     }
@@ -9661,6 +9680,7 @@ wss.on('connection', (ws, req) => {
       // sweep." Capturing it first and deleting the actual file here (same deleteUploadFile helper
       // the Scorpture video-delete route already uses) closes that permanently-unrecoverable gap.
       deleteUploadFile(target.media_url);
+      if (!ownsMessage(target, ws)) db.addModLog(ws.room, ws.profile.name, 'delete', target.name, (target.text || (target.media_type ? `(${target.media_type})` : '')).slice(0, 120));
       db.deleteMessageRow(messageId);
       const room = rooms.get(ws.room);
       const entry = room && room.history.find((m) => m.id === messageId);

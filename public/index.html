@@ -214,6 +214,15 @@
     </div>
   </div>
 
+  <div id="mod-log-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="mod-log-title">
+    <div class="modal-card">
+      <h2 id="mod-log-title">📜 Moderation log</h2>
+      <p class="search-status">What the host and co-hosts have done in this room (newest first).</p>
+      <ul id="mod-log-list" class="mod-log-list"></ul>
+      <button type="button" id="mod-log-close">Close</button>
+    </div>
+  </div>
+
   <div id="switcher-modal" class="modal-backdrop switcher-backdrop hidden" role="dialog" aria-modal="true" aria-label="Jump to a room">
     <div class="modal-card switcher-card">
       <input id="switcher-input" type="text" placeholder="Jump to a room — type a name or code" autocomplete="off" maxlength="40">
@@ -495,6 +504,7 @@
         <button type="submit" class="menu-link">Save welcome message</button>
       </form>
       <p id="cohost-hint" class="search-status hidden">⭐ Tip: tap ⭐ next to someone in the online list to make them a co-host. Co-hosts can mute, kick, ban and delete messages (they need an account).</p>
+      <button id="mod-log-btn" class="menu-link hidden" type="button">📜 Moderation log</button>
       <div id="bans-row" class="hidden">
         <button id="manage-bans-btn" class="menu-link" type="button">🚫 Manage banned users</button>
         <ul id="bans-list" class="hidden"></ul>

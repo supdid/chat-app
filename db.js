@@ -368,6 +368,16 @@ db.exec(`
     until INTEGER,
     PRIMARY KEY (key, room_code)
   );
+  -- What hosts/co-hosts did in a room (kicks, mutes, bans, deletions, setting changes).
+  CREATE TABLE IF NOT EXISTS mod_log (
+    room_code TEXT,
+    actor TEXT,
+    action TEXT,
+    target TEXT,
+    detail TEXT,
+    at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_mod_log_room ON mod_log(room_code, at);
   -- "/later 30m text": a message that posts itself at send_at.
   CREATE TABLE IF NOT EXISTS scheduled_messages (
     id TEXT PRIMARY KEY,
@@ -1279,6 +1289,19 @@ function getChatStreak(accountId, now = Date.now()) {
   let streak = 0;
   while (days.has(d)) { streak++; d--; }
   return streak;
+}
+
+const MOD_LOG_KEEP = 300;
+function addModLog(code, actor, action, target = null, detail = null) {
+  db.prepare('INSERT INTO mod_log (room_code, actor, action, target, detail, at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(code, String(actor).slice(0, 40), action, target ? String(target).slice(0, 60) : null, detail ? String(detail).slice(0, 200) : null, Date.now());
+  const n = db.prepare('SELECT COUNT(*) AS n FROM mod_log WHERE room_code = ?').get(code).n;
+  if (n > MOD_LOG_KEEP) {
+    db.prepare('DELETE FROM mod_log WHERE rowid IN (SELECT rowid FROM mod_log WHERE room_code = ? ORDER BY at ASC LIMIT ?)').run(code, n - MOD_LOG_KEEP);
+  }
+}
+function getModLog(code, limit = 100) {
+  return db.prepare('SELECT actor, action, target, detail, at FROM mod_log WHERE room_code = ? ORDER BY at DESC, rowid DESC LIMIT ?').all(code, limit);
 }
 
 function setHostsOnly(code, on) {
@@ -2699,6 +2722,7 @@ const deleteRoomCascade = db.transaction((code) => {
   db.prepare('DELETE FROM leaderboard WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM room_emojis WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM room_cohosts WHERE room_code = ?').run(code);
+  db.prepare('DELETE FROM mod_log WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM scheduled_messages WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM room_notify_prefs WHERE room_code = ?').run(code);
   db.prepare('DELETE FROM room_invite_uses WHERE token IN (SELECT token FROM room_invites WHERE room_code = ?)').run(code);
@@ -2985,6 +3009,8 @@ function getAccountByStreamKey(key) {
 }
 
 module.exports = {
+  addModLog,
+  getModLog,
   getChatStreak,
   setRoomAccent,
   findMentions,

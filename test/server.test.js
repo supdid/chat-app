@@ -8230,3 +8230,26 @@ describe('chat streaks + most-loved (2026-11-08)', () => {
     host.close(); me.close();
   });
 });
+
+describe('moderation log (2026-11-08)', () => {
+  test('host/co-host actions are logged and only mods can read the log', async () => {
+    const { ws: host, code } = await joinRoom('ModLogHost');
+    const member = await joinExistingRoom('ModLogMember', code);
+    send(member, { type: 'message', text: 'rude words' });
+    const m = await waitFor(host, (x) => x.type === 'message' && x.text === 'rude words');
+    send(host, { type: 'delete-message', messageId: m.id });
+    await waitFor(member, (x) => x.type === 'message-deleted');
+    send(host, { type: 'mute-user', name: 'ModLogMember' });
+    await waitFor(member, (x) => x.type === 'user-muted');
+    send(host, { type: 'set-slow-mode', seconds: 10 });
+    await waitFor(member, (x) => x.type === 'slow-mode-updated');
+    send(member, { type: 'get-mod-log' });
+    await sleep(250);
+    send(host, { type: 'get-mod-log' });
+    const log = await waitFor(host, (x) => x.type === 'mod-log');
+    assert.deepEqual(log.entries.map((e) => e.action), ['slow-mode', 'mute', 'delete']);
+    assert.equal(log.entries[2].target, 'ModLogMember');
+    assert.equal(log.entries[2].detail, 'rude words');
+    host.close(); member.close();
+  });
+});

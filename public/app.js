@@ -329,6 +329,7 @@ function applyModVisibility() {
   announcementForm.classList.toggle('hidden', !isMod());
   slowModeRow.classList.toggle('hidden', !isMod());
   bansRow.classList.toggle('hidden', !isMod());
+  document.getElementById('mod-log-btn').classList.toggle('hidden', !isMod());
   welcomeForm.classList.toggle('hidden', !isHost);
   cohostHint.classList.toggle('hidden', !isHost);
   document.getElementById('hosts-only-row').classList.toggle('hidden', !isHost);
@@ -1742,6 +1743,10 @@ function handleServerMessage(data) {
 
     case 'mentions':
       renderMentions(data.mentions || []);
+      break;
+
+    case 'mod-log':
+      renderModLog(data.entries || []);
       break;
 
     case 'edit-history':
@@ -9130,3 +9135,51 @@ function maybeShowWhatsNew() {
 document.getElementById('whats-new-btn').addEventListener('click', () => { closeMenu(); openWhatsNew(); });
 document.getElementById('whats-new-close').addEventListener('click', () => whatsNewModal.classList.add('hidden'));
 whatsNewModal.addEventListener('click', (e) => { if (e.target === whatsNewModal) whatsNewModal.classList.add('hidden'); });
+
+
+// --- 📜 Moderation log (host + co-hosts) ---
+const modLogModal = document.getElementById('mod-log-modal');
+const modLogList = document.getElementById('mod-log-list');
+document.getElementById('mod-log-btn').addEventListener('click', () => {
+  closeMenu();
+  modLogList.innerHTML = '<li class="search-status">Loading…</li>';
+  modLogModal.classList.remove('hidden');
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'get-mod-log' }));
+});
+document.getElementById('mod-log-close').addEventListener('click', () => modLogModal.classList.add('hidden'));
+modLogModal.addEventListener('click', (e) => { if (e.target === modLogModal) modLogModal.classList.add('hidden'); });
+const MOD_ACTION_TEXT = {
+  kick: (e) => `⛔ kicked ${e.target}`,
+  mute: (e) => `🔇 muted ${e.target}`,
+  unmute: (e) => `🔊 unmuted ${e.target}`,
+  ban: (e) => `🚫 banned ${e.target}`,
+  unban: (e) => `✅ unbanned ${e.target || 'someone'}`,
+  delete: (e) => `🗑️ deleted a message from ${e.target}${e.detail ? `: "${e.detail}"` : ''}`,
+  'slow-mode': (e) => `🐢 set slow mode ${e.detail}`,
+  'announcement-only': (e) => `📢 turned announcement-only ${e.detail}`,
+  announcement: (e) => `📌 set the announcement: ${e.detail}`,
+  'add-cohost': (e) => `⭐ made ${e.target} a co-host`,
+  'remove-cohost': (e) => `☆ removed ${e.target} as co-host`,
+  'word-filter': () => '🚫 changed the word filter',
+};
+function renderModLog(entries) {
+  modLogList.textContent = '';
+  if (!entries.length) {
+    const li = document.createElement('li');
+    li.className = 'search-status';
+    li.textContent = 'Nothing yet — all quiet. 😌';
+    modLogList.appendChild(li);
+    return;
+  }
+  for (const e of entries) {
+    const li = document.createElement('li');
+    const when = document.createElement('span');
+    when.className = 'eh-when';
+    when.textContent = formatReminderDue(e.at);
+    const what = document.createElement('span');
+    const fmt = MOD_ACTION_TEXT[e.action];
+    what.textContent = `${e.actor} ${fmt ? fmt(e) : e.action}`;
+    li.append(when, what);
+    modLogList.appendChild(li);
+  }
+}
