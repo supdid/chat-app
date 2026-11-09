@@ -3127,3 +3127,15 @@ body.hide-presence-system .system.presence-system { display: none; }
 .room-settings.hidden { display: none; }
 .room-settings > summary { cursor: pointer; font-weight: 600; padding: 0.35rem 0; list-style: revert; }
 .room-settings[open] > summary { margin-bottom: 0.4rem; }
+
+/* Long messages fold with a Show more button */
+.text.long-folded { display: block; max-height: 13.5em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
+.show-more-btn { display: block; margin-top: 0.25rem; background: none; border: none; padding: 0.15rem 0; color: var(--accent, #3b9dff); font: inherit; font-size: 0.82rem; font-weight: 700; cursor: pointer; }
+
+/* Birthday line on profile cards */
+.profile-birthday { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 0.4rem; margin: 0.35rem 0; font-size: 0.9rem; }
+.profile-birthday .empty { color: var(--text-subtle); }
+.profile-birthday.today { font-weight: 700; color: #ffb347; }
+.birthday-picker { display: inline-flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; justify-content: center; }
+.birthday-picker select { background: var(--input-bg); color: var(--text-color); border: 1px solid var(--input-border); border-radius: 8px; padding: 0.3rem 0.4rem; font: inherit; font-size: 0.85rem; }
+.birthday-picker select option { color: #000; }

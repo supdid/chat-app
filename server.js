@@ -5678,6 +5678,25 @@ const ICEBREAKERS = [
   "What's the best advice you've ever been given?", "What's a word you just love the sound of?",
   'If your life were a movie, what genre would it be?', "What's a smell that brings back a memory?",
 ];
+// 🎂 Birthdays (accounts only): the first time someone joins a room on their birthday, that
+// room gets one cheerful note — once per person per room per day.
+function todayMMDD(d = new Date()) {
+  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function announceBirthday(code, ws) {
+  if (!ws.accountId) return;
+  const acct = db.getAccountById(ws.accountId);
+  const today = todayMMDD();
+  if (!acct || acct.birthday !== today) return;
+  const room = rooms.get(code);
+  if (!room) return;
+  const key = `${ws.accountId}|${new Date().toDateString()}`;
+  room.birthdaysAnnounced = room.birthdaysAnnounced || new Set();
+  if (room.birthdaysAnnounced.has(key)) return;
+  room.birthdaysAnnounced.add(key);
+  broadcastRoom(code, { type: 'system', text: `🎂 It's ${ws.profile.name}'s birthday today! Say happy birthday 🎉`, at: Date.now(), birthday: true });
+}
+
 // Shared checklists (/todo): anyone in the room can tick items off or add more.
 const CHECKLIST_MAX_ITEMS = 30;
 const CHECKLIST_ITEM_MAX = 120;
@@ -8723,6 +8742,7 @@ wss.on('connection', (ws, req) => {
       });
       broadcastRoom(code, { type: 'system', text: `${ws.profile.name} joined the room`, at: Date.now(), presence: true }, ws);
       broadcastRoom(code, { type: 'presence', users: roomUsers(code) });
+      announceBirthday(code, ws);
       return;
     }
 
@@ -8903,7 +8923,7 @@ wss.on('connection', (ws, req) => {
               else if (f && f.status === 'pending') friendStatus = f.requester_id === ws.accountId ? 'pending-out' : 'pending-in';
             }
           }
-          account = { username: a.username, joinedAt: a.created_at, flair: db.accountFlair(a.id), badges: db.getAccountBadges(a.id), friendStatus, bio: friendStatus === 'blocked' ? null : a.bio || null, streak: db.getChatStreak(a.id) };
+          account = { username: a.username, joinedAt: a.created_at, flair: db.accountFlair(a.id), badges: db.getAccountBadges(a.id), friendStatus, bio: friendStatus === 'blocked' ? null : a.bio || null, streak: db.getChatStreak(a.id), birthday: friendStatus === 'blocked' ? null : a.birthday || null, birthdayToday: !!a.birthday && a.birthday === todayMMDD() };
         }
       }
       send(ws, {
@@ -9181,6 +9201,16 @@ wss.on('connection', (ws, req) => {
         if (live && live.clients.size) online[c] = live.clients.size;
       }
       send(ws, { type: 'recent-unread', counts, online });
+      return;
+    }
+
+    if (msg.type === 'set-birthday') {
+      if (!ws.accountId || isWsMsgRateLimited(ws)) return;
+      let mmdd = null;
+      const month = Math.floor(+msg.month), day = Math.floor(+msg.day);
+      if (month >= 1 && month <= 12 && day >= 1 && day <= new Date(2024, month, 0).getDate()) mmdd = `${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      db.setAccountBirthday(ws.accountId, mmdd);
+      send(ws, { type: 'birthday-updated', birthday: mmdd });
       return;
     }
 

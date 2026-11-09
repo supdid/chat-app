@@ -7925,6 +7925,41 @@ describe('shared checklists (2026-11-09)', () => {
   });
 });
 
+describe('birthdays (2026-11-09)', () => {
+  test('a birthday shows on the profile card, and joining a room on the day announces it once', async () => {
+    const acct = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'BdayUser', password: 'pass1234', email: 'bday@test.com' }),
+    }).then((r) => r.json());
+    const { ws: host, code } = await joinRoom('BdayHost');
+    const me = await joinAsAccount('BdayUser', acct.token, code);
+    send(me, { type: 'set-birthday', month: 2, day: 30 });
+    assert.equal((await waitFor(me, (m) => m.type === 'birthday-updated')).birthday, null, 'Feb 30 is not a day');
+    const now = new Date();
+    await sleep(200);
+    send(me, { type: 'set-birthday', month: now.getMonth() + 1, day: now.getDate() });
+    const saved = await waitFor(me, (m) => m.type === 'birthday-updated' && m.birthday);
+    assert.match(saved.birthday, /^\d\d-\d\d$/);
+    send(host, { type: 'get-profile-card', name: 'BdayUser' });
+    const card = await waitFor(host, (m) => m.type === 'profile-card');
+    assert.equal(card.account.birthday, saved.birthday);
+    assert.equal(card.account.birthdayToday, true);
+
+    const notes = [];
+    host.on('message', (raw) => { const m = JSON.parse(raw); if (m.type === 'system' && m.birthday) notes.push(m.text); });
+    for (let i = 0; i < 2; i++) {
+      await sleep(300);
+      send(me, { type: 'leave-room' });
+      await waitFor(me, (m) => m.type === 'left-room');
+      send(me, { type: 'join-room', code });
+      await waitFor(me, (m) => m.type === 'joined-room');
+    }
+    await sleep(300);
+    assert.deepEqual(notes, ["🎂 It's BdayUser's birthday today! Say happy birthday 🎉"], 'announced once per day');
+    host.close(); me.close();
+  });
+});
+
 describe('poll upgrades (2026-11-08)', () => {
   const postPoll = (ws, def) => send(ws, { type: 'message', text: JSON.stringify(def), mediaUrl: 'poll', mediaType: 'poll' });
 

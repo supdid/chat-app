@@ -1354,6 +1354,7 @@ function handleServerMessage(data) {
 
     case 'system':
       renderSystem(data);
+      if (data.birthday) playScreenEffect('confetti');
       break;
 
     case 'presence':
@@ -1780,6 +1781,10 @@ function handleServerMessage(data) {
         dot.textContent = `🟢 ${online}`;
         dot.title = `${online} ${online === 1 ? 'person is' : 'people are'} in this room now`;
       });
+      break;
+
+    case 'birthday-updated':
+      showAppToast(data.birthday ? '🎂 Birthday saved' : '🎂 Birthday removed');
       break;
 
     case 'bio-updated':
@@ -2340,6 +2345,21 @@ function renderMessage(data, opts = {}) {
     }
     text.appendChild(renderTextWithMentions(data.text));
     bubble.appendChild(text);
+    // Fold really long messages so one wall of text doesn't push the whole chat away.
+    if (!data.kind && (data.text.length > 700 || data.text.split('\n').length > 14)) {
+      text.classList.add('long-folded');
+      const more = document.createElement('button');
+      more.type = 'button';
+      more.className = 'show-more-btn';
+      more.textContent = 'Show more ▾';
+      more.setAttribute('aria-expanded', 'false');
+      more.addEventListener('click', () => {
+        const open = text.classList.toggle('long-folded');
+        more.textContent = open ? 'Show more ▾' : 'Show less ▴';
+        more.setAttribute('aria-expanded', String(!open));
+      });
+      bubble.appendChild(more);
+    }
     if (data.kind === 'countdown' && data.meta && data.meta.endsAt) {
       text.textContent = '';
       bubble.classList.add('countdown-bubble');
@@ -7899,6 +7919,8 @@ function renderProfileCard(data) {
     profileCardBody.appendChild(streak);
   }
 
+  if (acct && (acct.birthday || acct.friendStatus === 'self')) profileCardBody.appendChild(makeBirthdayRow(acct));
+
   if (acct && (acct.bio || acct.friendStatus === 'self')) {
     const bioWrap = document.createElement('div');
     bioWrap.className = 'profile-card-bio';
@@ -9314,6 +9336,8 @@ function flushOutbox(code) {
 // --- ✨ What's new (shown once per update to people who've used Valk before) ---
 const WHATS_NEW_VERSION = '2026-11-09b';
 const WHATS_NEW = [
+  ['🎂', 'Birthdays', 'Tap your name → 🎂 Set to add your birthday. On the day, the room gets confetti and a heads-up.'],
+  ['📜', 'Tidier long messages', 'Really long messages fold up with a Show more button.'],
   ['☑️', 'Shared checklists', '/todo Groceries: milk, eggs, bread — anyone in the room can tick things off or add more.'],
   ['💣', 'Minesweeper', 'A new game with Easy, Medium and Hard, and a fastest-times board for each room. /play mines'],
   ['🧠', 'Memory Match', 'Flip cards and find the pairs, fastest wins. /play match'],
@@ -9667,6 +9691,77 @@ function playScreenEffect(effect) {
   setTimeout(() => { layer.remove(); effectRunning = false; }, 5200);
 }
 
+
+// --- 🎂 Birthday line on profile cards (and a picker on your own) ---
+const MONTH_NAMES = Array.from({ length: 12 }, (_, i) => new Date(2024, i, 1).toLocaleDateString([], { month: 'long' }));
+function birthdayLabel(mmdd) {
+  const [m, d] = mmdd.split('-').map(Number);
+  return `${MONTH_NAMES[m - 1]} ${d}`;
+}
+function makeBirthdayRow(acct) {
+  const row = document.createElement('div');
+  row.className = 'profile-birthday';
+  const label = document.createElement('span');
+  const paint = () => {
+    label.textContent = acct.birthdayToday ? `🎂 It's ${acct.friendStatus === 'self' ? 'your' : 'their'} birthday today!`
+      : acct.birthday ? `🎂 Birthday: ${birthdayLabel(acct.birthday)}` : '🎂 Add your birthday (just the day — no year)';
+    row.classList.toggle('today', !!acct.birthdayToday);
+    label.classList.toggle('empty', !acct.birthday);
+  };
+  paint();
+  row.appendChild(label);
+  if (acct.friendStatus === 'self') {
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'small-btn-link';
+    edit.textContent = acct.birthday ? '✏️' : 'Set';
+    edit.setAttribute('aria-label', 'Set your birthday');
+    edit.addEventListener('click', () => {
+      const month = document.createElement('select');
+      month.setAttribute('aria-label', 'Month');
+      month.add(new Option('Month', ''));
+      MONTH_NAMES.forEach((n, i) => month.add(new Option(n, String(i + 1))));
+      const day = document.createElement('select');
+      day.setAttribute('aria-label', 'Day');
+      day.add(new Option('Day', ''));
+      for (let i = 1; i <= 31; i++) day.add(new Option(String(i), String(i)));
+      if (acct.birthday) { const [m, d] = acct.birthday.split('-').map(Number); month.value = String(m); day.value = String(d); }
+      const save = document.createElement('button');
+      save.type = 'button';
+      save.className = 'small-btn';
+      save.textContent = 'Save';
+      const clear = document.createElement('button');
+      clear.type = 'button';
+      clear.className = 'small-btn-link';
+      clear.textContent = 'Remove';
+      const done = (m, d) => {
+        if (!wsSendOrWarnDisconnected({ type: 'set-birthday', month: m, day: d })) return;
+        acct.birthday = m && d ? `${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}` : null;
+        const now = new Date();
+        acct.birthdayToday = !!acct.birthday && m === now.getMonth() + 1 && d === now.getDate();
+        picker.replaceWith(label);
+        edit.hidden = false;
+        edit.textContent = acct.birthday ? '✏️' : 'Set';
+        paint();
+      };
+      save.addEventListener('click', () => {
+        const m = Number(month.value), d = Number(day.value);
+        if (!m || !d) { showAppToast('Pick a month and a day'); return; }
+        if (d > new Date(2024, m, 0).getDate()) { showAppToast(`${MONTH_NAMES[m - 1]} doesn't have ${d} days`); return; }
+        done(m, d);
+      });
+      clear.addEventListener('click', () => done(0, 0));
+      const picker = document.createElement('span');
+      picker.className = 'birthday-picker';
+      picker.append(month, day, save);
+      if (acct.birthday) picker.appendChild(clear);
+      label.replaceWith(picker);
+      edit.hidden = true;
+    });
+    row.appendChild(edit);
+  }
+  return row;
+}
 
 // --- ☑️ Shared checklists (/todo) ---
 function renderChecklist(container, messageId, title, meta) {

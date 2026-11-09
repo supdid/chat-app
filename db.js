@@ -626,6 +626,8 @@ db.exec(`
 ensureColumn('accounts', 'email', 'TEXT');
 ensureColumn('accounts', 'google_id', 'TEXT');
 ensureColumn('accounts', 'bio', 'TEXT');
+// Birthday as 'MM-DD' (no year — nobody's age is stored or shown).
+ensureColumn('accounts', 'birthday', 'TEXT');
 ensureColumn('accounts', 'scorpture_banner_url', 'TEXT');
 ensureColumn('accounts', 'scorpture_avatar_url', 'TEXT');
 ensureColumn('accounts', 'scorpture_description', 'TEXT');
@@ -1239,6 +1241,10 @@ function countUnreadSince(code, name) {
   const m = db.prepare('SELECT at FROM messages WHERE id = ?').get(r.id);
   if (!m) return null;
   return db.prepare('SELECT COUNT(*) AS n FROM (SELECT 1 FROM messages WHERE room_code = ? AND at > ? AND name != ? AND deleted = 0 LIMIT 100)').get(code, m.at, name).n;
+}
+
+function setAccountBirthday(accountId, mmdd) {
+  db.prepare('UPDATE accounts SET birthday = ? WHERE id = ?').run(mmdd, accountId);
 }
 
 function setAccountBio(accountId, bio) {
@@ -3111,6 +3117,7 @@ module.exports = {
   findMentions,
   getRoomStats,
   setAccountBio,
+  setAccountBirthday,
   countUnreadSince,
   getAllRoomNotifyPrefs,
   saveRoomNotifyPref,
