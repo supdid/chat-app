@@ -3097,3 +3097,6 @@ button:focus-visible, a:focus-visible, [role="button"]:focus-visible, select:foc
 .spoiler-media-label { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #fff; font-weight: 700; text-shadow: 0 2px 6px rgba(0,0,0,0.7); font-size: 0.95rem; }
 
 .poll-voters { position: relative; font-size: 0.72rem; color: var(--text-subtle); margin-top: 0.15rem; white-space: normal; }
+
+.recent-visitors-list { list-style: none; margin: 0; padding: 0; opacity: 0.75; }
+.recent-visitors-list li { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0; cursor: pointer; }

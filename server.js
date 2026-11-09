@@ -9028,6 +9028,16 @@ wss.on('connection', (ws, req) => {
     }
 
     // Room icon: one emoji (a few code points for flags/skin tones/ZWJ sequences), no letters.
+    if (msg.type === 'get-recent-visitors' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      const room = rooms.get(ws.room);
+      const here = new Set(room ? [...room.clients].map((c) => c.profile && c.profile.name) : []);
+      const visitors = db.getRecentRoomVisitors(ws.room, Date.now() - 7 * 24 * 60 * 60 * 1000)
+        .filter((v) => !here.has(v.name)).slice(0, 20);
+      send(ws, { type: 'recent-visitors', visitors });
+      return;
+    }
+
     if (msg.type === 'set-room-icon' && ws.room) {
       if (isWsMsgRateLimited(ws)) return;
       const dbRoom = db.getRoom(ws.room);

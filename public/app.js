@@ -1802,6 +1802,28 @@ function handleServerMessage(data) {
       renderChampions(data.games || {});
       break;
 
+    case 'recent-visitors': {
+      const ul = document.getElementById('recent-visitors-list');
+      ul.textContent = '';
+      const list = data.visitors || [];
+      document.getElementById('recent-visitors-title').classList.toggle('hidden', !list.length);
+      for (const v of list) {
+        const li = document.createElement('li');
+        li.appendChild(makeAvatar(v.name, 'small'));
+        const n = document.createElement('span');
+        n.className = 'online-name-wrap';
+        n.textContent = v.name;
+        const t = document.createElement('span');
+        t.className = 'status-text';
+        t.textContent = timeAgo(v.at);
+        n.appendChild(t);
+        li.appendChild(n);
+        li.addEventListener('click', () => { if (typeof openProfileCard === 'function') openProfileCard(v.name); });
+        ul.appendChild(li);
+      }
+      break;
+    }
+
     case 'edit-history':
       showEditHistory(data);
       break;
@@ -6952,6 +6974,7 @@ async function refreshValkmailBadge() {
 }
 
 menuBtn.addEventListener('click', () => {
+  if (ws && ws.readyState === WebSocket.OPEN && currentRoomCode) ws.send(JSON.stringify({ type: 'get-recent-visitors' }));
   menuOverlay.classList.remove('hidden');
   refreshValkmailBadge();
 });
@@ -9694,3 +9717,15 @@ document.getElementById('room-icon-form').addEventListener('submit', (e) => {
   e.preventDefault();
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'set-room-icon', icon: document.getElementById('room-icon-input').value.trim() }));
 });
+
+
+function timeAgo(t) {
+  const s = Math.max(0, (Date.now() - t) / 1000);
+  if (s < 90) return 'just now';
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h} hour${h === 1 ? '' : 's'} ago`;
+  const d = Math.round(h / 24);
+  return `${d} day${d === 1 ? '' : 's'} ago`;
+}

@@ -8388,3 +8388,20 @@ describe('room icon (2026-11-09)', () => {
     host.close(); c.close();
   });
 });
+
+describe('recently here (2026-11-09)', () => {
+  test('lists people who read the room recently but are not online now', async () => {
+    const { ws: a, code } = await joinRoom('RecentA');
+    const b = await joinExistingRoom('RecentB', code);
+    send(a, { type: 'message', text: 'hello' });
+    const m = await waitFor(b, (x) => x.type === 'message' && x.text === 'hello');
+    send(b, { type: 'read', messageId: m.id });
+    await sleep(200);
+    b.close();
+    await sleep(200);
+    send(a, { type: 'get-recent-visitors' });
+    const r = await waitFor(a, (x) => x.type === 'recent-visitors');
+    assert.deepEqual(r.visitors.map((v) => v.name), ['RecentB']);
+    a.close();
+  });
+});

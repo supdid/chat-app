@@ -1283,6 +1283,11 @@ function findMentions(codes, name, since, limit = 60) {
   ).all(name, ...codes, since, name, `%@${name.replace(/[%_]/g, '')}%`, name, limit);
 }
 
+// "Recently here": names with a read receipt in this room, most recent first.
+function getRecentRoomVisitors(code, since, limit = 40) {
+  return db.prepare('SELECT name, at FROM read_receipts WHERE room_code = ? AND at > ? ORDER BY at DESC LIMIT ?').all(code, since, limit);
+}
+
 function setRoomIcon(code, icon) {
   db.prepare('UPDATE rooms SET icon = ? WHERE code = ?').run(icon, code);
 }
@@ -3074,6 +3079,7 @@ function getAccountByStreamKey(key) {
 }
 
 module.exports = {
+  getRecentRoomVisitors,
   setRoomIcon,
   getRoomLeaderboardAll,
   countRepliesFor,
