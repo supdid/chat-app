@@ -2997,6 +2997,11 @@ document.addEventListener('visibilitychange', () => {
 
 function updateUnreadBadge() {
   document.title = unreadCount > 0 ? `(${unreadCount > 99 ? '99+' : unreadCount}) ${baseTitle}` : baseTitle;
+  // Installed-app icon badge (home screen / taskbar), where the browser supports it.
+  try {
+    if (unreadCount > 0 && navigator.setAppBadge) navigator.setAppBadge(unreadCount).catch(() => {});
+    else if (unreadCount === 0 && navigator.clearAppBadge) navigator.clearAppBadge().catch(() => {});
+  } catch (err) { /* not supported */ }
   if (!faviconLink || !baseFaviconHref) return;
   if (unreadCount === 0) {
     faviconLink.href = baseFaviconHref;
@@ -6509,6 +6514,34 @@ function takeCaption() {
   return t.slice(0, 2000);
 }
 
+// Phone photos are often 3–8 MB and 4000+ px — far bigger than a chat needs, and slow for
+// everyone to load. Anything over 1.5 MB gets resized to at most 2048 px (JPEG, or WebP if it
+// might have transparency). GIFs are left alone (re-encoding would kill the animation), and the
+// original is kept if shrinking doesn't actually make it smaller.
+const SHRINK_OVER_BYTES = 1.5 * 1024 * 1024;
+const SHRINK_MAX_DIM = 2048;
+async function shrinkImageIfLarge(file) {
+  try {
+    if (!/^image\/(jpeg|png|webp)$/.test(file.type) || file.size <= SHRINK_OVER_BYTES || !window.createImageBitmap) return file;
+    const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    const scale = Math.min(1, SHRINK_MAX_DIM / Math.max(bmp.width, bmp.height));
+    const w = Math.round(bmp.width * scale);
+    const h = Math.round(bmp.height * scale);
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    canvas.getContext('2d').drawImage(bmp, 0, 0, w, h);
+    if (bmp.close) bmp.close();
+    const type = file.type === 'image/jpeg' ? 'image/jpeg' : 'image/webp';
+    const blob = await new Promise((r) => canvas.toBlob(r, type, 0.85));
+    if (!blob || blob.size >= file.size) return file;
+    const base = (file.name || 'photo').replace(/\.[^.]+$/, '');
+    return new File([blob], `${base}${type === 'image/jpeg' ? '.jpg' : '.webp'}`, { type });
+  } catch (err) {
+    return file; // anything odd (decode failure, old browser) — just send the original
+  }
+}
+
 async function uploadAndSendFile(file, withCaption = true) {
   if (!file) return;
   if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -6519,6 +6552,7 @@ async function uploadAndSendFile(file, withCaption = true) {
     showAppToast('Only photos and videos can be sent here.');
     return;
   }
+  file = await shrinkImageIfLarge(file);
   const formData = new FormData();
   formData.append('file', file, file.name || (file.type.startsWith('video/') ? 'clip.mp4' : 'pasted.png'));
   attachBtn.disabled = true;
