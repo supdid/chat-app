@@ -330,6 +330,8 @@ function applyModVisibility() {
   slowModeRow.classList.toggle('hidden', !isMod());
   bansRow.classList.toggle('hidden', !isMod());
   document.getElementById('mod-log-btn').classList.toggle('hidden', !isMod());
+  const settings = document.getElementById('room-settings');
+  if (settings) settings.classList.toggle('hidden', !isMod());
   welcomeForm.classList.toggle('hidden', !isHost);
   cohostHint.classList.toggle('hidden', !isHost);
   document.getElementById('hosts-only-row').classList.toggle('hidden', !isHost);
@@ -9787,3 +9789,26 @@ document.getElementById('room-people-chip').addEventListener('click', () => {
   menuBtn.click();
   setTimeout(() => { const l = document.getElementById('menu-online-list'); if (l) l.scrollIntoView({ block: 'start', behavior: 'smooth' }); }, 150);
 });
+
+
+// --- ⚙️ Room settings: the host/co-host controls live in one collapsible section so the menu
+// stays short. (Elements keep their ids and their own show/hide logic; they're just moved.) ---
+(function groupRoomSettings() {
+  const first = document.getElementById('rename-room-form');
+  if (!first) return;
+  const details = document.createElement('details');
+  details.id = 'room-settings';
+  details.className = 'room-settings hidden';
+  const summary = document.createElement('summary');
+  summary.textContent = '⚙️ Room settings (hosts)';
+  details.appendChild(summary);
+  first.parentNode.insertBefore(details, first);
+  ['rename-room-form', 'announcement-form', 'room-icon-form', 'accent-row', 'hosts-only-row', 'slow-mode-row',
+    'room-pin-form', 'wallpaper-row', 'disappear-row', 'invites-row', 'word-filter-row', 'room-emojis-row',
+    'welcome-form', 'cohost-hint', 'mod-log-btn', 'bans-row'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) details.appendChild(el);
+  });
+  try { details.open = localStorage.getItem('valk-room-settings-open') === '1'; } catch (err) { /* ignore */ }
+  details.addEventListener('toggle', () => { try { localStorage.setItem('valk-room-settings-open', details.open ? '1' : '0'); } catch (err) { /* ignore */ } });
+})();

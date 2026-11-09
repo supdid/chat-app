@@ -3105,3 +3105,8 @@ body.hide-presence-system .system.presence-system { display: none; }
 
 .room-people-chip { white-space: nowrap; flex-shrink: 0; margin-left: 0.4rem; padding: 0.15rem 0.55rem; border-radius: 999px; border: 1px solid var(--chip-border); background: var(--chip-bg); color: var(--text-color); font-size: 0.78rem; cursor: pointer; }
 .room-people-chip.hidden { display: none; }
+
+.room-settings { margin: 0.5rem 0; border: 1px solid var(--input-border); border-radius: 10px; padding: 0.4rem 0.6rem; }
+.room-settings.hidden { display: none; }
+.room-settings > summary { cursor: pointer; font-weight: 600; padding: 0.35rem 0; list-style: revert; }
+.room-settings[open] > summary { margin-bottom: 0.4rem; }
