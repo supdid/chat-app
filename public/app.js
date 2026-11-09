@@ -1307,10 +1307,11 @@ function handleServerMessage(data) {
       // still fired anyway, and the unread badge still counted them — exactly the content this
       // feature exists to hide, leaking through every surface that isn't the message list itself.
       if (data.sub !== myProfile.sub && !blockedNames.has(data.name)) {
-        const mentioned = messageHasMention(data.text, myProfile.name);
+        const keywordHit = matchesKeywordAlert(data.text);
+        const mentioned = messageHasMention(data.text, myProfile.name) || keywordHit;
         const roomMode = currentRoomNotifyMode();
         if (roomMode === 'all' || (roomMode === 'mentions' && mentioned)) {
-          notify(mentioned ? `${data.name} mentioned you` : data.name, notificationPreview(data), { messageId: data.id });
+          notify(keywordHit ? `🔎 ${data.name} said "${keywordHit}"` : mentioned ? `${data.name} mentioned you` : data.name, notificationPreview(data), { messageId: data.id });
           playNotifySound();
         }
         if (document.hidden) {
@@ -2129,6 +2130,7 @@ function renderMessage(data, opts = {}) {
   const isBlocked = !isOwn && blockedNames.has(data.name);
   el.className = 'message' + (isOwn ? ' own' : '') + (isBlocked ? ' blocked-hidden' : '');
   el.dataset.senderName = data.name;
+  el.dataset.at = String(data.at || 0);
   if (data.id) {
     el.id = `msg-${data.id}`;
     el.dataset.messageId = data.id;
@@ -2201,6 +2203,7 @@ function renderMessage(data, opts = {}) {
   }
 
   if (data.text && data.mediaType !== 'poll') {
+    if (!isOwn && matchesKeywordAlert(data.text)) bubble.classList.add('keyword-hit');
     const text = document.createElement('span');
     text.className = 'text';
     // renderTextWithMentions turns **bold**/*italic*/`code` into real elements, so .textContent
@@ -2253,6 +2256,7 @@ function renderMessage(data, opts = {}) {
   el.appendChild(makeAvatar(data.name));
   el.appendChild(bubble);
   messagesEl.appendChild(el);
+  groupWithPrevious(el);
   // force for your own outgoing message — sending should always show what you just sent
   // regardless of scroll position, same as every mainstream chat app.
   maybeScrollToBottom(Boolean(myProfile && data.sub === myProfile.sub));
@@ -8028,6 +8032,7 @@ function handleOlderMessages(data) {
   added.forEach((node) => messagesEl.insertBefore(node, anchor));
   lastMessageEl = savedLastEl;
   lastMessageId = savedLastId;
+  regroupAllMessages();
   if (typeof renderSeenBy === 'function') renderSeenBy();
   messagesEl.scrollTop = prevTop + (messagesEl.scrollHeight - prevHeight);
   if (data.messages && data.messages.length) oldestLoaded = { at: data.messages[0].at, id: data.messages[0].id };
@@ -8836,3 +8841,56 @@ function openMoreMenu(anchor, data) {
   if (first) first.focus();
 }
 messagesEl.addEventListener('scroll', () => closeMoreMenu(), { passive: true });
+
+
+// --- Group back-to-back messages from the same person (within 3 minutes): the name line shows
+// once at the top of the run and the avatar once at the bottom, like most chat apps. ---
+const GROUP_WINDOW_MS = 3 * 60 * 1000;
+function sameGroup(prev, el) {
+  return !!(prev && prev.classList && prev.classList.contains('message') && !prev.classList.contains('blocked-hidden')
+    && !el.classList.contains('blocked-hidden')
+    && prev.dataset.senderName === el.dataset.senderName
+    && Math.abs(Number(el.dataset.at) - Number(prev.dataset.at)) < GROUP_WINDOW_MS);
+}
+function groupWithPrevious(el) {
+  const prev = el.previousElementSibling;
+  const grouped = sameGroup(prev, el);
+  el.classList.toggle('group-cont', grouped);
+  if (grouped) {
+    prev.classList.add('group-has-next');
+    const bubble = el.querySelector('.bubble');
+    if (bubble && !bubble.title) bubble.title = new Date(Number(el.dataset.at)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+}
+function regroupAllMessages() {
+  const all = messagesEl.querySelectorAll('.message');
+  all.forEach((el) => el.classList.remove('group-cont', 'group-has-next'));
+  all.forEach((el) => groupWithPrevious(el));
+}
+
+
+// --- Keyword alerts (this device only) ---
+const keywordInput = document.getElementById('keyword-alerts-input');
+let keywordAlerts = [];
+function loadKeywordAlerts() {
+  let raw = '';
+  try { raw = localStorage.getItem('valk-keyword-alerts') || ''; } catch (err) { /* ignore */ }
+  keywordInput.value = raw;
+  keywordAlerts = raw.split(',').map((k) => k.trim().toLowerCase()).filter((k) => k.length >= 2).slice(0, 20);
+}
+function escapeRegExp(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+// Returns the matched keyword (whole words, any case) or ''.
+function matchesKeywordAlert(text) {
+  if (!text || !keywordAlerts.length) return '';
+  const plain = hideSpoilerText(text).toLowerCase();
+  for (const k of keywordAlerts) {
+    if (new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(k)}($|[^\\p{L}\\p{N}])`, 'u').test(plain)) return k;
+  }
+  return '';
+}
+keywordInput.addEventListener('change', () => {
+  try { localStorage.setItem('valk-keyword-alerts', keywordInput.value.slice(0, 200)); } catch (err) { /* ignore */ }
+  loadKeywordAlerts();
+  showAppToast(keywordAlerts.length ? `🔎 You'll be alerted for: ${keywordAlerts.join(', ')}` : '🔎 Keyword alerts off');
+});
+loadKeywordAlerts();
