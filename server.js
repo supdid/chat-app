@@ -8414,6 +8414,7 @@ wss.on('connection', (ws, req) => {
         cohosts: db.getRoomCohosts(code).map((c) => c.name),
         welcome: dbRoom ? dbRoom.welcome_text || null : null,
         hostsOnly: !!(dbRoom && dbRoom.hosts_only),
+        accent: dbRoom && ROOM_ACCENTS.includes(dbRoom.accent) ? dbRoom.accent : null,
         notifyPref: (() => {
           const p = ws.accountId ? roomNotifyPrefs.get(`acct:${ws.accountId}|${code}`) : null;
           return p && (!p.until || p.until > Date.now()) ? p : null;
@@ -8919,6 +8920,16 @@ wss.on('connection', (ws, req) => {
         .slice(0, 40)
         .map((m) => ({ ...m, text: String(m.text).slice(0, 300) }));
       send(ws, { type: 'mentions', mentions: rows });
+      return;
+    }
+
+    if (msg.type === 'set-accent' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      const dbRoom = db.getRoom(ws.room);
+      if (!isRoomHost(dbRoom, ws)) return;
+      const accent = ROOM_ACCENTS.includes(msg.accent) ? msg.accent : null;
+      db.setRoomAccent(ws.room, accent);
+      broadcastRoom(ws.room, { type: 'accent-updated', accent, by: ws.profile.name });
       return;
     }
 
@@ -9879,6 +9890,7 @@ function sweepDisappearingMessages() {
 }
 setInterval(sweepDisappearingMessages, Number(process.env.DISAPPEAR_SWEEP_MS) || 60 * 1000);
 
+const ROOM_ACCENTS = ['sunset', 'grape', 'candy', 'fire', 'ocean', 'gold', 'forest', 'mono'];
 const SCHEDULE_MAX_AHEAD_MS = 30 * 24 * 60 * 60 * 1000;
 const SCHEDULE_MAX_PENDING = 10;
 // Posts due "/later" messages as their author. Re-checks bans, mutes and announcement-only at

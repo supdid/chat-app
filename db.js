@@ -193,6 +193,7 @@ ensureColumn('rooms', 'filter_words', 'TEXT');
 ensureColumn('rooms', 'welcome_text', 'TEXT');
 // 1 = announcement-only: just the host and co-hosts can post.
 ensureColumn('rooms', 'hosts_only', 'INTEGER DEFAULT 0');
+ensureColumn('rooms', 'accent', 'TEXT');
 
 // One-time migration: pins used to be single-pin-per-room (PK: room_code) — multi-pin needs a
 // composite PK (room_code, message_id) instead, which ALTER TABLE can't change in place.
@@ -1248,6 +1249,10 @@ function findMentions(codes, name, since, limit = 60) {
        AND (m.text LIKE ? OR m.text LIKE '%@everyone%')
      ORDER BY m.at DESC LIMIT ?`
   ).all(...codes, since, name, `%@${name.replace(/[%_]/g, '')}%`, limit);
+}
+
+function setRoomAccent(code, accent) {
+  db.prepare('UPDATE rooms SET accent = ? WHERE code = ?').run(accent, code);
 }
 
 function setHostsOnly(code, on) {
@@ -2954,6 +2959,7 @@ function getAccountByStreamKey(key) {
 }
 
 module.exports = {
+  setRoomAccent,
   findMentions,
   getRoomStats,
   setAccountBio,

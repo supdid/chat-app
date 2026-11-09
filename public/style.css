@@ -2991,3 +2991,32 @@ body.ts-xl .bubble .meta { font-size: 0.9rem; }
 
 #keyword-alerts-input { width: 100%; padding: 0.45rem 0.6rem; border-radius: 8px; border: 1px solid var(--input-border); background: var(--input-bg); color: var(--text-color); font-size: 0.9rem; box-sizing: border-box; }
 .bubble.keyword-hit { box-shadow: 0 0 0 2px rgba(245, 185, 66, 0.75); }
+
+/* Room colors (rooms.accent) — own bubbles, Send button, focus ring, mention highlight */
+#chat-screen[data-accent="sunset"] .message.own .bubble { background: linear-gradient(135deg, rgba(255, 140, 66, 0.38), rgba(255, 77, 141, 0.38)); }
+#chat-screen[data-accent="sunset"] #message-form button[type="submit"] { background: linear-gradient(135deg, rgb(255, 140, 66), rgb(255, 77, 141)); }
+#chat-screen[data-accent="sunset"] #message-input:focus { border-color: rgb(255, 77, 141); }
+#chat-screen[data-accent="grape"] .message.own .bubble { background: linear-gradient(135deg, rgba(162, 89, 255, 0.38), rgba(59, 157, 255, 0.38)); }
+#chat-screen[data-accent="grape"] #message-form button[type="submit"] { background: linear-gradient(135deg, rgb(162, 89, 255), rgb(59, 157, 255)); }
+#chat-screen[data-accent="grape"] #message-input:focus { border-color: rgb(59, 157, 255); }
+#chat-screen[data-accent="candy"] .message.own .bubble { background: linear-gradient(135deg, rgba(255, 107, 214, 0.38), rgba(162, 89, 255, 0.38)); }
+#chat-screen[data-accent="candy"] #message-form button[type="submit"] { background: linear-gradient(135deg, rgb(255, 107, 214), rgb(162, 89, 255)); }
+#chat-screen[data-accent="candy"] #message-input:focus { border-color: rgb(162, 89, 255); }
+#chat-screen[data-accent="fire"] .message.own .bubble { background: linear-gradient(135deg, rgba(255, 64, 64, 0.38), rgba(255, 160, 40, 0.38)); }
+#chat-screen[data-accent="fire"] #message-form button[type="submit"] { background: linear-gradient(135deg, rgb(255, 64, 64), rgb(255, 160, 40)); }
+#chat-screen[data-accent="fire"] #message-input:focus { border-color: rgb(255, 160, 40); }
+#chat-screen[data-accent="ocean"] .message.own .bubble { background: linear-gradient(135deg, rgba(32, 201, 201, 0.38), rgba(40, 90, 255, 0.38)); }
+#chat-screen[data-accent="ocean"] #message-form button[type="submit"] { background: linear-gradient(135deg, rgb(32, 201, 201), rgb(40, 90, 255)); }
+#chat-screen[data-accent="ocean"] #message-input:focus { border-color: rgb(40, 90, 255); }
+#chat-screen[data-accent="gold"] .message.own .bubble { background: linear-gradient(135deg, rgba(255, 210, 60, 0.38), rgba(255, 140, 40, 0.38)); }
+#chat-screen[data-accent="gold"] #message-form button[type="submit"] { background: linear-gradient(135deg, rgb(255, 210, 60), rgb(255, 140, 40)); }
+#chat-screen[data-accent="gold"] #message-input:focus { border-color: rgb(255, 140, 40); }
+#chat-screen[data-accent="forest"] .message.own .bubble { background: linear-gradient(135deg, rgba(61, 220, 132, 0.38), rgba(30, 140, 80, 0.38)); }
+#chat-screen[data-accent="forest"] #message-form button[type="submit"] { background: linear-gradient(135deg, rgb(61, 220, 132), rgb(30, 140, 80)); }
+#chat-screen[data-accent="forest"] #message-input:focus { border-color: rgb(30, 140, 80); }
+#chat-screen[data-accent="mono"] .message.own .bubble { background: linear-gradient(135deg, rgba(200, 205, 215, 0.38), rgba(120, 130, 145, 0.38)); }
+#chat-screen[data-accent="mono"] #message-form button[type="submit"] { background: linear-gradient(135deg, rgb(200, 205, 215), rgb(120, 130, 145)); }
+#chat-screen[data-accent="mono"] #message-input:focus { border-color: rgb(120, 130, 145); }
+#accent-select { max-width: 9rem; }
+
+.pending-message .bubble { opacity: 0.6; border-style: dashed; }

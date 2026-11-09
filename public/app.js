@@ -332,6 +332,7 @@ function applyModVisibility() {
   welcomeForm.classList.toggle('hidden', !isHost);
   cohostHint.classList.toggle('hidden', !isHost);
   document.getElementById('hosts-only-row').classList.toggle('hidden', !isHost);
+  document.getElementById('accent-row').classList.toggle('hidden', !isHost);
   updateComposerLock();
 }
 const welcomeForm = document.getElementById('welcome-form');
@@ -1074,6 +1075,7 @@ function handleServerMessage(data) {
       roomCohosts = data.cohosts || [];
       roomWelcomeText = data.welcome || null;
       roomHostsOnly = !!data.hostsOnly;
+      applyRoomAccent(data.accent || null);
       // Each room keeps its own unsent draft (survives switching rooms and reloading).
       saveDraftNow(); // flush the previous room's draft first
       draftRoomCode = data.code;
@@ -1228,6 +1230,7 @@ function handleServerMessage(data) {
       // the screen is actually visible and has real layout dimensions.
       scrollToBottom();
       if (newMsgsDivider && !pendingLinkMsgId) newMsgsDivider.scrollIntoView({ block: 'center' });
+      flushOutbox(data.code);
       if (pendingLinkMsgId && data.code === pendingLinkRoom) {
         const id = pendingLinkMsgId;
         pendingLinkMsgId = null;
@@ -1613,6 +1616,11 @@ function handleServerMessage(data) {
     case 'room-emojis-updated':
       setRoomEmojis(data.emojis || []);
       if (data.added) showAppToast(`😀 New room emoji :${data.added}: — find it in the 🙂 picker`);
+      break;
+
+    case 'accent-updated':
+      applyRoomAccent(data.accent || null);
+      if (myProfile && data.by !== myProfile.name) showAppToast(`🎨 ${data.by} changed the room color`);
       break;
 
     case 'hosts-only-updated':
@@ -6380,6 +6388,16 @@ messageForm.addEventListener('submit', (e) => {
   // by the ws close/reconnect handlers) already explains WHY, but a per-attempt toast makes each
   // specific failed send unmissable too.
   if (ws.readyState !== WebSocket.OPEN) {
+    // Plain messages wait in an outbox and go out automatically once we're reconnected to this
+    // room; commands (/remind, /later, …) still need a live connection.
+    if (currentRoomCode && !raw.startsWith('/')) {
+      queueOutbox(raw);
+      messageInput.value = '';
+      saveDraftNow();
+      autoGrowComposer();
+      clearReplyingTo();
+      return;
+    }
     showAppToast("Not connected — your message wasn't sent. It'll stay in the box until you're back online.");
     return;
   }
@@ -8926,3 +8944,68 @@ const WYR_QUESTIONS = [
   ['live in a candy house', 'live in a bouncy castle'], ['find a treasure map', 'find a magic wand'],
   ['be a pro skateboarder', 'be a pro snowboarder'], ['shrink to ant size', 'grow to giant size'],
 ];
+
+
+// --- Room color (host picks; everyone sees it) ---
+const accentSelect = document.getElementById('accent-select');
+function applyRoomAccent(accent) {
+  if (accent) chatScreen.dataset.accent = accent;
+  else delete chatScreen.dataset.accent;
+  accentSelect.value = accent || '';
+}
+accentSelect.addEventListener('change', () => {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'set-accent', accent: accentSelect.value || null }));
+});
+
+
+// --- Offline outbox: messages typed while disconnected send themselves on reconnect ---
+function outboxKey(code) { return `valk-outbox:${code}`; }
+function readOutbox(code) {
+  try { return JSON.parse(localStorage.getItem(outboxKey(code)) || '[]'); } catch (err) { return []; }
+}
+function writeOutbox(code, list) {
+  try {
+    if (list.length) localStorage.setItem(outboxKey(code), JSON.stringify(list.slice(0, 20)));
+    else localStorage.removeItem(outboxKey(code));
+  } catch (err) { /* ignore */ }
+}
+function renderPendingBubble(item) {
+  const el = document.createElement('div');
+  el.className = 'message own pending-message';
+  el.dataset.pendingId = item.id;
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  const meta = document.createElement('span');
+  meta.className = 'meta';
+  meta.textContent = '⏳ Waiting to send — will go out when you’re back online';
+  const text = document.createElement('span');
+  text.className = 'text';
+  text.textContent = item.text;
+  bubble.append(meta, text);
+  el.appendChild(bubble);
+  messagesEl.appendChild(el);
+  scrollToBottom();
+}
+function queueOutbox(text) {
+  const item = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, text: text.slice(0, 2000), replyTo: replyingTo ? replyingTo.id : null, at: Date.now() };
+  const list = readOutbox(currentRoomCode);
+  if (list.length >= 20) { showAppToast('Too many messages waiting — wait until you’re back online.'); return; }
+  list.push(item);
+  writeOutbox(currentRoomCode, list);
+  renderPendingBubble(item);
+  showAppToast('📴 Offline — your message will send when you’re reconnected');
+}
+function flushOutbox(code) {
+  const list = readOutbox(code);
+  if (!list.length || !ws || ws.readyState !== WebSocket.OPEN) return;
+  writeOutbox(code, []);
+  messagesEl.querySelectorAll('.pending-message').forEach((el) => el.remove());
+  // Spaced out so a burst doesn't trip the server's flood limit.
+  list.forEach((item, i) => setTimeout(() => {
+    if (!ws || ws.readyState !== WebSocket.OPEN || currentRoomCode !== code) { writeOutbox(code, [...readOutbox(code), item]); return; }
+    const payload = { type: 'message', text: item.text };
+    if (item.replyTo) payload.replyTo = item.replyTo;
+    ws.send(JSON.stringify(payload));
+  }, i * 900));
+  showAppToast(`📶 Back online — sending ${list.length} waiting message${list.length === 1 ? '' : 's'}`);
+}
