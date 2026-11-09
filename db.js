@@ -195,6 +195,8 @@ ensureColumn('rooms', 'welcome_text', 'TEXT');
 ensureColumn('rooms', 'hosts_only', 'INTEGER DEFAULT 0');
 ensureColumn('rooms', 'accent', 'TEXT');
 ensureColumn('rooms', 'icon', 'TEXT');
+// 1 = the host chose to show this room in the public room list.
+ensureColumn('rooms', 'listed', 'INTEGER DEFAULT 0');
 
 // One-time migration: pins used to be single-pin-per-room (PK: room_code) — multi-pin needs a
 // composite PK (room_code, message_id) instead, which ALTER TABLE can't change in place.
@@ -1305,6 +1307,19 @@ function findMentions(codes, name, since, limit = 60) {
 // "Recently here": names with a read receipt in this room, most recent first.
 function getRecentRoomVisitors(code, since, limit = 40) {
   return db.prepare('SELECT name, at FROM read_receipts WHERE room_code = ? AND at > ? ORDER BY at DESC LIMIT ?').all(code, since, limit);
+}
+
+function setRoomListed(code, on) {
+  db.prepare('UPDATE rooms SET listed = ? WHERE code = ?').run(on ? 1 : 0, code);
+}
+
+// Rooms whose host listed them publicly: must have a name, no PIN, and been active in 30 days.
+function getListedRooms(limit = 60) {
+  return db.prepare(
+    `SELECT code, name, icon, last_active_at as lastActiveAt FROM rooms
+     WHERE listed = 1 AND name IS NOT NULL AND name <> '' AND (pin_required IS NULL OR pin_required = '')
+       AND last_active_at > ? ORDER BY last_active_at DESC LIMIT ?`
+  ).all(Date.now() - 30 * 24 * 60 * 60 * 1000, limit);
 }
 
 function setRoomIcon(code, icon) {
@@ -3123,6 +3138,8 @@ function getAccountByStreamKey(key) {
 module.exports = {
   getRecentRoomVisitors,
   setRoomIcon,
+  setRoomListed,
+  getListedRooms,
   getRoomLeaderboardAll,
   countRepliesFor,
   getAccountStickers,

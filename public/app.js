@@ -339,6 +339,7 @@ function applyModVisibility() {
   welcomeForm.classList.toggle('hidden', !isHost);
   cohostHint.classList.toggle('hidden', !isHost);
   document.getElementById('hosts-only-row').classList.toggle('hidden', !isHost);
+  document.getElementById('listed-row').classList.toggle('hidden', !isHost);
   document.getElementById('accent-row').classList.toggle('hidden', !isHost);
   document.getElementById('room-icon-form').classList.toggle('hidden', !isHost);
   updateFavoriteButton();
@@ -1102,6 +1103,7 @@ function handleServerMessage(data) {
       sentAway = false;
       lastActivityAt = Date.now();
       document.getElementById('hosts-only-input').checked = roomHostsOnly;
+      document.getElementById('listed-input').checked = !!data.listed;
       welcomeInput.value = roomWelcomeText || '';
       currentRoomPin = data.invitePass || pendingJoinPin;
       pendingJoinPin = '';
@@ -1666,6 +1668,16 @@ function handleServerMessage(data) {
     case 'accent-updated':
       applyRoomAccent(data.accent || null);
       if (myProfile && data.by !== myProfile.name) showAppToast(`🎨 ${data.by} changed the room color`);
+      break;
+
+    case 'listed-updated':
+      document.getElementById('listed-input').checked = !!data.on;
+      if (data.error) showAppToast(`🌍 ${data.error}`);
+      else showAppToast(data.on ? `🌍 ${data.by} listed this room in Public rooms` : `🌍 ${data.by} took this room off Public rooms`);
+      break;
+
+    case 'public-rooms':
+      renderPublicRooms(data.rooms || []);
       break;
 
     case 'hosts-only-updated':
@@ -2840,7 +2852,9 @@ function openReactionPicker(anchorBtn, messageId) {
 
   const grid = document.createElement('div');
   grid.className = 'reaction-popover-grid';
-  REACTION_EMOJIS.forEach((emoji) => {
+  // Your most recent reactions come first (this device), then the usual set.
+  const recent = getRecentReactions().filter((e) => !/^:[\w-]+:$/.test(e));
+  [...new Set([...recent, ...REACTION_EMOJIS])].slice(0, Math.max(REACTION_EMOJIS.length, recent.length)).forEach((emoji) => {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.textContent = emoji;
@@ -2900,7 +2914,17 @@ function closeReactionPickerOnOutsideClick(e) {
   if (activeReactionPopover && !activeReactionPopover.contains(e.target)) closeReactionPicker();
 }
 
+const RECENT_REACTIONS_KEY = 'valk-recent-reactions';
+function getRecentReactions() {
+  try { const v = JSON.parse(localStorage.getItem(RECENT_REACTIONS_KEY) || '[]'); return Array.isArray(v) ? v.filter((x) => typeof x === 'string').slice(0, 8) : []; } catch { return []; }
+}
+function rememberReaction(emoji) {
+  const list = [emoji, ...getRecentReactions().filter((e) => e !== emoji)].slice(0, 8);
+  try { localStorage.setItem(RECENT_REACTIONS_KEY, JSON.stringify(list)); } catch { /* private mode */ }
+}
+
 function toggleReaction(messageId, emoji) {
+  rememberReaction(emoji);
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'react', messageId, emoji }));
 }
 
@@ -3685,6 +3709,38 @@ function renderRecentRooms() {
   });
   if (list.length && myProfile && ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'recent-unread', codes: list.map((r) => r.code) }));
+  }
+  if (myProfile && ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'get-public-rooms' }));
+}
+
+function renderPublicRooms(list) {
+  const section = document.getElementById('public-rooms-section');
+  const box = document.getElementById('public-rooms-list');
+  box.innerHTML = '';
+  section.classList.toggle('hidden', !list.length);
+  for (const r of list) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'public-room';
+    const icon = document.createElement('span');
+    icon.className = 'public-room-icon';
+    icon.textContent = r.icon || '💬';
+    const name = document.createElement('span');
+    name.className = 'public-room-name';
+    name.textContent = r.name;
+    const online = document.createElement('span');
+    online.className = 'public-room-online' + (r.online ? ' live' : '');
+    online.textContent = r.online ? `🟢 ${r.online} here` : 'quiet';
+    btn.append(icon, name, online);
+    btn.addEventListener('click', () => {
+      roomErrorEl.classList.add('hidden');
+      pendingJoinPin = '';
+      roomCodeInput.value = r.code;
+      roomPinInput.value = '';
+      roomPinInput.classList.add('hidden');
+      wsSendOrWarnDisconnected({ type: 'join-room', code: r.code });
+    });
+    box.appendChild(btn);
   }
 }
 
@@ -8456,6 +8512,9 @@ messagesEl.addEventListener('scroll', () => {
 });
 
 
+document.getElementById('listed-input').addEventListener('change', (e) => {
+  if (!wsSendOrWarnDisconnected({ type: 'set-listed', on: e.target.checked })) e.target.checked = !e.target.checked;
+});
 document.getElementById('hosts-only-input').addEventListener('change', (e) => {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'set-hosts-only', on: e.target.checked }));
 });
@@ -9452,6 +9511,8 @@ function flushOutbox(code) {
 // --- ✨ What's new (shown once per update to people who've used Valk before) ---
 const WHATS_NEW_VERSION = '2026-11-09b';
 const WHATS_NEW = [
+  ['🌍', 'Public rooms', 'Hosts can list their room (Room settings → 🌍) so anyone can find it on the start screen.'],
+  ['😀', 'Your reactions first', 'The reaction picker now shows the emoji you use most recently first.'],
   ['🔁', 'Echo', 'New game: repeat the light-and-sound pattern as it grows. /play echo'],
   ['🔗', 'Links tab', 'Menu → 🖼️ Media gallery → 🔗 Links lists every link shared in the room.'],
   ['📅', 'Date dividers', 'Chat now shows Today, Yesterday and the date between days. Emoji-only messages show big 😂'],
@@ -10148,7 +10209,7 @@ document.getElementById('room-people-chip').addEventListener('click', () => {
   summary.textContent = '⚙️ Room settings (hosts)';
   details.appendChild(summary);
   first.parentNode.insertBefore(details, first);
-  ['rename-room-form', 'announcement-form', 'room-icon-form', 'accent-row', 'hosts-only-row', 'slow-mode-row',
+  ['rename-room-form', 'announcement-form', 'room-icon-form', 'accent-row', 'hosts-only-row', 'listed-row', 'slow-mode-row',
     'room-pin-form', 'wallpaper-row', 'disappear-row', 'invites-row', 'word-filter-row', 'room-emojis-row',
     'welcome-form', 'cohost-hint', 'mod-log-btn', 'bans-row'].forEach((id) => {
     const el = document.getElementById(id);

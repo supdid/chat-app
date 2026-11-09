@@ -106,6 +106,10 @@
         <div class="divider">Recent rooms</div>
         <div id="recent-rooms-list" class="recent-rooms-list"></div>
       </div>
+      <div id="public-rooms-section" class="recent-rooms hidden">
+        <div class="divider">🌍 Public rooms</div>
+        <div id="public-rooms-list" class="public-rooms-list"></div>
+      </div>
     </div>
   </div>
 
@@ -441,6 +445,9 @@
       </label>
       <label id="hosts-only-row" class="slow-mode-row hidden">📢 Announcement-only (just hosts can post)
         <input type="checkbox" id="hosts-only-input">
+      </label>
+      <label id="listed-row" class="slow-mode-row hidden">🌍 List in Public rooms (anyone can find &amp; join)
+        <input type="checkbox" id="listed-input">
       </label>
       <label id="slow-mode-row" class="slow-mode-row hidden">🐢 Slow mode (hosts)
         <select id="slow-mode-select">

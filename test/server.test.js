@@ -7984,6 +7984,43 @@ describe('gallery links tab (2026-11-09)', () => {
   });
 });
 
+describe('public room list (2026-11-09)', () => {
+  test('a host can list a named room; it shows in get-public-rooms with a live count; bad names and unnamed rooms are refused', async () => {
+    const { ws: host, code } = await joinRoom('PubHost');
+    const guest = await joinExistingRoom('PubGuest', code);
+    send(host, { type: 'set-listed', on: true });
+    assert.match((await waitFor(host, (m) => m.type === 'listed-updated')).error, /name/);
+    send(guest, { type: 'set-listed', on: true });
+    send(host, { type: 'rename-room', name: 'Shit talk' });
+    await sleep(300);
+    send(host, { type: 'set-listed', on: true });
+    assert.match((await waitFor(host, (m) => m.type === 'listed-updated' && m.error)).error, /can't be listed/);
+    send(host, { type: 'rename-room', name: 'Lego Builders' });
+    await sleep(300);
+    send(host, { type: 'set-listed', on: true });
+    const ok = await waitFor(guest, (m) => m.type === 'listed-updated' && m.on);
+    assert.equal(ok.by, 'PubHost');
+
+    const viewer = await connectWs();
+    send(viewer, { type: 'join-server', username: 'PubViewer' });
+    await waitFor(viewer, (m) => m.type === 'joined-server');
+    send(viewer, { type: 'get-public-rooms' });
+    const list = await waitFor(viewer, (m) => m.type === 'public-rooms');
+    const mine = list.rooms.find((r) => r.code === code);
+    assert.ok(mine, 'listed room is in the list');
+    assert.equal(mine.name, 'Lego Builders');
+    assert.equal(mine.online, 2);
+
+    send(host, { type: 'set-listed', on: false });
+    await waitFor(host, (m) => m.type === 'listed-updated' && m.on === false && !m.error);
+    await sleep(1100);
+    send(viewer, { type: 'get-public-rooms' });
+    const after = await waitFor(viewer, (m) => m.type === 'public-rooms');
+    assert.ok(!after.rooms.some((r) => r.code === code), 'unlisted room is gone');
+    host.close(); guest.close(); viewer.close();
+  });
+});
+
 describe('poll upgrades (2026-11-08)', () => {
   const postPoll = (ws, def) => send(ws, { type: 'message', text: JSON.stringify(def), mediaUrl: 'poll', mediaType: 'poll' });
 

@@ -3593,6 +3593,11 @@ function roomFilterRegex(dbRoom) {
   filterRegexCache.set(dbRoom.code, { key, re });
   return re;
 }
+// Public room names are always checked against the built-in list, whatever the room's own filter.
+const DEFAULT_FILTER_RE = new RegExp(`(?<![\\p{L}\\p{N}])(?:${DEFAULT_FILTER_WORDS.map(escapeRegex).join('|')})(?![\\p{L}\\p{N}])`, 'iu');
+function isCleanPublicName(name) {
+  return !!name && !DEFAULT_FILTER_RE.test(name);
+}
 function applyWordFilter(dbRoom, text) {
   const re = roomFilterRegex(dbRoom);
   if (!re || !text) return text;
@@ -8719,6 +8724,7 @@ wss.on('connection', (ws, req) => {
         cohosts: db.getRoomCohosts(code).map((c) => c.name),
         welcome: dbRoom ? dbRoom.welcome_text || null : null,
         hostsOnly: !!(dbRoom && dbRoom.hosts_only),
+        listed: !!(dbRoom && dbRoom.listed),
         accent: dbRoom && ROOM_ACCENTS.includes(dbRoom.accent) ? dbRoom.accent : null,
         icon: dbRoom ? dbRoom.icon || null : null,
         notifyPref: (() => {
@@ -9316,6 +9322,38 @@ wss.on('connection', (ws, req) => {
         if (byGame[r.game].length < 3) byGame[r.game].push({ name: r.name, score: r.score });
       }
       send(ws, { type: 'room-champions', games: byGame });
+      return;
+    }
+
+    // 🌍 Public room list: the host can list a named, PIN-free room so anyone can find it.
+    if (msg.type === 'set-listed' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      const dbRoom = db.getRoom(ws.room);
+      if (!isRoomHost(dbRoom, ws)) return;
+      const on = !!msg.on;
+      if (on) {
+        const problem = !dbRoom.name ? 'Give the room a name first (Room settings → rename).'
+          : dbRoom.pin_required ? 'Rooms with a PIN can\'t be listed publicly.'
+            : !isCleanPublicName(dbRoom.name) ? 'That room name can\'t be listed publicly.' : null;
+        if (problem) { send(ws, { type: 'listed-updated', on: false, error: problem }); return; }
+      }
+      db.setRoomListed(ws.room, on);
+      db.addModLog(ws.room, ws.profile.name, 'public-list', null, on ? 'on' : 'off');
+      broadcastRoom(ws.room, { type: 'listed-updated', on, by: ws.profile.name });
+      return;
+    }
+
+    if (msg.type === 'get-public-rooms') {
+      if (isWsMsgRateLimited(ws)) return;
+      const list = db.getListedRooms()
+        .filter((r) => isCleanPublicName(r.name))
+        .map((r) => {
+          const live = rooms.get(r.code);
+          return { code: r.code, name: r.name, icon: r.icon || null, online: live ? live.clients.size : 0, lastActiveAt: r.lastActiveAt };
+        })
+        .sort((a, b) => b.online - a.online || b.lastActiveAt - a.lastActiveAt)
+        .slice(0, 30);
+      send(ws, { type: 'public-rooms', rooms: list });
       return;
     }
 

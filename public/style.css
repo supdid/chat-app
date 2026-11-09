@@ -3164,3 +3164,12 @@ body.hide-presence-system .system.presence-system { display: none; }
 /* Minigames as a compact 2-column grid of tiles */
 .menu-section.games-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.45rem; }
 .menu-link.game-tile { padding: 0.55rem 0.5rem; font-size: 0.88rem; line-height: 1.2; display: flex; align-items: center; justify-content: center; min-height: 2.6rem; }
+
+/* 🌍 Public rooms on the room picker */
+.public-rooms-list { display: flex; flex-direction: column; gap: 0.4rem; max-height: 15rem; overflow-y: auto; }
+.public-room { display: flex; align-items: center; gap: 0.6rem; width: 100%; padding: 0.55rem 0.75rem; border-radius: 12px; background: var(--chip-bg); border: 1px solid var(--chip-border); color: var(--text-color); font: inherit; text-align: left; cursor: pointer; }
+.public-room:hover { filter: brightness(1.15); }
+.public-room-icon { font-size: 1.3rem; }
+.public-room-name { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.public-room-online { font-size: 0.75rem; color: var(--text-subtle); white-space: nowrap; }
+.public-room-online.live { color: #34e89e; font-weight: 700; }
