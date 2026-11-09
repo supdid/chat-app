@@ -456,6 +456,19 @@ app.get('/admin/activity', requireAdmin, (req, res) => {
   res.json({ ...db.getAdminActivity(), onlineNow: online, inRoomsNow: inRooms, liveRooms: rooms.size });
 });
 
+// 🌍 Rooms hosts have listed publicly — the admin can take any of them off the list.
+app.get('/admin/public-rooms', requireAdmin, (req, res) => {
+  res.json({ rooms: db.getListedRooms(200).map((r) => ({ ...r, online: rooms.get(r.code) ? rooms.get(r.code).clients.size : 0, clean: isCleanPublicName(r.name) })) });
+});
+app.post('/admin/public-rooms/:code/unlist', requireAdmin, (req, res) => {
+  const code = String(req.params.code || '').toUpperCase();
+  if (!db.getRoom(code)) return res.status(404).json({ error: 'No such room' });
+  db.setRoomListed(code, false);
+  db.addModLog(code, 'Valk admin', 'public-list', null, 'off');
+  broadcastRoom(code, { type: 'listed-updated', on: false, by: 'A Valk admin' });
+  res.json({ ok: true });
+});
+
 app.get('/admin/errors', requireAdmin, (req, res) => {
   res.json({ errors: db.getRecentErrorReports() });
 });

@@ -34,6 +34,8 @@
     <h1>Self-healing panel <button class="reject" id="forget-key-btn" type="button" style="font-size:12px;padding:4px 10px;">Forget admin key</button></h1>
     <h2>Activity</h2>
     <div class="card" id="activity-card"><div class="meta">Loading…</div></div>
+    <h2>🌍 Public rooms</h2>
+    <div class="card" id="public-rooms-card"><div class="meta">Loading…</div></div>
     <h2>Storage cleanup</h2>
     <div class="card">
       <div class="meta">Rooms inactive 90+ days (and their messages/media) are purged automatically once a day.</div>
@@ -242,8 +244,33 @@ async function loadActivity() {
   }
 }
 
+async function loadPublicRooms() {
+  const el = document.getElementById('public-rooms-card');
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  try {
+    const res = await fetch('/admin/public-rooms', { headers: headers() });
+    if (!res.ok) { el.innerHTML = '<div class="meta">Couldn\'t load public rooms.</div>'; return; }
+    const { rooms } = await res.json();
+    if (!rooms.length) { el.innerHTML = '<div class="meta">No rooms are listed publicly right now.</div>'; return; }
+    el.innerHTML = '<div class="meta" style="margin-bottom:8px;">Rooms whose host chose to list them on the start screen. Unlisting doesn\'t close the room.</div>'
+      + rooms.map((r) => `<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-top:1px solid #262a33;">
+          <span style="font-size:20px;">${esc(r.icon || '💬')}</span>
+          <span style="flex:1;">${esc(r.name)} <code>${esc(r.code)}</code>${r.clean ? '' : ' <b style="color:#e05252;">(hidden: name fails filter)</b>'}<br><span class="meta">${r.online} online · active ${new Date(r.lastActiveAt).toLocaleString()}</span></span>
+          <button class="reject" type="button" data-unlist="${esc(r.code)}">Unlist</button></div>`).join('');
+    el.querySelectorAll('[data-unlist]').forEach((btn) => btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      const { ok, data } = await adminPost(`/admin/public-rooms/${encodeURIComponent(btn.dataset.unlist)}/unlist`);
+      if (!ok) { alert(data.error || 'Could not unlist'); btn.disabled = false; return; }
+      loadPublicRooms();
+    }));
+  } catch {
+    el.innerHTML = '<div class="meta">Couldn\'t reach the server.</div>';
+  }
+}
+
 async function refresh() {
   loadActivity();
+  loadPublicRooms();
   let patchesRes, errorsRes, reportsRes, scorptureReportsRes;
   try {
     [patchesRes, errorsRes, reportsRes, scorptureReportsRes] = await Promise.all([

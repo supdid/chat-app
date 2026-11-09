@@ -8011,8 +8011,15 @@ describe('public room list (2026-11-09)', () => {
     assert.equal(mine.name, 'Lego Builders');
     assert.equal(mine.online, 2);
 
-    send(host, { type: 'set-listed', on: false });
-    await waitFor(host, (m) => m.type === 'listed-updated' && m.on === false && !m.error);
+    const adminKey = JSON.parse(fs.readFileSync(path.join(server.dir, 'admin-key.json'), 'utf8')).key;
+    const auth = { Authorization: `Bearer ${adminKey}` };
+    assert.equal((await fetch(`${BASE_URL}/admin/public-rooms`)).status, 401);
+    const adminList = await fetch(`${BASE_URL}/admin/public-rooms`, { headers: auth }).then((r) => r.json());
+    assert.ok(adminList.rooms.some((r) => r.code === code));
+    const unlisted = waitFor(host, (m) => m.type === 'listed-updated' && m.on === false && !m.error);
+    const r = await fetch(`${BASE_URL}/admin/public-rooms/${code}/unlist`, { method: 'POST', headers: auth });
+    assert.equal(r.status, 200);
+    assert.equal((await unlisted).by, 'A Valk admin');
     await sleep(1100);
     send(viewer, { type: 'get-public-rooms' });
     const after = await waitFor(viewer, (m) => m.type === 'public-rooms');
