@@ -656,6 +656,52 @@ app.use((req, res, next) => {
   res.setHeader('Permissions-Policy', 'geolocation=(), payment=(), usb=(), magnetometer=(), gyroscope=(), interest-cohort=()');
   next();
 });
+// Cache-busting: Cloudflare tells browsers to keep .js/.css for 4 hours, so after a deploy people
+// could run old JavaScript against new HTML for hours (even the "update available" reload just
+// re-read the browser cache). Every HTML page is served with its local scripts/stylesheets
+// stamped ?v=<that file's modified time> — a changed file gets a new URL, an unchanged one keeps
+// its cached copy. Rebuilt only when the page or one of its files actually changes.
+const PUBLIC_DIR = path.join(__dirname, 'public');
+const versionedHtmlCache = new Map(); // abs path -> { key, body }
+const ASSET_REF_RE = /(<script\b[^>]*\bsrc="|<link\b[^>]*\bhref=")((?!https?:|\/\/|data:)[^"?#]+\.(?:js|css))"/g;
+function servePageWithVersions(absPath, res, next) {
+  let stat;
+  try { stat = fs.statSync(absPath); } catch { return next(); }
+  if (!stat.isFile()) return next();
+  try {
+    const html = fs.readFileSync(absPath, 'utf8');
+    const refs = [];
+    const mtimes = [];
+    html.replace(ASSET_REF_RE, (m, pre, ref) => {
+      const assetAbs = path.join(path.dirname(absPath), ref);
+      let mt = 0;
+      if (assetAbs.startsWith(PUBLIC_DIR + path.sep)) { try { mt = Math.floor(fs.statSync(assetAbs).mtimeMs); } catch { mt = 0; } }
+      refs.push(ref);
+      mtimes.push(mt);
+      return m;
+    });
+    const key = `${Math.floor(stat.mtimeMs)}|${mtimes.join(',')}`;
+    let cached = versionedHtmlCache.get(absPath);
+    if (!cached || cached.key !== key) {
+      let i = 0;
+      const body = html.replace(ASSET_REF_RE, (m, pre, ref) => {
+        const mt = mtimes[i++];
+        return mt ? `${pre}${ref}?v=${mt.toString(36)}"` : m;
+      });
+      cached = { key, body };
+      versionedHtmlCache.set(absPath, cached);
+    }
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.send(cached.body);
+  } catch {
+    next();
+  }
+}
+app.get(/^\/(?:[A-Za-z0-9_-]+\.html)?$/, (req, res, next) => {
+  const rel = req.path === '/' ? 'index.html' : req.path.slice(1);
+  servePageWithVersions(path.join(PUBLIC_DIR, rel), res, next);
+});
 app.use(express.static(path.join(__dirname, 'public')));
 
 // The WS join-room handler is the only place that used to check a room's PIN — these four plain
