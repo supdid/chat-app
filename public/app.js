@@ -334,6 +334,7 @@ function applyModVisibility() {
   cohostHint.classList.toggle('hidden', !isHost);
   document.getElementById('hosts-only-row').classList.toggle('hidden', !isHost);
   document.getElementById('accent-row').classList.toggle('hidden', !isHost);
+  updateFavoriteButton();
   updateComposerLock();
 }
 const welcomeForm = document.getElementById('welcome-form');
@@ -1299,6 +1300,12 @@ function handleServerMessage(data) {
       // you're no longer in, on a screen that had already switched to roomSelectScreen underneath.
       qrOverlay.classList.add('hidden');
       eventsOverlay.classList.add('hidden');
+      saveDraftNow();
+      draftRoomCode = null;
+      messageInput.value = '';
+      // The picker's recent-rooms list was never refreshed here — after "Leave room" it showed
+      // whatever it had at login (often nothing) until a reload.
+      renderRecentRooms();
       showScreen(roomSelectScreen);
       break;
 
@@ -1742,6 +1749,14 @@ function handleServerMessage(data) {
         if (!badge) { badge = document.createElement('span'); badge.className = 'recent-unread-badge'; chip.appendChild(badge); }
         badge.textContent = n >= 100 ? '99+' : String(n);
         badge.title = `${n >= 100 ? '99+' : n} new message${n === 1 ? '' : 's'}`;
+      });
+      recentRoomsList.querySelectorAll('.recent-room-chip').forEach((chip) => {
+        const online = data.online && data.online[chip.dataset.code];
+        let dot = chip.querySelector('.recent-online');
+        if (!online) { if (dot) dot.remove(); return; }
+        if (!dot) { dot = document.createElement('span'); dot.className = 'recent-online'; chip.insertBefore(dot, chip.querySelector('.recent-unread-badge')); }
+        dot.textContent = `🟢 ${online}`;
+        dot.title = `${online} ${online === 1 ? 'person is' : 'people are'} in this room now`;
       });
       break;
 
@@ -3507,7 +3522,10 @@ function saveRecentRoom(code, name) {
   const list = getRecentRooms().filter((r) => r.code !== code);
   list.unshift({ code, name: name || null, lastJoined: Date.now() });
   // A throw here previously skipped the account-sync fetch below too, not just local persistence.
-  try { localStorage.setItem(RECENT_ROOMS_KEY, JSON.stringify(list.slice(0, RECENT_ROOMS_MAX))); } catch {}
+  // Favorites never fall off the end of the recent list.
+  const favs = getFavoriteRooms();
+  const kept = [...list.filter((r) => favs.includes(r.code)), ...list.filter((r) => !favs.includes(r.code)).slice(0, RECENT_ROOMS_MAX)];
+  try { localStorage.setItem(RECENT_ROOMS_KEY, JSON.stringify(kept)); } catch {}
   if (accountToken) {
     fetch('/account/recent-rooms', {
       method: 'POST',
@@ -3520,14 +3538,16 @@ function saveRecentRoom(code, name) {
 }
 
 function renderRecentRooms() {
-  const list = getRecentRooms();
+  const favs = getFavoriteRooms();
+  const all = getRecentRooms();
+  const list = [...all.filter((r) => favs.includes(r.code)), ...all.filter((r) => !favs.includes(r.code))];
   recentRoomsList.innerHTML = '';
   recentRoomsSection.classList.toggle('hidden', list.length === 0);
   list.forEach((r) => {
     const chip = document.createElement('button');
     chip.type = 'button';
     chip.className = 'recent-room-chip';
-    chip.textContent = r.name ? `${r.name} (${r.code})` : r.code;
+    chip.textContent = (favs.includes(r.code) ? '⭐ ' : '') + (r.name ? `${r.name} (${r.code})` : r.code);
     chip.addEventListener('click', () => {
       roomErrorEl.classList.add('hidden');
       pendingJoinPin = '';
@@ -9562,3 +9582,26 @@ function insertCommandSuggestion(text) {
   messageInput.focus();
   autoGrowComposer();
 }
+
+
+// --- ⭐ Favorite rooms (this device): always at the top of the room picker ---
+function getFavoriteRooms() {
+  try { const v = JSON.parse(localStorage.getItem('valk-fav-rooms') || '[]'); return Array.isArray(v) ? v : []; } catch (err) { return []; }
+}
+function setFavoriteRooms(list) {
+  try { localStorage.setItem('valk-fav-rooms', JSON.stringify(list.slice(0, 20))); } catch (err) { /* ignore */ }
+}
+const favRoomBtn = document.getElementById('fav-room-btn');
+function updateFavoriteButton() {
+  if (!favRoomBtn || !currentRoomCode) return;
+  const fav = getFavoriteRooms().includes(currentRoomCode);
+  favRoomBtn.textContent = fav ? '⭐ Favorite room (tap to remove)' : '☆ Add this room to favorites';
+}
+favRoomBtn.addEventListener('click', () => {
+  if (!currentRoomCode) return;
+  const favs = getFavoriteRooms();
+  const isFav = favs.includes(currentRoomCode);
+  setFavoriteRooms(isFav ? favs.filter((c) => c !== currentRoomCode) : [currentRoomCode, ...favs]);
+  updateFavoriteButton();
+  showAppToast(isFav ? 'Removed from favorites' : '⭐ Added to favorites — it’ll stay at the top of your rooms');
+});

@@ -8978,13 +8978,16 @@ wss.on('connection', (ws, req) => {
       if (isWsMsgRateLimited(ws)) return;
       const codes = Array.isArray(msg.codes) ? msg.codes.slice(0, 20).map((c) => String(c).toUpperCase().slice(0, 10)) : [];
       const counts = {};
+      const online = {};
       for (const c of codes) {
         const r = db.getRoom(c);
         if (!r || r.pin_required) continue;
         const n = db.countUnreadSince(c, ws.profile.name);
         if (n) counts[c] = n;
+        const live = rooms.get(c);
+        if (live && live.clients.size) online[c] = live.clients.size;
       }
-      send(ws, { type: 'recent-unread', counts });
+      send(ws, { type: 'recent-unread', counts, online });
       return;
     }
 

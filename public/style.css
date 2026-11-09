@@ -3087,3 +3087,5 @@ button:focus-visible, a:focus-visible, [role="button"]:focus-visible, select:foc
 .mention-dropdown { scrollbar-width: thin; scrollbar-color: rgba(127, 140, 155, 0.45) transparent; }
 .mention-dropdown::-webkit-scrollbar { width: 8px; }
 .mention-dropdown::-webkit-scrollbar-thumb { background: rgba(127, 140, 155, 0.45); border-radius: 4px; }
+
+.recent-online { margin-left: 0.4rem; font-size: 0.72rem; color: var(--text-subtle); }
