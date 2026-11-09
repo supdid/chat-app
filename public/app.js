@@ -2758,8 +2758,9 @@ function setReplyingTo(data) {
 // Photo/video uploads, voice clips, stickers and GIFs all send through here so a media send
 // answers whatever "Replying to…" is showing and then clears it — they used to ignore the reply
 // bar entirely and leave it stuck on the composer.
-function sendMediaMessage(mediaUrl, mediaType) {
+function sendMediaMessage(mediaUrl, mediaType, caption) {
   const payload = { type: 'message', mediaUrl, mediaType };
+  if (caption) payload.text = caption;
   if (replyingTo) payload.replyTo = replyingTo.id;
   ws.send(JSON.stringify(payload));
   clearReplyingTo();
@@ -6399,7 +6400,17 @@ messageInput.addEventListener('blur', () => {
 attachBtn.addEventListener('click', () => fileInput.click());
 
 // Shared by the 📎 button, pasting an image into the message box, and dragging files onto the chat.
-async function uploadAndSendFile(file) {
+// Text already typed in the message box rides along as the photo's caption (not slash commands).
+function takeCaption() {
+  const t = messageInput.value.trim();
+  if (!t || t.startsWith('/')) return '';
+  messageInput.value = '';
+  autoGrowComposer();
+  saveDraftNow();
+  return t.slice(0, 2000);
+}
+
+async function uploadAndSendFile(file, withCaption = true) {
   if (!file) return;
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     showAppToast("Not connected — your file wasn't sent.");
@@ -6422,7 +6433,7 @@ async function uploadAndSendFile(file) {
       showAppToast(`Upload failed: ${data.error || `error ${res.status}`}`);
       return;
     }
-    sendMediaMessage(data.url, data.mediaType);
+    sendMediaMessage(data.url, data.mediaType, withCaption ? takeCaption() : '');
   } catch {
     showAppToast('Upload failed — check your connection and try again.');
   } finally {
@@ -6430,10 +6441,12 @@ async function uploadAndSendFile(file) {
   }
 }
 
-fileInput.addEventListener('change', () => {
-  const file = fileInput.files[0];
+fileInput.addEventListener('change', async () => {
+  const all = [...fileInput.files];
+  const files = all.slice(0, 10);
   fileInput.value = '';
-  uploadAndSendFile(file);
+  if (all.length > 10) showAppToast('Sending the first 10 photos/videos');
+  for (let i = 0; i < files.length; i++) await uploadAndSendFile(files[i], i === 0);
 });
 
 // Paste a screenshot/photo straight into the message box.
@@ -6471,7 +6484,7 @@ chatScreen.addEventListener('drop', async (e) => {
   chatScreen.classList.remove('drag-over');
   const files = [...e.dataTransfer.files].filter((f) => /^(image|video)\//.test(f.type)).slice(0, 5);
   if (!files.length) { showAppToast('Only photos and videos can be sent here.'); return; }
-  for (const f of files) await uploadAndSendFile(f);
+  for (let i = 0; i < files.length; i++) await uploadAndSendFile(files[i], i === 0);
 });
 
 // --- Sticker picker ---
@@ -8556,3 +8569,65 @@ function ensureCountdownTicker() {
     if (!any) { clearInterval(countdownTicker); countdownTicker = null; }
   }, 1000);
 }
+
+
+// --- Phones: swipe a message right to reply, double-tap it to ❤️ ---
+function messageDataFromEl(msgEl) {
+  const row = msgEl && msgEl.querySelector('.message-actions');
+  return row ? messageActionData.get(row) : null;
+}
+let swipe = null;
+let lastTap = { id: null, at: 0 };
+messagesEl.addEventListener('touchstart', (e) => {
+  if (e.touches.length !== 1) { swipe = null; return; }
+  const msgEl = e.target.closest('.message');
+  // Swipes may start anywhere on the bubble (the action-button row covers a lot of it on phones);
+  // double-taps only count on the message itself, not on a button/link/player.
+  if (!msgEl || msgEl.dataset.deleted || e.target.closest('input, textarea, video, audio, .poll-card, .fenced-code, .edit-message-form')) { swipe = null; return; }
+  const t = e.touches[0];
+  swipe = { el: msgEl, bubble: msgEl.querySelector('.bubble'), x: t.clientX, y: t.clientY, dx: 0, locked: null, onControl: !!e.target.closest('button, a, .spoiler') };
+}, { passive: true });
+messagesEl.addEventListener('touchmove', (e) => {
+  if (!swipe || !swipe.bubble) return;
+  const t = e.touches[0];
+  const dx = t.clientX - swipe.x;
+  const dy = t.clientY - swipe.y;
+  if (swipe.locked === null && (Math.abs(dx) > 10 || Math.abs(dy) > 10)) swipe.locked = Math.abs(dx) > Math.abs(dy) * 1.3 && dx > 0 ? 'x' : 'y';
+  if (swipe.locked !== 'x') return;
+  swipe.dx = Math.max(0, Math.min(90, dx));
+  swipe.bubble.style.transform = `translateX(${swipe.dx}px)`;
+  swipe.bubble.style.transition = 'none';
+}, { passive: true });
+messagesEl.addEventListener('touchend', (e) => {
+  if (!swipe) return;
+  const s = swipe;
+  swipe = null;
+  if (s.bubble) {
+    s.bubble.style.transition = 'transform 0.18s ease';
+    s.bubble.style.transform = '';
+  }
+  if (s.locked === 'x' && s.dx > 60) {
+    const data = messageDataFromEl(s.el);
+    if (data && !roomHostsOnlyLocked()) { setReplyingTo(data); messageInput.focus(); if (navigator.vibrate) navigator.vibrate(10); }
+    return;
+  }
+  if (s.locked !== null || s.onControl) return;
+  // A tap that didn't move: two quick taps on the same message = ❤️.
+  const id = s.el.dataset.messageId;
+  const now = Date.now();
+  if (id && lastTap.id === id && now - lastTap.at < 320) {
+    lastTap = { id: null, at: 0 };
+    if (e.cancelable) e.preventDefault();
+    // Double-tap only ever adds a heart (like Instagram) — tap the ❤️ pill to take it back.
+    const hearts = reactionsByMessage.get(id) && reactionsByMessage.get(id).get('❤️');
+    if (!(hearts && myProfile && hearts.has(myProfile.name))) toggleReaction(id, '❤️');
+    const heart = document.createElement('span');
+    heart.className = 'double-tap-heart';
+    heart.textContent = '❤️';
+    s.bubble && s.bubble.appendChild(heart);
+    setTimeout(() => heart.remove(), 700);
+  } else {
+    lastTap = { id, at: now };
+  }
+});
+function roomHostsOnlyLocked() { return roomHostsOnly && !isMod(); }
