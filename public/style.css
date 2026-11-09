@@ -3038,3 +3038,16 @@ body.ts-xl .bubble .meta { font-size: 0.9rem; }
 :root[data-theme="light"] #chat-screen[data-accent="mono"] .message.own .bubble { background: linear-gradient(135deg, rgba(200, 205, 215, 0.28), rgba(120, 130, 145, 0.28)), rgba(255, 255, 255, 0.86); }
 :root[data-theme="light"] .roll-verified { color: #9a6a00; }
 :root[data-theme="light"] .countdown-clock.done { color: #12895a; }
+
+.whats-new-card { width: min(480px, 100%); }
+.whats-new-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.6rem; }
+.whats-new-list li { display: flex; gap: 0.7rem; align-items: flex-start; }
+.whats-new-list .wn-icon { font-size: 1.35rem; width: 1.8rem; text-align: center; flex-shrink: 0; }
+.whats-new-list b { display: block; font-size: 0.95rem; }
+.whats-new-list span:not(.wn-icon) { font-size: 0.85rem; color: var(--text-subtle); }
+.modal-card { scrollbar-width: thin; scrollbar-color: rgba(127, 140, 155, 0.45) transparent; }
+.modal-card *::-webkit-scrollbar, .modal-card::-webkit-scrollbar { width: 8px; }
+.modal-card *::-webkit-scrollbar-thumb, .modal-card::-webkit-scrollbar-thumb { background: rgba(127, 140, 155, 0.45); border-radius: 4px; }
+.whats-new-card { display: flex; flex-direction: column; overflow: hidden; }
+.whats-new-list { overflow-y: auto; min-height: 0; flex: 1 1 auto; padding-right: 0.3rem; scrollbar-width: thin; scrollbar-color: rgba(127, 140, 155, 0.45) transparent; }
+.whats-new-card > button { flex-shrink: 0; }

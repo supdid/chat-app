@@ -206,6 +206,14 @@
     </div>
   </div>
 
+  <div id="whats-new-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="whats-new-title">
+    <div class="modal-card whats-new-card">
+      <h2 id="whats-new-title">✨ What's new on Valk</h2>
+      <ul id="whats-new-list" class="whats-new-list"></ul>
+      <button type="button" id="whats-new-close">Cool, got it!</button>
+    </div>
+  </div>
+
   <div id="switcher-modal" class="modal-backdrop switcher-backdrop hidden" role="dialog" aria-modal="true" aria-label="Jump to a room">
     <div class="modal-card switcher-card">
       <input id="switcher-input" type="text" placeholder="Jump to a room — type a name or code" autocomplete="off" maxlength="40">
@@ -538,6 +546,7 @@
       <button id="gallery-btn" class="menu-link" type="button">🖼️ Media gallery</button>
       <button id="poll-btn" class="menu-link" type="button">📊 Create a poll</button>
       <button id="room-stats-btn" class="menu-link" type="button">📈 Room stats</button>
+      <button id="whats-new-btn" class="menu-link" type="button">✨ What's new</button>
       <button id="mentions-btn" class="menu-link" type="button">＠ Mentions of me</button>
       <button id="events-btn" class="menu-link" type="button">📅 Events</button>
       <button id="dnd-btn" class="menu-link" type="button">🔕 Do Not Disturb</button>

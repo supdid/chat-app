@@ -1198,6 +1198,7 @@ function handleServerMessage(data) {
       bansListEl.classList.add('hidden');
       applyModVisibility();
       if (!isHost) maybeShowWelcome(data.code, roomWelcomeText, data.name);
+      setTimeout(maybeShowWhatsNew, 800);
       unreadCount = 0;
       updateUnreadBadge();
       // Found by the room-chat client-side correctness audit: renderOnlineList (the only place
@@ -9034,3 +9035,64 @@ function flushOutbox(code) {
   }, i * 900));
   showAppToast(`📶 Back online — sending ${list.length} waiting message${list.length === 1 ? '' : 's'}`);
 }
+
+
+// --- ✨ What's new (shown once per update to people who've used Valk before) ---
+const WHATS_NEW_VERSION = '2026-11-09';
+const WHATS_NEW = [
+  ['⌨️', 'Type Race', 'A new game! Everyone types the same sentence — fastest fingers win. Menu → ⌨️ Play Type Race.'],
+  ['🛡️', 'Co-hosts', 'Hosts can tap ⭐ next to someone to make them a co-host who helps moderate.'],
+  ['📊', 'Better polls', 'Pick-several polls, polls that end on a timer, and /wyr for a random "Would you rather".'],
+  ['🎲', 'Fun commands', '/roll, /flip, /8ball, /pick pizza or tacos, /countdown 5m, /me waves, /later 1h text.'],
+  ['⬆️', 'Scroll back forever', 'Scroll up to load older messages. Search, pins and replies jump to any message.'],
+  ['🖼️', 'Photos', 'Tap a photo to zoom. Paste or drag photos in, add a caption, send up to 10 at once.'],
+  ['▶️', 'YouTube in chat', 'YouTube links play right inside the chat.'],
+  ['📱', 'Phone tricks', 'Swipe a message right to reply, double-tap to ❤️.'],
+  ['🔕', 'Your notifications', 'Per-room: every message, only @mentions, or muted. Plus 🔎 keyword alerts.'],
+  ['🎨', 'Room colors', 'Hosts can pick a color for the room (menu → 🎨 Room color).'],
+  ['＠', 'Mentions inbox', 'Menu → ＠ Mentions of me shows everyone who @mentioned you.'],
+  ['📈', 'Room stats', 'Top chatters, busiest times and the most-loved messages this week.'],
+  ['💻', 'Code blocks', 'Wrap code in ``` to get a box with a Copy button. Shift+Enter for a new line.'],
+  ['🔥', 'Streaks & About me', 'Profile cards show your chat streak and an "about me" you can write.'],
+];
+const whatsNewModal = document.getElementById('whats-new-modal');
+function openWhatsNew() {
+  const list = document.getElementById('whats-new-list');
+  list.textContent = '';
+  for (const [icon, title, desc] of WHATS_NEW) {
+    const li = document.createElement('li');
+    const ic = document.createElement('span');
+    ic.className = 'wn-icon';
+    ic.textContent = icon;
+    const body = document.createElement('div');
+    const t = document.createElement('b');
+    t.textContent = title;
+    const d = document.createElement('span');
+    d.textContent = desc;
+    body.append(t, d);
+    li.append(ic, body);
+    list.appendChild(li);
+  }
+  whatsNewModal.classList.remove('hidden');
+  try { localStorage.setItem('valk-whats-new-seen', WHATS_NEW_VERSION); } catch (err) { /* ignore */ }
+}
+// Judged once at page load — joining a room saves a recent room, which would otherwise make a
+// brand-new visitor look like a returning one a second later.
+let wasReturningVisitor = false;
+try {
+  wasReturningVisitor = !!(localStorage.getItem(RECENT_ROOMS_KEY) || localStorage.getItem('valk-theme') || localStorage.getItem(ACCOUNT_TOKEN_KEY) || localStorage.getItem('valk-whats-new-seen'));
+} catch (err) { /* storage blocked */ }
+function maybeShowWhatsNew() {
+  let seen = null;
+  const returning = wasReturningVisitor;
+  try {
+    seen = localStorage.getItem('valk-whats-new-seen');
+  } catch (err) { return; }
+  if (seen === WHATS_NEW_VERSION) return;
+  if (!returning) { try { localStorage.setItem('valk-whats-new-seen', WHATS_NEW_VERSION); } catch (err) { /* ignore */ } return; }
+  if (!welcomeModal.classList.contains('hidden')) return; // don't stack on the room's welcome card
+  openWhatsNew();
+}
+document.getElementById('whats-new-btn').addEventListener('click', () => { closeMenu(); openWhatsNew(); });
+document.getElementById('whats-new-close').addEventListener('click', () => whatsNewModal.classList.add('hidden'));
+whatsNewModal.addEventListener('click', (e) => { if (e.target === whatsNewModal) whatsNewModal.classList.add('hidden'); });
