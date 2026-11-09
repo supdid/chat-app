@@ -2345,6 +2345,10 @@ function renderMessage(data, opts = {}) {
     }
     text.appendChild(renderTextWithMentions(data.text));
     bubble.appendChild(text);
+    if (!data.kind && !data.mediaUrl && isJumboEmoji(data.text)) {
+      text.classList.add('jumbo-emoji');
+      bubble.classList.add('jumbo-bubble');
+    }
     // Fold really long messages so one wall of text doesn't push the whole chat away.
     if (!data.kind && (data.text.length > 700 || data.text.split('\n').length > 14)) {
       text.classList.add('long-folded');
@@ -9199,7 +9203,51 @@ function sameGroup(prev, el) {
     && prev.dataset.senderName === el.dataset.senderName
     && Math.abs(Number(el.dataset.at) - Number(prev.dataset.at)) < GROUP_WINDOW_MS);
 }
+// A message that's just 1–3 emoji shows them big, like other chat apps.
+const EMOJI_ONLY_RE = /^(?:\p{Regional_Indicator}{2}|\p{Extended_Pictographic}(?:\uFE0F|\p{Emoji_Modifier})?(?:\u200D\p{Extended_Pictographic}(?:\uFE0F|\p{Emoji_Modifier})?)*|\s)+$/u;
+const emojiSegmenter = typeof Intl !== 'undefined' && Intl.Segmenter ? new Intl.Segmenter() : null;
+function isJumboEmoji(text) {
+  const t = (text || '').trim();
+  if (!t || t.length > 40 || !EMOJI_ONLY_RE.test(t)) return false;
+  const count = emojiSegmenter ? [...emojiSegmenter.segment(t.replace(/\s+/g, ''))].length : [...t.replace(/\s+/g, '')].length;
+  return count >= 1 && count <= 3;
+}
+
+// --- Date dividers ("Today", "Yesterday", "Monday, Nov 3") between messages from different days ---
+function dayKeyOf(at) {
+  const d = new Date(at);
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+function dayLabelOf(at) {
+  const d = new Date(at);
+  const now = new Date();
+  const yest = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  if (dayKeyOf(d) === dayKeyOf(now)) return 'Today';
+  if (dayKeyOf(d) === dayKeyOf(yest)) return 'Yesterday';
+  const opts = { weekday: 'long', month: 'short', day: 'numeric' };
+  if (d.getFullYear() !== now.getFullYear()) opts.year = 'numeric';
+  return d.toLocaleDateString([], opts);
+}
+function ensureDateDivider(el) {
+  const at = Number(el.dataset.at);
+  if (!at || !el.parentNode) return;
+  const key = dayKeyOf(at);
+  let p = el.previousElementSibling;
+  while (p && !p.classList.contains('message') && !p.classList.contains('date-divider')) p = p.previousElementSibling;
+  if (p && p.classList.contains('date-divider') && p.dataset.day === key) return;
+  if (p && p.classList.contains('message') && Number(p.dataset.at) && dayKeyOf(Number(p.dataset.at)) === key) return;
+  const div = document.createElement('div');
+  div.className = 'date-divider';
+  div.dataset.day = key;
+  div.setAttribute('role', 'separator');
+  const label = document.createElement('span');
+  label.textContent = dayLabelOf(at);
+  div.appendChild(label);
+  el.parentNode.insertBefore(div, el);
+}
+
 function groupWithPrevious(el) {
+  ensureDateDivider(el);
   const prev = el.previousElementSibling;
   const grouped = sameGroup(prev, el);
   el.classList.toggle('group-cont', grouped);
@@ -9210,6 +9258,7 @@ function groupWithPrevious(el) {
   }
 }
 function regroupAllMessages() {
+  messagesEl.querySelectorAll('.date-divider').forEach((d) => d.remove());
   const all = messagesEl.querySelectorAll('.message');
   all.forEach((el) => el.classList.remove('group-cont', 'group-has-next'));
   all.forEach((el) => groupWithPrevious(el));
@@ -9336,6 +9385,7 @@ function flushOutbox(code) {
 // --- ✨ What's new (shown once per update to people who've used Valk before) ---
 const WHATS_NEW_VERSION = '2026-11-09b';
 const WHATS_NEW = [
+  ['📅', 'Date dividers', 'Chat now shows Today, Yesterday and the date between days. Emoji-only messages show big 😂'],
   ['🎂', 'Birthdays', 'Tap your name → 🎂 Set to add your birthday. On the day, the room gets confetti and a heads-up.'],
   ['📜', 'Tidier long messages', 'Really long messages fold up with a Show more button.'],
   ['☑️', 'Shared checklists', '/todo Groceries: milk, eggs, bread — anyone in the room can tick things off or add more.'],

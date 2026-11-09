@@ -3139,3 +3139,11 @@ body.hide-presence-system .system.presence-system { display: none; }
 .birthday-picker { display: inline-flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; justify-content: center; }
 .birthday-picker select { background: var(--input-bg); color: var(--text-color); border: 1px solid var(--input-border); border-radius: 8px; padding: 0.3rem 0.4rem; font: inherit; font-size: 0.85rem; }
 .birthday-picker select option { color: #000; }
+
+/* Date dividers between days */
+.date-divider { display: flex; align-items: center; gap: 0.75rem; margin: 0.9rem 0 0.4rem; color: var(--text-subtle); font-size: 0.75rem; font-weight: 700; letter-spacing: 0.03em; }
+.date-divider::before, .date-divider::after { content: ''; flex: 1; height: 1px; background: var(--panel-border); }
+.date-divider span { padding: 0.15rem 0.6rem; border-radius: 999px; background: var(--badge-bg); border: 1px solid var(--panel-border); }
+
+/* Emoji-only messages show big */
+.text.jumbo-emoji { font-size: 2.6rem; line-height: 1.15; letter-spacing: 0.05em; }
