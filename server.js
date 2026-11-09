@@ -4506,7 +4506,7 @@ function leaveRoom(ws, announce = true) {
     if (ws.accountId && ws.profile) rememberRecentAccountForName(room, ws.profile.name, ws.accountId);
     room.clients.delete(ws);
     if (announce) {
-      broadcastRoom(code, { type: 'system', text: `${ws.profile.name} left the room`, at: Date.now() });
+      broadcastRoom(code, { type: 'system', text: `${ws.profile.name} left the room`, at: Date.now(), presence: true });
       broadcastRoom(code, { type: 'presence', users: roomUsers(code) });
     }
   }
@@ -8535,7 +8535,7 @@ wss.on('connection', (ws, req) => {
         pinRequired: !!(dbRoom && dbRoom.pin_required),
         voiceCallActive: !!(room.voice && room.voice.size > 0),
       });
-      broadcastRoom(code, { type: 'system', text: `${ws.profile.name} joined the room`, at: Date.now() }, ws);
+      broadcastRoom(code, { type: 'system', text: `${ws.profile.name} joined the room`, at: Date.now(), presence: true }, ws);
       broadcastRoom(code, { type: 'presence', users: roomUsers(code) });
       return;
     }

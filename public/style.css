@@ -3100,3 +3100,5 @@ button:focus-visible, a:focus-visible, [role="button"]:focus-visible, select:foc
 
 .recent-visitors-list { list-style: none; margin: 0; padding: 0; opacity: 0.75; }
 .recent-visitors-list li { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0; cursor: pointer; }
+
+body.hide-presence-system .system.presence-system { display: none; }

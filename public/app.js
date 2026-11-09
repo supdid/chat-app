@@ -3165,7 +3165,7 @@ function renderSeenBy() {
 
 function renderSystem(data) {
   const el = document.createElement('div');
-  el.className = 'system';
+  el.className = 'system' + (data.presence ? ' presence-system' : '');
   el.textContent = data.text;
   messagesEl.appendChild(el);
   maybeScrollToBottom();
@@ -9757,4 +9757,17 @@ installBtn.addEventListener('click', async () => {
   } else if (isIos) {
     alert('To install Valk: tap the Share button (the square with an arrow) at the bottom of Safari, then "Add to Home Screen".');
   }
+});
+
+
+// --- Hide "joined/left the room" lines (this device) ---
+const showPresenceInput = document.getElementById('show-presence-input');
+function applyPresenceVisibility(show) { document.body.classList.toggle('hide-presence-system', !show); }
+let showPresenceSaved = true;
+try { showPresenceSaved = localStorage.getItem('valk-hide-presence') !== '1'; } catch (err) { /* ignore */ }
+showPresenceInput.checked = showPresenceSaved;
+applyPresenceVisibility(showPresenceSaved);
+showPresenceInput.addEventListener('change', () => {
+  applyPresenceVisibility(showPresenceInput.checked);
+  try { localStorage.setItem('valk-hide-presence', showPresenceInput.checked ? '0' : '1'); } catch (err) { /* ignore */ }
 });
