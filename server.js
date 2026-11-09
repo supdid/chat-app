@@ -8024,6 +8024,11 @@ wss.on('connection', (ws, req) => {
       if (db.isBannedFromRoom(code, ws.accountId || ws.scoreAccountId || null, name)) return;
       const dbRoom = db.getRoom(code);
       if (dbRoom && dbRoom.pin_required && ws.room !== code) return; // game pages of PIN rooms: only from the chat itself
+      // Also per person per room — game pages open a fresh socket per invite.
+      if (!room.inviteCooldown) room.inviteCooldown = new Map();
+      if (now - (room.inviteCooldown.get(name) || 0) < 30 * 1000) { send(ws, { type: 'error', message: 'You just sent an invite — give people a moment!' }); return; }
+      if (room.inviteCooldown.size > 200) room.inviteCooldown.clear();
+      room.inviteCooldown.set(name, now);
       ws.lastGameInviteAt = now;
       broadcastRoom(code, { type: 'game-invite', from: name, game, label: INVITE_GAMES[game][1], page: INVITE_GAMES[game][0], at: now });
       send(ws, { type: 'game-invite-sent', game });
