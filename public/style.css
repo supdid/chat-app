@@ -3025,3 +3025,16 @@ body.ts-xl .bubble .meta { font-size: 0.9rem; }
 .stats-loved { display: flex; flex-direction: column; align-items: flex-start; gap: 0.1rem; width: 100%; text-align: left; margin: 0.3rem 0; padding: 0.5rem 0.6rem; border-radius: 8px; border: 1px solid var(--input-border); background: var(--input-bg); color: var(--text-color); font: inherit; cursor: pointer; }
 .stats-loved-meta { font-size: 0.72rem; color: var(--text-subtle); }
 .stats-loved-text { font-size: 0.88rem; white-space: pre-wrap; word-break: break-word; max-height: 3.2em; overflow: hidden; }
+
+/* Light mode: own bubbles get a light base so dark text stays readable over the wallpaper. */
+:root[data-theme="light"] #chat-screen:not([data-accent]) .message.own .bubble { background: linear-gradient(135deg, rgba(52, 232, 158, 0.28), rgba(59, 157, 255, 0.28)), rgba(255, 255, 255, 0.86); }
+:root[data-theme="light"] #chat-screen[data-accent="sunset"] .message.own .bubble { background: linear-gradient(135deg, rgba(255, 140, 66, 0.28), rgba(255, 77, 141, 0.28)), rgba(255, 255, 255, 0.86); }
+:root[data-theme="light"] #chat-screen[data-accent="grape"] .message.own .bubble { background: linear-gradient(135deg, rgba(162, 89, 255, 0.28), rgba(59, 157, 255, 0.28)), rgba(255, 255, 255, 0.86); }
+:root[data-theme="light"] #chat-screen[data-accent="candy"] .message.own .bubble { background: linear-gradient(135deg, rgba(255, 107, 214, 0.28), rgba(162, 89, 255, 0.28)), rgba(255, 255, 255, 0.86); }
+:root[data-theme="light"] #chat-screen[data-accent="fire"] .message.own .bubble { background: linear-gradient(135deg, rgba(255, 64, 64, 0.28), rgba(255, 160, 40, 0.28)), rgba(255, 255, 255, 0.86); }
+:root[data-theme="light"] #chat-screen[data-accent="ocean"] .message.own .bubble { background: linear-gradient(135deg, rgba(32, 201, 201, 0.28), rgba(40, 90, 255, 0.28)), rgba(255, 255, 255, 0.86); }
+:root[data-theme="light"] #chat-screen[data-accent="gold"] .message.own .bubble { background: linear-gradient(135deg, rgba(255, 210, 60, 0.28), rgba(255, 140, 40, 0.28)), rgba(255, 255, 255, 0.86); }
+:root[data-theme="light"] #chat-screen[data-accent="forest"] .message.own .bubble { background: linear-gradient(135deg, rgba(61, 220, 132, 0.28), rgba(30, 140, 80, 0.28)), rgba(255, 255, 255, 0.86); }
+:root[data-theme="light"] #chat-screen[data-accent="mono"] .message.own .bubble { background: linear-gradient(135deg, rgba(200, 205, 215, 0.28), rgba(120, 130, 145, 0.28)), rgba(255, 255, 255, 0.86); }
+:root[data-theme="light"] .roll-verified { color: #9a6a00; }
+:root[data-theme="light"] .countdown-clock.done { color: #12895a; }
