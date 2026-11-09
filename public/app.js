@@ -2517,31 +2517,6 @@ function makeMessageActions(data) {
   saveBtn.addEventListener('click', () => toggleSaveMessage(data));
   actions.appendChild(saveBtn);
 
-  if (accountToken && data.mediaType !== 'poll') {
-    const fwdBtn = document.createElement('button');
-    fwdBtn.type = 'button';
-    fwdBtn.className = 'msg-action-btn';
-    fwdBtn.textContent = '↪️';
-    fwdBtn.setAttribute('aria-label', 'Forward to a friend');
-    fwdBtn.title = 'Forward to a friend';
-    fwdBtn.addEventListener('click', (e) => { e.stopPropagation(); openForward(data); });
-    actions.appendChild(fwdBtn);
-  }
-
-  const linkBtn = document.createElement('button');
-  linkBtn.type = 'button';
-  linkBtn.className = 'msg-action-btn';
-  linkBtn.textContent = '🔗';
-  linkBtn.setAttribute('aria-label', 'Copy link to message');
-  linkBtn.title = 'Copy link to this message';
-  linkBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const url = `${location.origin}/?room=${encodeURIComponent(currentRoomCode)}&msg=${encodeURIComponent(data.id)}`;
-    const ok = () => showAppToast('🔗 Link copied — anyone in this room can open it');
-    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(ok, () => prompt('Copy this link:', url));
-    else prompt('Copy this link:', url);
-  });
-  actions.appendChild(linkBtn);
 
   const replyBtn = document.createElement('button');
   replyBtn.type = 'button';
@@ -2605,6 +2580,15 @@ function makeMessageActions(data) {
     actions.appendChild(deleteBtn);
   }
 
+  // ⋯ More: the less-used actions live here so the row stays short on phones.
+  const moreBtn = document.createElement('button');
+  moreBtn.type = 'button';
+  moreBtn.className = 'msg-action-btn';
+  moreBtn.textContent = '⋯';
+  moreBtn.setAttribute('aria-label', 'More actions');
+  moreBtn.title = 'More';
+  moreBtn.addEventListener('click', (e) => { e.stopPropagation(); openMoreMenu(moreBtn, data); });
+  actions.appendChild(moreBtn);
   return actions;
 }
 
@@ -8770,3 +8754,82 @@ async function openForward(data) {
     forwardList.appendChild(li);
   }
 }
+
+
+// --- ⋯ More menu on messages: copy text, copy link, forward, read aloud ---
+let openMore = null;
+function closeMoreMenu() { if (openMore) { openMore.remove(); openMore = null; } }
+document.addEventListener('click', (e) => { if (openMore && !openMore.contains(e.target)) closeMoreMenu(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMoreMenu(); });
+
+function copyToClipboard(text, okMsg) {
+  const done = () => showAppToast(okMsg);
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, () => prompt('Copy this:', text));
+  else prompt('Copy this:', text);
+}
+
+function speakMessage(data) {
+  if (!('speechSynthesis' in window)) { showAppToast("This browser can't read messages aloud"); return; }
+  speechSynthesis.cancel();
+  let text = data.text || '';
+  if (data.mediaType === 'poll') { try { const p = JSON.parse(text); text = `Poll: ${p.question}. Options: ${p.options.join(', ')}`; } catch (err) { text = 'A poll'; } }
+  text = hideSpoilerText(text).replace(/```[\s\S]*?```/g, ' (code) ').replace(/https?:\/\/\S+/g, ' (link) ');
+  const u = new SpeechSynthesisUtterance(`${data.name} says: ${text || (data.mediaType ? `a ${data.mediaType}` : '')}`);
+  u.rate = 1;
+  speechSynthesis.speak(u);
+}
+
+function openMoreMenu(anchor, data) {
+  const wasOpenHere = openMore && openMore.dataset.for === (data.id || '');
+  closeMoreMenu();
+  if (wasOpenHere) return;
+  const menu = document.createElement('div');
+  menu.className = 'more-menu';
+  menu.dataset.for = data.id || '';
+  menu.setAttribute('role', 'menu');
+  const item = (label, fn) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.setAttribute('role', 'menuitem');
+    b.textContent = label;
+    b.addEventListener('click', (e) => { e.stopPropagation(); closeMoreMenu(); fn(); });
+    menu.appendChild(b);
+  };
+  if (data.text && data.mediaType !== 'poll') item('📋 Copy text', () => copyToClipboard(data.text, '📋 Copied'));
+  if (data.id) item('🔗 Copy link to message', () => copyToClipboard(`${location.origin}/?room=${encodeURIComponent(currentRoomCode)}&msg=${encodeURIComponent(data.id)}`, '🔗 Link copied — anyone in this room can open it'));
+  if (accountToken && data.mediaType !== 'poll') item('↪️ Forward to a friend', () => openForward(data));
+  if (data.text || data.mediaType === 'poll') item('🔊 Read aloud', () => speakMessage(data));
+  if (data.id) {
+    const remindText = () => {
+      let t = data.text || (data.mediaType ? `a ${data.mediaType}` : 'a message');
+      if (data.mediaType === 'poll') { try { t = `poll: ${JSON.parse(data.text).question}`; } catch (err) { t = 'a poll'; } }
+      return `${data.name}'s message: ${hideSpoilerText(t)}`.slice(0, 200);
+    };
+    item('⏰ Remind me in 1 hour', () => ws.send(JSON.stringify({ type: 'set-reminder', text: remindText(), inMs: 60 * 60 * 1000 })));
+    item('⏰ Remind me tomorrow', () => ws.send(JSON.stringify({ type: 'set-reminder', text: remindText(), inMs: 24 * 60 * 60 * 1000 })));
+  }
+  if (data.mediaUrl && data.mediaType !== 'poll') {
+    item('⬇️ Download', () => {
+      const a = document.createElement('a');
+      a.href = data.mediaUrl;
+      a.download = data.mediaUrl.split('/').pop() || 'file';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    });
+  }
+  // Fixed to the viewport (some bubbles clip overflow), placed above the ⋯ button when there's
+  // room, otherwise below, and kept inside the screen edges.
+  document.body.appendChild(menu);
+  const r = anchor.getBoundingClientRect();
+  const mw = menu.offsetWidth;
+  const mh = menu.offsetHeight;
+  const left = Math.max(8, Math.min(window.innerWidth - mw - 8, r.right - mw));
+  const top = r.top - mh - 6 >= 8 ? r.top - mh - 6 : Math.min(window.innerHeight - mh - 8, r.bottom + 6);
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+  openMore = menu;
+  const first = menu.querySelector('button');
+  if (first) first.focus();
+}
+messagesEl.addEventListener('scroll', () => closeMoreMenu(), { passive: true });
