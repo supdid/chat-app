@@ -1213,7 +1213,7 @@ function handleServerMessage(data) {
       // Screen readers announce new messages (#messages is role=log); don't read out the whole
       // history every time a room loads.
       messagesEl.setAttribute('aria-busy', 'true');
-      data.messages.forEach(renderMessage);
+      data.messages.forEach((m) => renderMessage(m, { history: true }));
       setTimeout(() => messagesEl.removeAttribute('aria-busy'), 0);
       // "New messages" divider: where this person's saved read receipt (from before this join)
       // sits in the history, if others have posted since — the chat then opens there instead of
@@ -2283,10 +2283,17 @@ function renderMessage(data, opts = {}) {
     renderReactionPills(bubble, data.id);
   }
 
+  if (data.replyCount > 0) setThreadCount(bubble, data.id, data.replyCount);
   el.appendChild(makeAvatar(data.name));
   el.appendChild(bubble);
   messagesEl.appendChild(el);
   groupWithPrevious(el);
+  // A live reply bumps the count on the message it replies to.
+  const parentId = (data.replyPreview && data.replyPreview.id) || data.replyToId;
+  if (parentId && !opts.history) {
+    const parentBubble = document.querySelector(`#msg-${CSS.escape(parentId)} .bubble`);
+    if (parentBubble) setThreadCount(parentBubble, parentId, (Number(parentBubble.dataset.replyCount) || 0) + 1);
+  }
   // force for your own outgoing message — sending should always show what you just sent
   // regardless of scroll position, same as every mainstream chat app.
   maybeScrollToBottom(Boolean(myProfile && data.sub === myProfile.sub));
@@ -8142,7 +8149,7 @@ function handleOlderMessages(data) {
   const prevHeight = messagesEl.scrollHeight;
   const prevTop = messagesEl.scrollTop;
   const startCount = messagesEl.children.length;
-  msgs.forEach((m) => renderMessage(m));
+  msgs.forEach((m) => renderMessage(m, { history: true }));
   const added = [...messagesEl.children].slice(startCount);
   const anchor = loadOlderBtn && loadOlderBtn.parentNode === messagesEl ? loadOlderBtn.nextSibling : messagesEl.firstChild;
   added.forEach((node) => messagesEl.insertBefore(node, anchor));
@@ -9337,3 +9344,18 @@ stickerBtn.addEventListener('click', () => {
   if (accountToken && ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'get-my-stickers' }));
   else renderMyStickers([], true);
 });
+
+
+function setThreadCount(bubble, messageId, n) {
+  bubble.dataset.replyCount = String(n);
+  let link = bubble.querySelector(':scope > .thread-count-link');
+  if (!link) {
+    link = document.createElement('button');
+    link.type = 'button';
+    link.className = 'thread-count-link';
+    link.addEventListener('click', (e) => { e.stopPropagation(); openThread(messageId); });
+    const actions = bubble.querySelector(':scope > .message-actions');
+    if (actions) bubble.insertBefore(link, actions); else bubble.appendChild(link);
+  }
+  link.textContent = `💬 ${n} ${n === 1 ? 'reply' : 'replies'}`;
+}

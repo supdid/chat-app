@@ -8298,3 +8298,23 @@ describe('my stickers (2026-11-08)', () => {
     ws.close(); guest.close();
   });
 });
+
+describe('thread reply counts (2026-11-08)', () => {
+  test('history carries replyCount for messages that have replies', async () => {
+    const { ws: a, code } = await joinRoom('ThreadCountA');
+    send(a, { type: 'message', text: 'root msg' });
+    const root = await waitFor(a, (m) => m.type === 'message' && m.text === 'root msg');
+    for (const t of ['r1', 'r2']) {
+      send(a, { type: 'message', text: t, replyTo: root.id });
+      await waitFor(a, (m) => m.type === 'message' && m.text === t);
+    }
+    const b = await connectWs();
+    send(b, { type: 'join-server', username: 'ThreadCountB' });
+    await waitFor(b, (m) => m.type === 'joined-server');
+    send(b, { type: 'join-room', code });
+    const j = await waitFor(b, (m) => m.type === 'joined-room');
+    assert.equal(j.messages.find((m) => m.id === root.id).replyCount, 2);
+    assert.equal(j.messages.find((m) => m.text === 'r1').replyCount, undefined);
+    a.close(); b.close();
+  });
+});

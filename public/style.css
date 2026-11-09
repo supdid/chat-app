@@ -3066,3 +3066,6 @@ button:focus-visible, a:focus-visible, [role="button"]:focus-visible, select:foc
 .my-stickers-head { grid-column: 1 / -1; font-size: 0.8rem; color: var(--text-subtle); font-weight: 600; }
 .my-stickers-note { grid-column: 1 / -1; font-size: 0.8rem; color: var(--text-subtle); }
 .make-sticker-btn { font-size: 1.8rem; color: var(--text-subtle); border: 2px dashed var(--input-border) !important; aspect-ratio: 1; display: flex; align-items: center; justify-content: center; }
+
+.thread-count-link { display: block; margin-top: 0.3rem; background: none; border: none; padding: 0; color: #3b9dff; font: inherit; font-size: 0.78rem; font-weight: 600; cursor: pointer; }
+.thread-count-link:hover { text-decoration: underline; }

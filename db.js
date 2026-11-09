@@ -1348,6 +1348,16 @@ function removeAccountSticker(accountId, url) {
   db.prepare('DELETE FROM account_stickers WHERE account_id = ? AND url = ?').run(accountId, url);
 }
 
+// { messageId: number of (non-deleted) replies } for the given messages.
+function countRepliesFor(ids) {
+  if (!ids.length) return {};
+  const out = {};
+  for (const r of db.prepare(
+    `SELECT reply_to_id AS id, COUNT(*) AS n FROM messages WHERE reply_to_id IN (${ids.map(() => '?').join(',')}) AND deleted = 0 GROUP BY reply_to_id`
+  ).all(...ids)) out[r.id] = r.n;
+  return out;
+}
+
 function setHostsOnly(code, on) {
   db.prepare('UPDATE rooms SET hosts_only = ? WHERE code = ?').run(on ? 1 : 0, code);
 }
@@ -3053,6 +3063,7 @@ function getAccountByStreamKey(key) {
 }
 
 module.exports = {
+  countRepliesFor,
   getAccountStickers,
   addAccountSticker,
   removeAccountSticker,

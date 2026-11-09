@@ -4375,6 +4375,12 @@ function roomActivityList(room) {
 // carry a per-connection `sub` that's random on every connect, so it can't do this by itself
 // after a reconnect. Same ownership rule as ownsMessage(): account if the message has one, else
 // display name.
+// "💬 N replies" under messages that have replies.
+function attachReplyCounts(entries) {
+  const counts = db.countRepliesFor(entries.filter((e) => e && e.id).map((e) => e.id));
+  return entries.map((e) => (e && counts[e.id] ? { ...e, replyCount: counts[e.id] } : e));
+}
+
 function markOwnForViewer(entries, ws) {
   return entries.map((e) => {
     if (!e || e.name !== ws.profile.name || !e.id) return e;
@@ -8408,7 +8414,7 @@ wss.on('connection', (ws, req) => {
       send(ws, {
         type: 'joined-room',
         code,
-        messages: markOwnForViewer(attachPollVotes(room.history, ws.profile.name), ws),
+        messages: attachReplyCounts(markOwnForViewer(attachPollVotes(room.history, ws.profile.name), ws)),
         users: roomUsers(code),
         name: dbRoom ? dbRoom.name : null,
         reactions: db.getReactionsForRoom(code, HISTORY_LIMIT),
@@ -9548,7 +9554,7 @@ wss.on('connection', (ws, req) => {
         jumped = !!raw;
       }
       if (!raw) raw = db.getMessagesBefore(ws.room, beforeAt, LOAD_OLDER_LIMIT, beforeId);
-      const messages = markOwnForViewer(attachPollVotes(raw, ws.profile.name), ws);
+      const messages = attachReplyCounts(markOwnForViewer(attachPollVotes(raw, ws.profile.name), ws));
       const reactions = db.getReactionsForMessages(raw.map((m) => m.id));
       const hasMore = jumped
         ? !!(raw.length && db.getMessagesBefore(ws.room, raw[0].at, 1, raw[0].id).length)
