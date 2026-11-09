@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Quick Draw</title>
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="quickdraw.css">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0a1420">
+</head>
+<body>
+  <a id="back-link" href="index.html">&larr; Back to chat</a>
+  <main id="app">
+    <h1>⚡ Quick Draw</h1>
+    <p class="tagline">Wait for <b>GREEN</b>, then tap as fast as you can. Tap too early and you're out!</p>
+    <button id="pad" class="pad idle" type="button" aria-live="assertive">Press <b>Start</b> when everyone's here</button>
+    <div class="controls">
+      <button id="start-btn" class="primary" type="button">Start a round</button>
+      <button id="invite-btn" class="secondary" type="button">📣 Invite the chat room</button>
+    </div>
+    <section class="panel">
+      <h2>Players</h2>
+      <ul id="players" class="list"></ul>
+    </section>
+    <section id="results-panel" class="panel hidden">
+      <h2>🏁 Last round</h2>
+      <ol id="results" class="list"></ol>
+    </section>
+    <section class="panel">
+      <h2>🏆 Fastest in this room</h2>
+      <ol id="leaderboard" class="list"><li class="muted">Loading…</li></ol>
+    </section>
+  </main>
+  <script src="error-report.js"></script>
+  <script src="quickdraw.js"></script>
+  <script src="update-prompt.js"></script>
+</body>
+</html>

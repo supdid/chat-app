@@ -76,6 +76,7 @@ const chessLink = document.getElementById('chess-link');
 const hangmanLink = document.getElementById('hangman-link');
 const wordguessLink = document.getElementById('wordguess-link');
 const typeraceLink = document.getElementById('typerace-link');
+const quickdrawLink = document.getElementById('quickdraw-link');
 const snakeLink = document.getElementById('snake-link');
 const g2048Link = document.getElementById('g2048-link');
 const whiteboardLink = document.getElementById('whiteboard-link');
@@ -486,7 +487,7 @@ let activeReactionPopover = null;
 
 // --- Minigame activity badges ---
 const roomActivity = new Map(); // name -> game code ('bc'|'gw'|'dg')
-const ACTIVITY_BADGES = { bc: '🏝️', gw: '🔺', dg: '🖍️', wb: '🖌️', tv: '❓', tt: '⭕', ch: '♟️', hm: '🪢', sk: '🐍', tf: '🔢', fp: '🛩️', sw: '🕸️', fg: '🔫', wg: '🟩', sf: '🥊', he: '👋', tr: '⌨️' };
+const ACTIVITY_BADGES = { bc: '🏝️', gw: '🔺', dg: '🖍️', wb: '🖌️', tv: '❓', tt: '⭕', ch: '♟️', hm: '🪢', sk: '🐍', tf: '🔢', fp: '🛩️', sw: '🕸️', fg: '🔫', wg: '🟩', sf: '🥊', he: '👋', tr: '⌨️', qd: '⚡' };
 let lastRoomUsers = [];
 // Found by the room-chat client-side correctness audit: tracks the single currently-open message
 // edit form ({ messageId, restore }), so starting a second edit can auto-cancel the first instead
@@ -3549,6 +3550,7 @@ function updateGameLinks() {
   hangmanLink.href = `hangman.html${params}`;
   wordguessLink.href = `wordguess.html${params}`;
   typeraceLink.href = `typerace.html${params}`;
+  quickdrawLink.href = `quickdraw.html${params}`;
   snakeLink.href = `snake.html${params}`;
   g2048Link.href = `2048.html${params}`;
   whiteboardLink.href = `whiteboard.html${params}`;
@@ -9275,6 +9277,7 @@ function flushOutbox(code) {
 // --- ✨ What's new (shown once per update to people who've used Valk before) ---
 const WHATS_NEW_VERSION = '2026-11-09';
 const WHATS_NEW = [
+  ['⚡', 'Quick Draw', 'Another new game: wait for green, tap fastest! Menu → ⚡ Play Quick Draw, or /play quick.'],
   ['⌨️', 'Type Race', 'A new game! Everyone types the same sentence — fastest fingers win. Menu → ⌨️ Play Type Race.'],
   ['🛡️', 'Co-hosts', 'Hosts can tap ⭐ next to someone to make them a co-host who helps moderate.'],
   ['📊', 'Better polls', 'Pick-several polls, polls that end on a timer, and /wyr for a random "Would you rather".'],
@@ -9517,13 +9520,13 @@ function setThreadCount(bubble, messageId, n) {
 
 // --- 🎮 Game invites + 🏆 Room champions ---
 const GAME_ALIASES = {
-  typerace: ['type', 'typing', 'race'], wordguess: ['wordle', 'word', 'wg'], hangman: ['hang'], trivia: ['quiz'],
+  typerace: ['type', 'typing', 'race'], quickdraw: ['quick', 'quickdraw', 'reaction', 'qd', 'fast'], wordguess: ['wordle', 'word', 'wg'], hangman: ['hang'], trivia: ['quiz'],
   pictionary: ['draw', 'drawing'], chess: [], tictactoe: ['ttt', 'xo', 'connect4', 'connectfour'], blockbattle: ['bb', 'block'],
   buildcraft: ['build', 'craft'], webswing: ['swing', 'spider'], firefight: ['fps', 'shooter'], fighterplane: ['plane', 'planes'],
   geometrywave: ['geometry', 'gw', 'dash'], stickfighter: ['stick', 'fight'], whiteboard: ['board', 'paint'], hello: [],
 };
 const GAME_LABELS = {
-  typerace: '⌨️ Type Race (WPM)', wordguess: '🟩 Word Guess', hangman: '🪢 Hangman', trivia: '❓ Trivia', snake: '🐍 Snake',
+  typerace: '⌨️ Type Race (WPM)', quickdraw: '⚡ Quick Draw (1000 − ms)', wordguess: '🟩 Word Guess', hangman: '🪢 Hangman', trivia: '❓ Trivia', snake: '🐍 Snake',
   g2048: '🔢 2048', fighterplane: '🛩️ Fighter Plane', stickfighter: '🥊 Stick Fighter', sw: '🕸️ Web Swing', hello: '👋 Hello',
   bblevel: '🧱 Block Battle (level)', bbplaytime: '🧱 Block Battle (minutes played)', bbwave: '🧱 Block Battle (waves)',
   bbjuggernaut: '🧱 Block Battle (Juggernaut)', bboneshot: '🧱 Block Battle (One Shot)',

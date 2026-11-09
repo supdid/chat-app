@@ -5380,6 +5380,54 @@ function wgProgress(wg) {
   }));
 }
 
+// ---- Quick Draw: wait for green, tap fastest. Each browser times its own reaction from the moment
+// it shows GO (so slow connections aren't punished); the server only accepts taps after GO was
+// sent, rejects impossible times (<100 ms) and calls false starts. ----
+const QD_MIN_MS = 100;
+const QD_MAX_MS = 2500;
+function broadcastQd(code, data) {
+  const room = rooms.get(code);
+  if (!room || !room.qd) return;
+  const payload = JSON.stringify(data);
+  for (const client of room.qd.players.keys()) if (client.readyState === client.OPEN) client.send(payload);
+}
+function qdPlayers(qd) {
+  return [...qd.players.values()].map((p) => ({ id: p.id, name: p.name, wins: p.wins, best: p.best }));
+}
+function endQdRound(code) {
+  const room = rooms.get(code);
+  const qd = room && room.qd;
+  if (!qd || qd.state === 'idle') return;
+  clearTimeout(qd.goTimer);
+  clearTimeout(qd.endTimer);
+  qd.state = 'idle';
+  const results = [...qd.players.values()].filter((p) => p.inRound)
+    .map((p) => ({ id: p.id, name: p.name, ms: p.ms, early: p.early }))
+    .sort((a, b) => (a.early - b.early) || ((a.ms ?? 1e9) - (b.ms ?? 1e9)));
+  const winner = results.find((r) => !r.early && r.ms != null);
+  if (winner) {
+    const wp = [...qd.players.values()].find((p) => p.id === winner.id);
+    if (wp) wp.wins += 1;
+  }
+  broadcastQd(code, { type: 'qd-round-end', results, winnerId: winner ? winner.id : null, players: qdPlayers(qd) });
+}
+function leaveQd(ws) {
+  const code = ws.qdRoom;
+  if (!code) return;
+  const room = rooms.get(code);
+  if (room && room.qd) {
+    const me = room.qd.players.get(ws);
+    room.qd.players.delete(ws);
+    if (me) {
+      broadcastQd(code, { type: 'qd-player-left', id: me.id });
+      clearRoomActivity(code, me.name);
+    }
+    if (room.qd.state !== 'idle' && ![...room.qd.players.values()].some((p) => p.inRound && p.ms == null && !p.early)) endQdRound(code);
+    if (room.qd.players.size === 0) { clearTimeout(room.qd.goTimer); clearTimeout(room.qd.endTimer); delete room.qd; }
+  }
+  ws.qdRoom = null;
+}
+
 // ---- Type Race: everyone types the same passage; live progress, server-timed WPM. ----
 const TR_PASSAGES = [
   'The quick brown fox jumps over the lazy dog while the sleepy cat watches from a sunny window.',
@@ -7353,6 +7401,76 @@ wss.on('connection', (ws, req) => {
       leaveHm(ws);
       return;
     }
+
+    if (msg.type === 'qd-join') {
+      if (isWsMsgRateLimited(ws)) return;
+      const code = String(msg.code || '').toUpperCase().trim();
+      const name = String(msg.name || 'Player').slice(0, 30).trim() || 'Player';
+      if (!code) return;
+      if (db.isBannedFromRoom(code, ws.accountId || null, name)) { send(ws, { type: 'qd-join-error', message: "You've been banned from this room" }); return; }
+      if (ws.qdRoom === code) return;
+      if (ws.qdRoom) leaveQd(ws);
+      const room = getOrCreateRoom(code);
+      if (!room.qd) room.qd = { players: new Map(), state: 'idle', goAt: 0, goTimer: null, endTimer: null };
+      if (room.qd.players.size >= MAX_GAME_PLAYERS) { send(ws, { type: 'qd-full' }); return; }
+      const id = crypto.randomUUID();
+      ws.qdRoom = code;
+      room.qd.players.set(ws, { id, name, wins: 0, best: null, inRound: false, ms: null, early: false });
+      send(ws, { type: 'qd-init', id, players: qdPlayers(room.qd), state: room.qd.state });
+      broadcastQd(code, { type: 'qd-players', players: qdPlayers(room.qd) });
+      setRoomActivity(code, name, 'qd');
+      return;
+    }
+
+    if (msg.type === 'qd-start' && ws.qdRoom) {
+      if (isWsMsgRateLimited(ws)) return;
+      const code = ws.qdRoom;
+      const qd = rooms.get(code) && rooms.get(code).qd;
+      if (!qd || qd.state !== 'idle') return;
+      qd.state = 'waiting';
+      for (const p of qd.players.values()) { p.inRound = true; p.ms = null; p.early = false; }
+      broadcastQd(code, { type: 'qd-ready', by: qd.players.get(ws).name });
+      const delay = 1800 + crypto.randomInt(3200);
+      qd.goTimer = setTimeout(() => {
+        if (qd.state !== 'waiting') return;
+        qd.state = 'go';
+        qd.goAt = Date.now();
+        broadcastQd(code, { type: 'qd-go' });
+        qd.endTimer = setTimeout(() => endQdRound(code), QD_MAX_MS + 1000);
+      }, delay);
+      return;
+    }
+
+    if (msg.type === 'qd-tap' && ws.qdRoom) {
+      const code = ws.qdRoom;
+      const qd = rooms.get(code) && rooms.get(code).qd;
+      const me = qd && qd.players.get(ws);
+      if (!qd || !me || !me.inRound || me.early || me.ms != null || qd.state === 'idle') return;
+      if (qd.state === 'waiting') {
+        me.early = true;
+        broadcastQd(code, { type: 'qd-tapped', id: me.id, early: true });
+      } else {
+        // The browser's own measurement, but never faster than humanly possible and never more
+        // than the time that has really passed since GO went out.
+        let ms = Math.round(Number(msg.ms));
+        if (!Number.isFinite(ms)) return;
+        ms = Math.max(QD_MIN_MS, Math.min(ms, Date.now() - qd.goAt + 50, QD_MAX_MS));
+        me.ms = ms;
+        if (me.best == null || ms < me.best) me.best = ms;
+        db.bumpLeaderboard(code, 'quickdraw', me.name, Math.max(0, 1000 - ms), ws.scoreAccountId);
+        broadcastQd(code, { type: 'qd-tapped', id: me.id, ms });
+      }
+      if (![...qd.players.values()].some((p) => p.inRound && p.ms == null && !p.early)) endQdRound(code);
+      return;
+    }
+
+    if (msg.type === 'qd-leaderboard' && ws.qdRoom) {
+      if (isWsMsgRateLimited(ws)) return;
+      send(ws, { type: 'qd-leaderboard-result', scores: db.getLeaderboard(ws.qdRoom, 'quickdraw', 10) });
+      return;
+    }
+
+    if (msg.type === 'qd-leave') { leaveQd(ws); return; }
 
     if (msg.type === 'tr-join') {
       if (isWsMsgRateLimited(ws)) return;
@@ -9975,6 +10093,7 @@ wss.on('connection', (ws, req) => {
     if (ws.hmRoom) leaveHm(ws);
     if (ws.wgRoom) leaveWg(ws);
     if (ws.trRoom) leaveTr(ws);
+    if (ws.qdRoom) leaveQd(ws);
     if (ws.arcadeRoom && ws.arcadeName) clearRoomActivity(ws.arcadeRoom, ws.arcadeName);
     // Only end the stream if this closing socket is the one actually on file — see the identity
     // guard added to scorpture-go-live/scorpture-end-live above; without it, a stale tab that had
@@ -10072,7 +10191,7 @@ setInterval(sweepDisappearingMessages, Number(process.env.DISAPPEAR_SWEEP_MS) ||
 const MAX_MY_STICKERS = 40;
 // Games you can invite the room to (page + display name).
 const INVITE_GAMES = {
-  typerace: ['typerace.html', '⌨️ Type Race'], wordguess: ['wordguess.html', '🟩 Word Guess'],
+  typerace: ['typerace.html', '⌨️ Type Race'], quickdraw: ['quickdraw.html', '⚡ Quick Draw'], wordguess: ['wordguess.html', '🟩 Word Guess'],
   hangman: ['hangman.html', '🪢 Hangman'], trivia: ['trivia.html', '❓ Trivia'], pictionary: ['pictionary.html', '🖍️ Pictionary'],
   chess: ['chess.html', '♟️ Chess'], tictactoe: ['tictactoe.html', '⭕ Tic-Tac-Toe'], blockbattle: ['blockbattle.html', '🧱 Block Battle'],
   buildcraft: ['buildcraft.html', '🏝️ Build Craft'], webswing: ['webswing.html', '🕸️ Web Swing'], firefight: ['firefight.html', '🔫 Firefight'],

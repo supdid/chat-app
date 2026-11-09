@@ -8425,3 +8425,34 @@ describe('new badges (2026-11-09)', () => {
     host.close(); me.close();
   });
 });
+
+describe('Quick Draw (2026-11-09)', () => {
+  test('false starts lose, fastest valid tap wins, impossible times are clamped', async () => {
+    const { code, ws: host } = await joinRoom('QdHost');
+    const join = async (name) => {
+      const ws = await connectWs();
+      send(ws, { type: 'qd-join', code, name });
+      const init = await waitFor(ws, (m) => m.type === 'qd-init');
+      return { ws, id: init.id };
+    };
+    const a = await join('QdA');
+    const b = await join('QdB');
+    const c = await join('QdC');
+    const goA = waitFor(a.ws, (m) => m.type === 'qd-go', 8000);
+    send(a.ws, { type: 'qd-start' });
+    await waitFor(c.ws, (m) => m.type === 'qd-ready');
+    send(c.ws, { type: 'qd-tap' }); // before GO = false start
+    await goA;
+    const end = waitFor(a.ws, (m) => m.type === 'qd-round-end');
+    send(a.ws, { type: 'qd-tap', ms: 5 }); // clamped up to 100
+    send(b.ws, { type: 'qd-tap', ms: 240 });
+    const r = await end;
+    assert.equal(r.winnerId, a.id);
+    assert.equal(r.results[0].ms, 100);
+    assert.equal(r.results.find((x) => x.id === c.id).early, true);
+    send(a.ws, { type: 'qd-leaderboard' });
+    const lb = await waitFor(a.ws, (m) => m.type === 'qd-leaderboard-result');
+    assert.equal(lb.scores[0].name, 'QdA');
+    a.ws.close(); b.ws.close(); c.ws.close(); host.close();
+  });
+});
