@@ -1761,6 +1761,10 @@ function handleServerMessage(data) {
       renderModLog(data.entries || []);
       break;
 
+    case 'my-stickers':
+      renderMyStickers(data.stickers || [], !!data.signedOut);
+      break;
+
     case 'edit-history':
       showEditHistory(data);
       break;
@@ -9132,6 +9136,8 @@ const WHATS_NEW = [
   ['📈', 'Room stats', 'Top chatters, busiest times and the most-loved messages this week.'],
   ['💻', 'Code blocks', 'Wrap code in ``` to get a box with a Copy button. Shift+Enter for a new line.'],
   ['🔥', 'Streaks & About me', 'Profile cards show your chat streak and an "about me" you can write.'],
+  ['⭐', 'Make your own stickers', 'Open 🙂 stickers → ＋ under My stickers to turn any photo into a sticker.'],
+  ['📨', 'Invite friends', 'In 👥 Friends, tap 📨 to invite a friend to the room you’re in.'],
 ];
 const whatsNewModal = document.getElementById('whats-new-modal');
 function openWhatsNew() {
@@ -9222,3 +9228,112 @@ function renderModLog(entries) {
     modLogList.appendChild(li);
   }
 }
+
+
+// --- My stickers: turn any photo into a sticker (saved to your account) ---
+const myStickersWrap = document.createElement('div');
+myStickersWrap.className = 'my-stickers';
+stickerPicker.appendChild(myStickersWrap);
+const stickerFileInput = document.createElement('input');
+stickerFileInput.type = 'file';
+stickerFileInput.accept = 'image/*';
+stickerFileInput.className = 'hidden';
+document.body.appendChild(stickerFileInput);
+
+function renderMyStickers(urls, signedOut) {
+  myStickersWrap.textContent = '';
+  const head = document.createElement('div');
+  head.className = 'my-stickers-head';
+  head.textContent = '⭐ My stickers';
+  myStickersWrap.appendChild(head);
+  if (signedOut || !accountToken) {
+    const p = document.createElement('div');
+    p.className = 'my-stickers-note';
+    p.textContent = 'Sign in to make stickers from your own photos.';
+    myStickersWrap.appendChild(p);
+    return;
+  }
+  const add = document.createElement('button');
+  add.type = 'button';
+  add.className = 'sticker-option make-sticker-btn';
+  add.title = 'Make a sticker from a photo';
+  add.textContent = '＋';
+  add.addEventListener('click', () => stickerFileInput.click());
+  myStickersWrap.appendChild(add);
+  for (const url of urls) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'sticker-option';
+    btn.title = 'Send (right-click or press and hold to remove)';
+    const img = document.createElement('img');
+    img.src = url;
+    img.alt = 'my sticker';
+    btn.appendChild(img);
+    btn.addEventListener('click', () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) { showAppToast("Not connected — your sticker wasn't sent."); return; }
+      sendMediaMessage(url, 'image');
+      stickerPicker.classList.add('hidden');
+    });
+    btn.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      if (confirm('Remove this sticker from your collection? (Messages that already used it stay.)')) {
+        ws.send(JSON.stringify({ type: 'remove-my-sticker', url }));
+      }
+    });
+    myStickersWrap.appendChild(btn);
+  }
+}
+
+// Square center-crop to 320px with rounded corners, saved as a WebP.
+async function photoToSticker(file) {
+  const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  const size = 320;
+  const side = Math.min(bmp.width, bmp.height);
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const r = size * 0.18;
+  ctx.beginPath();
+  ctx.moveTo(r, 0); ctx.arcTo(size, 0, size, size, r); ctx.arcTo(size, size, 0, size, r); ctx.arcTo(0, size, 0, 0, r); ctx.arcTo(0, 0, size, 0, r);
+  ctx.closePath();
+  ctx.clip();
+  ctx.drawImage(bmp, (bmp.width - side) / 2, (bmp.height - side) / 2, side, side, 0, 0, size, size);
+  if (bmp.close) bmp.close();
+  const blob = await new Promise((res) => canvas.toBlob(res, 'image/webp', 0.9));
+  return new File([blob], 'sticker.webp', { type: 'image/webp' });
+}
+
+stickerFileInput.addEventListener('change', async () => {
+  const file = stickerFileInput.files[0];
+  stickerFileInput.value = '';
+  if (!file || !/^image\//.test(file.type)) return;
+  try {
+    showAppToast('✂️ Making your sticker…');
+    const sticker = await photoToSticker(file);
+    const fd = new FormData();
+    fd.append('file', sticker, 'sticker.webp');
+    const res = await fetch('/upload', { method: 'POST', body: fd });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.url) { showAppToast(`Couldn't make the sticker: ${data.error || res.status}`); return; }
+    ws.send(JSON.stringify({ type: 'add-my-sticker', url: data.url }));
+    showAppToast('⭐ Sticker added to My stickers');
+  } catch (err) {
+    showAppToast("Couldn't read that picture — try a different one");
+  }
+});
+
+// Press-and-hold on phones = right-click.
+let stickerHold = null;
+myStickersWrap.addEventListener('touchstart', (e) => {
+  const btn = e.target.closest('.sticker-option:not(.make-sticker-btn)');
+  if (!btn) return;
+  stickerHold = setTimeout(() => btn.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })), 600);
+}, { passive: true });
+['touchend', 'touchmove', 'touchcancel'].forEach((ev) => myStickersWrap.addEventListener(ev, () => clearTimeout(stickerHold), { passive: true }));
+
+stickerBtn.addEventListener('click', () => {
+  if (stickerPicker.classList.contains('hidden')) return;
+  if (accountToken && ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'get-my-stickers' }));
+  else renderMyStickers([], true);
+});

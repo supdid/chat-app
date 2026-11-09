@@ -3061,3 +3061,8 @@ button:focus-visible, a:focus-visible, [role="button"]:focus-visible, select:foc
   outline: 2px solid #3b9dff;
   outline-offset: 2px;
 }
+
+.my-stickers { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(6, 1fr); gap: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--input-border); }
+.my-stickers-head { grid-column: 1 / -1; font-size: 0.8rem; color: var(--text-subtle); font-weight: 600; }
+.my-stickers-note { grid-column: 1 / -1; font-size: 0.8rem; color: var(--text-subtle); }
+.make-sticker-btn { font-size: 1.8rem; color: var(--text-subtle); border: 2px dashed var(--input-border) !important; aspect-ratio: 1; display: flex; align-items: center; justify-content: center; }

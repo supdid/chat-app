@@ -8272,3 +8272,29 @@ describe('admin activity (2026-11-08)', () => {
     ws.close();
   });
 });
+
+describe('my stickers (2026-11-08)', () => {
+  test('signed-in users can save, list and remove their own stickers; guests get none', async () => {
+    const acct = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'StickerMaker', password: 'pass1234', email: 'stickermaker@test.com' }),
+    }).then((r) => r.json());
+    const ws = await joinAsAccount('StickerMaker', acct.token);
+    const form = new FormData();
+    form.append('file', new Blob([Buffer.from('RIFF0000WEBPVP8 ')], { type: 'image/webp' }), 'sticker.webp');
+    const up = await fetch(`${BASE_URL}/upload`, { method: 'POST', body: form }).then((r) => r.json());
+    assert.match(up.url, /^\/uploads\/.+\.webp$/);
+    send(ws, { type: 'add-my-sticker', url: '/uploads/../server.js' });
+    send(ws, { type: 'add-my-sticker', url: up.url });
+    const list = await waitFor(ws, (m) => m.type === 'my-stickers' && m.stickers.length === 1);
+    assert.deepEqual(list.stickers, [up.url]);
+    send(ws, { type: 'remove-my-sticker', url: up.url });
+    assert.deepEqual((await waitFor(ws, (m) => m.type === 'my-stickers')).stickers, []);
+    const guest = await connectWs();
+    send(guest, { type: 'join-server', username: 'StickerGuest' });
+    await waitFor(guest, (m) => m.type === 'joined-server');
+    send(guest, { type: 'get-my-stickers' });
+    assert.equal((await waitFor(guest, (m) => m.type === 'my-stickers')).signedOut, true);
+    ws.close(); guest.close();
+  });
+});

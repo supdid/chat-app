@@ -8953,6 +8953,28 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    if (msg.type === 'get-my-stickers' || msg.type === 'add-my-sticker' || msg.type === 'remove-my-sticker') {
+      if (!ws.accountId) { send(ws, { type: 'my-stickers', stickers: [], signedOut: true }); return; }
+      if (isWsMsgRateLimited(ws)) return;
+      if (msg.type !== 'get-my-stickers') {
+        const url = String(msg.url || '');
+        if (!/^\/uploads\/[A-Za-z0-9._-]+\.(webp|png|jpg|gif)$/.test(url)) return;
+        if (msg.type === 'add-my-sticker') {
+          if (!fs.existsSync(path.join(__dirname, 'public', url))) return;
+          if (db.getAccountStickers(ws.accountId).length >= MAX_MY_STICKERS) {
+            send(ws, { type: 'error', message: `You can keep up to ${MAX_MY_STICKERS} stickers — remove one first (right-click / long-press it)` });
+            return;
+          }
+          claimUpload(url);
+          db.addAccountSticker(ws.accountId, url);
+        } else {
+          db.removeAccountSticker(ws.accountId, url);
+        }
+      }
+      send(ws, { type: 'my-stickers', stickers: db.getAccountStickers(ws.accountId) });
+      return;
+    }
+
     if (msg.type === 'set-hosts-only' && ws.room) {
       if (isWsMsgRateLimited(ws)) return;
       const dbRoom = db.getRoom(ws.room);
@@ -9921,6 +9943,7 @@ function sweepDisappearingMessages() {
 }
 setInterval(sweepDisappearingMessages, Number(process.env.DISAPPEAR_SWEEP_MS) || 60 * 1000);
 
+const MAX_MY_STICKERS = 40;
 const ROOM_ACCENTS = ['sunset', 'grape', 'candy', 'fire', 'ocean', 'gold', 'forest', 'mono'];
 const SCHEDULE_MAX_AHEAD_MS = 30 * 24 * 60 * 60 * 1000;
 const SCHEDULE_MAX_PENDING = 10;

@@ -378,6 +378,13 @@ db.exec(`
     at INTEGER
   );
   CREATE INDEX IF NOT EXISTS idx_mod_log_room ON mod_log(room_code, at);
+  -- Stickers people made from their own photos (🙂 picker → My stickers).
+  CREATE TABLE IF NOT EXISTS account_stickers (
+    account_id TEXT,
+    url TEXT,
+    at INTEGER,
+    PRIMARY KEY (account_id, url)
+  );
   -- "/later 30m text": a message that posts itself at send_at.
   CREATE TABLE IF NOT EXISTS scheduled_messages (
     id TEXT PRIMARY KEY,
@@ -1135,6 +1142,7 @@ const deleteAccountCascade = db.transaction((accountId) => {
   db.prepare('DELETE FROM sessions WHERE account_id = ?').run(accountId);
   db.prepare('DELETE FROM account_recent_rooms WHERE account_id = ?').run(accountId);
   db.prepare('DELETE FROM account_saved_messages WHERE account_id = ?').run(accountId);
+  db.prepare('DELETE FROM account_stickers WHERE account_id = ?').run(accountId);
   db.prepare('DELETE FROM push_subscriptions WHERE account_id = ?').run(accountId);
   db.prepare('DELETE FROM reminders WHERE account_id = ?').run(accountId);
   db.prepare('DELETE FROM dnd_settings WHERE key = ?').run(`acct:${accountId}`);
@@ -1328,6 +1336,16 @@ function getAdminActivity(now = Date.now()) {
     busiestRooms24h: busiest,
     daily,
   };
+}
+
+function getAccountStickers(accountId) {
+  return db.prepare('SELECT url FROM account_stickers WHERE account_id = ? ORDER BY at DESC').all(accountId).map((r) => r.url);
+}
+function addAccountSticker(accountId, url) {
+  db.prepare('INSERT OR IGNORE INTO account_stickers (account_id, url, at) VALUES (?, ?, ?)').run(accountId, url, Date.now());
+}
+function removeAccountSticker(accountId, url) {
+  db.prepare('DELETE FROM account_stickers WHERE account_id = ? AND url = ?').run(accountId, url);
 }
 
 function setHostsOnly(code, on) {
@@ -3035,6 +3053,9 @@ function getAccountByStreamKey(key) {
 }
 
 module.exports = {
+  getAccountStickers,
+  addAccountSticker,
+  removeAccountSticker,
   getAdminActivity,
   addModLog,
   getModLog,
