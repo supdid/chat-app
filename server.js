@@ -9553,6 +9553,12 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    if (msg.type === 'get-links' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      send(ws, { type: 'links-result', links: db.getRoomLinks(ws.room) });
+      return;
+    }
+
     if (msg.type === 'get-media' && ws.room) {
       send(ws, { type: 'media-result', media: db.getRoomMedia(ws.room) });
       return;

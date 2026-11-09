@@ -3147,3 +3147,14 @@ body.hide-presence-system .system.presence-system { display: none; }
 
 /* Emoji-only messages show big */
 .text.jumbo-emoji { font-size: 2.6rem; line-height: 1.15; letter-spacing: 0.05em; }
+
+/* Gallery: Photos | Links tabs */
+.gallery-tabs { display: flex; gap: 0.35rem; margin: 0 0 0.75rem; }
+.gallery-tab { flex: 1; padding: 0.45rem 0.6rem; border-radius: 999px; border: 1px solid var(--chip-border); background: var(--chip-bg); color: var(--text-muted); font: inherit; font-size: 0.85rem; font-weight: 600; cursor: pointer; }
+.gallery-tab.active { background: linear-gradient(135deg, #34e89e, #3b9dff); color: #06121c; border-color: transparent; }
+.gallery-links { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; overflow-y: auto; }
+.gallery-links li { padding: 0.55rem 0.7rem; border-radius: 10px; background: var(--chip-bg); border: 1px solid var(--chip-border); }
+.gallery-links li.search-status { background: none; border: none; }
+.gallery-link-url { display: block; color: #5bb2ff; word-break: break-all; font-size: 0.9rem; }
+.gallery-link-meta { margin-top: 0.2rem; font-size: 0.75rem; color: var(--text-subtle); }
+.gallery-link-meta .small-btn-link { font-size: 0.75rem; padding: 0; }

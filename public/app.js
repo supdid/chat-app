@@ -1783,6 +1783,10 @@ function handleServerMessage(data) {
       });
       break;
 
+    case 'links-result':
+      renderGalleryLinks(data.links || []);
+      break;
+
     case 'birthday-updated':
       showAppToast(data.birthday ? '🎂 Birthday saved' : '🎂 Birthday removed');
       break;
@@ -7075,8 +7079,56 @@ galleryBtn.addEventListener('click', () => {
   closeMenu();
   galleryGridEl.innerHTML = '<p class="search-status">Loading…</p>';
   galleryOverlay.classList.remove('hidden');
+  showGalleryTab('media');
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'get-media' }));
 });
+const galleryLinksEl = document.getElementById('gallery-links');
+const galleryTabMedia = document.getElementById('gallery-tab-media');
+const galleryTabLinks = document.getElementById('gallery-tab-links');
+function showGalleryTab(which) {
+  const links = which === 'links';
+  galleryTabMedia.classList.toggle('active', !links);
+  galleryTabLinks.classList.toggle('active', links);
+  galleryTabMedia.setAttribute('aria-selected', String(!links));
+  galleryTabLinks.setAttribute('aria-selected', String(links));
+  galleryGridEl.classList.toggle('hidden', links);
+  galleryLinksEl.classList.toggle('hidden', !links);
+}
+galleryTabMedia.addEventListener('click', () => showGalleryTab('media'));
+galleryTabLinks.addEventListener('click', () => {
+  showGalleryTab('links');
+  galleryLinksEl.innerHTML = '<li class="search-status">Loading…</li>';
+  wsSendOrWarnDisconnected({ type: 'get-links' });
+});
+function renderGalleryLinks(links) {
+  galleryLinksEl.innerHTML = '';
+  if (!links.length) {
+    galleryLinksEl.innerHTML = '<li class="search-status">No links shared in this room yet.</li>';
+    return;
+  }
+  for (const l of links) {
+    let host = l.url;
+    try { host = new URL(l.url).hostname.replace(/^www\./, ''); } catch { /* keep the raw url */ }
+    const li = document.createElement('li');
+    const a = document.createElement('a');
+    a.href = l.url;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.className = 'gallery-link-url';
+    a.textContent = l.url;
+    const meta = document.createElement('div');
+    meta.className = 'gallery-link-meta';
+    meta.textContent = `${host} · ${l.name} · ${new Date(l.at).toLocaleDateString([], { month: 'short', day: 'numeric' })}`;
+    const jump = document.createElement('button');
+    jump.type = 'button';
+    jump.className = 'small-btn-link';
+    jump.textContent = 'Show in chat';
+    jump.addEventListener('click', () => { galleryOverlay.classList.add('hidden'); jumpToMessage(l.id); });
+    meta.append(' · ', jump);
+    li.append(a, meta);
+    galleryLinksEl.appendChild(li);
+  }
+}
 galleryCloseBtn.addEventListener('click', () => galleryOverlay.classList.add('hidden'));
 galleryOverlay.addEventListener('click', (e) => {
   if (e.target === galleryOverlay) galleryOverlay.classList.add('hidden');
@@ -9385,6 +9437,7 @@ function flushOutbox(code) {
 // --- ✨ What's new (shown once per update to people who've used Valk before) ---
 const WHATS_NEW_VERSION = '2026-11-09b';
 const WHATS_NEW = [
+  ['🔗', 'Links tab', 'Menu → 🖼️ Media gallery → 🔗 Links lists every link shared in the room.'],
   ['📅', 'Date dividers', 'Chat now shows Today, Yesterday and the date between days. Emoji-only messages show big 😂'],
   ['🎂', 'Birthdays', 'Tap your name → 🎂 Set to add your birthday. On the day, the room gets confetti and a heads-up.'],
   ['📜', 'Tidier long messages', 'Really long messages fold up with a Show more button.'],

@@ -7960,6 +7960,27 @@ describe('birthdays (2026-11-09)', () => {
   });
 });
 
+describe('gallery links tab (2026-11-09)', () => {
+  test('get-links lists every link shared in the room, newest first', async () => {
+    const { ws: a } = await joinRoom('LinksA');
+    send(a, { type: 'message', text: 'look https://example.com/a, and https://valk.chat/b!' });
+    await waitFor(a, (m) => m.type === 'message' && /example/.test(m.text));
+    await sleep(150);
+    send(a, { type: 'message', text: 'no link here' });
+    await sleep(150);
+    send(a, { type: 'message', text: 'newer http://test.org/x' });
+    await waitFor(a, (m) => m.type === 'message' && /test\.org/.test(m.text));
+    send(a, { type: 'get-links' });
+    const r = await waitFor(a, (m) => m.type === 'links-result');
+    assert.deepEqual(r.links.map((l) => l.url), ['http://test.org/x', 'https://example.com/a', 'https://valk.chat/b']);
+    assert.equal(r.links[0].name, 'LinksA');
+    const other = await joinRoom('LinksOther');
+    send(other.ws, { type: 'get-links' });
+    assert.deepEqual((await waitFor(other.ws, (m) => m.type === 'links-result')).links, [], 'only this room');
+    a.close(); other.ws.close();
+  });
+});
+
 describe('poll upgrades (2026-11-08)', () => {
   const postPoll = (ws, def) => send(ws, { type: 'message', text: JSON.stringify(def), mediaUrl: 'poll', mediaType: 'poll' });
 

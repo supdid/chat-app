@@ -1892,6 +1892,25 @@ function getRoomMedia(code, limit = 200) {
     .all(code, limit);
 }
 
+// Links people shared in a room, newest first (one row per link).
+function getRoomLinks(code, limit = 100) {
+  const rows = db.prepare(
+    `SELECT id, name, text, at FROM messages
+     WHERE room_code = ? AND deleted = 0 AND (media_type IS NULL OR media_type <> 'poll') AND (text LIKE '%http://%' OR text LIKE '%https://%')
+     ORDER BY at DESC LIMIT 400`
+  ).all(code);
+  const out = [];
+  for (const r of rows) {
+    const found = String(r.text).match(/https?:\/\/[^\s<>"')\]]+/gi) || [];
+    for (let url of found) {
+      url = url.replace(/[.,!?;:]+$/, '');
+      if (out.length >= limit) return out;
+      out.push({ id: r.id, name: r.name, at: r.at, url });
+    }
+  }
+  return out;
+}
+
 // ---- Threads (direct replies to a message — one level, not deeply nested) ----
 
 function getThreadReplies(code, messageId, limit = 200) {
@@ -3269,6 +3288,7 @@ module.exports = {
   setPollVote,
   getPollVotes,
   getRoomMedia,
+  getRoomLinks,
   getThreadReplies,
   rowToHistoryEntry,
   savePushSubscription,
