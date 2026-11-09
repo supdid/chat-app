@@ -3173,6 +3173,12 @@ function renderSystem(data) {
 
 function renderOnlineList(users) {
   lastRoomUsers = users;
+  const peopleChip = document.getElementById('room-people-chip');
+  if (peopleChip) {
+    peopleChip.textContent = `👥 ${users.length}`;
+    peopleChip.title = `${users.length} ${users.length === 1 ? 'person' : 'people'} in this room — tap to see who`;
+    peopleChip.classList.toggle('hidden', !users.length);
+  }
   users.forEach((u) => roomProfiles.set(u.name, { avatarUrl: u.avatarUrl, status: u.status }));
   menuOnlineList.innerHTML = '';
   users.forEach((u) => {
@@ -9770,4 +9776,9 @@ applyPresenceVisibility(showPresenceSaved);
 showPresenceInput.addEventListener('change', () => {
   applyPresenceVisibility(showPresenceInput.checked);
   try { localStorage.setItem('valk-hide-presence', showPresenceInput.checked ? '0' : '1'); } catch (err) { /* ignore */ }
+});
+
+document.getElementById('room-people-chip').addEventListener('click', () => {
+  menuBtn.click();
+  setTimeout(() => { const l = document.getElementById('menu-online-list'); if (l) l.scrollIntoView({ block: 'start', behavior: 'smooth' }); }, 150);
 });

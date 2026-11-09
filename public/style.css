@@ -3102,3 +3102,6 @@ button:focus-visible, a:focus-visible, [role="button"]:focus-visible, select:foc
 .recent-visitors-list li { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0; cursor: pointer; }
 
 body.hide-presence-system .system.presence-system { display: none; }
+
+.room-people-chip { white-space: nowrap; flex-shrink: 0; margin-left: 0.4rem; padding: 0.15rem 0.55rem; border-radius: 999px; border: 1px solid var(--chip-border); background: var(--chip-bg); color: var(--text-color); font-size: 0.78rem; cursor: pointer; }
+.room-people-chip.hidden { display: none; }
