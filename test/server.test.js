@@ -7914,6 +7914,9 @@ describe('Minesweeper (2026-11-09)', () => {
     send(host, { type: 'get-room-champions' });
     const champs = await waitFor(host, (m) => m.type === 'room-champions');
     assert.equal(champs.games['mines-medium'][0].name, 'Sweeper');
+    send(host, { type: 'get-profile-card', name: 'Sweeper' });
+    const card = await waitFor(host, (m) => m.type === 'profile-card');
+    assert.deepEqual(card.gameRanks.map((g) => [g.game, g.rank]), [['mines-medium', 1]], 'profile card shows their placing');
     host.close(); p.close();
   });
 });

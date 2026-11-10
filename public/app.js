@@ -8062,6 +8062,26 @@ function renderProfileCard(data) {
   }
 
   if (acct && (acct.birthday || acct.friendStatus === 'self')) profileCardBody.appendChild(makeBirthdayRow(acct));
+  if (data.gameRanks && data.gameRanks.length) {
+    const ranks = document.createElement('div');
+    ranks.className = 'profile-game-ranks';
+    const h = document.createElement('div');
+    h.className = 'profile-game-ranks-title';
+    h.textContent = '🏆 Top scores in this room';
+    ranks.appendChild(h);
+    for (const g of data.gameRanks) {
+      const row = document.createElement('div');
+      row.className = 'profile-game-rank';
+      const medal = ['🥇', '🥈', '🥉'][g.rank - 1] || `#${g.rank}`;
+      const label = document.createElement('span');
+      label.textContent = `${medal} ${GAME_LABELS[g.game] || g.game}`;
+      const sc = document.createElement('b');
+      sc.textContent = TIME_SCORE_GAMES.has(g.game) ? `${((100000 - g.score) / 10).toFixed(1)}s` : Number(g.score).toLocaleString();
+      row.append(label, sc);
+      ranks.appendChild(row);
+    }
+    profileCardBody.appendChild(ranks);
+  }
 
   if (acct && (acct.bio || acct.friendStatus === 'self')) {
     const bioWrap = document.createElement('div');
@@ -9533,6 +9553,7 @@ const WHATS_NEW = [
   ['📅', 'Date dividers', 'Chat now shows Today, Yesterday and the date between days. Emoji-only messages show big 😂'],
   ['🎂', 'Birthdays', 'Tap your name → 🎂 Set to add your birthday. On the day, the room gets confetti and a heads-up.'],
   ['📜', 'Tidier long messages', 'Really long messages fold up with a Show more button.'],
+  ['🏆', 'Game ranks on profiles', 'Profile cards show someone’s best placings on this room’s game leaderboards.'],
   ['🎯', 'Number game', '/numbergame — Valk picks a secret number, the whole room guesses with /guess 50.'],
   ['☑️', 'Shared checklists', '/todo Groceries: milk, eggs, bread — anyone in the room can tick things off or add more.'],
   ['💣', 'Minesweeper', 'A new game with Easy, Medium and Hard, and a fastest-times board for each room. /play mines'],

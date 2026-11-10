@@ -5698,6 +5698,21 @@ const ICEBREAKERS = [
   "What's the best advice you've ever been given?", "What's a word you just love the sound of?",
   'If your life were a movie, what genre would it be?', "What's a smell that brings back a memory?",
 ];
+// This person's best placings on this room's game leaderboards (top 10 only, best 5 shown).
+function roomGameRanks(code, name) {
+  const byGame = new Map();
+  for (const r of db.getRoomLeaderboardAll(code)) {
+    if (!byGame.has(r.game)) byGame.set(r.game, []);
+    byGame.get(r.game).push(r);
+  }
+  const out = [];
+  for (const [game, rows] of byGame) {
+    const i = rows.findIndex((r) => r.name === name);
+    if (i >= 0 && i < 10) out.push({ game, rank: i + 1, score: rows[i].score, of: rows.length });
+  }
+  return out.sort((a, b) => a.rank - b.rank).slice(0, 5);
+}
+
 // 🎂 Birthdays (accounts only): the first time someone joins a room on their birthday, that
 // room gets one cheerful note — once per person per room per day.
 function todayMMDD(d = new Date()) {
@@ -8984,6 +8999,7 @@ wss.on('connection', (ws, req) => {
         isHost: !!dbRoom && (dbRoom.host_account_id ? !!accountId && dbRoom.host_account_id === accountId : dbRoom.host_name === name),
         isCohost: !!(accountId && db.isRoomCohost(ws.room, accountId)),
         account,
+        gameRanks: roomGameRanks(ws.room, name),
       });
       return;
     }
