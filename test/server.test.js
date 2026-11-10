@@ -7866,6 +7866,31 @@ describe('more fair commands (2026-11-09)', () => {
   });
 });
 
+describe('room number game (2026-11-09)', () => {
+  test('/numbergame + /guess: higher/lower hints until someone finds it', async () => {
+    const { ws: a, code } = await joinRoom('NumA');
+    const b = await joinExistingRoom('NumB', code);
+    send(a, { type: 'message', text: '/numbergame' });
+    await waitFor(b, (m) => m.type === 'message' && /started a number game/.test(m.text));
+    let lo = 1, hi = 100, won = null;
+    for (let i = 0; i < 8 && !won; i++) {
+      const mid = Math.floor((lo + hi) / 2);
+      send(i % 2 ? b : a, { type: 'message', text: `/guess ${mid}` });
+      const r = await waitFor(a, (m) => m.type === 'message' && m.text.startsWith(`🎯 guessed ${mid} `));
+      assert.equal(r.kind, 'roll');
+      if (/CORRECT/.test(r.text)) won = r.text;
+      else if (/higher/.test(r.text)) lo = mid + 1;
+      else hi = mid - 1;
+      await sleep(350);
+    }
+    assert.ok(won, 'binary search finds it within 7 guesses');
+    send(a, { type: 'message', text: '/guess 5' });
+    assert.match((await waitFor(a, (m) => m.type === 'message' && /no number game/.test(m.text))).text, /numbergame/);
+
+    a.close(); b.close();
+  });
+});
+
 describe('Minesweeper (2026-11-09)', () => {
   test('each difficulty has its own room leaderboard, and it shows up in room champions', async () => {
     const { ws: host, code } = await joinRoom('MinesHost');

@@ -5720,7 +5720,34 @@ function announceBirthday(code, ws) {
 // Shared checklists (/todo): anyone in the room can tick items off or add more.
 const CHECKLIST_MAX_ITEMS = 30;
 const CHECKLIST_ITEM_MAX = 120;
-function resolveServerCommand(text) {
+// 🎯 Room number game: /numbergame picks a secret 1–100 for the room; /guess N says higher/lower.
+const NUMBER_GAME_TTL_MS = 60 * 60 * 1000;
+function numberGameCommand(text, room) {
+  if (!room) return null;
+  if (room.numberGame && Date.now() - room.numberGame.startedAt > NUMBER_GAME_TTL_MS) room.numberGame = null;
+  if (/^\/(?:numbergame|guessgame)\s*$/i.test(text)) {
+    if (room.numberGame) return { kind: 'roll', text: `🎯 A number game is already going (${room.numberGame.tries} guesses so far) — guess with /guess 50` };
+    room.numberGame = { secret: crypto.randomInt(1, 101), tries: 0, lo: 1, hi: 100, startedAt: Date.now() };
+    return { kind: 'roll', text: '🎯 started a number game! I picked a number from 1 to 100 — everyone guess with /guess 50' };
+  }
+  const g = text.match(/^\/guess\s+(\d{1,3})\s*$/i);
+  if (!g) return null;
+  const n = parseInt(g[1], 10);
+  if (!room.numberGame) return { kind: 'roll', text: `🎯 guessed ${n}, but there's no number game going — start one with /numbergame` };
+  const game = room.numberGame;
+  if (n < 1 || n > 100) return { kind: 'roll', text: `🎯 guessed ${n} — it's between 1 and 100!` };
+  game.tries++;
+  if (n === game.secret) {
+    room.numberGame = null;
+    return { kind: 'roll', text: `🎯 guessed ${n} — 🎉 CORRECT! Found in ${game.tries} ${game.tries === 1 ? 'guess' : 'guesses'} by the room.` };
+  }
+  if (n < game.secret) game.lo = Math.max(game.lo, n + 1); else game.hi = Math.min(game.hi, n - 1);
+  return { kind: 'roll', text: `🎯 guessed ${n} — ${n < game.secret ? 'higher ⬆️' : 'lower ⬇️'} (it's ${game.lo}–${game.hi})` };
+}
+
+function resolveServerCommand(text, room = null) {
+  const ng = numberGameCommand(text, room);
+  if (ng) return ng;
   const roll = text.match(/^\/roll(?:\s+(\d*)d(\d+))?\s*$/i);
   if (roll) {
     const count = Math.min(20, Math.max(1, parseInt(roll[1] || '1', 10) || 1));
@@ -10040,7 +10067,7 @@ wss.on('connection', (ws, req) => {
       let kind = null;
       let meta = null;
       if (!msg.mediaType && !msg.gifId) {
-        const cmd = resolveServerCommand(text);
+        const cmd = resolveServerCommand(text, room);
         if (cmd) { text = cmd.text; kind = cmd.kind; meta = cmd.meta || null; }
       }
       // A GIF from the GIF picker arrives as just its GIPHY id; the URL is built here.
