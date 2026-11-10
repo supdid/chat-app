@@ -2787,7 +2787,15 @@ app.post('/api/scorpture/channels/:username/subscribe', (req, res) => {
   if (!channelAccount) return res.status(404).json({ error: 'No such channel' });
   if (channelAccount.id === account.id) return res.status(400).json({ error: "Can't subscribe to your own channel" });
   const subscribed = db.toggleScorptureSubscription(account.id, channelAccount.id);
-  res.json({ subscribed, subscriberCount: db.getScorptureSubscriberCount(channelAccount.id) });
+  const subscriberCount = db.getScorptureSubscriberCount(channelAccount.id);
+  if (subscribed) {
+    // 🔔 On-stream alert (only once per person per stream, so unsub/resub can't spam it).
+    const stream = liveStreams.get(channelAccount.id);
+    const already = stream && stream.newSubs && stream.newSubs.includes(account.username);
+    if (stream && !already) (stream.newSubs = stream.newSubs || []).push(account.username);
+    if (!already) broadcastOverlay(channelAccount.id, { type: 'ov-sub', username: account.username, total: subscriberCount });
+  }
+  res.json({ subscribed, subscriberCount });
 });
 
 // Banner image is set for your own channel only (there's no username in the URL — it always
@@ -3014,6 +3022,68 @@ const liveStreams = new Map();
 
 // Channel account id -> Set of chat-overlay sockets (OBS browser sources).
 const chatOverlays = new Map();
+// 🎬 Stream extras: everything the stream-overlay.html widgets need, pushed to a channel's overlays.
+const streamPolls = new Map(); // accountId -> { question, options, votes: Map<username, idx>, open }
+const lastStreamSummary = new Map(); // accountId -> { chatters, newSubs, endedAt }
+function broadcastOverlay(accountId, msg) {
+  for (const ows of chatOverlays.get(accountId) || []) send(ows, msg);
+}
+function pollStateMsg(accountId) {
+  const p = streamPolls.get(accountId);
+  if (!p) return { type: 'ov-poll', poll: null };
+  const counts = p.options.map((_, i) => [...p.votes.values()].filter((v) => v === i).length);
+  return { type: 'ov-poll', poll: { question: p.question, options: p.options, counts, open: p.open } };
+}
+function overlayStatus(accountId) {
+  const stream = liveStreams.get(accountId);
+  const summary = stream ? { chatters: [...(stream.chatters || [])], newSubs: [...(stream.newSubs || [])] } : lastStreamSummary.get(accountId) || { chatters: [], newSubs: [] };
+  return {
+    type: 'ov-status',
+    live: !!stream,
+    viewers: stream ? stream.viewers.size : 0,
+    startedAt: stream ? stream.startedAt : null,
+    title: stream ? stream.title : null,
+    subscribers: db.getScorptureSubscriberCount(accountId),
+    settings: publicStreamSettings(accountId),
+    chatters: summary.chatters.slice(-60),
+    newSubs: summary.newSubs.slice(-30),
+  };
+}
+function publicStreamSettings(accountId) {
+  const st = db.getStreamSettings(accountId);
+  return { nowPlaying: st.nowPlaying || '', goal: st.goal || 0, goalLabel: st.goalLabel || 'Subscriber goal', startsAt: st.startsAt || null, brbText: st.brbText || '' };
+}
+// Viewer counts, timers etc. change constantly — a light push every 3s to channels with overlays open.
+setInterval(() => {
+  for (const accountId of chatOverlays.keys()) broadcastOverlay(accountId, overlayStatus(accountId));
+}, Number(process.env.OVERLAY_TICK_MS) || 3000).unref();
+// "ValkBot" reply in a channel's live chat (seen by the streamer, viewers and the chat box).
+function streamBotSay(accountId, text) {
+  const stream = liveStreams.get(accountId);
+  const m = { type: 'scorpture-live-chat', username: 'ValkBot', bot: true, text: String(text).slice(0, 300), at: Date.now() };
+  if (stream) { send(stream.ws, m); for (const v of stream.viewers.values()) send(v, m); }
+  broadcastOverlay(accountId, m);
+}
+function streamChatCommand(accountId, text) {
+  const m = text.match(/^!([a-z0-9_]{1,20})\b/i);
+  if (!m) return null;
+  const cmd = m[1].toLowerCase();
+  const st = db.getStreamSettings(accountId);
+  const custom = (st.commands || []).find((c) => c.cmd === cmd);
+  if (custom) return custom.reply;
+  const stream = liveStreams.get(accountId);
+  if (cmd === 'uptime') {
+    if (!stream) return 'Not live right now.';
+    const mins = Math.floor((Date.now() - stream.startedAt) / 60000);
+    return `Live for ${mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins} min`} ⏱️`;
+  }
+  if (cmd === 'game' && st.nowPlaying) return `Playing: ${st.nowPlaying} 🎮`;
+  if (cmd === 'commands') {
+    const list = ['!uptime', ...(st.nowPlaying ? ['!game'] : []), ...(st.commands || []).map((c) => `!${c.cmd}`)];
+    return `Commands: ${list.join(' ')}`;
+  }
+  return null;
+}
 function leaveChatOverlay(ws) {
   if (!ws.chatOverlayFor) return;
   const set = chatOverlays.get(ws.chatOverlayFor);
@@ -3025,6 +3095,8 @@ function endScorptureLive(accountId) {
   const stream = liveStreams.get(accountId);
   if (!stream) return;
   liveStreams.delete(accountId);
+  lastStreamSummary.set(accountId, { chatters: [...(stream.chatters || [])], newSubs: [...(stream.newSubs || [])], endedAt: Date.now() });
+  broadcastOverlay(accountId, overlayStatus(accountId));
   for (const viewerWs of stream.viewers.values()) {
     send(viewerWs, { type: 'scorpture-stream-ended' });
     viewerWs.scorptureStreamerAccountId = null;
@@ -3167,6 +3239,63 @@ app.get('/api/scorpture/stream-key', (req, res) => {
     obsLive: !!(stream && stream.obs),
     saveReplays: info.saveReplays,
   });
+});
+
+// 🎬 Stream extras settings (now playing, goal, chat commands, starting-soon countdown, BRB text).
+app.get('/api/scorpture/stream-settings', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  const st = db.getStreamSettings(account.id);
+  res.json({ ...publicStreamSettings(account.id), commands: st.commands || [], poll: pollStateMsg(account.id).poll });
+});
+app.post('/api/scorpture/stream-settings', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many changes too quickly' });
+  const b = req.body || {};
+  const st = db.getStreamSettings(account.id);
+  if (typeof b.nowPlaying === 'string') st.nowPlaying = b.nowPlaying.trim().slice(0, 60);
+  if (typeof b.goalLabel === 'string') st.goalLabel = b.goalLabel.trim().slice(0, 40) || 'Subscriber goal';
+  if (b.goal !== undefined) st.goal = Math.max(0, Math.min(10000000, Math.floor(Number(b.goal) || 0)));
+  if (typeof b.brbText === 'string') st.brbText = b.brbText.trim().slice(0, 80);
+  if (b.startsInMinutes !== undefined) {
+    const mins = Number(b.startsInMinutes);
+    st.startsAt = Number.isFinite(mins) && mins > 0 && mins <= 240 ? Date.now() + Math.round(mins * 60000) : null;
+  }
+  if (Array.isArray(b.commands)) {
+    const seen = new Set(['uptime', 'game', 'commands']);
+    st.commands = b.commands.slice(0, 15).map((c) => ({
+      cmd: String((c && c.cmd) || '').replace(/^!/, '').toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 20),
+      reply: String((c && c.reply) || '').trim().slice(0, 200),
+    })).filter((c) => c.cmd && c.reply && !seen.has(c.cmd) && seen.add(c.cmd));
+  }
+  db.setStreamSettings(account.id, st);
+  broadcastOverlay(account.id, overlayStatus(account.id));
+  res.json({ ok: true, ...publicStreamSettings(account.id), commands: st.commands || [] });
+});
+// 📊 On-stream poll: viewers vote by typing 1, 2, 3… in the live chat.
+app.post('/api/scorpture/stream-poll', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  if (isPostMediaRateLimited(req)) return res.status(429).json({ error: 'Too many changes too quickly' });
+  if (req.body && req.body.action === 'end') {
+    const p = streamPolls.get(account.id);
+    if (p) p.open = false;
+    broadcastOverlay(account.id, pollStateMsg(account.id));
+    return res.json({ ok: true, poll: pollStateMsg(account.id).poll });
+  }
+  if (req.body && req.body.action === 'clear') {
+    streamPolls.delete(account.id);
+    broadcastOverlay(account.id, pollStateMsg(account.id));
+    return res.json({ ok: true, poll: null });
+  }
+  const question = String((req.body && req.body.question) || '').trim().slice(0, 100);
+  const options = (Array.isArray(req.body && req.body.options) ? req.body.options : []).map((o) => String(o || '').trim().slice(0, 40)).filter(Boolean).slice(0, 5);
+  if (!question || options.length < 2) return res.status(400).json({ error: 'Add a question and at least 2 options' });
+  streamPolls.set(account.id, { question, options, votes: new Map(), open: true });
+  broadcastOverlay(account.id, pollStateMsg(account.id));
+  streamBotSay(account.id, `📊 ${question} — vote by typing ${options.map((o, i) => `${i + 1} for ${o}`).join(', ')}`);
+  res.json({ ok: true, poll: pollStateMsg(account.id).poll });
 });
 
 app.post('/api/scorpture/stream-key/replays', (req, res) => {
@@ -6285,6 +6414,23 @@ wss.on('connection', (ws, req) => {
       send(stream.ws, chatMsg);
       for (const viewerWs of stream.viewers.values()) send(viewerWs, chatMsg);
       for (const overlayWs of chatOverlays.get(streamerAccountId) || []) send(overlayWs, chatMsg);
+      stream.chatters = stream.chatters || new Set();
+      if (account.id !== streamerAccountId) stream.chatters.add(account.username);
+      // 📊 Viewers vote in an on-stream poll by typing the option number.
+      const poll = streamPolls.get(streamerAccountId);
+      const vote = text.match(/^\s*([1-9])\s*$/);
+      if (poll && poll.open && vote && Number(vote[1]) <= poll.options.length) {
+        poll.votes.set(account.username, Number(vote[1]) - 1);
+        broadcastOverlay(streamerAccountId, pollStateMsg(streamerAccountId));
+      }
+      // 🤖 !commands
+      const reply = text.startsWith('!') ? streamChatCommand(streamerAccountId, text) : null;
+      if (reply) {
+        const now = Date.now();
+        stream.lastBotAt = stream.lastBotAt || {};
+        const key = text.toLowerCase().split(/\s/)[0];
+        if (now - (stream.lastBotAt[key] || 0) > 5000) { stream.lastBotAt[key] = now; setTimeout(() => streamBotSay(streamerAccountId, reply), 300); }
+      }
       return;
     }
 
@@ -6301,6 +6447,8 @@ wss.on('connection', (ws, req) => {
       set.add(ws);
       ws.chatOverlayFor = streamer.id;
       send(ws, { type: 'scorpture-chat-overlay-ok', username: streamer.username, live: liveStreams.has(streamer.id) });
+      send(ws, overlayStatus(streamer.id));
+      send(ws, pollStateMsg(streamer.id));
       return;
     }
 

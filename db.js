@@ -639,6 +639,8 @@ ensureColumn('accounts', 'bio', 'TEXT');
 ensureColumn('accounts', 'birthday', 'TEXT');
 // 1 (default) = OBS streams on Scorpture are saved as a replay video when they end.
 ensureColumn('accounts', 'save_stream_replays', 'INTEGER DEFAULT 1');
+// Stream extras (JSON): nowPlaying, goal, commands, startsAt — see /api/scorpture/stream-settings.
+ensureColumn('accounts', 'stream_settings', 'TEXT');
 ensureColumn('accounts', 'scorpture_banner_url', 'TEXT');
 ensureColumn('accounts', 'scorpture_avatar_url', 'TEXT');
 ensureColumn('accounts', 'scorpture_description', 'TEXT');
@@ -3169,6 +3171,14 @@ function setScorptureStreamKey(accountId, key) {
   db.prepare('UPDATE accounts SET scorpture_stream_key = ? WHERE id = ?').run(key, accountId);
 }
 
+function getStreamSettings(accountId) {
+  const row = db.prepare('SELECT stream_settings FROM accounts WHERE id = ?').get(accountId);
+  try { return (row && JSON.parse(row.stream_settings)) || {}; } catch { return {}; }
+}
+function setStreamSettings(accountId, settings) {
+  db.prepare('UPDATE accounts SET stream_settings = ? WHERE id = ?').run(JSON.stringify(settings), accountId);
+}
+
 function setSaveStreamReplays(accountId, on) {
   db.prepare('UPDATE accounts SET save_stream_replays = ? WHERE id = ?').run(on ? 1 : 0, accountId);
 }
@@ -3308,6 +3318,8 @@ module.exports = {
   setScorptureStreamKey,
   setScorptureObsTitle,
   setSaveStreamReplays,
+  getStreamSettings,
+  setStreamSettings,
   getAccountByStreamKey,
   upsertRoom,
   getRoom,

@@ -8191,6 +8191,45 @@ describe('scorpture chat overlay (2026-11-09)', () => {
   });
 });
 
+describe('scorpture stream extras (2026-11-09)', () => {
+  test('settings, on-stream poll and subscriber alerts reach the overlay', async () => {
+    const signup = (u) => fetch(`${BASE_URL}/auth/signup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: u, password: 'pass1234', email: `${u}@test.com` }) }).then((r) => r.json());
+    const streamer = await signup('ExtrasStreamer');
+    const fan = await signup('ExtrasFan');
+    const auth = (t) => ({ 'Content-Type': 'application/json', Authorization: `Bearer ${t}` });
+    const o = await connectWs();
+    send(o, { type: 'scorpture-chat-overlay', username: 'ExtrasStreamer' });
+    const first = await waitFor(o, (m) => m.type === 'ov-status');
+    assert.equal(first.live, false);
+
+    const pushedP = waitFor(o, (m) => m.type === 'ov-status' && m.settings.nowPlaying === 'Roblox');
+    const st = await fetch(`${BASE_URL}/api/scorpture/stream-settings`, { method: 'POST', headers: auth(streamer.token),
+      body: JSON.stringify({ nowPlaying: 'Roblox', goal: 25, commands: [{ cmd: '!discord', reply: 'hi' }, { cmd: 'uptime', reply: 'cannot override' }, { cmd: '??', reply: 'x' }], startsInMinutes: 5 }) }).then((r) => r.json());
+    assert.deepEqual(st.commands, [{ cmd: 'discord', reply: 'hi' }]);
+    assert.ok(st.startsAt > Date.now() + 4 * 60000);
+    const pushed = await pushedP;
+    assert.equal(pushed.settings.goal, 25);
+
+    const bad = await fetch(`${BASE_URL}/api/scorpture/stream-poll`, { method: 'POST', headers: auth(streamer.token), body: JSON.stringify({ question: 'Q?', options: ['only one'] }) });
+    assert.equal(bad.status, 400);
+    const pmP = waitFor(o, (m) => m.type === 'ov-poll' && m.poll);
+    const started = await fetch(`${BASE_URL}/api/scorpture/stream-poll`, { method: 'POST', headers: auth(streamer.token), body: JSON.stringify({ question: 'Map?', options: ['A', 'B', ''] }) });
+    assert.equal(started.status, 200, await started.clone().text());
+    const pm = await pmP;
+    assert.deepEqual([pm.poll.options, pm.poll.counts, pm.poll.open], [['A', 'B'], [0, 0], true]);
+    const endedP = waitFor(o, (m) => m.type === 'ov-poll' && m.poll && !m.poll.open);
+    await fetch(`${BASE_URL}/api/scorpture/stream-poll`, { method: 'POST', headers: auth(streamer.token), body: JSON.stringify({ action: 'end' }) });
+    await endedP;
+
+    const alertP = waitFor(o, (m) => m.type === 'ov-sub');
+    await fetch(`${BASE_URL}/api/scorpture/channels/ExtrasStreamer/subscribe`, { method: 'POST', headers: auth(fan.token) });
+    const alert = await alertP;
+    assert.deepEqual([alert.username, alert.total], ['ExtrasFan', 1]);
+    assert.equal((await fetch(`${BASE_URL}/api/scorpture/stream-settings`)).status, 401);
+    o.close();
+  });
+});
+
 describe('poll upgrades (2026-11-08)', () => {
   const postPoll = (ws, def) => send(ws, { type: 'message', text: JSON.stringify(def), mediaUrl: 'poll', mediaType: 'poll' });
 

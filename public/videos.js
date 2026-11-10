@@ -1637,6 +1637,10 @@ async function renderStreamKeyPage() {
         </div>
         <p class="stream-key-hint">Change <code>fade=30</code> to how many seconds messages stay (<code>fade=0</code> keeps them), add <code>&amp;size=1.4</code> for bigger text. <a href="/chat-overlay.html?u=${encodeURIComponent(currentAccount.username)}&demo=1" target="_blank" rel="noopener">Preview it</a></p>
       </div>
+      <div class="stream-key-card" id="extras-card">
+        <h2>🎬 Stream extras</h2>
+        <div class="state-msg">Loading…</div>
+      </div>
       <div class="stream-key-card">
         <h2>How to set up OBS</h2>
         <ol class="stream-key-steps">
@@ -1669,6 +1673,7 @@ async function renderStreamKeyPage() {
       document.getElementById('obs-key-input').value = r.streamKey;
     } catch (err) { alert(err.message); }
   });
+  renderStreamExtras(document.getElementById('extras-card'));
   document.getElementById('obs-replays-input').addEventListener('change', async (e) => {
     try {
       await api('/api/scorpture/stream-key/replays', { method: 'POST', body: JSON.stringify({ on: e.target.checked }) });
@@ -1679,6 +1684,112 @@ async function renderStreamKeyPage() {
       await api('/api/scorpture/stream-key/title', { method: 'POST', body: JSON.stringify({ title: document.getElementById('obs-title-input').value }) });
       e.target.textContent = 'Saved!';
       setTimeout(() => { e.target.textContent = 'Save'; }, 1500);
+    } catch (err) { alert(err.message); }
+  });
+}
+
+// ---------- 🎬 Stream extras: settings, on-stream poll, and the OBS widget links ----------
+const STREAM_WIDGETS = [
+  ['alerts', '🔔 Subscriber alerts', 'Pop-up + sound when someone subscribes', '800 × 400'],
+  ['viewers', '👀 Viewer count', 'How many people are watching', '320 × 80'],
+  ['timer', '⏱️ Stream timer', 'How long you\'ve been live', '320 × 80'],
+  ['nowplaying', '🎮 Now playing', 'The game name you set below', '520 × 110'],
+  ['goal', '🎯 Goal bar', 'Fills up as you get subscribers', '640 × 110'],
+  ['poll', '📊 Poll', 'Shows the live poll you start below', '640 × 360'],
+  ['frame', '🎥 Facecam frame', 'Glowing border + your name — put it on top of your camera', 'same size as your camera'],
+  ['starting', '⏳ Starting soon scene', 'Full screen, countdown + chat', '1920 × 1080'],
+  ['brb', '☕ Be right back scene', 'Full screen, your message + chat', '1920 × 1080'],
+  ['ending', '🏁 Thanks for watching scene', 'Full screen, credits for chatters + new subscribers', '1920 × 1080'],
+];
+async function renderStreamExtras(card) {
+  let st;
+  try { st = await api('/api/scorpture/stream-settings'); } catch (err) { card.innerHTML = `<h2>🎬 Stream extras</h2><p class="stream-key-hint">${escapeHtml(err.message)}</p>`; return; }
+  const base = `${location.origin}/stream-overlay.html?u=${encodeURIComponent(currentAccount.username)}`;
+  const cmdLines = (st.commands || []).map((c) => `!${c.cmd} = ${c.reply}`).join('\n');
+  card.innerHTML = `
+    <h2>🎬 Stream extras</h2>
+    <label>🎮 Now playing</label>
+    <div class="stream-key-row"><input id="ex-np" type="text" maxlength="60" placeholder="e.g. Roblox — Rivals" value="${escapeHtml(st.nowPlaying)}"></div>
+    <label>🎯 Goal</label>
+    <div class="stream-key-row">
+      <input id="ex-goal-label" type="text" maxlength="40" placeholder="Subscriber goal" value="${escapeHtml(st.goalLabel)}">
+      <input id="ex-goal" type="number" min="0" max="10000000" placeholder="50" value="${st.goal || ''}" style="max-width:8rem">
+    </div>
+    <label>☕ Be right back message</label>
+    <div class="stream-key-row"><input id="ex-brb" type="text" maxlength="80" placeholder="Getting a snack 🍕" value="${escapeHtml(st.brbText)}"></div>
+    <label>🤖 Chat commands <span class="stream-key-hint">(one per line: <code>!discord = Join my Discord: …</code>. Built in: !uptime !game !commands)</span></label>
+    <textarea id="ex-cmds" rows="4" class="extras-textarea" placeholder="!discord = Join my Discord!&#10;!pc = My PC: Ryzen + RTX">${escapeHtml(cmdLines)}</textarea>
+    <div class="stream-key-row" style="margin-top:0.6rem"><button id="ex-save" class="pill-btn">Save extras</button><span id="ex-saved" class="stream-key-hint"></span></div>
+
+    <label style="margin-top:1rem">⏳ Starting soon countdown</label>
+    <div class="stream-key-row">
+      <button class="pill-btn ghost ex-start" data-min="2">2 min</button><button class="pill-btn ghost ex-start" data-min="5">5 min</button>
+      <button class="pill-btn ghost ex-start" data-min="10">10 min</button><button class="pill-btn ghost ex-start" data-min="0">Clear</button>
+      <span id="ex-start-msg" class="stream-key-hint">${st.startsAt && st.startsAt > Date.now() ? `Counting down to ${new Date(st.startsAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ''}</span>
+    </div>
+
+    <label style="margin-top:1rem">📊 Poll on stream <span class="stream-key-hint">(viewers vote by typing 1, 2, 3… in chat)</span></label>
+    <div id="ex-poll"></div>
+
+    <label style="margin-top:1rem">🔗 OBS links <span class="stream-key-hint">(Sources → + → Browser → paste the link, use the size shown)</span></label>
+    <div class="extras-widgets">${STREAM_WIDGETS.map(([w, name, desc, size]) => `
+      <div class="extras-widget">
+        <div><b>${name}</b><div class="stream-key-hint">${desc} · ${size}</div></div>
+        <input type="text" readonly id="ex-url-${w}" value="${escapeHtml(`${base}&w=${w}`)}">
+        <button class="pill-btn copy-btn" data-copy="ex-url-${w}">Copy</button>
+        <a class="pill-btn ghost" href="${escapeHtml(`${base}&w=${w}&demo=1`)}" target="_blank" rel="noopener">Preview</a>
+      </div>`).join('')}</div>`;
+  card.querySelectorAll('.copy-btn').forEach((btn) => btn.addEventListener('click', async () => {
+    const input = document.getElementById(btn.dataset.copy);
+    try { await navigator.clipboard.writeText(input.value); } catch { input.select(); document.execCommand('copy'); }
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+  }));
+  document.getElementById('ex-save').addEventListener('click', async () => {
+    const commands = document.getElementById('ex-cmds').value.split('\n').map((l) => l.match(/^\s*!?([a-z0-9_]+)\s*[=:]\s*(.+)$/i)).filter(Boolean).map((m) => ({ cmd: m[1], reply: m[2] }));
+    try {
+      await api('/api/scorpture/stream-settings', { method: 'POST', body: JSON.stringify({
+        nowPlaying: document.getElementById('ex-np').value,
+        goal: document.getElementById('ex-goal').value,
+        goalLabel: document.getElementById('ex-goal-label').value,
+        brbText: document.getElementById('ex-brb').value,
+        commands,
+      }) });
+      const msg = document.getElementById('ex-saved');
+      msg.textContent = '✅ Saved — your overlays update right away';
+      setTimeout(() => { msg.textContent = ''; }, 3000);
+    } catch (err) { alert(err.message); }
+  });
+  card.querySelectorAll('.ex-start').forEach((b) => b.addEventListener('click', async () => {
+    try {
+      await api('/api/scorpture/stream-settings', { method: 'POST', body: JSON.stringify({ startsInMinutes: Number(b.dataset.min) }) });
+      const m = Number(b.dataset.min);
+      document.getElementById('ex-start-msg').textContent = m ? `Counting down ${m} minutes ⏳` : 'Countdown cleared';
+    } catch (err) { alert(err.message); }
+  }));
+  renderExtrasPoll(st.poll);
+}
+function renderExtrasPoll(poll) {
+  const box = document.getElementById('ex-poll');
+  if (!box) return;
+  if (poll) {
+    const total = poll.counts.reduce((a, b) => a + b, 0);
+    box.innerHTML = `<div class="extras-poll-live"><b>${escapeHtml(poll.question)}</b> — ${poll.open ? '🟢 open' : '⏹ closed'} · ${total} vote${total === 1 ? '' : 's'}
+      <div>${poll.options.map((o, i) => `${i + 1}. ${escapeHtml(o)}: <b>${poll.counts[i]}</b>`).join(' · ')}</div>
+      <div class="stream-key-row" style="margin-top:0.4rem">${poll.open ? '<button class="pill-btn" id="ex-poll-end">End poll</button>' : ''}<button class="pill-btn ghost" id="ex-poll-clear">Remove from stream</button><button class="pill-btn ghost" id="ex-poll-refresh">↻ Refresh</button></div></div>`;
+    const act = async (action) => { try { const r = await api('/api/scorpture/stream-poll', { method: 'POST', body: JSON.stringify({ action }) }); renderExtrasPoll(r.poll); } catch (err) { alert(err.message); } };
+    if (poll.open) document.getElementById('ex-poll-end').addEventListener('click', () => act('end'));
+    document.getElementById('ex-poll-clear').addEventListener('click', () => act('clear'));
+    document.getElementById('ex-poll-refresh').addEventListener('click', async () => { const s = await api('/api/scorpture/stream-settings'); renderExtrasPoll(s.poll); });
+    return;
+  }
+  box.innerHTML = `<div class="stream-key-row"><input id="ex-pq" type="text" maxlength="100" placeholder="Question, e.g. Which map next?"></div>
+    <div class="stream-key-row"><input id="ex-po" type="text" maxlength="200" placeholder="Options, comma separated: Desert, Castle, Arena"></div>
+    <div class="stream-key-row"><button class="pill-btn" id="ex-poll-start">Start poll</button></div>`;
+  document.getElementById('ex-poll-start').addEventListener('click', async () => {
+    try {
+      const r = await api('/api/scorpture/stream-poll', { method: 'POST', body: JSON.stringify({ question: document.getElementById('ex-pq').value, options: document.getElementById('ex-po').value.split(',') }) });
+      renderExtrasPoll(r.poll);
     } catch (err) { alert(err.message); }
   });
 }

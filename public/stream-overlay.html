@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Scorpture Stream Overlay</title>
+<style>
+  /* OBS Browser Source widgets for Scorpture streams. ?u=<channel>&w=<widget>
+     widgets: alerts, viewers, poll, goal, timer, nowplaying, starting, brb, ending, frame */
+  :root { --size: 1; --accent: #ff4d6d; --accent2: #ffb347; }
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  body { font-family: "Segoe UI", Roboto, Ubuntu, sans-serif; color: #fff; font-size: calc(20px * var(--size)); }
+  .hidden { display: none !important; }
+  .shadow { text-shadow: 0 2px 6px rgba(0, 0, 0, 0.85); }
+  .panel { background: rgba(10, 14, 24, 0.78); border: 2px solid rgba(255, 255, 255, 0.12); border-radius: 16px; }
+
+  /* 🔔 alerts */
+  #alerts { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  .alert { text-align: center; padding: 1em 1.8em; animation: alertIn 0.6s cubic-bezier(.2,1.6,.4,1) both; border-color: var(--accent2); box-shadow: 0 0 40px rgba(255, 179, 71, 0.55); }
+  .alert.out { animation: alertOut 0.5s ease-in both; }
+  .alert .big { font-size: 2.6em; line-height: 1; }
+  .alert .kicker { font-size: 0.9em; font-weight: 800; letter-spacing: 0.12em; color: var(--accent2); margin-top: 0.4em; }
+  .alert .who { font-size: 1.9em; font-weight: 900; margin-top: 0.1em; }
+  .alert .sub { font-size: 0.85em; opacity: 0.8; margin-top: 0.2em; }
+  @keyframes alertIn { from { transform: scale(0.3) translateY(40px); opacity: 0; } to { transform: none; opacity: 1; } }
+  @keyframes alertOut { to { transform: scale(0.8) translateY(-30px); opacity: 0; } }
+
+  /* small pills: viewers / timer / nowplaying */
+  .pill { display: inline-flex; align-items: center; gap: 0.45em; padding: 0.35em 0.8em; border-radius: 999px; font-weight: 800; margin: 8px; }
+  .dot { width: 0.65em; height: 0.65em; border-radius: 50%; background: #ff3b3b; box-shadow: 0 0 10px #ff3b3b; animation: blink 1.4s infinite; }
+  .dot.off { background: #777; box-shadow: none; animation: none; }
+  @keyframes blink { 50% { opacity: 0.35; } }
+  .np { margin: 8px; padding: 0.45em 1em 0.45em 0.8em; display: inline-flex; gap: 0.5em; align-items: center; border-left: 5px solid var(--accent); border-radius: 6px 14px 14px 6px; }
+  .np .label { font-size: 0.65em; text-transform: uppercase; letter-spacing: 0.12em; opacity: 0.75; font-weight: 700; }
+  .np .game { font-weight: 900; }
+
+  /* 📊 poll */
+  #poll { margin: 8px; padding: 0.8em 1em; width: calc(100% - 16px - 2em - 4px); max-width: 640px; }
+  #poll h3 { margin: 0 0 0.5em; font-size: 1.05em; }
+  .opt { position: relative; margin-top: 0.4em; padding: 0.35em 0.6em; border-radius: 10px; background: rgba(255, 255, 255, 0.08); overflow: hidden; display: flex; justify-content: space-between; gap: 0.5em; font-weight: 700; }
+  .opt .bar { position: absolute; inset: 0 auto 0 0; background: linear-gradient(90deg, var(--accent), var(--accent2)); opacity: 0.55; transition: width 0.4s; z-index: 0; }
+  .opt span { position: relative; z-index: 1; }
+  .opt.win { outline: 2px solid var(--accent2); }
+  .poll-hint { margin-top: 0.5em; font-size: 0.7em; opacity: 0.8; }
+
+  /* 🎯 goal */
+  #goal { margin: 8px; padding: 0.6em 0.9em; max-width: 640px; }
+  #goal .top { display: flex; justify-content: space-between; font-weight: 800; font-size: 0.85em; margin-bottom: 0.35em; }
+  #goal .track { height: 1em; border-radius: 999px; background: rgba(255, 255, 255, 0.12); overflow: hidden; }
+  #goal .fill { height: 100%; width: 0; border-radius: 999px; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width 0.8s; box-shadow: 0 0 14px rgba(255, 179, 71, 0.6); }
+
+  /* full-screen scenes: starting / brb / ending */
+  .scene { position: fixed; inset: 0; display: grid; grid-template-columns: 1fr minmax(0, 34%); gap: 3vw; padding: 5vw; box-sizing: border-box;
+    background: radial-gradient(circle at 20% 20%, #3a1d4f, #12081f 55%, #070310); }
+  .scene::before { content: ''; position: absolute; inset: 0; background: repeating-linear-gradient(115deg, rgba(255,255,255,0.025) 0 2px, transparent 2px 60px); pointer-events: none; }
+  .scene .main { display: flex; flex-direction: column; justify-content: center; position: relative; }
+  .scene .channel { font-size: 2.2vw; font-weight: 800; color: var(--accent2); letter-spacing: 0.08em; text-transform: uppercase; }
+  .scene h1 { margin: 0.1em 0 0; font-size: 7vw; line-height: 1; font-weight: 900; background: linear-gradient(90deg, #fff, #ffd9a0); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .scene .countdown { margin-top: 0.3em; font-size: 9vw; font-weight: 900; font-variant-numeric: tabular-nums; color: #fff; text-shadow: 0 0 40px rgba(255, 77, 109, 0.7); }
+  .scene .line { margin-top: 1em; font-size: 2.2vw; opacity: 0.85; }
+  .scene .side { position: relative; display: flex; flex-direction: column; justify-content: flex-end; gap: 0.6vw; overflow: hidden; }
+  .scene .side h2 { margin: 0 0 0.4vw; font-size: 1.6vw; opacity: 0.8; }
+  .scene .cmsg { font-size: 1.5vw; padding: 0.5vw 0.9vw; border-radius: 12px; background: rgba(255, 255, 255, 0.08); animation: alertIn 0.3s both; overflow-wrap: anywhere; }
+  .scene .cmsg b { margin-right: 0.4em; }
+  .credits { font-size: 2.4vw; line-height: 1.6; margin-top: 0.8em; }
+  .credits .names { font-weight: 800; color: var(--accent2); }
+
+  /* 🎥 facecam frame */
+  #frame { position: fixed; inset: 6px; border-radius: 22px; border: 6px solid var(--accent); box-shadow: 0 0 24px var(--accent), inset 0 0 24px rgba(0, 0, 0, 0.5); }
+  #frame .tag { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); padding: 0.25em 1em; border-radius: 999px; background: var(--accent); font-weight: 900; white-space: nowrap; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5); }
+
+  #notice { position: fixed; bottom: 4px; left: 8px; font-size: 13px; background: rgba(214, 60, 60, 0.9); padding: 3px 8px; border-radius: 6px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<div id="notice" class="hidden"></div>
+<script>
+const params = new URLSearchParams(location.search);
+const channel = (params.get('u') || '').trim();
+const widget = (params.get('w') || 'alerts').toLowerCase();
+const demo = params.get('demo') === '1';
+const root = document.getElementById('root');
+const noticeEl = document.getElementById('notice');
+document.documentElement.style.setProperty('--size', String(Math.min(3, Math.max(0.4, Number(params.get('size')) || 1))));
+if (/^[0-9a-f]{6}$/i.test(params.get('color') || '')) document.documentElement.style.setProperty('--accent', '#' + params.get('color'));
+
+let status = { live: false, viewers: 0, startedAt: null, subscribers: 0, settings: {}, chatters: [], newSubs: [] };
+let poll = null;
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmtDur = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)); const h = Math.floor(s / 3600); const m = Math.floor((s % 3600) / 60); const ss = String(s % 60).padStart(2, '0'); return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`; };
+function notice(t) { noticeEl.textContent = t; noticeEl.classList.toggle('hidden', !t); }
+
+// ---------- widgets ----------
+const W = {};
+
+// 🔔 subscriber alerts (queued, one at a time, with a chime)
+W.alerts = {
+  init() { root.innerHTML = '<div id="alerts"></div>'; this.q = []; this.busy = false; },
+  onSub(m) { this.q.push(m); this.next(); },
+  next() {
+    if (this.busy || !this.q.length) return;
+    this.busy = true;
+    const m = this.q.shift();
+    const box = document.getElementById('alerts');
+    box.innerHTML = `<div class="alert panel shadow"><div class="big">🔔</div><div class="kicker">NEW SUBSCRIBER</div><div class="who">${esc(m.username)}</div><div class="sub">${m.total ? `${Number(m.total).toLocaleString()} subscribers!` : 'Thanks for subscribing!'}</div></div>`;
+    chime();
+    setTimeout(() => box.firstElementChild && box.firstElementChild.classList.add('out'), 5500);
+    setTimeout(() => { box.innerHTML = ''; this.busy = false; this.next(); }, 6100);
+  },
+};
+function chime() {
+  if (params.get('sound') === '0') return;
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    [[659.3, 0], [880, 0.12], [1318.5, 0.24]].forEach(([f, t]) => {
+      const o = ctx.createOscillator(); const g = ctx.createGain();
+      o.type = 'triangle'; o.frequency.value = f;
+      g.gain.setValueAtTime(0.0001, ctx.currentTime + t);
+      g.gain.exponentialRampToValueAtTime(0.3, ctx.currentTime + t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + t + 0.5);
+      o.connect(g).connect(ctx.destination); o.start(ctx.currentTime + t); o.stop(ctx.currentTime + t + 0.55);
+    });
+  } catch { /* no audio */ }
+}
+
+// 👀 viewer count
+W.viewers = {
+  init() { root.innerHTML = '<div class="pill panel shadow" id="vc"><span class="dot"></span><span id="vct"></span></div>'; },
+  render() {
+    document.querySelector('#vc .dot').classList.toggle('off', !status.live);
+    document.getElementById('vct').textContent = status.live ? `👀 ${status.viewers} watching` : 'Offline';
+  },
+};
+
+// ⏱️ live timer
+W.timer = {
+  init() { root.innerHTML = '<div class="pill panel shadow"><span class="dot"></span><span id="tt"></span></div>'; setInterval(() => this.render(), 1000); },
+  render() {
+    document.querySelector('.dot').classList.toggle('off', !status.live);
+    document.getElementById('tt').textContent = status.live && status.startedAt ? `LIVE ${fmtDur(Date.now() - status.startedAt)}` : 'Not live yet';
+  },
+};
+
+// 🎮 now playing
+W.nowplaying = {
+  init() { root.innerHTML = '<div class="np panel shadow" id="np"><span>🎮</span><div><div class="label">Now playing</div><div class="game" id="npg"></div></div></div>'; },
+  render() {
+    const g = status.settings.nowPlaying;
+    document.getElementById('np').classList.toggle('hidden', !g);
+    document.getElementById('npg').textContent = g || '';
+  },
+};
+
+// 🎯 goal bar
+W.goal = {
+  init() { root.innerHTML = '<div id="goal" class="panel shadow"><div class="top"><span id="gl"></span><span id="gn"></span></div><div class="track"><div class="fill" id="gf"></div></div></div>'; },
+  render() {
+    const goal = Number(status.settings.goal) || 0;
+    document.getElementById('goal').classList.toggle('hidden', !goal);
+    if (!goal) return;
+    document.getElementById('gl').textContent = `🎯 ${status.settings.goalLabel || 'Subscriber goal'}`;
+    document.getElementById('gn').textContent = `${status.subscribers.toLocaleString()} / ${goal.toLocaleString()}${status.subscribers >= goal ? ' 🎉' : ''}`;
+    document.getElementById('gf').style.width = `${Math.min(100, (status.subscribers / goal) * 100)}%`;
+  },
+};
+
+// 📊 poll (viewers type 1, 2, 3… in chat)
+W.poll = {
+  init() { root.innerHTML = '<div id="poll" class="panel shadow hidden"></div>'; },
+  render() {
+    const el = document.getElementById('poll');
+    el.classList.toggle('hidden', !poll);
+    if (!poll) return;
+    const total = poll.counts.reduce((a, b) => a + b, 0);
+    const max = Math.max(...poll.counts);
+    el.innerHTML = `<h3>📊 ${esc(poll.question)}</h3>` + poll.options.map((o, i) => {
+      const pct = total ? Math.round((poll.counts[i] / total) * 100) : 0;
+      const win = !poll.open && total && poll.counts[i] === max;
+      return `<div class="opt${win ? ' win' : ''}"><div class="bar" style="width:${pct}%"></div><span>${i + 1}. ${esc(o)}${win ? ' 🏆' : ''}</span><span>${pct}% (${poll.counts[i]})</span></div>`;
+    }).join('') + `<div class="poll-hint">${poll.open ? `Type ${poll.options.map((_, i) => i + 1).join(', ')} in chat to vote · ${total} vote${total === 1 ? '' : 's'}` : `Poll closed · ${total} vote${total === 1 ? '' : 's'}`}</div>`;
+  },
+};
+
+// Full-screen scenes share a chat column.
+function sceneShell(inner, withChat = true) {
+  root.innerHTML = `<div class="scene"><div class="main">${inner}</div>${withChat ? '<div class="side"><h2>💬 Chat</h2><div id="schat"></div></div>' : '<div></div>'}</div>`;
+}
+function sceneChat(m) {
+  const box = document.getElementById('schat');
+  if (!box) return;
+  const d = document.createElement('div');
+  d.className = 'cmsg';
+  d.innerHTML = `<b style="color:${nameColor(m.username)}">${esc(m.username)}</b>${esc(m.text)}`;
+  box.appendChild(d);
+  while (box.children.length > 9) box.firstElementChild.remove();
+}
+const NAME_COLORS = ['#ff7eb6', '#5bb2ff', '#34e89e', '#ffb347', '#b18cff', '#3fe0d0', '#ff6b6b', '#f2e430'];
+function nameColor(n) { let h = 0; for (const c of n) h = (h * 31 + c.codePointAt(0)) >>> 0; return NAME_COLORS[h % NAME_COLORS.length]; }
+
+// ⏳ starting soon
+W.starting = {
+  init() {
+    sceneShell(`<div class="channel" id="sch"></div><h1>Starting soon</h1><div class="countdown" id="scd"></div><div class="line" id="sline"></div>`);
+    setInterval(() => this.render(), 500);
+  },
+  render() {
+    document.getElementById('sch').textContent = channel;
+    const at = status.settings.startsAt;
+    const left = at ? at - Date.now() : 0;
+    document.getElementById('scd').textContent = left > 0 ? fmtDur(left) : '';
+    document.getElementById('sline').textContent = left > 0 ? 'Grab a snack and say hi in chat 👋' : 'Any second now… 👀';
+  },
+};
+// ☕ be right back
+W.brb = {
+  init() { sceneShell(`<div class="channel" id="sch"></div><h1>Be right back</h1><div class="line" id="bline"></div>`); },
+  render() {
+    document.getElementById('sch').textContent = channel;
+    document.getElementById('bline').textContent = status.settings.brbText || "Stay here — I'll be back in a moment ☕";
+  },
+};
+// 🏁 thanks for watching (credits)
+W.ending = {
+  init() { sceneShell(`<div class="channel" id="sch"></div><h1>Thanks for watching!</h1><div class="credits" id="cred"></div>`); },
+  render() {
+    document.getElementById('sch').textContent = channel;
+    const subs = status.newSubs || [];
+    const chat = status.chatters || [];
+    document.getElementById('cred').innerHTML =
+      (subs.length ? `<div>🔔 New subscribers: <span class="names">${subs.map(esc).join(', ')}</span></div>` : '') +
+      (chat.length ? `<div>💬 Thanks for chatting: <span class="names">${chat.map(esc).join(', ')}</span></div>` : '') +
+      (!subs.length && !chat.length ? '<div>See you next stream! 👋</div>' : '');
+  },
+};
+// 🎥 facecam frame
+W.frame = {
+  init() { root.innerHTML = `<div id="frame"><div class="tag" id="ftag"></div></div>`; },
+  render() { document.getElementById('ftag').textContent = params.get('name') || channel; },
+};
+
+const w = W[widget] || W.alerts;
+w.init();
+const render = () => { if (w.render) w.render(); };
+render();
+
+// ---------- connection ----------
+function handle(m) {
+  if (m.type === 'ov-status') { status = m; render(); }
+  else if (m.type === 'ov-poll') { poll = m.poll; render(); }
+  else if (m.type === 'ov-sub') { if (w.onSub) w.onSub(m); }
+  else if (m.type === 'scorpture-live-chat') { if (widget === 'starting' || widget === 'brb' || widget === 'ending') sceneChat(m); }
+  else if (m.type === 'scorpture-chat-overlay-ok') notice('');
+  else if (m.type === 'scorpture-chat-overlay-error') notice(m.message);
+}
+function connect() {
+  if (!channel) { notice('Add ?u=YourScorptureName to this link'); return; }
+  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`);
+  ws.addEventListener('open', () => ws.send(JSON.stringify({ type: 'scorpture-chat-overlay', username: channel })));
+  ws.addEventListener('message', (e) => { try { handle(JSON.parse(e.data)); } catch { /* ignore */ } });
+  ws.addEventListener('close', () => { notice('Reconnecting…'); setTimeout(connect, 2000); });
+}
+if (demo) {
+  // Preview with made-up numbers (nothing is sent anywhere).
+  handle({ type: 'ov-status', live: true, viewers: 27, startedAt: Date.now() - 3725000, subscribers: 38,
+    settings: { nowPlaying: 'Roblox — Rivals', goal: 50, goalLabel: 'Subscriber goal', startsAt: Date.now() + 4 * 60000, brbText: 'Getting a snack 🍕' },
+    chatters: ['Ana', 'Ben', 'CyTheGamer', 'Dee'], newSubs: ['Ben', 'Zoe'] });
+  handle({ type: 'ov-poll', poll: { question: 'Which map next?', options: ['Desert', 'Castle', 'Arena'], counts: [5, 12, 3], open: true } });
+  [['Ana', 'hiii 👋'], ['Ben', 'lets gooo'], ['CyTheGamer', 'GG 🔥']].forEach(([u, t], i) => setTimeout(() => handle({ type: 'scorpture-live-chat', username: u, text: t }), 400 * i));
+  setTimeout(() => handle({ type: 'ov-sub', username: 'Zoe', total: 39 }), 600);
+} else {
+  connect();
+}
+</script>
+</body>
+</html>

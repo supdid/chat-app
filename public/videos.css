@@ -931,3 +931,11 @@ a { color: inherit; text-decoration: none; }
 
 .stream-replay-toggle { display: flex; gap: 0.55rem; align-items: flex-start; margin-top: 0.9rem; font-size: 0.9rem; line-height: 1.4; cursor: pointer; }
 .stream-replay-toggle input { margin-top: 0.2rem; width: 1.05rem; height: 1.05rem; flex-shrink: 0; accent-color: #ff4d4d; }
+
+/* 🎬 Stream extras */
+.extras-textarea { width: 100%; box-sizing: border-box; font: inherit; font-size: 0.9rem; padding: 0.5rem 0.65rem; border-radius: 10px; border: 1px solid rgba(0,0,0,0.15); resize: vertical; }
+.extras-widgets { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.4rem; }
+.extras-widget { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.4fr) auto auto; gap: 0.5rem; align-items: center; padding: 0.55rem 0.7rem; border-radius: 12px; background: rgba(255, 140, 60, 0.07); }
+.extras-widget input { min-width: 0; font-size: 0.78rem; }
+.extras-poll-live { padding: 0.6rem 0.75rem; border-radius: 12px; background: rgba(255, 140, 60, 0.08); line-height: 1.6; }
+@media (max-width: 700px) { .extras-widget { grid-template-columns: 1fr auto auto; } .extras-widget input { grid-column: 1 / -1; grid-row: 2; } }
