@@ -3173,3 +3173,6 @@ body.hide-presence-system .system.presence-system { display: none; }
 .public-room-name { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .public-room-online { font-size: 0.75rem; color: var(--text-subtle); white-space: nowrap; }
 .public-room-online.live { color: #34e89e; font-weight: 700; }
+
+.public-room-topic { display: block; font-weight: 400; font-size: 0.75rem; color: var(--text-subtle); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.menu-room-topic { margin: -0.25rem 0 0.75rem; font-size: 0.88rem; color: var(--text-muted); line-height: 1.35; word-break: break-word; }

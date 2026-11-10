@@ -369,6 +369,7 @@
         <h2>Room</h2>
         <button id="menu-close-btn" class="icon-btn" aria-label="Close menu">✕</button>
       </div>
+      <p id="menu-room-topic" class="menu-room-topic hidden"></p>
       <div class="my-profile">
         <button id="my-avatar-btn" class="my-avatar-btn" aria-label="Change your profile picture" type="button"></button>
         <input type="file" id="avatar-file-input" accept="image/*" class="hidden">
@@ -425,6 +426,10 @@
       <form id="announcement-form" class="rename-room-form hidden">
         <input id="announcement-input" type="text" placeholder="Pinned announcement (hosts, blank to clear)" maxlength="200" autocomplete="off">
         <button type="submit" class="icon-btn" aria-label="Save announcement">✓</button>
+      </form>
+      <form id="room-topic-form" class="rename-room-form hidden">
+        <input id="room-topic-input" type="text" placeholder="What's this room about? (one line, blank = none)" maxlength="120" autocomplete="off">
+        <button type="submit" class="icon-btn" aria-label="Save room description">✓</button>
       </form>
       <form id="room-icon-form" class="rename-room-form hidden">
         <input id="room-icon-input" type="text" placeholder="Room icon — one emoji, e.g. 🎮 (blank = none)" maxlength="16" autocomplete="off">

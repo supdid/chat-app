@@ -8740,6 +8740,7 @@ wss.on('connection', (ws, req) => {
         listed: !!(dbRoom && dbRoom.listed),
         accent: dbRoom && ROOM_ACCENTS.includes(dbRoom.accent) ? dbRoom.accent : null,
         icon: dbRoom ? dbRoom.icon || null : null,
+        topic: dbRoom ? dbRoom.topic || null : null,
         notifyPref: (() => {
           const p = ws.accountId ? roomNotifyPrefs.get(`acct:${ws.accountId}|${code}`) : null;
           return p && (!p.until || p.until > Date.now()) ? p : null;
@@ -9275,6 +9276,20 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    if (msg.type === 'set-room-topic' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      const dbRoom = db.getRoom(ws.room);
+      if (!isRoomHost(dbRoom, ws)) return;
+      const topic = applyWordFilter(dbRoom, String(msg.topic || '').replace(/\s+/g, ' ').trim().slice(0, 120)) || null;
+      if (topic && dbRoom.listed && !isCleanPublicName(topic)) {
+        send(ws, { type: 'error', message: 'This room is in Public rooms, so its description has to be family-friendly' });
+        return;
+      }
+      db.setRoomTopic(ws.room, topic);
+      broadcastRoom(ws.room, { type: 'room-topic-updated', topic, by: ws.profile.name });
+      return;
+    }
+
     if (msg.type === 'set-room-icon' && ws.room) {
       if (isWsMsgRateLimited(ws)) return;
       const dbRoom = db.getRoom(ws.room);
@@ -9362,7 +9377,7 @@ wss.on('connection', (ws, req) => {
         .filter((r) => isCleanPublicName(r.name))
         .map((r) => {
           const live = rooms.get(r.code);
-          return { code: r.code, name: r.name, icon: r.icon || null, online: live ? live.clients.size : 0, lastActiveAt: r.lastActiveAt };
+          return { code: r.code, name: r.name, icon: r.icon || null, topic: r.topic && isCleanPublicName(r.topic) ? r.topic : null, online: live ? live.clients.size : 0, lastActiveAt: r.lastActiveAt };
         })
         .sort((a, b) => b.online - a.online || b.lastActiveAt - a.lastActiveAt)
         .slice(0, 30);

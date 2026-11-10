@@ -8001,6 +8001,10 @@ describe('public room list (2026-11-09)', () => {
     const ok = await waitFor(guest, (m) => m.type === 'listed-updated' && m.on);
     assert.equal(ok.by, 'PubHost');
 
+    send(guest, { type: 'set-room-topic', topic: 'not the host' });
+    send(host, { type: 'set-room-topic', topic: '  Show   off your builds  ' });
+    assert.equal((await waitFor(guest, (m) => m.type === 'room-topic-updated')).topic, 'Show off your builds');
+
     const viewer = await connectWs();
     send(viewer, { type: 'join-server', username: 'PubViewer' });
     await waitFor(viewer, (m) => m.type === 'joined-server');
@@ -8010,6 +8014,7 @@ describe('public room list (2026-11-09)', () => {
     assert.ok(mine, 'listed room is in the list');
     assert.equal(mine.name, 'Lego Builders');
     assert.equal(mine.online, 2);
+    assert.equal(mine.topic, 'Show off your builds');
 
     const adminKey = JSON.parse(fs.readFileSync(path.join(server.dir, 'admin-key.json'), 'utf8')).key;
     const auth = { Authorization: `Bearer ${adminKey}` };

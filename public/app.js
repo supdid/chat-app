@@ -342,6 +342,7 @@ function applyModVisibility() {
   document.getElementById('listed-row').classList.toggle('hidden', !isHost);
   document.getElementById('accent-row').classList.toggle('hidden', !isHost);
   document.getElementById('room-icon-form').classList.toggle('hidden', !isHost);
+  document.getElementById('room-topic-form').classList.toggle('hidden', !isHost);
   updateFavoriteButton();
   updateComposerLock();
 }
@@ -1104,6 +1105,8 @@ function handleServerMessage(data) {
       lastActivityAt = Date.now();
       document.getElementById('hosts-only-input').checked = roomHostsOnly;
       document.getElementById('listed-input').checked = !!data.listed;
+      currentRoomTopic = data.topic || null;
+      renderRoomTopic();
       welcomeInput.value = roomWelcomeText || '';
       currentRoomPin = data.invitePass || pendingJoinPin;
       pendingJoinPin = '';
@@ -1656,6 +1659,12 @@ function handleServerMessage(data) {
     case 'room-emojis-updated':
       setRoomEmojis(data.emojis || []);
       if (data.added) showAppToast(`😀 New room emoji :${data.added}: — find it in the 🙂 picker`);
+      break;
+
+    case 'room-topic-updated':
+      currentRoomTopic = data.topic || null;
+      renderRoomTopic();
+      showAppToast(data.topic ? `📝 ${data.by} updated the room description` : `📝 ${data.by} cleared the room description`);
       break;
 
     case 'room-icon-updated':
@@ -3728,6 +3737,12 @@ function renderPublicRooms(list) {
     const name = document.createElement('span');
     name.className = 'public-room-name';
     name.textContent = r.name;
+    if (r.topic) {
+      const t = document.createElement('small');
+      t.className = 'public-room-topic';
+      t.textContent = r.topic;
+      name.appendChild(t);
+    }
     const online = document.createElement('span');
     online.className = 'public-room-online' + (r.online ? ' live' : '');
     online.textContent = r.online ? `🟢 ${r.online} here` : 'quiet';
@@ -9511,7 +9526,7 @@ function flushOutbox(code) {
 // --- ✨ What's new (shown once per update to people who've used Valk before) ---
 const WHATS_NEW_VERSION = '2026-11-09b';
 const WHATS_NEW = [
-  ['🌍', 'Public rooms', 'Hosts can list their room (Room settings → 🌍) so anyone can find it on the start screen.'],
+  ['🌍', 'Public rooms', 'Hosts can list their room and give it a one-line description (Room settings) so anyone can find it on the start screen.'],
   ['😀', 'Your reactions first', 'The reaction picker now shows the emoji you use most recently first.'],
   ['🔁', 'Echo', 'New game: repeat the light-and-sound pattern as it grows. /play echo'],
   ['🔗', 'Links tab', 'Menu → 🖼️ Media gallery → 🔗 Links lists every link shared in the room.'],
@@ -10127,11 +10142,23 @@ function downloadEventIcs(ev) {
 
 // --- Room icon ---
 let currentRoomIcon = null;
+let currentRoomTopic = null;
+function renderRoomTopic() {
+  const el = document.getElementById('menu-room-topic');
+  el.textContent = currentRoomTopic ? `📝 ${currentRoomTopic}` : '';
+  el.classList.toggle('hidden', !currentRoomTopic);
+  document.getElementById('room-topic-input').value = currentRoomTopic || '';
+  roomCodeChip.title = currentRoomTopic || '';
+}
 function renderRoomChip() {
   if (!currentRoomCode) return;
   const label = currentRoomName ? `${currentRoomName} (${currentRoomCode})` : currentRoomCode;
   roomCodeChip.textContent = currentRoomIcon ? `${currentRoomIcon} ${label}` : label;
 }
+document.getElementById('room-topic-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  wsSendOrWarnDisconnected({ type: 'set-room-topic', topic: document.getElementById('room-topic-input').value });
+});
 document.getElementById('room-icon-form').addEventListener('submit', (e) => {
   e.preventDefault();
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'set-room-icon', icon: document.getElementById('room-icon-input').value.trim() }));
@@ -10209,7 +10236,7 @@ document.getElementById('room-people-chip').addEventListener('click', () => {
   summary.textContent = '⚙️ Room settings (hosts)';
   details.appendChild(summary);
   first.parentNode.insertBefore(details, first);
-  ['rename-room-form', 'announcement-form', 'room-icon-form', 'accent-row', 'hosts-only-row', 'listed-row', 'slow-mode-row',
+  ['rename-room-form', 'room-topic-form', 'announcement-form', 'room-icon-form', 'accent-row', 'hosts-only-row', 'listed-row', 'slow-mode-row',
     'room-pin-form', 'wallpaper-row', 'disappear-row', 'invites-row', 'word-filter-row', 'room-emojis-row',
     'welcome-form', 'cohost-hint', 'mod-log-btn', 'bans-row'].forEach((id) => {
     const el = document.getElementById(id);
