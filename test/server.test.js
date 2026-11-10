@@ -8061,6 +8061,28 @@ describe('public room list (2026-11-09)', () => {
   });
 });
 
+describe('best of this room (2026-11-09)', () => {
+  test('get-best-of lists messages with 2+ reactions, most reacted first', async () => {
+    const { ws: a, code } = await joinRoom('BestA');
+    const b = await joinExistingRoom('BestB', code);
+    const post = async (text) => { send(a, { type: 'message', text }); return waitFor(b, (m) => m.type === 'message' && m.text === text); };
+    const one = await post('pretty good');
+    const two = await post('legendary joke');
+    const three = await post('meh');
+    await sleep(200);
+    for (const [ws, id, e] of [[a, two.id, '😂'], [b, two.id, '😂'], [b, two.id, '🔥'], [a, one.id, '👍'], [b, one.id, '👍'], [b, three.id, '👍']]) {
+      send(ws, { type: 'react', messageId: id, emoji: e });
+      await sleep(120);
+    }
+    await sleep(300);
+    send(b, { type: 'get-best-of' });
+    const r = await waitFor(b, (m) => m.type === 'best-of');
+    assert.deepEqual(r.messages.map((m) => [m.text, m.n]), [['legendary joke', 3], ['pretty good', 2]]);
+    assert.deepEqual(r.messages[0].emojis.sort(), ['🔥', '😂']);
+    a.close(); b.close();
+  });
+});
+
 describe('poll upgrades (2026-11-08)', () => {
   const postPoll = (ws, def) => send(ws, { type: 'message', text: JSON.stringify(def), mediaUrl: 'poll', mediaType: 'poll' });
 

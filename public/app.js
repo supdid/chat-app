@@ -1805,6 +1805,10 @@ function handleServerMessage(data) {
       });
       break;
 
+    case 'best-of':
+      if (data.code === currentRoomCode) renderBestOf(data.messages || []);
+      break;
+
     case 'links-result':
       renderGalleryLinks(data.links || []);
       break;
@@ -8865,8 +8869,50 @@ textSizeSelect.addEventListener('change', () => {
 // --- Room stats ---
 const statsModal = document.getElementById('stats-modal');
 const statsBody = document.getElementById('stats-body');
+const statsTitle = document.getElementById('stats-title');
+document.getElementById('best-of-btn').addEventListener('click', () => {
+  closeMenu();
+  statsTitle.textContent = '⭐ Best of this room';
+  statsBody.innerHTML = '<p class="search-status">Loading…</p>';
+  statsModal.classList.remove('hidden');
+  wsSendOrWarnDisconnected({ type: 'get-best-of' });
+});
+function renderBestOf(messages) {
+  statsBody.textContent = '';
+  if (!messages.length) {
+    const p = document.createElement('p');
+    p.className = 'search-status';
+    p.textContent = 'Nothing yet — messages with 2 or more reactions show up here. React to the good stuff!';
+    statsBody.appendChild(p);
+    return;
+  }
+  messages.forEach((m, i) => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'stats-loved best-of-row';
+    const who = document.createElement('span');
+    who.className = 'stats-loved-meta';
+    who.textContent = `${['🥇', '🥈', '🥉'][i] || `#${i + 1}`} ${m.name} · ${new Date(m.at).toLocaleDateString([], { month: 'short', day: 'numeric' })} · ${m.emojis.join(' ')} ${m.n}`;
+    row.appendChild(who);
+    if (m.imageUrl) {
+      const img = document.createElement('img');
+      img.className = 'best-of-thumb';
+      img.src = m.imageUrl;
+      img.alt = '';
+      img.loading = 'lazy';
+      row.appendChild(img);
+    }
+    const t = document.createElement('span');
+    t.className = 'stats-loved-text';
+    t.textContent = hideSpoilerText(m.text);
+    row.appendChild(t);
+    row.addEventListener('click', () => { statsModal.classList.add('hidden'); jumpToMessage(m.id); });
+    statsBody.appendChild(row);
+  });
+}
 document.getElementById('room-stats-btn').addEventListener('click', () => {
   closeMenu();
+  statsTitle.textContent = '📈 Room stats';
   statsBody.innerHTML = '<p class="search-status">Loading…</p>';
   statsModal.classList.remove('hidden');
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'get-room-stats' }));
@@ -9553,6 +9599,7 @@ const WHATS_NEW = [
   ['📅', 'Date dividers', 'Chat now shows Today, Yesterday and the date between days. Emoji-only messages show big 😂'],
   ['🎂', 'Birthdays', 'Tap your name → 🎂 Set to add your birthday. On the day, the room gets confetti and a heads-up.'],
   ['📜', 'Tidier long messages', 'Really long messages fold up with a Show more button.'],
+  ['⭐', 'Best of this room', 'Menu → ⭐ Best of this room: the most-reacted messages of all time.'],
   ['🏆', 'Game ranks on profiles', 'Profile cards show someone’s best placings on this room’s game leaderboards.'],
   ['🎯', 'Number game', '/numbergame — Valk picks a secret number, the whole room guesses with /guess 50.'],
   ['☑️', 'Shared checklists', '/todo Groceries: milk, eggs, bread — anyone in the room can tick things off or add more.'],

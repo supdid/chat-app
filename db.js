@@ -1289,6 +1289,25 @@ function getRoomStats(code, now = Date.now()) {
   return { total, today, week, topChatters, people30, hoursUtc: hours, topReactions, mostLoved, firstMessageAt: first || null };
 }
 
+// ⭐ Best of a room: the most-reacted messages of all time (at least 2 reactions).
+function getRoomBestOf(code, limit = 20) {
+  return db.prepare(
+    `SELECT m.id, m.name, m.text, m.media_type AS mediaType, m.media_url AS mediaUrl, m.at, m.kind, COUNT(r.emoji) AS n,
+            GROUP_CONCAT(DISTINCT r.emoji) AS emojis
+     FROM messages m JOIN reactions r ON r.message_id = m.id
+     WHERE m.room_code = ? AND m.deleted = 0
+     GROUP BY m.id HAVING n >= 2 ORDER BY n DESC, m.at DESC LIMIT ?`
+  ).all(code, limit).map((m) => {
+    let text = m.text || '';
+    if (m.mediaType === 'poll') { try { text = `📊 ${JSON.parse(m.text).question}`; } catch { text = '📊 Poll'; } }
+    else if (m.kind === 'checklist') text = `☑️ ${text}`;
+    else if (!text && m.mediaType) text = m.mediaType === 'image' ? '🖼️ Photo' : m.mediaType === 'video' ? '🎬 Video' : '🔊 Audio';
+    return { id: m.id, name: m.name, text: text.slice(0, 200), at: m.at, n: m.n, emojis: String(m.emojis || '').split(',').filter((e) => !/^:[\w-]+:$/.test(e)).slice(0, 5),
+      // Spoiler photos (caption has ||…||) never get a thumbnail here.
+      imageUrl: m.mediaType === 'image' && !/\|\|[\s\S]+?\|\|/.test(m.text || '') ? m.mediaUrl : null };
+  });
+}
+
 // Messages that @mention `name` (or @everyone) in the given rooms since `since`, newest first.
 // LIKE pre-filters cheaply; the caller confirms it's a real mention token.
 function findMentions(codes, name, since, limit = 60) {
@@ -3159,6 +3178,7 @@ module.exports = {
   setRoomAccent,
   findMentions,
   getRoomStats,
+  getRoomBestOf,
   setAccountBio,
   setAccountBirthday,
   countUnreadSince,

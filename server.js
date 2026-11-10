@@ -9664,6 +9664,12 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    if (msg.type === 'get-best-of' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      send(ws, { type: 'best-of', code: ws.room, messages: db.getRoomBestOf(ws.room) });
+      return;
+    }
+
     if (msg.type === 'get-links' && ws.room) {
       if (isWsMsgRateLimited(ws)) return;
       send(ws, { type: 'links-result', links: db.getRoomLinks(ws.room) });
