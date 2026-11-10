@@ -205,6 +205,7 @@ function messagePreviewText(entry) {
   }
   if (entry.kind === 'me') return `* ${entry.name} ${entry.text}`;
   if (entry.kind === 'checklist') return `☑️ Checklist: ${entry.text}`;
+  if (entry.kind === 'watch') return `📺 Watch together: ${entry.text}`;
   if (entry.kind === 'story' && entry.meta) return `📖 Story: ${entry.meta.lines[0].t}`;
   return entry.text || (entry.mediaType ? `sent a${entry.mediaType === 'image' ? 'n' : ''} ${entry.mediaType}` : '');
 }
@@ -4531,6 +4532,7 @@ function leaveRoom(ws, announce = true) {
   if (room) {
     if (ws.accountId && ws.profile) rememberRecentAccountForName(room, ws.profile.name, ws.accountId);
     room.clients.delete(ws);
+    if (ws.watching) { const wid = ws.watching; ws.watching = null; broadcastWatch(code, wid); }
     if (announce) {
       broadcastRoom(code, { type: 'system', text: `${ws.profile.name} left the room`, at: Date.now(), presence: true });
       broadcastRoom(code, { type: 'presence', users: roomUsers(code) });
@@ -5733,6 +5735,34 @@ function announceBirthday(code, ws) {
   broadcastRoom(code, { type: 'system', text: `🎂 It's ${ws.profile.name}'s birthday today! Say happy birthday 🎉`, at: Date.now(), birthday: true });
 }
 
+// 📺 Watch together: /watch <YouTube link> posts a card; everyone who opens it shares one
+// play/pause/position (kept per message in room.watches, in memory).
+function youtubeIdFrom(raw) {
+  let u;
+  try { u = new URL(raw); } catch { return null; }
+  const host = u.hostname.replace(/^(www\.|m\.|music\.)/, '');
+  let id = null;
+  if (host === 'youtu.be') id = u.pathname.slice(1).split('/')[0];
+  else if (host === 'youtube.com' || host === 'youtube-nocookie.com') {
+    if (u.pathname === '/watch') id = u.searchParams.get('v');
+    else { const m = u.pathname.match(/^\/(?:shorts|embed|live)\/([^/]+)/); if (m) id = m[1]; }
+  }
+  return id && /^[A-Za-z0-9_-]{11}$/.test(id) ? id : null;
+}
+function watchStateOf(w) {
+  const pos = w.playing ? w.pos + (Date.now() - w.at) / 1000 : w.pos;
+  return { playing: w.playing, pos: Math.max(0, pos), rate: 1 };
+}
+function watchersOf(room, messageId) {
+  return [...room.clients].filter((c) => c.watching === messageId).map((c) => c.profile.name);
+}
+function broadcastWatch(code, messageId, extra = {}) {
+  const room = rooms.get(code);
+  if (!room || !room.watches || !room.watches.has(messageId)) return;
+  const w = room.watches.get(messageId);
+  broadcastRoom(code, { type: 'watch-state', messageId, ...watchStateOf(w), watchers: watchersOf(room, messageId), ...extra });
+}
+
 // 📖 /story: everyone adds one line at a time to a shared story.
 const STORY_LINE_MAX = 160;
 const STORY_MAX_LINES = 40;
@@ -5826,6 +5856,11 @@ function resolveServerCommand(text, room = null) {
     }
   }
   if (/^\/(?:icebreaker|question|qotd)\s*$/i.test(text)) return { kind: 'icebreaker', text: ICEBREAKERS[crypto.randomInt(ICEBREAKERS.length)] };
+  const watch = text.match(/^\/watch\s+(\S+)\s*([\s\S]*)$/i);
+  if (watch) {
+    const videoId = youtubeIdFrom(watch[1]);
+    if (videoId) return { kind: 'watch', text: watch[2].trim().slice(0, 120) || 'Watch together', meta: { videoId } };
+  }
   const story = text.match(/^\/story\s+([\s\S]+)$/i);
   if (story) {
     const first = story[1].replace(/\s+/g, ' ').trim().slice(0, STORY_LINE_MAX);
@@ -9771,6 +9806,43 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    if ((msg.type === 'watch-join' || msg.type === 'watch-control' || msg.type === 'watch-leave') && ws.room) {
+      const messageId = String(msg.messageId || '');
+      const room = rooms.get(ws.room);
+      if (!room) return;
+      if (msg.type === 'watch-leave') {
+        if (ws.watching === messageId) { ws.watching = null; broadcastWatch(ws.room, messageId); }
+        return;
+      }
+      // Player events can come in bursts (seek = pause + play), so a looser gate than chat.
+      const nowW = Date.now();
+      ws.watchHits = (ws.watchHits || []).filter((t) => nowW - t < 5000);
+      if (ws.watchHits.length >= 20) return;
+      ws.watchHits.push(nowW);
+      const target = db.getMessage(messageId);
+      if (!target || target.room_code !== ws.room || target.kind !== 'watch' || target.deleted) return;
+      room.watches = room.watches || new Map();
+      if (!room.watches.has(messageId)) room.watches.set(messageId, { playing: false, pos: 0, at: nowW });
+      const w = room.watches.get(messageId);
+      if (msg.type === 'watch-join') {
+        const prev = ws.watching;
+        ws.watching = messageId;
+        if (prev && prev !== messageId) broadcastWatch(ws.room, prev);
+        broadcastWatch(ws.room, messageId, { joined: ws.profile.name });
+        return;
+      }
+      if (ws.watching !== messageId) return;
+      const action = String(msg.action || '');
+      const pos = Number(msg.pos);
+      if (!['play', 'pause', 'seek'].includes(action) || !Number.isFinite(pos) || pos < 0 || pos > 24 * 3600) return;
+      w.pos = pos;
+      w.at = nowW;
+      if (action === 'play') w.playing = true;
+      if (action === 'pause') w.playing = false;
+      broadcastWatch(ws.room, messageId, { by: ws.profile.name, action });
+      return;
+    }
+
     if (msg.type === 'story-add' && ws.room) {
       if (isWsMsgRateLimited(ws)) return;
       const messageId = String(msg.messageId || '');
@@ -10211,7 +10283,7 @@ wss.on('connection', (ws, req) => {
       // supported poll feature and this generic free-text path has no shape validation, so
       // allowing it here would let a user corrupt their own poll the same way the message
       // handler above now guards against on creation.
-      if (!target || target.room_code !== ws.room || !ownsMessage(target, ws) || target.deleted || target.media_type === 'poll' || target.kind === 'roll' || target.kind === 'countdown' || target.kind === 'checklist' || target.kind === 'icebreaker' || target.kind === 'story') return;
+      if (!target || target.room_code !== ws.room || !ownsMessage(target, ws) || target.deleted || target.media_type === 'poll' || target.kind === 'roll' || target.kind === 'countdown' || target.kind === 'checklist' || target.kind === 'icebreaker' || target.kind === 'story' || target.kind === 'watch') return;
       db.updateMessageText(messageId, text);
       const entry = room && room.history.find((m) => m.id === messageId);
       if (entry) { entry.text = text; entry.edited = true; }

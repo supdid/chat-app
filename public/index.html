@@ -187,6 +187,17 @@
     <button type="button" id="viewer-next" class="viewer-nav viewer-next" aria-label="Next photo">›</button>
   </div>
 
+  <div id="watch-overlay" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="watch-title">
+    <div class="modal-card watch-card">
+      <div class="watch-top">
+        <h2 id="watch-title">📺 Watch together</h2>
+        <button type="button" id="watch-close" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+      <div class="watch-frame"><div id="watch-player"></div></div>
+      <p id="watch-status" class="watch-status">Loading…</p>
+    </div>
+  </div>
+
   <div id="stats-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="stats-title">
     <div class="modal-card stats-card">
       <h2 id="stats-title">📈 Room stats</h2>

@@ -1073,6 +1073,10 @@ function handleServerMessage(data) {
       rerenderPollCard(data.messageId);
       break;
 
+    case 'watch-state':
+      handleWatchState(data);
+      break;
+
     case 'story-updated': {
       const holder = document.querySelector(`#msg-${CSS.escape(data.messageId)} .story`);
       if (holder) renderStory(holder.parentNode, data.messageId, data.meta);
@@ -1091,6 +1095,7 @@ function handleServerMessage(data) {
       break;
 
     case 'joined-room':
+      if (watch && data.code !== currentRoomCode) closeWatch();
       currentRoomCode = data.code;
       currentRoomName = data.name || null;
       isHost = !!data.isHost;
@@ -1306,6 +1311,7 @@ function handleServerMessage(data) {
       break;
 
     case 'left-room':
+      closeWatch();
       currentRoomCode = null;
       isHost = false;
       messagesEl.innerHTML = '';
@@ -2425,6 +2431,11 @@ function renderMessage(data, opts = {}) {
       tag.textContent = '🧊 Icebreaker';
       text.prepend(tag);
     }
+    if (data.kind === 'watch' && data.meta && data.meta.videoId) {
+      text.textContent = '';
+      bubble.classList.add('watch-bubble');
+      text.appendChild(makeWatchCard(data));
+    }
     if (data.kind === 'story' && data.meta && Array.isArray(data.meta.lines)) {
       text.textContent = '';
       bubble.classList.add('story-bubble');
@@ -2776,7 +2787,7 @@ function makeMessageActions(data) {
     reportBtn.addEventListener('click', () => reportUser(data.name, data.id, data.text));
     actions.appendChild(reportBtn);
   }
-  if (isOwn && !data.mediaUrl && data.kind !== 'roll' && data.kind !== 'countdown' && data.kind !== 'checklist' && data.kind !== 'icebreaker' && data.kind !== 'story') {
+  if (isOwn && !data.mediaUrl && data.kind !== 'roll' && data.kind !== 'countdown' && data.kind !== 'checklist' && data.kind !== 'icebreaker' && data.kind !== 'story' && data.kind !== 'watch') {
     const editBtn = document.createElement('button');
     editBtn.type = 'button';
     editBtn.className = 'msg-action-btn';
@@ -9226,7 +9237,7 @@ messagesEl.addEventListener('touchstart', (e) => {
   const msgEl = e.target.closest('.message');
   // Swipes may start anywhere on the bubble (the action-button row covers a lot of it on phones);
   // double-taps only count on the message itself, not on a button/link/player.
-  if (!msgEl || msgEl.dataset.deleted || e.target.closest('input, textarea, video, audio, .poll-card, .fenced-code, .edit-message-form')) { swipe = null; return; }
+  if (!msgEl || msgEl.dataset.deleted || e.target.closest('input, textarea, label, video, audio, .poll-card, .checklist, .story-add, .fenced-code, .edit-message-form')) { swipe = null; return; }
   const t = e.touches[0];
   swipe = { el: msgEl, bubble: msgEl.querySelector('.bubble'), x: t.clientX, y: t.clientY, dx: 0, locked: null, onControl: !!e.target.closest('button, a, .spoiler') };
 }, { passive: true });
@@ -9612,6 +9623,7 @@ const WHATS_NEW = [
   ['📜', 'Tidier long messages', 'Really long messages fold up with a Show more button.'],
   ['⭐', 'Best of this room', 'Menu → ⭐ Best of this room: the most-reacted messages of all time.'],
   ['🏆', 'Game ranks on profiles', 'Profile cards show someone’s best placings on this room’s game leaderboards.'],
+  ['📺', 'Watch together', '/watch + a YouTube link — everyone who opens it watches in sync (play, pause and skip are shared).'],
   ['📖', 'Group stories', '/story Once upon a time… — then everyone adds one line at a time.'],
   ['🎯', 'Number game', '/numbergame — Valk picks a secret number, the whole room guesses with /guess 50.'],
   ['☑️', 'Shared checklists', '/todo Groceries: milk, eggs, bread — anyone in the room can tick things off or add more.'],
@@ -10040,6 +10052,127 @@ function makeBirthdayRow(acct) {
   return row;
 }
 
+// --- 📺 Watch together (/watch <YouTube link>) ---
+const watchOverlay = document.getElementById('watch-overlay');
+const watchStatusEl = document.getElementById('watch-status');
+let watch = null; // { messageId, videoId, player, ready, applyingUntil, last }
+function makeWatchCard(data) {
+  const card = document.createElement('div');
+  card.className = 'watch-card-msg';
+  const thumb = document.createElement('button');
+  thumb.type = 'button';
+  thumb.className = 'watch-thumb';
+  thumb.setAttribute('aria-label', `Watch together: ${data.text}`);
+  const img = document.createElement('img');
+  img.src = `https://i.ytimg.com/vi/${encodeURIComponent(data.meta.videoId)}/hqdefault.jpg`;
+  img.alt = '';
+  img.loading = 'lazy';
+  const play = document.createElement('span');
+  play.className = 'watch-play';
+  play.textContent = '▶';
+  thumb.append(img, play);
+  const title = document.createElement('div');
+  title.className = 'watch-title';
+  title.textContent = `📺 ${data.text}`;
+  const watchers = document.createElement('div');
+  watchers.className = 'watch-watchers';
+  watchers.dataset.watchId = data.id;
+  watchers.textContent = 'Tap to watch in sync with the room';
+  thumb.addEventListener('click', () => openWatch(data.id, data.meta.videoId, data.text));
+  card.append(thumb, title, watchers);
+  return card;
+}
+let ytApiPromise = null;
+function loadYouTubeApi() {
+  if (window.YT && window.YT.Player) return Promise.resolve();
+  if (ytApiPromise) return ytApiPromise;
+  ytApiPromise = new Promise((resolve, reject) => {
+    const prev = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => { if (prev) try { prev(); } catch { /* ignore */ } resolve(); };
+    const s = document.createElement('script');
+    s.src = 'https://www.youtube.com/iframe_api';
+    s.onerror = () => { ytApiPromise = null; reject(new Error('YouTube could not load')); };
+    document.head.appendChild(s);
+  });
+  return ytApiPromise;
+}
+async function openWatch(messageId, videoId, title) {
+  if (watch) closeWatch();
+  document.getElementById('watch-title').textContent = `📺 ${title}`;
+  watchStatusEl.textContent = 'Loading the player…';
+  watchOverlay.classList.remove('hidden');
+  watch = { messageId, videoId, player: null, ready: false, applyingUntil: 0, last: null, pending: null };
+  const mine = watch;
+  try { await loadYouTubeApi(); } catch { watchStatusEl.textContent = '⚠️ YouTube couldn’t load. Check your connection.'; return; }
+  if (watch !== mine) return;
+  document.getElementById('watch-player').replaceWith(Object.assign(document.createElement('div'), { id: 'watch-player' }));
+  mine.player = new YT.Player('watch-player', {
+    videoId,
+    playerVars: { playsinline: 1, rel: 0, modestbranding: 1 },
+    events: {
+      onReady: () => {
+        mine.ready = true;
+        wsSendOrWarnDisconnected({ type: 'watch-join', messageId });
+      },
+      onStateChange: (e) => {
+        if (watch !== mine || Date.now() < mine.applyingUntil) return;
+        const pos = mine.player.getCurrentTime();
+        if (e.data === YT.PlayerState.PLAYING) sendWatch('play', pos);
+        else if (e.data === YT.PlayerState.PAUSED) sendWatch('pause', pos);
+      },
+    },
+  });
+}
+function sendWatch(action, pos) {
+  if (!watch) return;
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'watch-control', messageId: watch.messageId, action, pos }));
+}
+function applyWatchState(state) {
+  const w = watch;
+  if (!w || !w.ready) { if (w) w.pending = state; return; }
+  const p = w.player;
+  const cur = p.getCurrentTime();
+  w.applyingUntil = Date.now() + 1200;
+  if (Math.abs(cur - state.pos) > 1.5) p.seekTo(state.pos, true);
+  const ps = p.getPlayerState();
+  if (state.playing && ps !== YT.PlayerState.PLAYING && ps !== YT.PlayerState.BUFFERING) p.playVideo();
+  if (!state.playing && ps === YT.PlayerState.PLAYING) p.pauseVideo();
+}
+function handleWatchState(data) {
+  const names = data.watchers || [];
+  document.querySelectorAll(`.watch-watchers[data-watch-id="${CSS.escape(data.messageId)}"]`).forEach((el) => {
+    el.textContent = names.length ? `👀 ${names.length} watching: ${names.slice(0, 4).join(', ')}${names.length > 4 ? '…' : ''}` : 'Tap to watch in sync with the room';
+  });
+  if (!watch || watch.messageId !== data.messageId) return;
+  watch.last = { playing: data.playing, pos: data.pos, at: Date.now() };
+  watchStatusEl.textContent = `👀 Watching: ${names.join(', ') || 'just you'}`;
+  if (data.by && myProfile && data.by !== myProfile.name && data.action) {
+    showAppToast(data.action === 'pause' ? `⏸ ${data.by} paused` : `▶ ${data.by} pressed play`);
+  }
+  if (data.by && myProfile && data.by === myProfile.name) return; // our own change, already applied
+  applyWatchState(data);
+}
+// If someone skips around while the video is playing, tell the room.
+setInterval(() => {
+  const w = watch;
+  if (!w || !w.ready || !w.last || Date.now() < w.applyingUntil) return;
+  if (w.pending) { const s = w.pending; w.pending = null; applyWatchState(s); return; }
+  const p = w.player;
+  if (p.getPlayerState() !== YT.PlayerState.PLAYING || !w.last.playing) return;
+  const expected = w.last.pos + (Date.now() - w.last.at) / 1000;
+  if (Math.abs(p.getCurrentTime() - expected) > 3) sendWatch('play', p.getCurrentTime());
+}, 1000);
+function closeWatch() {
+  if (!watch) return;
+  const id = watch.messageId;
+  try { if (watch.player && watch.player.destroy) watch.player.destroy(); } catch { /* ignore */ }
+  watch = null;
+  watchOverlay.classList.add('hidden');
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'watch-leave', messageId: id }));
+}
+document.getElementById('watch-close').addEventListener('click', closeWatch);
+watchOverlay.addEventListener('click', (e) => { if (e.target === watchOverlay) closeWatch(); });
+
 // --- 📖 Group stories (/story) ---
 const STORY_COLORS = ['#5bb2ff', '#34e89e', '#ffb347', '#ff7eb6', '#b18cff', '#3fe0d0', '#ff6b6b', '#f2c230'];
 function storyColor(name) {
@@ -10180,6 +10313,7 @@ const SLASH_COMMANDS = [
   ['/pick', 'pizza, tacos or sushi', 'Let Valk choose'],
   ['/me', 'waves', 'Say an action'],
   ['/todo', 'Groceries: milk, eggs, bread', 'Shared checklist anyone can tick'],
+  ['/watch', 'https://youtu.be/…', 'Watch a YouTube video in sync with the room'],
   ['/story', 'Once upon a time, a cat found a map…', 'Start a story everyone adds a line to'],
   ['/rps', 'rock', 'Rock paper scissors vs Valk'],
   ['/number', '1-100', 'Random number'],

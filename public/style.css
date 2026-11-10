@@ -3192,3 +3192,18 @@ body.hide-presence-system .system.presence-system { display: none; }
 .story-line { border-bottom: 2px solid var(--writer, #5bb2ff); padding-bottom: 1px; }
 .story-note { margin-top: 0.35rem; font-size: 0.8rem; color: var(--text-subtle); font-style: italic; }
 .story-add input { width: 100%; margin-top: 0.45rem; padding: 0.35rem 0.5rem; border-radius: 8px; border: 1px dashed rgba(127,127,127,0.45); background: transparent; color: inherit; font: inherit; font-size: 0.88rem; }
+
+/* 📺 Watch together */
+.watch-bubble { border-left: 3px solid #ff4d4d; }
+.watch-card-msg { display: flex; flex-direction: column; gap: 0.35rem; width: min(320px, 70vw); }
+.watch-thumb { position: relative; padding: 0; border: none; border-radius: 10px; overflow: hidden; cursor: pointer; background: #000; aspect-ratio: 16 / 9; }
+.watch-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.watch-play { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 3.2rem; height: 3.2rem; border-radius: 50%; background: rgba(255, 0, 0, 0.88); color: #fff; font-size: 1.3rem; display: flex; align-items: center; justify-content: center; padding-left: 0.2rem; }
+.watch-title { font-weight: 700; }
+.watch-watchers { font-size: 0.78rem; color: var(--text-subtle); }
+.watch-card { width: min(860px, 96vw); max-width: none; }
+.watch-top { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.watch-top h2 { margin: 0; font-size: 1.05rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.watch-frame { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 10px; overflow: hidden; margin: 0.6rem 0; }
+.watch-frame iframe, .watch-frame #watch-player { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.watch-status { margin: 0; font-size: 0.85rem; color: var(--text-muted); }

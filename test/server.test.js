@@ -8102,6 +8102,37 @@ describe('group stories (2026-11-09)', () => {
   });
 });
 
+describe('watch together (2026-11-09)', () => {
+  test('/watch makes a synced player card; play/pause/position are shared with everyone watching', async () => {
+    const { ws: a, code } = await joinRoom('WatchA');
+    const b = await joinExistingRoom('WatchB', code);
+    send(a, { type: 'message', text: '/watch https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=5 Movie night' });
+    const m = await waitFor(b, (x) => x.type === 'message' && x.kind === 'watch');
+    assert.deepEqual(m.meta, { videoId: 'dQw4w9WgXcQ' });
+    assert.equal(m.text, 'Movie night');
+    send(a, { type: 'message', text: '/watch https://evil.example/watch?v=dQw4w9WgXcQ' });
+    assert.ok(!(await waitFor(a, (x) => x.type === 'message' && /evil/.test(x.text))).kind, 'only YouTube links');
+
+    send(b, { type: 'watch-control', messageId: m.id, action: 'play', pos: 10 });
+    send(a, { type: 'watch-join', messageId: m.id });
+    let st = await waitFor(b, (x) => x.type === 'watch-state' && x.joined === 'WatchA');
+    assert.deepEqual([st.playing, st.pos, st.watchers], [false, 0, ['WatchA']], 'non-watchers cannot control it');
+    send(b, { type: 'watch-join', messageId: m.id });
+    await waitFor(a, (x) => x.type === 'watch-state' && x.watchers.length === 2);
+    send(a, { type: 'watch-control', messageId: m.id, action: 'play', pos: 42 });
+    st = await waitFor(b, (x) => x.type === 'watch-state' && x.action === 'play');
+    assert.equal(st.playing, true);
+    assert.ok(st.pos >= 42 && st.pos < 43);
+    await sleep(600);
+    send(b, { type: 'watch-control', messageId: m.id, action: 'pause', pos: 42.6 });
+    st = await waitFor(a, (x) => x.type === 'watch-state' && x.action === 'pause');
+    assert.deepEqual([st.playing, st.pos, st.by], [false, 42.6, 'WatchB']);
+    send(b, { type: 'watch-leave', messageId: m.id });
+    assert.deepEqual((await waitFor(a, (x) => x.type === 'watch-state' && x.watchers.length === 1)).watchers, ['WatchA']);
+    a.close(); b.close();
+  });
+});
+
 describe('poll upgrades (2026-11-08)', () => {
   const postPoll = (ws, def) => send(ws, { type: 'message', text: JSON.stringify(def), mediaUrl: 'poll', mediaType: 'poll' });
 
