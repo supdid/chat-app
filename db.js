@@ -390,6 +390,11 @@ db.exec(`
     at INTEGER,
     PRIMARY KEY (account_id, url)
   );
+  CREATE TABLE IF NOT EXISTS message_secrets (
+    message_id TEXT PRIMARY KEY,
+    secret TEXT
+  );
+
   -- "/later 30m text": a message that posts itself at send_at.
   CREATE TABLE IF NOT EXISTS scheduled_messages (
     id TEXT PRIMARY KEY,
@@ -1908,6 +1913,16 @@ function getPollMultiVotes(messageId) {
 
 // Poll messages keep their definition as JSON in `text`; closing a poll rewrites it without
 // marking the message "edited" or saving an edit-history version.
+// Hidden answers for message games (e.g. which of "two truths and a lie" is the lie) — kept out
+// of messages.meta so they can never be sent to anyone before the reveal.
+function setMessageSecret(messageId, secret) {
+  db.prepare('INSERT OR REPLACE INTO message_secrets (message_id, secret) VALUES (?, ?)').run(messageId, String(secret));
+}
+function getMessageSecret(messageId) {
+  const r = db.prepare('SELECT secret FROM message_secrets WHERE message_id = ?').get(messageId);
+  return r ? r.secret : null;
+}
+
 function setMessageMeta(messageId, meta) {
   db.prepare('UPDATE messages SET meta = ? WHERE id = ?').run(meta ? JSON.stringify(meta) : null, messageId);
 }
@@ -2862,6 +2877,7 @@ function getRoomMediaUrls(code) {
 const deleteRoomCascade = db.transaction((code) => {
   db.prepare('DELETE FROM reactions WHERE message_id IN (SELECT id FROM messages WHERE room_code = ?)').run(code);
   db.prepare('DELETE FROM poll_votes WHERE message_id IN (SELECT id FROM messages WHERE room_code = ?)').run(code);
+  db.prepare('DELETE FROM message_secrets WHERE message_id IN (SELECT id FROM messages WHERE room_code = ?)').run(code);
   db.prepare('DELETE FROM poll_multi_votes WHERE message_id IN (SELECT id FROM messages WHERE room_code = ?)').run(code);
   db.prepare('DELETE FROM message_edits WHERE message_id IN (SELECT id FROM messages WHERE room_code = ?)').run(code);
   db.prepare('DELETE FROM messages WHERE room_code = ?').run(code);
@@ -3194,6 +3210,8 @@ module.exports = {
   getPollMultiVotes,
   setPollText,
   setMessageMeta,
+  setMessageSecret,
+  getMessageSecret,
   getMessagesBetween,
   getReactionsForMessages,
   getRoomCohosts,

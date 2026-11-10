@@ -1074,6 +1074,13 @@ function handleServerMessage(data) {
       rerenderPollCard(data.messageId);
       break;
 
+    case 'ttal-updated': {
+      const holder = document.querySelector(`#msg-${CSS.escape(data.messageId)} .ttal`);
+      if (holder) renderTtal(holder.parentNode, data.messageId, data.meta, holder.dataset.own === '1');
+      if (data.meta.revealed && myProfile && data.by !== myProfile.name) showAppToast(`🤥 ${data.by} revealed the lie!`);
+      break;
+    }
+
     case 'watch-state':
       handleWatchState(data);
       break;
@@ -2445,6 +2452,11 @@ function renderMessage(data, opts = {}) {
       tag.textContent = '🧊 Icebreaker';
       text.prepend(tag);
     }
+    if (data.kind === 'ttal' && data.meta && Array.isArray(data.meta.statements)) {
+      text.textContent = '';
+      bubble.classList.add('ttal-bubble');
+      renderTtal(text, data.id, data.meta, isOwn);
+    }
     if (data.kind === 'watch' && data.meta && data.meta.videoId) {
       text.textContent = '';
       bubble.classList.add('watch-bubble');
@@ -2801,7 +2813,7 @@ function makeMessageActions(data) {
     reportBtn.addEventListener('click', () => reportUser(data.name, data.id, data.text));
     actions.appendChild(reportBtn);
   }
-  if (isOwn && !data.mediaUrl && data.kind !== 'roll' && data.kind !== 'countdown' && data.kind !== 'checklist' && data.kind !== 'icebreaker' && data.kind !== 'story' && data.kind !== 'watch') {
+  if (isOwn && !data.mediaUrl && data.kind !== 'roll' && data.kind !== 'countdown' && data.kind !== 'checklist' && data.kind !== 'icebreaker' && data.kind !== 'story' && data.kind !== 'watch' && data.kind !== 'ttal') {
     const editBtn = document.createElement('button');
     editBtn.type = 'button';
     editBtn.className = 'msg-action-btn';
@@ -9638,6 +9650,7 @@ const WHATS_NEW = [
   ['📜', 'Tidier long messages', 'Really long messages fold up with a Show more button.'],
   ['⭐', 'Best of this room', 'Menu → ⭐ Best of this room: the most-reacted messages of all time.'],
   ['🏆', 'Game ranks on profiles', 'Profile cards show someone’s best placings on this room’s game leaderboards.'],
+  ['🤥', 'Two truths and a lie', '/2truths I have a cat | *I met a celebrity | I can juggle — the * marks your lie; the room guesses, you reveal.'],
   ['🧩', 'Sudoku', 'New game: fresh puzzles in Easy, Medium and Hard, with notes mode and a fastest-times board. /play sudoku'],
   ['📺', 'Watch together', '/watch + a YouTube link — everyone who opens it watches in sync (play, pause and skip are shared).'],
   ['📖', 'Group stories', '/story Once upon a time… — then everyone adds one line at a time.'],
@@ -10074,6 +10087,65 @@ function makeBirthdayRow(acct) {
   return row;
 }
 
+// --- 🤥 Two truths and a lie (/2truths a | *lie | c) ---
+function renderTtal(container, messageId, meta, own) {
+  container.textContent = '';
+  const box = document.createElement('div');
+  box.className = 'ttal';
+  box.dataset.own = own ? '1' : '';
+  const votes = meta.votes || {};
+  const voters = Object.keys(votes);
+  const myVote = myProfile && Object.prototype.hasOwnProperty.call(votes, myProfile.name) ? votes[myProfile.name] : null;
+  const head = document.createElement('div');
+  head.className = 'ttal-head';
+  head.textContent = meta.revealed ? '🤥 Two truths and a lie — revealed!' : own ? '🤥 Your two truths and a lie — waiting for guesses' : '🤥 Two truths and a lie — tap the one you think is the lie';
+  box.appendChild(head);
+  meta.statements.forEach((t, i) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'ttal-option';
+    const n = voters.filter((v) => votes[v] === i).length;
+    const label = document.createElement('span');
+    label.textContent = t;
+    btn.appendChild(label);
+    if (voters.length && (meta.revealed || myVote !== null || own)) {
+      const c = document.createElement('small');
+      c.className = 'ttal-count';
+      c.textContent = `${n} vote${n === 1 ? '' : 's'}`;
+      btn.appendChild(c);
+    }
+    if (myVote === i) btn.classList.add('mine');
+    if (meta.revealed) {
+      btn.disabled = true;
+      btn.classList.add(i === meta.lie ? 'lie' : 'truth');
+      const tag = document.createElement('b');
+      tag.className = 'ttal-tag';
+      tag.textContent = i === meta.lie ? '🤥 LIE' : '✅ true';
+      btn.prepend(tag);
+    } else if (own) {
+      btn.disabled = true;
+    } else {
+      btn.addEventListener('click', () => wsSendOrWarnDisconnected({ type: 'ttal-vote', messageId, index: i }));
+    }
+    box.appendChild(btn);
+  });
+  if (meta.revealed) {
+    const right = voters.filter((v) => votes[v] === meta.lie);
+    const res = document.createElement('div');
+    res.className = 'ttal-result';
+    res.textContent = !voters.length ? 'Nobody guessed!' : right.length ? `🎯 Spotted it: ${right.join(', ')}` : '😈 Fooled everyone!';
+    box.appendChild(res);
+  } else if (own || isMod()) {
+    const reveal = document.createElement('button');
+    reveal.type = 'button';
+    reveal.className = 'small-btn ttal-reveal';
+    reveal.textContent = `Reveal the lie${voters.length ? ` (${voters.length} guessed)` : ''}`;
+    reveal.addEventListener('click', () => wsSendOrWarnDisconnected({ type: 'ttal-reveal', messageId }));
+    box.appendChild(reveal);
+  }
+  container.appendChild(box);
+}
+
 // --- 📺 Watch together (/watch <YouTube link>) ---
 const watchOverlay = document.getElementById('watch-overlay');
 const watchStatusEl = document.getElementById('watch-status');
@@ -10335,6 +10407,7 @@ const SLASH_COMMANDS = [
   ['/pick', 'pizza, tacos or sushi', 'Let Valk choose'],
   ['/me', 'waves', 'Say an action'],
   ['/todo', 'Groceries: milk, eggs, bread', 'Shared checklist anyone can tick'],
+  ['/2truths', 'I have a cat | *I met a celebrity | I can juggle', 'Two truths and a lie (* marks the lie, only you see it)'],
   ['/watch', 'https://youtu.be/…', 'Watch a YouTube video in sync with the room'],
   ['/story', 'Once upon a time, a cat found a map…', 'Start a story everyone adds a line to'],
   ['/rps', 'rock', 'Rock paper scissors vs Valk'],

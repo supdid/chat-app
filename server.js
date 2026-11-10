@@ -206,6 +206,7 @@ function messagePreviewText(entry) {
   if (entry.kind === 'me') return `* ${entry.name} ${entry.text}`;
   if (entry.kind === 'checklist') return `☑️ Checklist: ${entry.text}`;
   if (entry.kind === 'watch') return `📺 Watch together: ${entry.text}`;
+  if (entry.kind === 'ttal') return '🤥 Two truths and a lie — can you spot the lie?';
   if (entry.kind === 'story' && entry.meta) return `📖 Story: ${entry.meta.lines[0].t}`;
   return entry.text || (entry.mediaType ? `sent a${entry.mediaType === 'image' ? 'n' : ''} ${entry.mediaType}` : '');
 }
@@ -5858,6 +5859,15 @@ function resolveServerCommand(text, room = null) {
     }
   }
   if (/^\/(?:icebreaker|question|qotd)\s*$/i.test(text)) return { kind: 'icebreaker', text: ICEBREAKERS[crypto.randomInt(ICEBREAKERS.length)] };
+  const ttal = text.match(/^\/(?:2truths|twotruths|ttal)\s+([\s\S]+)$/i);
+  if (ttal) {
+    const parts = ttal[1].split('|').map((p) => p.trim()).filter(Boolean);
+    const starred = parts.map((p, i) => (p.startsWith('*') ? i : -1)).filter((i) => i >= 0);
+    if (parts.length === 3 && starred.length === 1) {
+      const statements = parts.map((p) => p.replace(/^\*\s*/, '').slice(0, 140));
+      if (statements.every(Boolean)) return { kind: 'ttal', text: 'Two truths and a lie', meta: { statements, votes: {}, revealed: false }, secret: String(starred[0]) };
+    }
+  }
   const watch = text.match(/^\/watch\s+(\S+)\s*([\s\S]*)$/i);
   if (watch) {
     const videoId = youtubeIdFrom(watch[1]);
@@ -9845,6 +9855,35 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    if ((msg.type === 'ttal-vote' || msg.type === 'ttal-reveal') && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      const messageId = String(msg.messageId || '');
+      const target = db.getMessage(messageId);
+      if (!target || target.room_code !== ws.room || target.kind !== 'ttal' || target.deleted) return;
+      let meta;
+      try { meta = JSON.parse(target.meta); } catch { return; }
+      if (!meta || !Array.isArray(meta.statements) || meta.revealed) return;
+      if (msg.type === 'ttal-vote') {
+        if (ownsMessage(target, ws)) { send(ws, { type: 'error', message: 'You know the answer already! 😉' }); return; }
+        const i = Math.floor(+msg.index);
+        if (!Number.isInteger(i) || i < 0 || i > 2) return;
+        meta.votes = meta.votes || {};
+        meta.votes[ws.profile.name] = i;
+      } else {
+        if (!ownsMessage(target, ws) && !isRoomMod(db.getRoom(ws.room), ws)) return;
+        const lie = Number(db.getMessageSecret(messageId));
+        if (!Number.isInteger(lie)) return;
+        meta.revealed = true;
+        meta.lie = lie;
+      }
+      db.setMessageMeta(messageId, meta);
+      const liveRoom = rooms.get(ws.room);
+      const entry = liveRoom && liveRoom.history.find((m) => m.id === messageId);
+      if (entry) entry.meta = meta;
+      broadcastRoom(ws.room, { type: 'ttal-updated', messageId, meta, by: ws.profile.name });
+      return;
+    }
+
     if (msg.type === 'story-add' && ws.room) {
       if (isWsMsgRateLimited(ws)) return;
       const messageId = String(msg.messageId || '');
@@ -10195,9 +10234,10 @@ wss.on('connection', (ws, req) => {
       // kind 'roll' tells clients to show it as a verified roll. /me becomes an action line.
       let kind = null;
       let meta = null;
+      let secret = null;
       if (!msg.mediaType && !msg.gifId) {
         const cmd = resolveServerCommand(text, room);
-        if (cmd) { text = cmd.text; kind = cmd.kind; meta = cmd.meta || null; }
+        if (cmd) { text = cmd.text; kind = cmd.kind; meta = cmd.meta || null; secret = cmd.secret != null ? cmd.secret : null; }
       }
       // A GIF from the GIF picker arrives as just its GIPHY id; the URL is built here.
       const gifUrl = typeof msg.gifId === 'string' && GIF_ID_RE.test(msg.gifId) ? gifUrlForId(msg.gifId) : null;
@@ -10227,6 +10267,7 @@ wss.on('connection', (ws, req) => {
       // Scorpture overlays route elsewhere in this file.
       claimUpload(mediaUrl);
       if (kind === 'checklist' && meta) meta.items.forEach((it) => { it.t = applyWordFilter(slowRoom, it.t); });
+      if (kind === 'ttal' && meta) meta.statements = meta.statements.map((t) => applyWordFilter(slowRoom, t));
       if (kind === 'story' && meta) { meta.lines[0].by = ws.profile.name; meta.lines[0].t = applyWordFilter(slowRoom, meta.lines[0].t); }
 
       let replyToId = null;
@@ -10256,6 +10297,7 @@ wss.on('connection', (ws, req) => {
       room.history.push(entry);
       if (room.history.length > HISTORY_LIMIT) room.history.shift();
       db.insertMessage({ id: entry.id, roomCode: ws.room, name: entry.name, text: entry.text, mediaUrl: entry.mediaUrl, mediaType: entry.mediaType, replyToId, at: entry.at, accountId: ws.accountId || null, kind, meta });
+      if (secret != null) db.setMessageSecret(entry.id, secret);
       db.upsertRoom(ws.room);
       broadcastRoom(ws.room, entry);
       pushNewMessage(ws.room, entry);
@@ -10285,7 +10327,7 @@ wss.on('connection', (ws, req) => {
       // supported poll feature and this generic free-text path has no shape validation, so
       // allowing it here would let a user corrupt their own poll the same way the message
       // handler above now guards against on creation.
-      if (!target || target.room_code !== ws.room || !ownsMessage(target, ws) || target.deleted || target.media_type === 'poll' || target.kind === 'roll' || target.kind === 'countdown' || target.kind === 'checklist' || target.kind === 'icebreaker' || target.kind === 'story' || target.kind === 'watch') return;
+      if (!target || target.room_code !== ws.room || !ownsMessage(target, ws) || target.deleted || target.media_type === 'poll' || target.kind === 'roll' || target.kind === 'countdown' || target.kind === 'checklist' || target.kind === 'icebreaker' || target.kind === 'story' || target.kind === 'watch' || target.kind === 'ttal') return;
       db.updateMessageText(messageId, text);
       const entry = room && room.history.find((m) => m.id === messageId);
       if (entry) { entry.text = text; entry.edited = true; }
@@ -10595,7 +10637,11 @@ function sendDueScheduledMessages() {
         scheduled: true,
         flair: db.accountFlair(r.account_id),
       };
+      if (entry.kind === 'story' && entry.meta) entry.meta.lines[0] = { t: applyWordFilter(dbRoom, entry.meta.lines[0].t), by: r.name };
+      if (entry.kind === 'checklist' && entry.meta) entry.meta.items.forEach((it) => { it.t = applyWordFilter(dbRoom, it.t); });
+      if (entry.kind === 'ttal' && entry.meta) entry.meta.statements = entry.meta.statements.map((t) => applyWordFilter(dbRoom, t));
       db.insertMessage({ id: entry.id, roomCode: r.room_code, name: entry.name, text: entry.text, mediaUrl: null, mediaType: null, replyToId: null, at: entry.at, accountId: r.account_id || null, kind: entry.kind, meta: entry.meta });
+      if (cmd && cmd.secret != null) db.setMessageSecret(entry.id, cmd.secret);
       db.upsertRoom(r.room_code);
       if (room) {
         room.history.push(entry);

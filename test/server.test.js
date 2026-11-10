@@ -8135,6 +8135,44 @@ describe('watch together (2026-11-09)', () => {
   });
 });
 
+describe('two truths and a lie (2026-11-09)', () => {
+  test('the lie stays secret until the author reveals it; others vote, the author cannot', async () => {
+    const { ws: a, code } = await joinRoom('TtalA');
+    const b = await joinExistingRoom('TtalB', code);
+    const c = await joinExistingRoom('TtalC', code);
+    const raw = [];
+    b.on('message', (r) => raw.push(String(r)));
+    send(a, { type: 'message', text: '/2truths I have a cat | *I met the Queen | I can juggle' });
+    const m = await waitFor(b, (x) => x.type === 'message' && x.kind === 'ttal');
+    assert.deepEqual(m.meta, { statements: ['I have a cat', 'I met the Queen', 'I can juggle'], votes: {}, revealed: false });
+    send(a, { type: 'ttal-vote', messageId: m.id, index: 0 });
+    assert.match((await waitFor(a, (x) => x.type === 'error')).message, /know the answer/);
+    send(c, { type: 'ttal-reveal', messageId: m.id }); // not the author
+    send(b, { type: 'ttal-vote', messageId: m.id, index: 1 });
+    await waitFor(a, (x) => x.type === 'ttal-updated' && x.meta.votes.TtalB === 1);
+    send(c, { type: 'ttal-vote', messageId: m.id, index: 2 });
+    let u = await waitFor(a, (x) => x.type === 'ttal-updated' && x.meta.votes.TtalC === 2);
+    assert.equal(u.meta.revealed, false);
+    assert.equal(u.meta.lie, undefined);
+    const d = await joinExistingRoom('TtalD', code);
+    assert.ok(!raw.some((r) => /"lie"/.test(r) || /\*I met/.test(r)), 'nothing sent before the reveal contains the answer');
+    send(a, { type: 'ttal-reveal', messageId: m.id });
+    u = await waitFor(b, (x) => x.type === 'ttal-updated' && x.meta.revealed);
+    assert.equal(u.meta.lie, 1);
+    send(c, { type: 'ttal-vote', messageId: m.id, index: 0 });
+    await sleep(300);
+    a.close(); b.close(); c.close(); d.close();
+  });
+
+  test('/2truths needs exactly three parts with exactly one starred', async () => {
+    const { ws: a } = await joinRoom('TtalBad');
+    send(a, { type: 'message', text: '/2truths one | two | three' });
+    const plain = await waitFor(a, (x) => x.type === 'message' && /one \| two/.test(x.text));
+    assert.ok(!plain.kind);
+    a.close();
+  });
+});
+
 describe('poll upgrades (2026-11-08)', () => {
   const postPoll = (ws, def) => send(ws, { type: 'message', text: JSON.stringify(def), mediaUrl: 'poll', mediaType: 'poll' });
 
