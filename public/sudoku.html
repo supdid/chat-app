@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Sudoku</title>
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="minesweeper.css">
+<link rel="stylesheet" href="sudoku.css">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0a1420">
+<link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+</head>
+<body>
+  <a id="back-link" href="index.html">&larr; Back to chat</a>
+
+  <main id="app">
+    <header class="ms-header">
+      <h1>🧩 Sudoku</h1>
+      <p class="tagline">Fill every row, column and 3×3 box with 1–9.</p>
+    </header>
+
+    <div class="controls">
+      <div class="levels" role="radiogroup" aria-label="Difficulty">
+        <button type="button" class="level" data-level="easy" role="radio">Easy</button>
+        <button type="button" class="level" data-level="medium" role="radio">Medium</button>
+        <button type="button" class="level" data-level="hard" role="radio">Hard</button>
+      </div>
+      <div class="hud">
+        <span id="mistakes" title="Mistakes">❌ 0</span>
+        <button id="face-btn" type="button" aria-label="New puzzle">🔄</button>
+        <span id="timer" title="Time">⏱ 0:00</span>
+      </div>
+    </div>
+
+    <div id="board" class="sd-board" role="grid" aria-label="Sudoku grid"></div>
+
+    <div class="sd-pad" id="pad">
+      <button type="button" data-n="1">1</button><button type="button" data-n="2">2</button><button type="button" data-n="3">3</button>
+      <button type="button" data-n="4">4</button><button type="button" data-n="5">5</button><button type="button" data-n="6">6</button>
+      <button type="button" data-n="7">7</button><button type="button" data-n="8">8</button><button type="button" data-n="9">9</button>
+      <button type="button" data-n="0" class="sd-erase" aria-label="Erase">⌫</button>
+      <button type="button" id="notes-btn" class="sd-notes" aria-pressed="false">✏️ Notes</button>
+    </div>
+    <p class="hint">Tap a square, then a number. Notes mode pencils in small guesses. Keyboard: arrows + 1–9, N for notes.</p>
+    <div id="result" class="result hidden"></div>
+
+    <section class="panel">
+      <h2>🏆 Fastest in this room — <span id="lb-level">Easy</span></h2>
+      <ol id="leaderboard" class="results-list"><li class="muted">Loading…</li></ol>
+    </section>
+  </main>
+
+  <script src="error-report.js"></script>
+  <script src="sudoku.js"></script>
+  <script src="update-prompt.js"></script>
+</body>
+</html>

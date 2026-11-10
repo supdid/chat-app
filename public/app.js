@@ -80,6 +80,7 @@ const quickdrawLink = document.getElementById('quickdraw-link');
 const minesweeperLink = document.getElementById('minesweeper-link');
 const memoryLink = document.getElementById('memory-link');
 const echoLink = document.getElementById('echo-link');
+const sudokuLink = document.getElementById('sudoku-link');
 const snakeLink = document.getElementById('snake-link');
 const g2048Link = document.getElementById('g2048-link');
 const whiteboardLink = document.getElementById('whiteboard-link');
@@ -492,7 +493,7 @@ let activeReactionPopover = null;
 
 // --- Minigame activity badges ---
 const roomActivity = new Map(); // name -> game code ('bc'|'gw'|'dg')
-const ACTIVITY_BADGES = { bc: '🏝️', gw: '🔺', dg: '🖍️', wb: '🖌️', tv: '❓', tt: '⭕', ch: '♟️', hm: '🪢', sk: '🐍', tf: '🔢', fp: '🛩️', sw: '🕸️', fg: '🔫', wg: '🟩', sf: '🥊', he: '👋', tr: '⌨️', qd: '⚡', mi: '💣', mm: '🧠', ec: '🔁' };
+const ACTIVITY_BADGES = { bc: '🏝️', gw: '🔺', dg: '🖍️', wb: '🖌️', tv: '❓', tt: '⭕', ch: '♟️', hm: '🪢', sk: '🐍', tf: '🔢', fp: '🛩️', sw: '🕸️', fg: '🔫', wg: '🟩', sf: '🥊', he: '👋', tr: '⌨️', qd: '⚡', mi: '💣', mm: '🧠', ec: '🔁', sd: '🧩' };
 let lastRoomUsers = [];
 // Found by the room-chat client-side correctness audit: tracks the single currently-open message
 // edit form ({ messageId, restore }), so starting a second edit can auto-cancel the first instead
@@ -3675,6 +3676,7 @@ function updateGameLinks() {
   minesweeperLink.href = `minesweeper.html${params}`;
   memoryLink.href = `memory.html${params}`;
   echoLink.href = `echo.html${params}`;
+  sudokuLink.href = `sudoku.html${params}`;
   snakeLink.href = `snake.html${params}`;
   g2048Link.href = `2048.html${params}`;
   whiteboardLink.href = `whiteboard.html${params}`;
@@ -8115,7 +8117,7 @@ function renderProfileCard(data) {
       const label = document.createElement('span');
       label.textContent = `${medal} ${GAME_LABELS[g.game] || g.game}`;
       const sc = document.createElement('b');
-      sc.textContent = TIME_SCORE_GAMES.has(g.game) ? `${((100000 - g.score) / 10).toFixed(1)}s` : Number(g.score).toLocaleString();
+      sc.textContent = TIME_SCORE_GAMES.has(g.game) ? formatTimeScore(g.score) : Number(g.score).toLocaleString();
       row.append(label, sc);
       ranks.appendChild(row);
     }
@@ -9636,6 +9638,7 @@ const WHATS_NEW = [
   ['📜', 'Tidier long messages', 'Really long messages fold up with a Show more button.'],
   ['⭐', 'Best of this room', 'Menu → ⭐ Best of this room: the most-reacted messages of all time.'],
   ['🏆', 'Game ranks on profiles', 'Profile cards show someone’s best placings on this room’s game leaderboards.'],
+  ['🧩', 'Sudoku', 'New game: fresh puzzles in Easy, Medium and Hard, with notes mode and a fastest-times board. /play sudoku'],
   ['📺', 'Watch together', '/watch + a YouTube link — everyone who opens it watches in sync (play, pause and skip are shared).'],
   ['📖', 'Group stories', '/story Once upon a time… — then everyone adds one line at a time.'],
   ['🎯', 'Number game', '/numbergame — Valk picks a secret number, the whole room guesses with /guess 50.'],
@@ -9891,7 +9894,7 @@ const GAME_ALIASES = {
   typerace: ['type', 'typing', 'race'], quickdraw: ['quick', 'quickdraw', 'reaction', 'qd', 'fast'], wordguess: ['wordle', 'word', 'wg'], hangman: ['hang'], trivia: ['quiz'],
   pictionary: ['draw', 'drawing'], chess: [], tictactoe: ['ttt', 'xo', 'connect4', 'connectfour'], blockbattle: ['bb', 'block'],
   buildcraft: ['build', 'craft'], webswing: ['swing', 'spider'], firefight: ['fps', 'shooter'], fighterplane: ['plane', 'planes'],
-  geometrywave: ['geometry', 'gw', 'dash'], stickfighter: ['stick', 'fight'], whiteboard: ['board', 'paint'], hello: [], minesweeper: ['mines', 'mine', 'ms', 'sweeper'], memory: ['match', 'pairs', 'cards', 'mm'], echo: ['pattern', 'sequence', 'simon'],
+  geometrywave: ['geometry', 'gw', 'dash'], stickfighter: ['stick', 'fight'], whiteboard: ['board', 'paint'], hello: [], minesweeper: ['mines', 'mine', 'ms', 'sweeper'], memory: ['match', 'pairs', 'cards', 'mm'], echo: ['pattern', 'sequence', 'simon'], sudoku: ['sd', 'numbers'],
 };
 const GAME_LABELS = {
   typerace: '⌨️ Type Race (WPM)', quickdraw: '⚡ Quick Draw (1000 − ms)', wordguess: '🟩 Word Guess', hangman: '🪢 Hangman', trivia: '❓ Trivia', snake: '🐍 Snake',
@@ -9903,9 +9906,15 @@ const GAME_LABELS = {
   'mines-easy': '💣 Minesweeper (easy)', 'mines-medium': '💣 Minesweeper (medium)', 'mines-hard': '💣 Minesweeper (hard)',
   'memory-easy': '🧠 Memory Match (easy)', 'memory-medium': '🧠 Memory Match (medium)', 'memory-hard': '🧠 Memory Match (hard)',
   echo: '🔁 Echo (in a row)',
+  'sudoku-easy': '🧩 Sudoku (easy)', 'sudoku-medium': '🧩 Sudoku (medium)', 'sudoku-hard': '🧩 Sudoku (hard)',
 };
 // Leaderboards that store a time as 100000 − tenths of a second (lower time = higher score).
-const TIME_SCORE_GAMES = new Set(['mines-easy', 'mines-medium', 'mines-hard', 'memory-easy', 'memory-medium', 'memory-hard']);
+const TIME_SCORE_GAMES = new Set(['mines-easy', 'mines-medium', 'mines-hard', 'memory-easy', 'memory-medium', 'memory-hard', 'sudoku-easy', 'sudoku-medium', 'sudoku-hard']);
+// "42.3s", or "4:05" once it's a minute or more.
+function formatTimeScore(score) {
+  const secs = (100000 - score) / 10;
+  return secs < 60 ? `${secs.toFixed(1)}s` : `${Math.floor(secs / 60)}:${String(Math.floor(secs % 60)).padStart(2, '0')}`;
+}
 
 function renderGameInvite(data) {
   const el = document.createElement('div');
@@ -9956,7 +9965,7 @@ function renderChampions(games) {
       const n = document.createElement('span');
       n.textContent = `${['🥇', '🥈', '🥉'][i]} ${r.name}`;
       const sc = document.createElement('b');
-      sc.textContent = TIME_SCORE_GAMES.has(g) ? `${((100000 - r.score) / 10).toFixed(1)}s` : Number(r.score).toLocaleString();
+      sc.textContent = TIME_SCORE_GAMES.has(g) ? formatTimeScore(r.score) : Number(r.score).toLocaleString();
       row.append(n, sc);
       sec.appendChild(row);
     });
