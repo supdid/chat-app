@@ -2525,6 +2525,69 @@ app.get('/api/scorpture/videos', (req, res) => {
   });
 });
 
+app.get('/api/scorpture/videos/:id/chat-replay', (req, res) => {
+  res.json({ messages: db.getChatReplay(String(req.params.id)) });
+});
+
+app.get('/api/scorpture/chat-bans', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  res.json({ bans: db.getScorptureChatBans(account.id) });
+});
+app.post('/api/scorpture/chat-bans/remove', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  const target = db.getAccountByUsername(String((req.body && req.body.username) || ''));
+  if (target) db.setScorptureChatBan(account.id, target.id, target.username, false);
+  res.json({ ok: true, bans: db.getScorptureChatBans(account.id) });
+});
+
+// ✂️ Clips: anyone signed in can save the last 30 seconds of a live OBS stream (cut from the
+// replay recording that's already being written) as a video on the streamer's channel.
+const clipCooldown = new Map(); // clipper account id -> last clip time
+const CLIP_SECONDS = 30;
+app.post('/api/scorpture/live/:username/clip', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Sign in to make clips' });
+  const streamer = db.getAccountByUsername(req.params.username);
+  const live = streamer && liveStreams.get(streamer.id);
+  if (!live || !live.obs) return res.status(400).json({ error: 'This stream isn’t live right now' });
+  if (db.isBlockedBetween(account.id, streamer.id) || (account.id !== streamer.id && db.isScorptureChatBanned(streamer.id, account.id))) return res.status(403).json({ error: 'You can’t clip this stream' });
+  const session = [...obsSessions.values()].find((s) => s.accountId === streamer.id);
+  if (!session || !session.replayFile) return res.status(400).json({ error: 'Clips are off for this stream (the streamer turned replays off)' });
+  const now = Date.now();
+  if (now - (clipCooldown.get(account.id) || 0) < 30000) return res.status(429).json({ error: 'Wait a little before making another clip' });
+  const elapsed = (now - session.recordStartedAt) / 1000;
+  if (elapsed < 8) return res.status(400).json({ error: 'The stream just started — try again in a few seconds' });
+  clipCooldown.set(account.id, now);
+  const base = `clip-${crypto.randomUUID()}`;
+  const out = path.join(__dirname, 'public/uploads', `${base}.mp4`);
+  const thumb = path.join(__dirname, 'public/uploads', `${base}.jpg`);
+  const start = Math.max(0, elapsed - CLIP_SECONDS - 1);
+  const { execFile } = require('child_process');
+  execFile('ffmpeg', ['-loglevel', 'error', '-y', '-ss', start.toFixed(2), '-i', session.replayFile, '-t', String(CLIP_SECONDS), '-c', 'copy', '-movflags', '+faststart', out], { timeout: 60000 }, (err) => {
+    let size = 0;
+    try { size = fs.statSync(out).size; } catch { /* missing */ }
+    if (err || size < 20 * 1024) { fs.rm(out, { force: true }, () => {}); return res.status(500).json({ error: 'Couldn’t make that clip — try again' }); }
+    execFile('ffmpeg', ['-loglevel', 'error', '-y', '-ss', '1', '-i', out, '-frames:v', '1', '-vf', 'scale=640:-2', thumb], { timeout: 30000 }, (terr) => {
+      const id = crypto.randomUUID();
+      db.insertScorptureVideo({
+        id,
+        uploaderId: streamer.id,
+        uploaderUsername: streamer.username,
+        title: `✂️ ${String(live.title || 'Clip').slice(0, 90)}`,
+        description: `✂️ Clipped by ${account.username} during a live stream.`,
+        videoUrl: `/uploads/${base}.mp4`,
+        thumbnailUrl: !terr && fs.existsSync(thumb) ? `/uploads/${base}.jpg` : null,
+        category: null,
+        createdAt: Date.now(),
+      });
+      streamBotSay(streamer.id, `✂️ ${account.username} clipped that!`);
+      res.json({ ok: true, id });
+    });
+  });
+});
+
 app.get('/api/scorpture/videos/:id', (req, res) => {
   const account = getAccountFromReq(req);
   const video = db.getScorptureVideo(req.params.id);
@@ -3372,8 +3435,11 @@ function saveStreamReplay(s) {
     const title = (s.title || db.getScorptureStreamKey(s.accountId).title || `${account.username}'s stream`).slice(0, 88);
     const mins = Math.floor(seconds / 60);
     const length = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : mins ? `${mins}m ${seconds % 60}s` : `${seconds}s`;
+    const videoId = crypto.randomUUID();
+    const chatRows = (s.chatLog || []).map((m) => ({ t: Math.max(0, m.at - s.recordStartedAt), username: m.username, text: m.text }));
+    if (chatRows.length) db.saveChatReplay(videoId, chatRows);
     db.insertScorptureVideo({
-      id: crypto.randomUUID(),
+      id: videoId,
       uploaderId: account.id,
       uploaderUsername: account.username,
       title: `🔴 ${title}`,
@@ -3392,7 +3458,7 @@ function stopObsSession(sessionId) {
   obsSessions.delete(sessionId);
   clearInterval(s.readyPoll);
   const live = liveStreams.get(s.accountId);
-  if (live && live.obs && live.obsSessionId === sessionId) s.title = live.title;
+  if (live && live.obs && live.obsSessionId === sessionId) { s.title = live.title; s.chatLog = live.chatLog || []; }
   // Ask ffmpeg to finish cleanly (closes the recording properly), then save the replay.
   if (s.ffmpeg && s.ffmpeg.exitCode === null) {
     const ff = s.ffmpeg;
@@ -6410,7 +6476,16 @@ wss.on('connection', (ws, req) => {
       // Same flood gate as regular chat/DM messages — was missing here, letting an unthrottled
       // viewer spam every other viewer + the streamer at unlimited speed.
       if (isWsMsgRateLimited(ws)) return;
-      const chatMsg = { type: 'scorpture-live-chat', username: account.username, text, at: Date.now() };
+      // 🛡️ Streamer moderation: banned from this channel's chat, or timed out for a few minutes.
+      if (account.id !== streamerAccountId) {
+        if (db.isScorptureChatBanned(streamerAccountId, account.id)) { send(ws, { type: 'scorpture-live-chat-blocked', message: "You've been banned from this channel's chat." }); return; }
+        const until = stream.timeouts && stream.timeouts.get(account.id);
+        if (until && until > Date.now()) { send(ws, { type: 'scorpture-live-chat-blocked', message: `You're timed out from chat for ${Math.ceil((until - Date.now()) / 60000)} more minute(s).` }); return; }
+      }
+      const chatMsg = { type: 'scorpture-live-chat', id: crypto.randomBytes(6).toString('hex'), username: account.username, text, at: Date.now() };
+      // Kept for the stream replay's chat playback.
+      stream.chatLog = stream.chatLog || [];
+      if (stream.chatLog.length < 5000) stream.chatLog.push({ id: chatMsg.id, at: chatMsg.at, username: account.username, text });
       send(stream.ws, chatMsg);
       for (const viewerWs of stream.viewers.values()) send(viewerWs, chatMsg);
       for (const overlayWs of chatOverlays.get(streamerAccountId) || []) send(overlayWs, chatMsg);
@@ -6431,6 +6506,36 @@ wss.on('connection', (ws, req) => {
         const key = text.toLowerCase().split(/\s/)[0];
         if (now - (stream.lastBotAt[key] || 0) > 5000) { stream.lastBotAt[key] = now; setTimeout(() => streamBotSay(streamerAccountId, reply), 300); }
       }
+      return;
+    }
+
+    // 🛡️ Live chat moderation — only the streamer, on their own live stream.
+    if (msg.type === 'scorpture-live-mod') {
+      if (!ws.accountId || isWsMsgRateLimited(ws)) return;
+      const stream = liveStreams.get(ws.accountId);
+      const action = String(msg.action || '');
+      if (action === 'delete') {
+        if (!stream) return;
+        const id = String(msg.messageId || '');
+        if (stream.chatLog) stream.chatLog = stream.chatLog.filter((m) => m.id !== id);
+        const del = { type: 'scorpture-live-chat-delete', id };
+        send(stream.ws, del);
+        for (const v of stream.viewers.values()) send(v, del);
+        broadcastOverlay(ws.accountId, del);
+        return;
+      }
+      const target = db.getAccountByUsername(String(msg.username || ''));
+      if (!target || target.id === ws.accountId) return;
+      if (action === 'timeout') {
+        if (!stream) return;
+        stream.timeouts = stream.timeouts || new Map();
+        stream.timeouts.set(target.id, Date.now() + 5 * 60000);
+        streamBotSay(ws.accountId, `⏱️ ${target.username} was timed out for 5 minutes.`);
+      } else if (action === 'ban' || action === 'unban') {
+        db.setScorptureChatBan(ws.accountId, target.id, target.username, action === 'ban');
+        if (action === 'ban') streamBotSay(ws.accountId, `🚫 ${target.username} was banned from chat.`);
+      } else return;
+      send(ws, { type: 'scorpture-live-mod-ok', action, username: target.username });
       return;
     }
 

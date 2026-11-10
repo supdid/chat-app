@@ -939,3 +939,17 @@ a { color: inherit; text-decoration: none; }
 .extras-widget input { min-width: 0; font-size: 0.78rem; }
 .extras-poll-live { padding: 0.6rem 0.75rem; border-radius: 12px; background: rgba(255, 140, 60, 0.08); line-height: 1.6; }
 @media (max-width: 700px) { .extras-widget { grid-template-columns: 1fr auto auto; } .extras-widget input { grid-column: 1 / -1; grid-row: 2; } }
+
+/* 🛡️ live chat mod tools, bot + system lines */
+.live-chat-message { position: relative; }
+.live-mod-tools { display: none; margin-left: 0.35rem; }
+.live-chat-message:hover .live-mod-tools, .live-chat-message:focus-within .live-mod-tools { display: inline-flex; gap: 0.15rem; }
+.live-mod-tools button { border: none; background: rgba(0, 0, 0, 0.08); border-radius: 6px; cursor: pointer; font-size: 0.8rem; padding: 0.05rem 0.25rem; }
+.live-chat-message.bot .live-chat-author { color: #8a5cff; }
+.live-chat-message.system { opacity: 0.85; font-style: italic; }
+@media (hover: none) { .live-mod-tools { display: inline-flex; gap: 0.15rem; } }
+/* 💬 chat replay under stream replays */
+.chat-replay { margin: 0.8rem 0; padding: 0.7rem 0.85rem; border-radius: 14px; background: rgba(255, 140, 60, 0.07); }
+.chat-replay-head { font-weight: 700; margin-bottom: 0.4rem; }
+.chat-replay-list { max-height: 260px; overflow-y: auto; display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.92rem; }
+.ban-chip { display: inline-flex; align-items: center; gap: 0.3rem; margin: 0.15rem 0.4rem 0.15rem 0; font-weight: 700; color: inherit; }

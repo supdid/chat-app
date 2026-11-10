@@ -191,6 +191,7 @@ function sceneChat(m) {
   if (!box) return;
   const d = document.createElement('div');
   d.className = 'cmsg';
+  if (m.id) d.dataset.id = m.id;
   d.innerHTML = `<b style="color:${nameColor(m.username)}">${esc(m.username)}</b>${esc(m.text)}`;
   box.appendChild(d);
   while (box.children.length > 9) box.firstElementChild.remove();
@@ -250,6 +251,7 @@ function handle(m) {
   else if (m.type === 'ov-poll') { poll = m.poll; render(); }
   else if (m.type === 'ov-sub') { if (w.onSub) w.onSub(m); }
   else if (m.type === 'scorpture-live-chat') { if (widget === 'starting' || widget === 'brb' || widget === 'ending') sceneChat(m); }
+  else if (m.type === 'scorpture-live-chat-delete') { const d = document.querySelector(`#schat [data-id="${CSS.escape(String(m.id))}"]`); if (d) d.remove(); }
   else if (m.type === 'scorpture-chat-overlay-ok') notice('');
   else if (m.type === 'scorpture-chat-overlay-error') notice(m.message);
 }

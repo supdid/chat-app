@@ -8230,6 +8230,31 @@ describe('scorpture stream extras (2026-11-09)', () => {
   });
 });
 
+describe('scorpture clips, chat bans, chat replay (2026-11-09)', () => {
+  test('clip needs a live OBS stream; chat bans list/unban; chat replay of an unknown video is empty', async () => {
+    const signup = (u) => fetch(`${BASE_URL}/auth/signup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: u, password: 'pass1234', email: `${u}@test.com` }) }).then((r) => r.json());
+    const a = await signup('ClipStreamer');
+    const b = await signup('ClipFan');
+    const auth = (t) => ({ 'Content-Type': 'application/json', Authorization: `Bearer ${t}` });
+    assert.equal((await fetch(`${BASE_URL}/api/scorpture/live/ClipStreamer/clip`, { method: 'POST' })).status, 401);
+    const notLive = await fetch(`${BASE_URL}/api/scorpture/live/ClipStreamer/clip`, { method: 'POST', headers: auth(b.token) });
+    assert.equal(notLive.status, 400);
+    assert.match((await notLive.json()).error, /isn’t live/);
+
+    const ws = await connectWs();
+    send(ws, { type: 'join-server', username: 'ClipStreamer', accountToken: a.token });
+    await waitFor(ws, (m) => m.type === 'joined-server');
+    send(ws, { type: 'scorpture-live-mod', action: 'ban', username: 'ClipFan' });
+    assert.equal((await waitFor(ws, (m) => m.type === 'scorpture-live-mod-ok')).action, 'ban');
+    let bans = await fetch(`${BASE_URL}/api/scorpture/chat-bans`, { headers: auth(a.token) }).then((r) => r.json());
+    assert.deepEqual(bans.bans.map((x) => x.username), ['ClipFan']);
+    bans = await fetch(`${BASE_URL}/api/scorpture/chat-bans/remove`, { method: 'POST', headers: auth(a.token), body: JSON.stringify({ username: 'ClipFan' }) }).then((r) => r.json());
+    assert.deepEqual(bans.bans, []);
+    assert.deepEqual((await fetch(`${BASE_URL}/api/scorpture/videos/nope/chat-replay`).then((r) => r.json())).messages, []);
+    ws.close();
+  });
+});
+
 describe('poll upgrades (2026-11-08)', () => {
   const postPoll = (ws, def) => send(ws, { type: 'message', text: JSON.stringify(def), mediaUrl: 'poll', mediaType: 'poll' });
 

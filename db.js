@@ -550,6 +550,24 @@ db.exec(`
     PRIMARY KEY (video_id, account_id)
   );
 
+  -- Live chat saved alongside a stream replay, played back in sync with the video.
+  CREATE TABLE IF NOT EXISTS scorpture_chat_replay (
+    video_id TEXT,
+    t_ms INTEGER,
+    username TEXT,
+    text TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_chat_replay_video ON scorpture_chat_replay(video_id, t_ms);
+
+  -- People a streamer banned from chatting in their live streams.
+  CREATE TABLE IF NOT EXISTS scorpture_chat_bans (
+    channel_id TEXT,
+    account_id TEXT,
+    username TEXT,
+    at INTEGER,
+    PRIMARY KEY (channel_id, account_id)
+  );
+
   CREATE TABLE IF NOT EXISTS scorpture_subscriptions (
     subscriber_id TEXT,
     channel_id TEXT,
@@ -1131,6 +1149,7 @@ const deleteAccountCascade = db.transaction((accountId) => {
     pushUrl(v.video_url);
     pushUrl(v.thumbnail_url);
     db.prepare('DELETE FROM scorpture_comments WHERE video_id = ?').run(v.id);
+    db.prepare('DELETE FROM scorpture_chat_replay WHERE video_id = ?').run(v.id);
     db.prepare('DELETE FROM scorpture_likes WHERE video_id = ?').run(v.id);
     db.prepare('DELETE FROM scorpture_reports WHERE video_id = ?').run(v.id);
   }
@@ -2514,6 +2533,7 @@ function updateScorptureVideo(id, v) {
 
 function deleteScorptureVideo(id) {
   db.prepare('DELETE FROM scorpture_comments WHERE video_id = ?').run(id);
+  db.prepare('DELETE FROM scorpture_chat_replay WHERE video_id = ?').run(id);
   db.prepare('DELETE FROM scorpture_likes WHERE video_id = ?').run(id);
   db.prepare('DELETE FROM scorpture_videos WHERE id = ?').run(id);
 }
@@ -3171,6 +3191,24 @@ function setScorptureStreamKey(accountId, key) {
   db.prepare('UPDATE accounts SET scorpture_stream_key = ? WHERE id = ?').run(key, accountId);
 }
 
+function saveChatReplay(videoId, rows) {
+  const ins = db.prepare('INSERT INTO scorpture_chat_replay (video_id, t_ms, username, text) VALUES (?, ?, ?, ?)');
+  db.transaction(() => { for (const r of rows) ins.run(videoId, r.t, r.username, r.text); })();
+}
+function getChatReplay(videoId) {
+  return db.prepare('SELECT t_ms AS t, username, text FROM scorpture_chat_replay WHERE video_id = ? ORDER BY t_ms LIMIT 5000').all(videoId);
+}
+function setScorptureChatBan(channelId, accountId, username, banned) {
+  if (banned) db.prepare('INSERT OR REPLACE INTO scorpture_chat_bans (channel_id, account_id, username, at) VALUES (?, ?, ?, ?)').run(channelId, accountId, username, Date.now());
+  else db.prepare('DELETE FROM scorpture_chat_bans WHERE channel_id = ? AND account_id = ?').run(channelId, accountId);
+}
+function isScorptureChatBanned(channelId, accountId) {
+  return !!db.prepare('SELECT 1 FROM scorpture_chat_bans WHERE channel_id = ? AND account_id = ?').get(channelId, accountId);
+}
+function getScorptureChatBans(channelId) {
+  return db.prepare('SELECT username, at FROM scorpture_chat_bans WHERE channel_id = ? ORDER BY at DESC').all(channelId);
+}
+
 function getStreamSettings(accountId) {
   const row = db.prepare('SELECT stream_settings FROM accounts WHERE id = ?').get(accountId);
   try { return (row && JSON.parse(row.stream_settings)) || {}; } catch { return {}; }
@@ -3319,6 +3357,11 @@ module.exports = {
   setScorptureObsTitle,
   setSaveStreamReplays,
   getStreamSettings,
+  saveChatReplay,
+  getChatReplay,
+  setScorptureChatBan,
+  isScorptureChatBanned,
+  getScorptureChatBans,
   setStreamSettings,
   getAccountByStreamKey,
   upsertRoom,

@@ -65,9 +65,10 @@ function showNotice(text) {
 }
 function clearNotice() { if (notice) { notice.remove(); notice = null; } }
 
-function addMessage(username, text) {
+function addMessage(username, text, id) {
   const el = document.createElement('div');
   el.className = 'msg';
+  if (id) el.dataset.id = id;
   const n = document.createElement('span');
   n.className = 'name';
   n.style.color = colorFor(username);
@@ -92,7 +93,8 @@ function connect() {
     try { m = JSON.parse(e.data); } catch { return; }
     if (m.type === 'scorpture-chat-overlay-ok') clearNotice();
     else if (m.type === 'scorpture-chat-overlay-error') showNotice(m.message);
-    else if (m.type === 'scorpture-live-chat') addMessage(m.username, m.text);
+    else if (m.type === 'scorpture-live-chat') addMessage(m.username, m.text, m.id);
+    else if (m.type === 'scorpture-live-chat-delete') { const d = chatEl.querySelector(`[data-id="${CSS.escape(String(m.id))}"]`); if (d) d.remove(); }
   });
   ws.addEventListener('close', () => { showNotice('Chat box reconnecting…'); setTimeout(connect, 2000); });
 }

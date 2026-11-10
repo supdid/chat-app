@@ -343,6 +343,40 @@ async function renderSubscriptionsFeed() {
 }
 
 // ---------- Watch page ----------
+// 💬 Stream replays: show the live chat in sync with the video's playback position.
+async function setupChatReplay(id, myToken) {
+  let msgs;
+  try { msgs = (await api(`/api/scorpture/videos/${encodeURIComponent(id)}/chat-replay`)).messages; } catch { return; }
+  if (myToken !== routeToken || !msgs || !msgs.length) return;
+  const box = document.getElementById('chat-replay');
+  const list = document.getElementById('chat-replay-list');
+  const video = document.querySelector('.watch-player-wrap video');
+  if (!box || !list || !video) return;
+  box.classList.remove('hidden');
+  let shown = -1;
+  const draw = () => {
+    const now = video.currentTime * 1000;
+    let upto = -1;
+    while (upto + 1 < msgs.length && msgs[upto + 1].t <= now) upto++;
+    if (upto === shown) return;
+    if (upto < shown) list.innerHTML = '';
+    for (let i = upto < shown ? Math.max(0, upto - 49) : shown + 1; i <= upto; i++) {
+      const m = msgs[i];
+      const row = document.createElement('div');
+      row.className = 'live-chat-message';
+      row.innerHTML = `<span class="live-chat-author">${escapeHtml(m.username)}</span> ${escapeHtml(m.text)}`;
+      list.appendChild(row);
+    }
+    while (list.children.length > 50) list.firstElementChild.remove();
+    list.scrollTop = list.scrollHeight;
+    shown = upto;
+    if (upto < 0) list.innerHTML = '<div class="watch-stats">Chat messages appear here as the video plays…</div>';
+  };
+  video.addEventListener('timeupdate', draw);
+  video.addEventListener('seeked', () => { shown = Number.MAX_SAFE_INTEGER; draw(); });
+  draw();
+}
+
 async function renderWatch(id) {
   if (!id) return renderHome('');
   const myToken = routeToken;
@@ -381,6 +415,10 @@ async function renderWatch(id) {
         ${video.isOwner ? '' : `<button id="subscribe-btn" class="pill-btn subscribe-btn${video.subscribed ? ' subscribed' : ''}">${video.subscribed ? 'Subscribed' : 'Subscribe'}</button>`}
       </div>
       ${video.description ? `<div class="watch-description">${escapeHtml(video.description)}</div>` : ''}
+      <div id="chat-replay" class="chat-replay hidden">
+        <div class="chat-replay-head">💬 Chat replay <span class="watch-stats">— the live chat, played back with the video</span></div>
+        <div id="chat-replay-list" class="chat-replay-list"></div>
+      </div>
       <div class="comments-section">
         <div class="comments-heading" id="comments-heading">Comments</div>
         <form id="comment-form" class="comment-form">
@@ -391,6 +429,8 @@ async function renderWatch(id) {
       </div>
     </div>
   `;
+
+  setupChatReplay(id, myToken);
 
   document.getElementById('like-btn').addEventListener('click', async () => {
     if (!requireAccount()) return;
@@ -1139,6 +1179,20 @@ function handleWsMessage(data) {
   if (data.type === 'scorpture-watch-ack') return handleWatchAck(data);
   if (data.type === 'scorpture-stream-ended') return handleStreamEnded();
   if (data.type === 'scorpture-live-chat') return appendLiveChatMessage(data);
+  if (data.type === 'scorpture-live-chat-delete') {
+    const row = liveChatMessagesEl.querySelector(`[data-id="${CSS.escape(String(data.id))}"]`);
+    if (row) row.remove();
+    return;
+  }
+  if (data.type === 'scorpture-live-chat-blocked') return appendLiveChatMessage({ username: '⚠️', text: data.message, system: true });
+  if (data.type === 'scorpture-live-mod-ok') return showToast({ timeout: `⏱️ ${data.username} timed out for 5 minutes`, ban: `🚫 ${data.username} banned from your chat`, unban: `✅ ${data.username} can chat again` }[data.action] || 'Done');
+}
+
+// Am I the streamer of the live chat I'm looking at? (Then I get mod buttons.)
+function moderatingOwnStream() {
+  if (!currentAccount) return false;
+  if (broadcastState) return true;
+  return !!(watchState && watchState.username === currentAccount.username) || (location.hash.includes('watch-live') && new URLSearchParams(location.hash.split('?')[1] || '').get('u') === currentAccount.username);
 }
 
 // ---- Broadcaster side ----
@@ -1516,9 +1570,26 @@ function renderWatchLive(username) {
           ${avatarHtml(null, username)}
           <span id="live-channel-name">${escapeHtml(username)}</span>
         </a>
+        <button id="clip-btn" class="pill-btn" title="Save the last 30 seconds as a video">✂️ Clip</button>
       </div>
     </div>
   `;
+  document.getElementById('clip-btn').addEventListener('click', async (e) => {
+    if (!requireAccount()) return;
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    btn.textContent = '✂️ Clipping…';
+    try {
+      const r = await api(`/api/scorpture/live/${encodeURIComponent(username)}/clip`, { method: 'POST' });
+      showToast('✂️ Clip saved! It’s on the channel now.');
+      btn.textContent = '✅ Clipped';
+      btn.dataset.clipId = r.id;
+    } catch (err) {
+      showToast(err.message);
+      btn.textContent = '✂️ Clip';
+    }
+    setTimeout(() => { btn.disabled = false; btn.textContent = '✂️ Clip'; }, 30000);
+  });
   // Best-effort, non-blocking — the WebRTC connection below doesn't wait on this, it just
   // upgrades the initials fallback to a real picture (and adds the verified badge) once the
   // channel's actual info arrives.
@@ -1731,6 +1802,9 @@ async function renderStreamExtras(card) {
     <label style="margin-top:1rem">📊 Poll on stream <span class="stream-key-hint">(viewers vote by typing 1, 2, 3… in chat)</span></label>
     <div id="ex-poll"></div>
 
+    <label style="margin-top:1rem">🚫 Banned from your chat <span class="stream-key-hint">(hover a chat message during your stream for 🗑️ delete · ⏱️ 5-min timeout · 🚫 ban)</span></label>
+    <div id="ex-bans" class="stream-key-hint">Loading…</div>
+
     <label style="margin-top:1rem">🔗 OBS links <span class="stream-key-hint">(Sources → + → Browser → paste the link, use the size shown)</span></label>
     <div class="extras-widgets">${STREAM_WIDGETS.map(([w, name, desc, size]) => `
       <div class="extras-widget">
@@ -1768,6 +1842,17 @@ async function renderStreamExtras(card) {
     } catch (err) { alert(err.message); }
   }));
   renderExtrasPoll(st.poll);
+  renderChatBans();
+}
+async function renderChatBans(list) {
+  const box = document.getElementById('ex-bans');
+  if (!box) return;
+  try { if (!list) list = (await api('/api/scorpture/chat-bans')).bans; } catch { box.textContent = ''; return; }
+  if (!list.length) { box.textContent = 'Nobody — nice chat! 😊'; return; }
+  box.innerHTML = list.map((b) => `<span class="ban-chip">${escapeHtml(b.username)} <button class="pill-btn ghost unban-btn" data-u="${escapeHtml(b.username)}">Unban</button></span>`).join(' ');
+  box.querySelectorAll('.unban-btn').forEach((btn) => btn.addEventListener('click', async () => {
+    try { renderChatBans((await api('/api/scorpture/chat-bans/remove', { method: 'POST', body: JSON.stringify({ username: btn.dataset.u }) })).bans); } catch (err) { alert(err.message); }
+  }));
 }
 function renderExtrasPoll(poll) {
   const box = document.getElementById('ex-poll');
@@ -1965,8 +2050,28 @@ liveChatForm.addEventListener('submit', (e) => {
 function appendLiveChatMessage(data) {
   const atBottom = liveChatMessagesEl.scrollHeight - liveChatMessagesEl.scrollTop - liveChatMessagesEl.clientHeight < 40;
   const row = document.createElement('div');
-  row.className = 'live-chat-message';
+  row.className = 'live-chat-message' + (data.bot ? ' bot' : '') + (data.system ? ' system' : '');
+  if (data.id) row.dataset.id = data.id;
   row.innerHTML = `<span class="live-chat-author">${escapeHtml(data.username)}</span> ${escapeHtml(data.text)}`;
+  // 🛡️ Streamer tools on other people's messages: delete, 5-minute timeout, ban.
+  if (data.id && !data.bot && moderatingOwnStream() && data.username !== currentAccount.username) {
+    const tools = document.createElement('span');
+    tools.className = 'live-mod-tools';
+    for (const [action, icon, label] of [['delete', '🗑️', 'Delete message'], ['timeout', '⏱️', 'Time out 5 minutes'], ['ban', '🚫', 'Ban from chat']]) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = icon;
+      b.title = label;
+      b.setAttribute('aria-label', `${label}: ${data.username}`);
+      b.addEventListener('click', () => {
+        if (action === 'ban' && !confirm(`Ban ${data.username} from chatting on your streams?`)) return;
+        wsSend({ type: 'scorpture-live-mod', action, messageId: data.id, username: data.username });
+        if (action !== 'delete') wsSend({ type: 'scorpture-live-mod', action: 'delete', messageId: data.id });
+      });
+      tools.appendChild(b);
+    }
+    row.appendChild(tools);
+  }
   liveChatMessagesEl.appendChild(row);
   if (atBottom) liveChatMessagesEl.scrollTop = liveChatMessagesEl.scrollHeight;
 }
