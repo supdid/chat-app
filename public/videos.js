@@ -1626,6 +1626,7 @@ async function renderStreamKeyPage() {
           <button class="pill-btn copy-btn" data-copy="obs-key-input">Copy</button>
         </div>
         <button id="obs-key-reset" class="pill-btn ghost danger-text">🔄 Reset stream key</button>
+        <label class="stream-replay-toggle"><input id="obs-replays-input" type="checkbox"${info.saveReplays ? ' checked' : ''}> 🔴 Save my streams as replays — when you click Stop Streaming, the stream is added to your channel as a video (streams under 30 seconds aren't kept; you can delete replays like any video)</label>
       </div>
       <div class="stream-key-card">
         <h2>How to set up OBS</h2>
@@ -1634,7 +1635,7 @@ async function renderStreamKeyPage() {
           <li>Set <b>Service</b> to <b>Custom...</b></li>
           <li>Paste the <b>Server</b> and <b>Stream Key</b> from above, then click OK.</li>
           <li>Click <b>Start Streaming</b>. In a few seconds your channel shows 🔴 LIVE.</li>
-          <li>Click <b>Stop Streaming</b> in OBS to end it.</li>
+          <li>Click <b>Stop Streaming</b> in OBS to end it.${info.saveReplays ? ' A replay appears on your channel a few seconds later.' : ''}</li>
         </ol>
         <p class="stream-key-hint">Tip: in OBS Settings → Output, keep the encoder on x264 (or a hardware H.264 encoder) and audio on AAC — those are the defaults.</p>
         ${info.obsLive ? `<a class="pill-btn" href="#/watch-live?u=${encodeURIComponent(currentAccount.username)}">Watch your stream + chat</a>` : ''}
@@ -1658,6 +1659,11 @@ async function renderStreamKeyPage() {
       const r = await api('/api/scorpture/stream-key/reset', { method: 'POST' });
       document.getElementById('obs-key-input').value = r.streamKey;
     } catch (err) { alert(err.message); }
+  });
+  document.getElementById('obs-replays-input').addEventListener('change', async (e) => {
+    try {
+      await api('/api/scorpture/stream-key/replays', { method: 'POST', body: JSON.stringify({ on: e.target.checked }) });
+    } catch (err) { e.target.checked = !e.target.checked; alert(err.message); }
   });
   document.getElementById('obs-title-save').addEventListener('click', async (e) => {
     try {

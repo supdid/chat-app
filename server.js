@@ -3156,7 +3156,15 @@ app.get('/api/scorpture/stream-key', (req, res) => {
     serverUrl: `rtmp://${RTMP_PUBLIC_HOST || lanAddress()}:${RTMP_PORT}/live`,
     localServerUrl: `rtmp://localhost:${RTMP_PORT}/live`,
     obsLive: !!(stream && stream.obs),
+    saveReplays: info.saveReplays,
   });
+});
+
+app.post('/api/scorpture/stream-key/replays', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  db.setSaveStreamReplays(account.id, !!req.body.on);
+  res.json({ ok: true, saveReplays: !!req.body.on });
 });
 
 app.post('/api/scorpture/stream-key/reset', (req, res) => {
@@ -3195,12 +3203,67 @@ app.get('/scorpture-hls/:username/:file', (req, res) => {
   });
 });
 
+const REPLAY_MAX_SECONDS = 6 * 60 * 60;
+const REPLAY_MIN_SECONDS = 30;
+const REPLAY_MIN_FREE_BYTES = 3 * 1024 * 1024 * 1024;
+function hasDiskRoomForReplay() {
+  try {
+    const st = fs.statfsSync(path.join(__dirname, 'public/uploads'));
+    return st.bavail * st.bsize > REPLAY_MIN_FREE_BYTES;
+  } catch { return true; }
+}
+// After an OBS stream ends: make its recording a Scorpture video (with a thumbnail from the
+// middle), or delete it if it's too short to be worth keeping.
+function saveStreamReplay(s) {
+  const file = s.replayFile;
+  if (!file) return;
+  s.replayFile = null;
+  const seconds = Math.round((Date.now() - (s.recordStartedAt || Date.now())) / 1000);
+  let size = 0;
+  try { size = fs.statSync(file).size; } catch { return; }
+  const discard = () => fs.rm(file, { force: true }, () => {});
+  if (seconds < REPLAY_MIN_SECONDS || size < 100 * 1024) return discard();
+  const account = db.getAccountById(s.accountId);
+  if (!account) return discard();
+  const base = path.basename(file, '.mp4');
+  const thumbFile = path.join(__dirname, 'public/uploads', `${base}.jpg`);
+  const { execFile } = require('child_process');
+  const at = String(Math.max(1, Math.min(seconds / 2, seconds - 2)));
+  execFile('ffmpeg', ['-loglevel', 'error', '-y', '-ss', at, '-i', file, '-frames:v', '1', '-vf', 'scale=640:-2', thumbFile], { timeout: 60000 }, (err) => {
+    const hasThumb = !err && fs.existsSync(thumbFile);
+    const title = (s.title || db.getScorptureStreamKey(s.accountId).title || `${account.username}'s stream`).slice(0, 88);
+    const mins = Math.floor(seconds / 60);
+    const length = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : mins ? `${mins}m ${seconds % 60}s` : `${seconds}s`;
+    db.insertScorptureVideo({
+      id: crypto.randomUUID(),
+      uploaderId: account.id,
+      uploaderUsername: account.username,
+      title: `🔴 ${title}`,
+      description: `🔴 Stream replay · ${length} long.`,
+      videoUrl: `/uploads/${path.basename(file)}`,
+      thumbnailUrl: hasThumb ? `/uploads/${path.basename(thumbFile)}` : null,
+      category: null,
+      createdAt: Date.now(),
+    });
+  });
+}
+
 function stopObsSession(sessionId) {
   const s = obsSessions.get(sessionId);
   if (!s) return;
   obsSessions.delete(sessionId);
   clearInterval(s.readyPoll);
-  if (s.ffmpeg && s.ffmpeg.exitCode === null) s.ffmpeg.kill('SIGKILL');
+  const live = liveStreams.get(s.accountId);
+  if (live && live.obs && live.obsSessionId === sessionId) s.title = live.title;
+  // Ask ffmpeg to finish cleanly (closes the recording properly), then save the replay.
+  if (s.ffmpeg && s.ffmpeg.exitCode === null) {
+    const ff = s.ffmpeg;
+    const hardKill = setTimeout(() => { if (ff.exitCode === null) ff.kill('SIGKILL'); }, 8000);
+    ff.once('exit', () => { clearTimeout(hardKill); saveStreamReplay(s); });
+    ff.kill('SIGINT');
+  } else {
+    saveStreamReplay(s);
+  }
   const stream = liveStreams.get(s.accountId);
   // Only end it if it's still *this* OBS session's stream — a browser Go Live (or a newer OBS
   // session) may have replaced it since.
@@ -3244,11 +3307,24 @@ function startRtmpServer() {
     fs.rmSync(dir, { recursive: true, force: true });
     fs.mkdirSync(dir, { recursive: true });
     const { spawn } = require('child_process');
+    // 🔴 Stream replay: the same ffmpeg also records the whole stream (fragmented MP4, so the file
+    // stays playable even if ffmpeg is killed) unless the streamer turned replays off or the disk
+    // is nearly full. saveStreamReplay() turns it into a Scorpture video once the stream ends.
+    const keyInfo = db.getScorptureStreamKey(s.accountId);
+    const replayFile = keyInfo && keyInfo.saveReplays && hasDiskRoomForReplay()
+      ? path.join(__dirname, 'public/uploads', `stream-replay-${crypto.randomUUID()}.mp4`)
+      : null;
+    s.replayFile = replayFile;
+    s.recordStartedAt = Date.now();
+    const recordArgs = replayFile
+      ? ['-map', '0', '-c', 'copy', '-t', String(REPLAY_MAX_SECONDS), '-f', 'mp4', '-movflags', '+frag_keyframe+empty_moov+default_base_moof', replayFile]
+      : [];
     s.ffmpeg = spawn('ffmpeg', [
       '-loglevel', 'error', '-i', `rtmp://127.0.0.1:${RTMP_PORT}${streamPath}`,
-      '-c', 'copy', '-f', 'hls', '-hls_time', '2', '-hls_list_size', '6',
+      '-map', '0', '-c', 'copy', '-f', 'hls', '-hls_time', '2', '-hls_list_size', '6',
       '-hls_flags', 'delete_segments+independent_segments',
       '-hls_segment_filename', path.join(dir, 'seg%d.ts'), path.join(dir, 'index.m3u8'),
+      ...recordArgs,
     ], { stdio: ['ignore', 'ignore', 'pipe'] });
     let stderr = '';
     s.ffmpeg.stderr.on('data', (d) => { stderr = (stderr + d).slice(-2000); });

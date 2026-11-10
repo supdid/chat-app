@@ -637,6 +637,8 @@ ensureColumn('accounts', 'google_id', 'TEXT');
 ensureColumn('accounts', 'bio', 'TEXT');
 // Birthday as 'MM-DD' (no year — nobody's age is stored or shown).
 ensureColumn('accounts', 'birthday', 'TEXT');
+// 1 (default) = OBS streams on Scorpture are saved as a replay video when they end.
+ensureColumn('accounts', 'save_stream_replays', 'INTEGER DEFAULT 1');
 ensureColumn('accounts', 'scorpture_banner_url', 'TEXT');
 ensureColumn('accounts', 'scorpture_avatar_url', 'TEXT');
 ensureColumn('accounts', 'scorpture_description', 'TEXT');
@@ -3159,12 +3161,16 @@ function countValkmailSentSince(accountId, since) {
 // invalidates the old one, the same "reset stream key" button Twitch/YouTube have).
 
 function getScorptureStreamKey(accountId) {
-  const row = db.prepare('SELECT scorpture_stream_key, scorpture_obs_title FROM accounts WHERE id = ?').get(accountId);
-  return row ? { key: row.scorpture_stream_key || null, title: row.scorpture_obs_title || '' } : null;
+  const row = db.prepare('SELECT scorpture_stream_key, scorpture_obs_title, save_stream_replays FROM accounts WHERE id = ?').get(accountId);
+  return row ? { key: row.scorpture_stream_key || null, title: row.scorpture_obs_title || '', saveReplays: row.save_stream_replays !== 0 } : null;
 }
 
 function setScorptureStreamKey(accountId, key) {
   db.prepare('UPDATE accounts SET scorpture_stream_key = ? WHERE id = ?').run(key, accountId);
+}
+
+function setSaveStreamReplays(accountId, on) {
+  db.prepare('UPDATE accounts SET save_stream_replays = ? WHERE id = ?').run(on ? 1 : 0, accountId);
 }
 
 function setScorptureObsTitle(accountId, title) {
@@ -3301,6 +3307,7 @@ module.exports = {
   getScorptureStreamKey,
   setScorptureStreamKey,
   setScorptureObsTitle,
+  setSaveStreamReplays,
   getAccountByStreamKey,
   upsertRoom,
   getRoom,
