@@ -2197,7 +2197,20 @@ function renderYouTubeCard(bubble, yt, url) {
   link.target = '_blank';
   link.rel = 'noopener noreferrer';
   link.textContent = 'Open on YouTube ↗';
-  wrap.append(thumb, link);
+  const together = document.createElement('button');
+  together.type = 'button';
+  together.className = 'yt-together small-btn-link';
+  together.textContent = '📺 Watch together';
+  together.title = 'Post a synced player everyone can join';
+  together.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (roomHostsOnlyLocked()) { showAppToast('Only hosts can post in this room'); return; }
+    wsSendOrWarnDisconnected({ type: 'message', text: `/watch https://youtu.be/${yt.id}` });
+  });
+  const links = document.createElement('div');
+  links.className = 'yt-links';
+  links.append(link, together);
+  wrap.append(thumb, links);
   bubble.appendChild(wrap);
   // Fill in the title from the normal link-preview fetch, if it has one.
   fetch(`/link-preview?url=${encodeURIComponent(url)}`).then((r) => (r.ok ? r.json() : null)).then((data) => {

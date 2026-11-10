@@ -3207,3 +3207,6 @@ body.hide-presence-system .system.presence-system { display: none; }
 .watch-frame { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 10px; overflow: hidden; margin: 0.6rem 0; }
 .watch-frame iframe, .watch-frame #watch-player { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
 .watch-status { margin: 0; font-size: 0.85rem; color: var(--text-muted); }
+
+.yt-links { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.yt-together { font-size: 0.8rem; padding: 0; }
