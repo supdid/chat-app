@@ -7042,8 +7042,74 @@ chatScreen.addEventListener('drop', async (e) => {
   });
 })();
 
+// --- 🎲 Fun stuff: one-tap access to the in-chat activities ---
+const funBtn = document.getElementById('fun-btn');
+const funPicker = document.getElementById('fun-picker');
+// [emoji, label, command, send right away?]
+const FUN_ITEMS = [
+  ['📊', 'Poll', '/poll Question? option 1, option 2', false],
+  ['☑️', 'Checklist', '/todo List name: item 1, item 2', false],
+  ['📖', 'Story', '/story Once upon a time, ', false],
+  ['🤥', '2 truths & a lie', '/2truths true thing | *the lie | another true thing', false],
+  ['📺', 'Watch together', '/watch ', false],
+  ['⏳', 'Countdown', '/countdown 5m ', false],
+  ['🎯', 'Number game', '/numbergame', true],
+  ['🧊', 'Icebreaker', '/icebreaker', true],
+  ['🤔', 'Would you rather', '/wyr', true],
+  ['🎲', 'Roll a die', '/roll', true],
+  ['🪙', 'Flip a coin', '/flip', true],
+  ['🎮', 'Invite to a game', '/play ', false],
+];
+function buildFunPicker() {
+  funPicker.textContent = '';
+  for (const [emoji, label, cmd, now] of FUN_ITEMS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'fun-item';
+    b.setAttribute('role', 'menuitem');
+    const e = document.createElement('span');
+    e.className = 'fun-emoji';
+    e.textContent = emoji;
+    const l = document.createElement('span');
+    l.textContent = label;
+    b.append(e, l);
+    b.addEventListener('click', () => {
+      closeFunPicker();
+      if (now) {
+        if (roomHostsOnlyLocked()) { showAppToast('Only hosts can post in this room'); return; }
+        wsSendOrWarnDisconnected({ type: 'message', text: cmd });
+        return;
+      }
+      messageInput.value = cmd;
+      messageInput.focus();
+      // Select the placeholder part so typing replaces it.
+      const firstSpace = cmd.indexOf(' ');
+      if (firstSpace > 0 && cmd.length > firstSpace + 1 && !cmd.endsWith(' ')) messageInput.setSelectionRange(firstSpace + 1, cmd.length);
+      else messageInput.setSelectionRange(cmd.length, cmd.length);
+      messageInput.dispatchEvent(new Event('input'));
+    });
+    funPicker.appendChild(b);
+  }
+}
+function closeFunPicker() {
+  funPicker.classList.add('hidden');
+  funBtn.setAttribute('aria-expanded', 'false');
+}
+funBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (!funPicker.childElementCount) buildFunPicker();
+  const open = funPicker.classList.toggle('hidden') === false;
+  funBtn.setAttribute('aria-expanded', String(open));
+  if (open) stickerPicker.classList.add('hidden');
+});
+document.addEventListener('click', (e) => {
+  if (!funPicker.classList.contains('hidden') && !funPicker.contains(e.target) && e.target !== funBtn) closeFunPicker();
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !funPicker.classList.contains('hidden')) closeFunPicker(); });
+
 stickerBtn.addEventListener('click', () => {
   stickerPicker.classList.toggle('hidden');
+  if (!stickerPicker.classList.contains('hidden')) closeFunPicker();
   // Same mutual-exclusion fix as updateMentionDropdown() above, the other direction.
   if (!stickerPicker.classList.contains('hidden')) {
     mentionDropdownEl.classList.add('hidden');
@@ -9650,6 +9716,7 @@ const WHATS_NEW = [
   ['📜', 'Tidier long messages', 'Really long messages fold up with a Show more button.'],
   ['⭐', 'Best of this room', 'Menu → ⭐ Best of this room: the most-reacted messages of all time.'],
   ['🏆', 'Game ranks on profiles', 'Profile cards show someone’s best placings on this room’s game leaderboards.'],
+  ['🎲', 'Fun stuff button', 'Tap 🎲 next to the message box for polls, checklists, stories, games and more.'],
   ['🤥', 'Two truths and a lie', '/2truths I have a cat | *I met a celebrity | I can juggle — the * marks your lie; the room guesses, you reveal.'],
   ['🧩', 'Sudoku', 'New game: fresh puzzles in Easy, Medium and Hard, with notes mode and a fastest-times board. /play sudoku'],
   ['📺', 'Watch together', '/watch + a YouTube link — everyone who opens it watches in sync (play, pause and skip are shared).'],

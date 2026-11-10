@@ -3224,3 +3224,26 @@ body.hide-presence-system .system.presence-system { display: none; }
 .ttal-tag { font-size: 0.72rem; white-space: nowrap; }
 .ttal-result { margin-top: 0.45rem; font-weight: 700; }
 .ttal-reveal { margin-top: 0.5rem; }
+
+/* 🎲 Fun stuff picker above the composer */
+.fun-picker { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0.4rem; padding: 0.75rem 1.5rem; background: var(--header-bg); backdrop-filter: blur(16px); border-top: 1px solid var(--header-border); max-height: 240px; overflow-y: auto; }
+.fun-item { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.65rem; border-radius: 10px; border: 1px solid var(--chip-border); background: var(--chip-bg); color: var(--text-color); font: inherit; font-size: 0.88rem; font-weight: 600; cursor: pointer; text-align: left; }
+.fun-item:hover { filter: brightness(1.15); }
+.fun-emoji { font-size: 1.2rem; }
+@media (max-width: 600px) { .fun-picker { grid-template-columns: 1fr 1fr; padding: 0.6rem 16px; } }
+
+/* Small phones: keep the chat header on one line (the worldwide count is on the start screen too). */
+@media (max-width: 380px) {
+  #header-worldwide { display: none !important; }
+}
+
+/* Phones: one-line chat header — the room chip shrinks with "…" instead of wrapping. */
+@media (max-width: 480px) {
+  #chat-screen header { flex-wrap: nowrap; gap: 0.5rem; }
+  .header-left { flex: 1; gap: 0.5rem; }
+  .header-left h1 { display: none; }
+  .header-right { gap: 0.45rem; flex-shrink: 0; }
+  .room-code-chip { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: 0; }
+  .room-people-chip { flex-shrink: 0; }
+  .logo.small { flex-shrink: 0; }
+}
