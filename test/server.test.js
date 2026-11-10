@@ -8255,6 +8255,25 @@ describe('scorpture clips, chat bans, chat replay (2026-11-09)', () => {
   });
 });
 
+describe('scorpture raids + schedule (2026-11-09)', () => {
+  test('raid needs you to be live; next stream shows on the channel', async () => {
+    const signup = (u) => fetch(`${BASE_URL}/auth/signup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: u, password: 'pass1234', email: `${u}@test.com` }) }).then((r) => r.json());
+    const a = await signup('RaidA');
+    await signup('RaidB');
+    const auth = { 'Content-Type': 'application/json', Authorization: `Bearer ${a.token}` };
+    const r = await fetch(`${BASE_URL}/api/scorpture/raid`, { method: 'POST', headers: auth, body: JSON.stringify({ username: 'RaidB' }) });
+    assert.equal(r.status, 400);
+    assert.match((await r.json()).error, /need to be live/);
+    const at = Date.now() + 86400000;
+    await fetch(`${BASE_URL}/api/scorpture/stream-settings`, { method: 'POST', headers: auth, body: JSON.stringify({ nextStreamAt: at, nextStreamText: 'Game night' }) });
+    let ch = await fetch(`${BASE_URL}/api/scorpture/channels/RaidA`).then((x) => x.json());
+    assert.deepEqual(ch.nextStream, { at, text: 'Game night' });
+    await fetch(`${BASE_URL}/api/scorpture/stream-settings`, { method: 'POST', headers: auth, body: JSON.stringify({ nextStreamAt: Date.now() - 1000 }) });
+    ch = await fetch(`${BASE_URL}/api/scorpture/channels/RaidA`).then((x) => x.json());
+    assert.equal(ch.nextStream, null, 'a time in the past clears it');
+  });
+});
+
 describe('poll upgrades (2026-11-08)', () => {
   const postPoll = (ws, def) => send(ws, { type: 'message', text: JSON.stringify(def), mediaUrl: 'poll', mediaType: 'poll' });
 

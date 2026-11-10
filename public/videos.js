@@ -580,6 +580,34 @@ function wireCommentEditButtons(videoId) {
 }
 
 // ---------- Channel page ----------
+// Channel tabs: replays start with 🔴, clips with ✂️ (see server.js saveStreamReplay / clip).
+const videoKind = (v) => (v.title.startsWith('🔴') ? 'replays' : v.title.startsWith('✂️') ? 'clips' : 'videos');
+function channelTabsHtml(list) {
+  const n = { replays: 0, clips: 0, videos: 0 };
+  list.forEach((v) => { n[videoKind(v)]++; });
+  if (!n.replays && !n.clips) return '';
+  const tab = (k, label) => `<button class="pill-btn ghost channel-tab${k === 'all' ? ' active' : ''}" data-tab="${k}">${label}</button>`;
+  return `<div class="channel-tabs">${tab('all', `All (${list.length})`)}${n.videos ? tab('videos', `🎬 Videos (${n.videos})`) : ''}${n.replays ? tab('replays', `🔴 Replays (${n.replays})`) : ''}${n.clips ? tab('clips', `✂️ Clips (${n.clips})`) : ''}</div>`;
+}
+function wireChannelTabs(list) {
+  document.querySelectorAll('.channel-tab').forEach((b) => b.addEventListener('click', () => {
+    document.querySelectorAll('.channel-tab').forEach((x) => x.classList.toggle('active', x === b));
+    const k = b.dataset.tab;
+    const grid = document.getElementById('channel-video-grid');
+    grid.innerHTML = list.filter((v) => k === 'all' || videoKind(v) === k).map(videoCardHtml).join('');
+    wireVideoCards();
+  }));
+}
+function tickNextStreamCountdown() {
+  const el = document.querySelector('.next-stream-countdown');
+  if (!el) return;
+  const left = Number(el.dataset.at) - Date.now();
+  if (left <= 0) { el.textContent = '(any minute now!)'; return; }
+  const d = Math.floor(left / 86400000), h = Math.floor((left % 86400000) / 3600000), m = Math.floor((left % 3600000) / 60000), s = Math.floor((left % 60000) / 1000);
+  el.textContent = `(in ${d ? `${d}d ` : ''}${d || h ? `${h}h ` : ''}${m}m${d ? '' : ` ${s}s`})`;
+  setTimeout(tickNextStreamCountdown, 1000);
+}
+
 async function renderChannel(username) {
   if (!username) return renderHome('');
   const myToken = routeToken;
@@ -608,6 +636,9 @@ async function renderChannel(username) {
       <a href="#/watch-live?u=${encodeURIComponent(channel.username)}" class="live-banner">
         <span class="watch-live-badge">🔴 LIVE</span> ${escapeHtml(channel.username)} is streaming now &mdash; ${escapeHtml(channel.liveTitle)}. Click to watch &rarr;
       </a>
+    ` : ''}
+    ${!channel.live && channel.nextStream ? `
+      <div class="next-stream-banner">📅 <b>Next stream:</b> ${escapeHtml(new Date(channel.nextStream.at).toLocaleString([], { weekday: 'long', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}${channel.nextStream.text ? ` — ${escapeHtml(channel.nextStream.text)}` : ''} <span class="next-stream-countdown" data-at="${channel.nextStream.at}"></span></div>
     ` : ''}
     <div class="channel-header">
       <div class="channel-header-avatar-wrap" id="channel-header-avatar-wrap">
@@ -653,11 +684,13 @@ async function renderChannel(username) {
     ` : ''}
     ${
       videos.videos.length
-        ? `<div class="video-grid">${videos.videos.map(videoCardHtml).join('')}</div>`
+        ? `${channelTabsHtml(videos.videos)}<div class="video-grid" id="channel-video-grid">${videos.videos.map(videoCardHtml).join('')}</div>`
         : `<div class="state-msg">${escapeHtml(channel.username)} hasn't uploaded any videos yet.</div>`
     }
   `;
   wireVideoCards();
+  wireChannelTabs(videos.videos);
+  tickNextStreamCountdown();
 
   const bannerFileInput = document.getElementById('banner-file-input');
   if (bannerFileInput) {
@@ -1182,6 +1215,13 @@ function handleWsMessage(data) {
   if (data.type === 'scorpture-live-chat-delete') {
     const row = liveChatMessagesEl.querySelector(`[data-id="${CSS.escape(String(data.id))}"]`);
     if (row) row.remove();
+    return;
+  }
+  if (data.type === 'scorpture-raid') {
+    if (data.self) return showToast(`🚀 Sent your viewers to ${data.to}!`);
+    appendLiveChatMessage({ username: '🚀', text: `${data.from} is raiding ${data.to} — taking you there in 5 seconds…`, system: true });
+    showToast(`🚀 Raid! Going to ${data.to}'s stream…`);
+    setTimeout(() => { location.hash = `#/watch-live?u=${encodeURIComponent(data.to)}`; }, 5000);
     return;
   }
   if (data.type === 'scorpture-live-chat-blocked') return appendLiveChatMessage({ username: '⚠️', text: data.message, system: true });
@@ -1786,6 +1826,11 @@ async function renderStreamExtras(card) {
       <input id="ex-goal-label" type="text" maxlength="40" placeholder="Subscriber goal" value="${escapeHtml(st.goalLabel)}">
       <input id="ex-goal" type="number" min="0" max="10000000" placeholder="50" value="${st.goal || ''}" style="max-width:8rem">
     </div>
+    <label>📅 Next stream <span class="stream-key-hint">(shown on your channel page with a countdown)</span></label>
+    <div class="stream-key-row">
+      <input id="ex-next-at" type="datetime-local" value="${st.nextStreamAt ? toLocalInput(st.nextStreamAt) : ''}" style="max-width:15rem">
+      <input id="ex-next-text" type="text" maxlength="60" placeholder="e.g. Roblox night with viewers" value="${escapeHtml(st.nextStreamText || '')}">
+    </div>
     <label>☕ Be right back message</label>
     <div class="stream-key-row"><input id="ex-brb" type="text" maxlength="80" placeholder="Getting a snack 🍕" value="${escapeHtml(st.brbText)}"></div>
     <label>🤖 Chat commands <span class="stream-key-hint">(one per line: <code>!discord = Join my Discord: …</code>. Built in: !uptime !game !commands)</span></label>
@@ -1797,6 +1842,12 @@ async function renderStreamExtras(card) {
       <button class="pill-btn ghost ex-start" data-min="2">2 min</button><button class="pill-btn ghost ex-start" data-min="5">5 min</button>
       <button class="pill-btn ghost ex-start" data-min="10">10 min</button><button class="pill-btn ghost ex-start" data-min="0">Clear</button>
       <span id="ex-start-msg" class="stream-key-hint">${st.startsAt && st.startsAt > Date.now() ? `Counting down to ${new Date(st.startsAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ''}</span>
+    </div>
+
+    <label style="margin-top:1rem">🚀 Raid <span class="stream-key-hint">(at the end of your stream, send your viewers to a friend who's live)</span></label>
+    <div class="stream-key-row">
+      <input id="ex-raid" type="text" maxlength="40" placeholder="Their Scorpture name">
+      <button id="ex-raid-btn" class="pill-btn">🚀 Raid</button>
     </div>
 
     <label style="margin-top:1rem">📊 Poll on stream <span class="stream-key-hint">(viewers vote by typing 1, 2, 3… in chat)</span></label>
@@ -1827,6 +1878,8 @@ async function renderStreamExtras(card) {
         goal: document.getElementById('ex-goal').value,
         goalLabel: document.getElementById('ex-goal-label').value,
         brbText: document.getElementById('ex-brb').value,
+        nextStreamAt: document.getElementById('ex-next-at').value ? new Date(document.getElementById('ex-next-at').value).getTime() : null,
+        nextStreamText: document.getElementById('ex-next-text').value,
         commands,
       }) });
       const msg = document.getElementById('ex-saved');
@@ -1843,6 +1896,20 @@ async function renderStreamExtras(card) {
   }));
   renderExtrasPoll(st.poll);
   renderChatBans();
+  document.getElementById('ex-raid-btn').addEventListener('click', async () => {
+    const name = document.getElementById('ex-raid').value.trim();
+    if (!name) return;
+    if (!confirm(`Send everyone watching your stream to ${name}?`)) return;
+    try {
+      const r = await api('/api/scorpture/raid', { method: 'POST', body: JSON.stringify({ username: name }) });
+      showToast(`🚀 Raiding ${name} with ${r.viewers} viewer${r.viewers === 1 ? '' : 's'}!`);
+    } catch (err) { alert(err.message); }
+  });
+}
+function toLocalInput(ms) {
+  const d = new Date(ms);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 async function renderChatBans(list) {
   const box = document.getElementById('ex-bans');

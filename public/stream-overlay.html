@@ -98,12 +98,15 @@ const W = {};
 W.alerts = {
   init() { root.innerHTML = '<div id="alerts"></div>'; this.q = []; this.busy = false; },
   onSub(m) { this.q.push(m); this.next(); },
+  onRaid(m) { this.q.push({ raid: true, ...m }); this.next(); },
   next() {
     if (this.busy || !this.q.length) return;
     this.busy = true;
     const m = this.q.shift();
     const box = document.getElementById('alerts');
-    box.innerHTML = `<div class="alert panel shadow"><div class="big">🔔</div><div class="kicker">NEW SUBSCRIBER</div><div class="who">${esc(m.username)}</div><div class="sub">${m.total ? `${Number(m.total).toLocaleString()} subscribers!` : 'Thanks for subscribing!'}</div></div>`;
+    box.innerHTML = m.raid
+      ? `<div class="alert panel shadow"><div class="big">🚀</div><div class="kicker">RAID!</div><div class="who">${esc(m.from)}</div><div class="sub">is raiding with ${Number(m.viewers || 0).toLocaleString()} viewer${m.viewers === 1 ? '' : 's'}!</div></div>`
+      : `<div class="alert panel shadow"><div class="big">🔔</div><div class="kicker">NEW SUBSCRIBER</div><div class="who">${esc(m.username)}</div><div class="sub">${m.total ? `${Number(m.total).toLocaleString()} subscribers!` : 'Thanks for subscribing!'}</div></div>`;
     chime();
     setTimeout(() => box.firstElementChild && box.firstElementChild.classList.add('out'), 5500);
     setTimeout(() => { box.innerHTML = ''; this.busy = false; this.next(); }, 6100);
@@ -250,6 +253,7 @@ function handle(m) {
   if (m.type === 'ov-status') { status = m; render(); }
   else if (m.type === 'ov-poll') { poll = m.poll; render(); }
   else if (m.type === 'ov-sub') { if (w.onSub) w.onSub(m); }
+  else if (m.type === 'ov-raid') { if (w.onRaid) w.onRaid(m); }
   else if (m.type === 'scorpture-live-chat') { if (widget === 'starting' || widget === 'brb' || widget === 'ending') sceneChat(m); }
   else if (m.type === 'scorpture-live-chat-delete') { const d = document.querySelector(`#schat [data-id="${CSS.escape(String(m.id))}"]`); if (d) d.remove(); }
   else if (m.type === 'scorpture-chat-overlay-ok') notice('');

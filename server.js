@@ -2542,6 +2542,28 @@ app.post('/api/scorpture/chat-bans/remove', (req, res) => {
   res.json({ ok: true, bans: db.getScorptureChatBans(account.id) });
 });
 
+// 🚀 Raid: send everyone watching your stream over to another live channel.
+const raidCooldown = new Map();
+app.post('/api/scorpture/raid', (req, res) => {
+  const account = getAccountFromReq(req);
+  if (!account) return res.status(401).json({ error: 'Not signed in' });
+  const mine = liveStreams.get(account.id);
+  if (!mine) return res.status(400).json({ error: 'You need to be live to raid' });
+  const target = db.getAccountByUsername(String((req.body && req.body.username) || '').trim().replace(/^@/, ''));
+  if (!target || target.id === account.id) return res.status(404).json({ error: 'No such channel' });
+  if (!liveStreams.has(target.id)) return res.status(400).json({ error: `${target.username} isn’t live right now` });
+  if (db.isBlockedBetween(account.id, target.id)) return res.status(403).json({ error: 'You can’t raid that channel' });
+  if (Date.now() - (raidCooldown.get(account.id) || 0) < 60000) return res.status(429).json({ error: 'You just raided — wait a minute' });
+  raidCooldown.set(account.id, Date.now());
+  const n = mine.viewers.size;
+  for (const v of mine.viewers.values()) send(v, { type: 'scorpture-raid', to: target.username, from: account.username });
+  send(mine.ws, { type: 'scorpture-raid', to: target.username, from: account.username, self: true });
+  streamBotSay(account.id, `🚀 Raiding ${target.username}! See you there!`);
+  broadcastOverlay(target.id, { type: 'ov-raid', from: account.username, viewers: n });
+  streamBotSay(target.id, `🚀 ${account.username} is raiding with ${n} viewer${n === 1 ? '' : 's'}!`);
+  res.json({ ok: true, viewers: n });
+});
+
 // ✂️ Clips: anyone signed in can save the last 30 seconds of a live OBS stream (cut from the
 // replay recording that's already being written) as a video on the streamer's channel.
 const clipCooldown = new Map(); // clipper account id -> last clip time
@@ -2840,6 +2862,7 @@ app.get('/api/scorpture/channels/:username', (req, res) => {
     bannerUrl: channelAccount.scorpture_banner_url || null,
     avatarUrl: channelAccount.scorpture_avatar_url || null,
     description: channelAccount.scorpture_description || null,
+    nextStream: (() => { const st = publicStreamSettings(channelAccount.id); return st.nextStreamAt ? { at: st.nextStreamAt, text: st.nextStreamText } : null; })(),
   });
 });
 
@@ -3114,7 +3137,8 @@ function overlayStatus(accountId) {
 }
 function publicStreamSettings(accountId) {
   const st = db.getStreamSettings(accountId);
-  return { nowPlaying: st.nowPlaying || '', goal: st.goal || 0, goalLabel: st.goalLabel || 'Subscriber goal', startsAt: st.startsAt || null, brbText: st.brbText || '' };
+  return { nowPlaying: st.nowPlaying || '', goal: st.goal || 0, goalLabel: st.goalLabel || 'Subscriber goal', startsAt: st.startsAt || null, brbText: st.brbText || '',
+    nextStreamAt: st.nextStreamAt && st.nextStreamAt > Date.now() ? st.nextStreamAt : null, nextStreamText: st.nextStreamText || '' };
 }
 // Viewer counts, timers etc. change constantly — a light push every 3s to channels with overlays open.
 setInterval(() => {
@@ -3321,6 +3345,12 @@ app.post('/api/scorpture/stream-settings', (req, res) => {
   if (typeof b.goalLabel === 'string') st.goalLabel = b.goalLabel.trim().slice(0, 40) || 'Subscriber goal';
   if (b.goal !== undefined) st.goal = Math.max(0, Math.min(10000000, Math.floor(Number(b.goal) || 0)));
   if (typeof b.brbText === 'string') st.brbText = b.brbText.trim().slice(0, 80);
+  // 📅 Next scheduled stream (shown on the channel page).
+  if (b.nextStreamAt !== undefined) {
+    const at = Number(b.nextStreamAt);
+    st.nextStreamAt = Number.isFinite(at) && at > Date.now() && at < Date.now() + 90 * 86400000 ? Math.round(at) : null;
+  }
+  if (typeof b.nextStreamText === 'string') st.nextStreamText = b.nextStreamText.trim().slice(0, 60);
   if (b.startsInMinutes !== undefined) {
     const mins = Number(b.startsInMinutes);
     st.startsAt = Number.isFinite(mins) && mins > 0 && mins <= 240 ? Date.now() + Math.round(mins * 60000) : null;
