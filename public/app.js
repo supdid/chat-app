@@ -9705,29 +9705,32 @@ function flushOutbox(code) {
 
 
 // --- ✨ What's new (shown once per update to people who've used Valk before) ---
-const WHATS_NEW_VERSION = '2026-11-09b';
+const WHATS_NEW_VERSION = '2026-11-10';
 const WHATS_NEW = [
-  ['🌍', 'Public rooms', 'Hosts can list their room and give it a one-line description (Room settings) so anyone can find it on the start screen.'],
-  ['😀', 'Your reactions first', 'The reaction picker now shows the emoji you use most recently first.'],
-  ['🔁', 'Echo', 'New game: repeat the light-and-sound pattern as it grows. /play echo'],
-  ['🔗', 'Links tab', 'Menu → 🖼️ Media gallery → 🔗 Links lists every link shared in the room.'],
-  ['📅', 'Date dividers', 'Chat now shows Today, Yesterday and the date between days. Emoji-only messages show big 😂'],
-  ['🎂', 'Birthdays', 'Tap your name → 🎂 Set to add your birthday. On the day, the room gets confetti and a heads-up.'],
-  ['📜', 'Tidier long messages', 'Really long messages fold up with a Show more button.'],
-  ['⭐', 'Best of this room', 'Menu → ⭐ Best of this room: the most-reacted messages of all time.'],
-  ['🏆', 'Game ranks on profiles', 'Profile cards show someone’s best placings on this room’s game leaderboards.'],
-  ['🎲', 'Fun stuff button', 'Tap 🎲 next to the message box for polls, checklists, stories, games and more.'],
-  ['🤥', 'Two truths and a lie', '/2truths I have a cat | *I met a celebrity | I can juggle — the * marks your lie; the room guesses, you reveal.'],
-  ['🧩', 'Sudoku', 'New game: fresh puzzles in Easy, Medium and Hard, with notes mode and a fastest-times board. /play sudoku'],
   ['📺', 'Watch together', '/watch + a YouTube link — everyone who opens it watches in sync (play, pause and skip are shared).'],
+  ['🎲', 'Fun stuff button', 'Tap 🎲 next to the message box for polls, checklists, stories, games and more.'],
+  ['🌍', 'Public rooms', 'Hosts can list their room and give it a one-line description (Room settings) so anyone can find it on the start screen.'],
+  ['🤥', 'Two truths and a lie', '/2truths I have a cat | *I met a celebrity | I can juggle — the * marks your lie; the room guesses, you reveal.'],
   ['📖', 'Group stories', '/story Once upon a time… — then everyone adds one line at a time.'],
-  ['🎯', 'Number game', '/numbergame — Valk picks a secret number, the whole room guesses with /guess 50.'],
   ['☑️', 'Shared checklists', '/todo Groceries: milk, eggs, bread — anyone in the room can tick things off or add more.'],
+  ['🎯', 'Number game', '/numbergame — Valk picks a secret number, the whole room guesses with /guess 50.'],
+  ['🧩', 'Sudoku', 'New game: fresh puzzles in Easy, Medium and Hard, with notes mode and a fastest-times board. /play sudoku'],
   ['💣', 'Minesweeper', 'A new game with Easy, Medium and Hard, and a fastest-times board for each room. /play mines'],
   ['🧠', 'Memory Match', 'Flip cards and find the pairs, fastest wins. /play match'],
+  ['🔁', 'Echo', 'New game: repeat the light-and-sound pattern as it grows. /play echo'],
   ['📊', 'Quick polls', '/poll Lunch? pizza, tacos, sushi — no form needed.'],
   ['🧊', 'Icebreakers', '/icebreaker posts a fun question to get everyone talking.'],
   ['✊', 'More fair games', '/rps rock (vs Valk), /number 1-100, /teams 2 Ana, Ben, Cy, Dee.'],
+  ['⭐', 'Best of this room', 'Menu → ⭐ Best of this room: the most-reacted messages of all time.'],
+  ['🏆', 'Game ranks on profiles', 'Profile cards show someone’s best placings on this room’s game leaderboards.'],
+  ['🎂', 'Birthdays', 'Tap your name → 🎂 Set to add your birthday. On the day, the room gets confetti and a heads-up.'],
+  ['📅', 'Date dividers', 'Chat now shows Today, Yesterday and the date between days. Emoji-only messages show big 😂'],
+  ['🔗', 'Links tab', 'Menu → 🖼️ Media gallery → 🔗 Links lists every link shared in the room.'],
+  ['📜', 'Tidier long messages', 'Really long messages fold up with a Show more button.'],
+  ['😀', 'Your reactions first', 'The reaction picker now shows the emoji you use most recently first.'],
+];
+// Older entries, folded under "Earlier updates".
+const WHATS_NEW_EARLIER = [
   ['⚡', 'Quick Draw', 'Another new game: wait for green, tap fastest! Menu → ⚡ Play Quick Draw, or /play quick.'],
   ['⌨️', 'Type Race', 'A new game! Everyone types the same sentence — fastest fingers win. Menu → ⌨️ Play Type Race.'],
   ['🛡️', 'Co-hosts', 'Hosts can tap ⭐ next to someone to make them a co-host who helps moderate.'],
@@ -9755,23 +9758,35 @@ const WHATS_NEW = [
   ['🎮', 'Game invites', 'Type /play typerace (or chess, trivia, wordle…) to call the room to a game. 🏆 Room champions shows the top players.'],
 ];
 const whatsNewModal = document.getElementById('whats-new-modal');
+function whatsNewItem([icon, title, desc]) {
+  const li = document.createElement('li');
+  const ic = document.createElement('span');
+  ic.className = 'wn-icon';
+  ic.textContent = icon;
+  const body = document.createElement('div');
+  const t = document.createElement('b');
+  t.textContent = title;
+  const d = document.createElement('span');
+  d.textContent = desc;
+  body.append(t, d);
+  li.append(ic, body);
+  return li;
+}
 function openWhatsNew() {
   const list = document.getElementById('whats-new-list');
   list.textContent = '';
-  for (const [icon, title, desc] of WHATS_NEW) {
-    const li = document.createElement('li');
-    const ic = document.createElement('span');
-    ic.className = 'wn-icon';
-    ic.textContent = icon;
-    const body = document.createElement('div');
-    const t = document.createElement('b');
-    t.textContent = title;
-    const d = document.createElement('span');
-    d.textContent = desc;
-    body.append(t, d);
-    li.append(ic, body);
-    list.appendChild(li);
-  }
+  WHATS_NEW.forEach((item) => list.appendChild(whatsNewItem(item)));
+  const more = document.createElement('li');
+  more.className = 'wn-earlier';
+  const details = document.createElement('details');
+  const summary = document.createElement('summary');
+  summary.textContent = `Earlier updates (${WHATS_NEW_EARLIER.length})`;
+  const inner = document.createElement('ul');
+  inner.className = list.className;
+  WHATS_NEW_EARLIER.forEach((item) => inner.appendChild(whatsNewItem(item)));
+  details.append(summary, inner);
+  more.appendChild(details);
+  list.appendChild(more);
   whatsNewModal.classList.remove('hidden');
   try { localStorage.setItem('valk-whats-new-seen', WHATS_NEW_VERSION); } catch (err) { /* ignore */ }
 }

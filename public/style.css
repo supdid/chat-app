@@ -3247,3 +3247,7 @@ body.hide-presence-system .system.presence-system { display: none; }
   .room-people-chip { flex-shrink: 0; }
   .logo.small { flex-shrink: 0; }
 }
+
+.wn-earlier { display: block !important; list-style: none; }
+.wn-earlier summary { cursor: pointer; font-weight: 700; color: var(--text-muted); padding: 0.4rem 0; }
+.wn-earlier ul { padding: 0; margin: 0.3rem 0 0; }
