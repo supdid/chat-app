@@ -8083,6 +8083,25 @@ describe('best of this room (2026-11-09)', () => {
   });
 });
 
+describe('group stories (2026-11-09)', () => {
+  test('/story starts a story; people take turns adding lines, never twice in a row', async () => {
+    const { ws: a, code } = await joinRoom('StoryA');
+    const b = await joinExistingRoom('StoryB', code);
+    send(a, { type: 'message', text: '/story Once upon a time, a cat found a map.' });
+    const m = await waitFor(b, (x) => x.type === 'message' && x.kind === 'story');
+    assert.deepEqual(m.meta.lines, [{ t: 'Once upon a time, a cat found a map.', by: 'StoryA' }]);
+    send(a, { type: 'story-add', messageId: m.id, text: 'me again' });
+    assert.match((await waitFor(a, (x) => x.type === 'error')).message, /someone else/);
+    send(b, { type: 'story-add', messageId: m.id, text: '  It led   to the fridge.  ' });
+    const u = await waitFor(a, (x) => x.type === 'story-updated');
+    assert.deepEqual(u.meta.lines.map((l) => [l.t, l.by]), [['Once upon a time, a cat found a map.', 'StoryA'], ['It led to the fridge.', 'StoryB']]);
+    await sleep(200);
+    send(a, { type: 'story-add', messageId: m.id, text: 'The end.' });
+    await waitFor(b, (x) => x.type === 'story-updated' && x.meta.lines.length === 3);
+    a.close(); b.close();
+  });
+});
+
 describe('poll upgrades (2026-11-08)', () => {
   const postPoll = (ws, def) => send(ws, { type: 'message', text: JSON.stringify(def), mediaUrl: 'poll', mediaType: 'poll' });
 

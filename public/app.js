@@ -1073,6 +1073,12 @@ function handleServerMessage(data) {
       rerenderPollCard(data.messageId);
       break;
 
+    case 'story-updated': {
+      const holder = document.querySelector(`#msg-${CSS.escape(data.messageId)} .story`);
+      if (holder) renderStory(holder.parentNode, data.messageId, data.meta);
+      break;
+    }
+
     case 'checklist-updated': {
       const holder = document.querySelector(`#msg-${CSS.escape(data.messageId)} .checklist`);
       if (holder) renderChecklist(holder.parentNode, data.messageId, holder.dataset.title, data.meta);
@@ -2419,6 +2425,11 @@ function renderMessage(data, opts = {}) {
       tag.textContent = '🧊 Icebreaker';
       text.prepend(tag);
     }
+    if (data.kind === 'story' && data.meta && Array.isArray(data.meta.lines)) {
+      text.textContent = '';
+      bubble.classList.add('story-bubble');
+      renderStory(text, data.id, data.meta);
+    }
     if (data.kind === 'checklist' && data.meta && Array.isArray(data.meta.items)) {
       text.textContent = '';
       bubble.classList.add('checklist-bubble');
@@ -2765,7 +2776,7 @@ function makeMessageActions(data) {
     reportBtn.addEventListener('click', () => reportUser(data.name, data.id, data.text));
     actions.appendChild(reportBtn);
   }
-  if (isOwn && !data.mediaUrl && data.kind !== 'roll' && data.kind !== 'countdown' && data.kind !== 'checklist' && data.kind !== 'icebreaker') {
+  if (isOwn && !data.mediaUrl && data.kind !== 'roll' && data.kind !== 'countdown' && data.kind !== 'checklist' && data.kind !== 'icebreaker' && data.kind !== 'story') {
     const editBtn = document.createElement('button');
     editBtn.type = 'button';
     editBtn.className = 'msg-action-btn';
@@ -9601,6 +9612,7 @@ const WHATS_NEW = [
   ['📜', 'Tidier long messages', 'Really long messages fold up with a Show more button.'],
   ['⭐', 'Best of this room', 'Menu → ⭐ Best of this room: the most-reacted messages of all time.'],
   ['🏆', 'Game ranks on profiles', 'Profile cards show someone’s best placings on this room’s game leaderboards.'],
+  ['📖', 'Group stories', '/story Once upon a time… — then everyone adds one line at a time.'],
   ['🎯', 'Number game', '/numbergame — Valk picks a secret number, the whole room guesses with /guess 50.'],
   ['☑️', 'Shared checklists', '/todo Groceries: milk, eggs, bread — anyone in the room can tick things off or add more.'],
   ['💣', 'Minesweeper', 'A new game with Easy, Medium and Hard, and a fastest-times board for each room. /play mines'],
@@ -10028,6 +10040,64 @@ function makeBirthdayRow(acct) {
   return row;
 }
 
+// --- 📖 Group stories (/story) ---
+const STORY_COLORS = ['#5bb2ff', '#34e89e', '#ffb347', '#ff7eb6', '#b18cff', '#3fe0d0', '#ff6b6b', '#f2c230'];
+function storyColor(name) {
+  let h = 0;
+  for (const ch of String(name)) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+  return STORY_COLORS[h % STORY_COLORS.length];
+}
+function renderStory(container, messageId, meta) {
+  container.textContent = '';
+  const box = document.createElement('div');
+  box.className = 'story';
+  const head = document.createElement('div');
+  head.className = 'story-head';
+  const authors = [...new Set(meta.lines.map((l) => l.by).filter(Boolean))];
+  head.textContent = `📖 Group story · ${meta.lines.length} line${meta.lines.length === 1 ? '' : 's'} · ${authors.length} writer${authors.length === 1 ? '' : 's'}`;
+  box.appendChild(head);
+  const body = document.createElement('p');
+  body.className = 'story-body';
+  meta.lines.forEach((l, i) => {
+    const span = document.createElement('span');
+    span.className = 'story-line';
+    span.style.setProperty('--writer', storyColor(l.by));
+    span.title = l.by ? `by ${l.by}` : '';
+    span.textContent = l.t;
+    body.appendChild(span);
+    if (i < meta.lines.length - 1) body.appendChild(document.createTextNode(' '));
+  });
+  box.appendChild(body);
+  const last = meta.lines[meta.lines.length - 1];
+  if (meta.lines.length >= 40) {
+    const end = document.createElement('div');
+    end.className = 'story-note';
+    end.textContent = '— The End —';
+    box.appendChild(end);
+  } else if (myProfile && last.by === myProfile.name) {
+    const wait = document.createElement('div');
+    wait.className = 'story-note';
+    wait.textContent = '✍️ Waiting for someone else to add the next line…';
+    box.appendChild(wait);
+  } else {
+    const form = document.createElement('form');
+    form.className = 'story-add';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.maxLength = 160;
+    input.placeholder = '✍️ Add the next line…';
+    input.setAttribute('aria-label', 'Add the next line of the story');
+    form.appendChild(input);
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const v = input.value.trim();
+      if (v && wsSendOrWarnDisconnected({ type: 'story-add', messageId, text: v })) input.value = '';
+    });
+    box.appendChild(form);
+  }
+  container.appendChild(box);
+}
+
 // --- ☑️ Shared checklists (/todo) ---
 function renderChecklist(container, messageId, title, meta) {
   container.textContent = '';
@@ -10110,6 +10180,7 @@ const SLASH_COMMANDS = [
   ['/pick', 'pizza, tacos or sushi', 'Let Valk choose'],
   ['/me', 'waves', 'Say an action'],
   ['/todo', 'Groceries: milk, eggs, bread', 'Shared checklist anyone can tick'],
+  ['/story', 'Once upon a time, a cat found a map…', 'Start a story everyone adds a line to'],
   ['/rps', 'rock', 'Rock paper scissors vs Valk'],
   ['/number', '1-100', 'Random number'],
   ['/teams', '2 Ana, Ben, Cy, Dee', 'Split people into random teams'],

@@ -205,6 +205,7 @@ function messagePreviewText(entry) {
   }
   if (entry.kind === 'me') return `* ${entry.name} ${entry.text}`;
   if (entry.kind === 'checklist') return `☑️ Checklist: ${entry.text}`;
+  if (entry.kind === 'story' && entry.meta) return `📖 Story: ${entry.meta.lines[0].t}`;
   return entry.text || (entry.mediaType ? `sent a${entry.mediaType === 'image' ? 'n' : ''} ${entry.mediaType}` : '');
 }
 
@@ -5732,6 +5733,9 @@ function announceBirthday(code, ws) {
   broadcastRoom(code, { type: 'system', text: `🎂 It's ${ws.profile.name}'s birthday today! Say happy birthday 🎉`, at: Date.now(), birthday: true });
 }
 
+// 📖 /story: everyone adds one line at a time to a shared story.
+const STORY_LINE_MAX = 160;
+const STORY_MAX_LINES = 40;
 // Shared checklists (/todo): anyone in the room can tick items off or add more.
 const CHECKLIST_MAX_ITEMS = 30;
 const CHECKLIST_ITEM_MAX = 120;
@@ -5822,6 +5826,11 @@ function resolveServerCommand(text, room = null) {
     }
   }
   if (/^\/(?:icebreaker|question|qotd)\s*$/i.test(text)) return { kind: 'icebreaker', text: ICEBREAKERS[crypto.randomInt(ICEBREAKERS.length)] };
+  const story = text.match(/^\/story\s+([\s\S]+)$/i);
+  if (story) {
+    const first = story[1].replace(/\s+/g, ' ').trim().slice(0, STORY_LINE_MAX);
+    if (first) return { kind: 'story', text: 'Story', meta: { lines: [{ t: first, by: null }] } };
+  }
   const todo = text.match(/^\/(?:todo|checklist|list)\s+([\s\S]+)$/i);
   if (todo) {
     let body = todo[1].trim();
@@ -9762,6 +9771,30 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    if (msg.type === 'story-add' && ws.room) {
+      if (isWsMsgRateLimited(ws)) return;
+      const messageId = String(msg.messageId || '');
+      const target = db.getMessage(messageId);
+      if (!target || target.room_code !== ws.room || target.kind !== 'story' || target.deleted) return;
+      const liveRoom = rooms.get(ws.room);
+      if (liveRoom && liveRoom.muted && liveRoom.muted.has(ws.profile.name)) return;
+      const dbRoom = db.getRoom(ws.room);
+      if (dbRoom && dbRoom.hosts_only && !isRoomMod(dbRoom, ws)) { send(ws, { type: 'error', message: 'Only hosts can change things in this room' }); return; }
+      let meta;
+      try { meta = JSON.parse(target.meta); } catch { return; }
+      if (!meta || !Array.isArray(meta.lines)) return;
+      if (meta.lines.length >= STORY_MAX_LINES) { send(ws, { type: 'error', message: 'This story is finished — start a new one with /story' }); return; }
+      if (meta.lines[meta.lines.length - 1].by === ws.profile.name) { send(ws, { type: 'error', message: 'Let someone else add the next line first!' }); return; }
+      const t = applyWordFilter(dbRoom, String(msg.text || '').replace(/\s+/g, ' ').trim().slice(0, STORY_LINE_MAX));
+      if (!t) return;
+      meta.lines.push({ t, by: ws.profile.name });
+      db.setMessageMeta(messageId, meta);
+      const entry = liveRoom && liveRoom.history.find((m) => m.id === messageId);
+      if (entry) entry.meta = meta;
+      broadcastRoom(ws.room, { type: 'story-updated', messageId, meta, by: ws.profile.name });
+      return;
+    }
+
     // End a poll early — whoever posted it, or the host/co-hosts.
     if (msg.type === 'close-poll' && ws.room) {
       if (isWsMsgRateLimited(ws)) return;
@@ -10120,6 +10153,7 @@ wss.on('connection', (ws, req) => {
       // Scorpture overlays route elsewhere in this file.
       claimUpload(mediaUrl);
       if (kind === 'checklist' && meta) meta.items.forEach((it) => { it.t = applyWordFilter(slowRoom, it.t); });
+      if (kind === 'story' && meta) { meta.lines[0].by = ws.profile.name; meta.lines[0].t = applyWordFilter(slowRoom, meta.lines[0].t); }
 
       let replyToId = null;
       let replyPreview = null;
@@ -10177,7 +10211,7 @@ wss.on('connection', (ws, req) => {
       // supported poll feature and this generic free-text path has no shape validation, so
       // allowing it here would let a user corrupt their own poll the same way the message
       // handler above now guards against on creation.
-      if (!target || target.room_code !== ws.room || !ownsMessage(target, ws) || target.deleted || target.media_type === 'poll' || target.kind === 'roll' || target.kind === 'countdown' || target.kind === 'checklist' || target.kind === 'icebreaker') return;
+      if (!target || target.room_code !== ws.room || !ownsMessage(target, ws) || target.deleted || target.media_type === 'poll' || target.kind === 'roll' || target.kind === 'countdown' || target.kind === 'checklist' || target.kind === 'icebreaker' || target.kind === 'story') return;
       db.updateMessageText(messageId, text);
       const entry = room && room.history.find((m) => m.id === messageId);
       if (entry) { entry.text = text; entry.edited = true; }
