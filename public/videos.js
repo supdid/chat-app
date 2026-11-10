@@ -1629,6 +1629,15 @@ async function renderStreamKeyPage() {
         <label class="stream-replay-toggle"><input id="obs-replays-input" type="checkbox"${info.saveReplays ? ' checked' : ''}> 🔴 Save my streams as replays — when you click Stop Streaming, the stream is added to your channel as a video (streams under 30 seconds aren't kept; you can delete replays like any video)</label>
       </div>
       <div class="stream-key-card">
+        <h2>💬 Chat box for OBS</h2>
+        <p class="stream-key-hint">Shows your live chat on your stream. In OBS: <b>Sources → + → Browser</b>, paste this link as the URL, set Width <b>400</b> and Height <b>600</b>, then place it where you like.</p>
+        <div class="stream-key-row">
+          <input id="obs-chat-url" type="text" readonly value="${escapeHtml(`${location.origin}/chat-overlay.html?u=${encodeURIComponent(currentAccount.username)}&fade=30`)}">
+          <button class="pill-btn copy-btn" data-copy="obs-chat-url">Copy</button>
+        </div>
+        <p class="stream-key-hint">Change <code>fade=30</code> to how many seconds messages stay (<code>fade=0</code> keeps them), add <code>&amp;size=1.4</code> for bigger text. <a href="/chat-overlay.html?u=${encodeURIComponent(currentAccount.username)}&demo=1" target="_blank" rel="noopener">Preview it</a></p>
+      </div>
+      <div class="stream-key-card">
         <h2>How to set up OBS</h2>
         <ol class="stream-key-steps">
           <li>Open OBS Studio → <b>Settings</b> → <b>Stream</b>.</li>

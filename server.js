@@ -3012,6 +3012,15 @@ function getAccountPresence(accountId) {
 // accountId -> { ws, username, title, startedAt, viewers: Map<viewerId, ws> }
 const liveStreams = new Map();
 
+// Channel account id -> Set of chat-overlay sockets (OBS browser sources).
+const chatOverlays = new Map();
+function leaveChatOverlay(ws) {
+  if (!ws.chatOverlayFor) return;
+  const set = chatOverlays.get(ws.chatOverlayFor);
+  if (set) { set.delete(ws); if (!set.size) chatOverlays.delete(ws.chatOverlayFor); }
+  ws.chatOverlayFor = null;
+}
+
 function endScorptureLive(accountId) {
   const stream = liveStreams.get(accountId);
   if (!stream) return;
@@ -6275,6 +6284,23 @@ wss.on('connection', (ws, req) => {
       const chatMsg = { type: 'scorpture-live-chat', username: account.username, text, at: Date.now() };
       send(stream.ws, chatMsg);
       for (const viewerWs of stream.viewers.values()) send(viewerWs, chatMsg);
+      for (const overlayWs of chatOverlays.get(streamerAccountId) || []) send(overlayWs, chatMsg);
+      return;
+    }
+
+    // 💬 OBS chat box: chat-overlay.html?u=<username> listens to that channel's live chat. Read-only
+    // (the same messages any viewer of the stream sees) and doesn't count as a viewer.
+    if (msg.type === 'scorpture-chat-overlay') {
+      if (isWsMsgRateLimited(ws)) return;
+      const streamer = db.getAccountByUsername(String(msg.username || '').slice(0, 40));
+      if (!streamer) { send(ws, { type: 'scorpture-chat-overlay-error', message: 'No Scorpture channel with that name' }); return; }
+      leaveChatOverlay(ws);
+      if (!chatOverlays.has(streamer.id)) chatOverlays.set(streamer.id, new Set());
+      const set = chatOverlays.get(streamer.id);
+      if (set.size >= 20) return; // a handful of OBS scenes, not unlimited sockets
+      set.add(ws);
+      ws.chatOverlayFor = streamer.id;
+      send(ws, { type: 'scorpture-chat-overlay-ok', username: streamer.username, live: liveStreams.has(streamer.id) });
       return;
     }
 
@@ -10556,6 +10582,7 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('close', () => {
+    leaveChatOverlay(ws);
     unregisterAccountConnection(ws);
     if (ws.room) leaveRoom(ws);
     if (ws.profile) broadcastWorldwideCount();

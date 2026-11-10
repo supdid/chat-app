@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Scorpture Chat Box</title>
+<style>
+  /* Made for an OBS Browser Source: transparent page, chat stacks up from the bottom. */
+  :root { --size: 1; }
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  body {
+    font-family: "Segoe UI", Roboto, Ubuntu, sans-serif;
+    font-size: calc(18px * var(--size));
+    color: #fff;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    padding: 10px;
+    box-sizing: border-box;
+  }
+  #chat { display: flex; flex-direction: column; gap: 6px; }
+  .msg {
+    align-self: flex-start;
+    max-width: 100%;
+    box-sizing: border-box;
+    padding: 0.4em 0.7em;
+    border-radius: 12px;
+    background: rgba(10, 16, 26, 0.72);
+    line-height: 1.35;
+    word-wrap: break-word;
+    overflow-wrap: anywhere;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+    animation: pop 0.25s ease-out;
+    transition: opacity 0.6s;
+  }
+  .msg.fade { opacity: 0; }
+  .name { font-weight: 800; margin-right: 0.35em; }
+  .notice { align-self: flex-start; font-size: 0.75em; padding: 0.3em 0.6em; border-radius: 8px; background: rgba(214, 60, 60, 0.85); }
+  @keyframes pop { from { transform: translateX(-12px); opacity: 0; } to { transform: none; opacity: 1; } }
+</style>
+</head>
+<body>
+<div id="chat" aria-live="polite"></div>
+<script>
+// Options: ?u=<channel> (required) &fade=30 (seconds before a message fades; 0 = never)
+//          &size=1.2 (text size) &max=12 (messages kept on screen)
+const params = new URLSearchParams(location.search);
+const channel = (params.get('u') || '').trim();
+const fadeSecs = params.has('fade') ? Math.max(0, Number(params.get('fade')) || 0) : 0;
+const maxMsgs = Math.min(50, Math.max(1, Number(params.get('max')) || 12));
+document.documentElement.style.setProperty('--size', String(Math.min(3, Math.max(0.5, Number(params.get('size')) || 1))));
+const chatEl = document.getElementById('chat');
+
+const COLORS = ['#ff7eb6', '#5bb2ff', '#34e89e', '#ffb347', '#b18cff', '#3fe0d0', '#ff6b6b', '#f2e430', '#8fd3ff', '#ff9f6b'];
+function colorFor(name) {
+  let h = 0;
+  for (const ch of name) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+  return COLORS[h % COLORS.length];
+}
+
+let notice = null;
+function showNotice(text) {
+  if (!notice) { notice = document.createElement('div'); notice.className = 'notice'; document.body.prepend(notice); }
+  notice.textContent = text;
+}
+function clearNotice() { if (notice) { notice.remove(); notice = null; } }
+
+function addMessage(username, text) {
+  const el = document.createElement('div');
+  el.className = 'msg';
+  const n = document.createElement('span');
+  n.className = 'name';
+  n.style.color = colorFor(username);
+  n.textContent = username;
+  const t = document.createElement('span');
+  t.textContent = text;
+  el.append(n, t);
+  chatEl.appendChild(el);
+  while (chatEl.children.length > maxMsgs) chatEl.firstElementChild.remove();
+  if (fadeSecs > 0) {
+    setTimeout(() => el.classList.add('fade'), fadeSecs * 1000);
+    setTimeout(() => el.remove(), fadeSecs * 1000 + 700);
+  }
+}
+
+function connect() {
+  if (!channel) { showNotice('Add ?u=YourScorptureName to the end of this link'); return; }
+  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`);
+  ws.addEventListener('open', () => ws.send(JSON.stringify({ type: 'scorpture-chat-overlay', username: channel })));
+  ws.addEventListener('message', (e) => {
+    let m;
+    try { m = JSON.parse(e.data); } catch { return; }
+    if (m.type === 'scorpture-chat-overlay-ok') clearNotice();
+    else if (m.type === 'scorpture-chat-overlay-error') showNotice(m.message);
+    else if (m.type === 'scorpture-live-chat') addMessage(m.username, m.text);
+  });
+  ws.addEventListener('close', () => { showNotice('Chat box reconnecting…'); setTimeout(connect, 2000); });
+}
+connect();
+if (params.get('demo') === '1') {
+  [['Ana', 'hiii 👋'], ['Ben', 'that jump was insane'], ['Cy', 'GG!! 🔥🔥'], ['Dee', 'what game is this?']].forEach(([u, t], i) => setTimeout(() => addMessage(u, t), 300 * i));
+}
+</script>
+</body>
+</html>

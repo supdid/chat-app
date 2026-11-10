@@ -8173,6 +8173,24 @@ describe('two truths and a lie (2026-11-09)', () => {
   });
 });
 
+describe('scorpture chat overlay (2026-11-09)', () => {
+  test('an overlay socket subscribes to a channel by name; unknown names get an error', async () => {
+    const acct = await fetch(`${BASE_URL}/auth/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'ChatBoxStreamer', password: 'pass1234', email: 'chatbox@test.com' }),
+    }).then((r) => r.json());
+    assert.ok(acct.token);
+    const o = await connectWs();
+    send(o, { type: 'scorpture-chat-overlay', username: 'NoSuchChannel123' });
+    assert.match((await waitFor(o, (m) => m.type === 'scorpture-chat-overlay-error')).message, /No Scorpture channel/);
+    await sleep(200);
+    send(o, { type: 'scorpture-chat-overlay', username: 'ChatBoxStreamer' });
+    const ok = await waitFor(o, (m) => m.type === 'scorpture-chat-overlay-ok');
+    assert.deepEqual([ok.username, ok.live], ['ChatBoxStreamer', false]);
+    o.close();
+  });
+});
+
 describe('poll upgrades (2026-11-08)', () => {
   const postPoll = (ws, def) => send(ws, { type: 'message', text: JSON.stringify(def), mediaUrl: 'poll', mediaType: 'poll' });
 
