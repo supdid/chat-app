@@ -26,6 +26,25 @@
   <button id="menu-music-toggle-btn" class="theme-toggle music-toggle" aria-label="Toggle menu music" type="button">🔊</button>
   <div id="app-toast" class="app-toast" role="status" aria-live="polite"></div>
 
+  <!-- Limited-time promo: side tab + code box (app.js refreshPromoTab; the code is checked server-side) -->
+  <button id="promo-tab" class="promo-tab hidden" type="button" aria-label="Enter a premium code">🍪 PREMIUM CODE</button>
+  <div id="promo-modal" class="promo-modal hidden" role="dialog" aria-modal="true" aria-labelledby="promo-title">
+    <div class="promo-card">
+      <div class="promo-emoji">🎟️</div>
+      <h2 id="promo-title">Got a premium code?</h2>
+      <p>Type it in to unlock Valk Premium for free.</p>
+      <p id="promo-ends" class="promo-ends"></p>
+      <form id="promo-form">
+        <input id="promo-input" type="text" placeholder="What's the code?" maxlength="60" autocomplete="off" required>
+        <div class="promo-actions">
+          <button type="button" id="promo-cancel">Cancel</button>
+          <button type="submit" class="primary">Unlock ⭐</button>
+        </div>
+      </form>
+      <p id="promo-error" class="error hidden"></p>
+    </div>
+  </div>
+
   <!-- Screen 1: pick a name -->
   <div id="login-screen" class="screen">
     <div class="card">

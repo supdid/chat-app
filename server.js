@@ -1384,10 +1384,67 @@ const NAME_COLORS = ['gold', 'rose', 'sky', 'mint', 'violet', 'flame', 'rainbow'
 const BUBBLE_THEMES = ['galaxy', 'sunset', 'ocean', 'neon', 'candy'];
 const PERMANENT_TIERS = Object.keys(TIERS).filter((t) => TIERS[t].permanentRooms);
 
-function perksFor(accountId) {
-  const p = db.getActivePremium(accountId);
+function perksFor(accountId, guestPass) {
+  const p = db.getActivePremium(accountId) || db.getGuestPass(guestPass);
   return p && TIERS[p.tier] ? TIERS[p.tier] : FREE_PERKS;
 }
+
+// ---- Limited-time promo code (shown as a "Premium code" tab on the landing screen) ----
+// Typing the code gives the top tier until PROMO.endsAt: a signed-in account gets it on the
+// account; a guest gets a guest pass (db.createGuestPass) kept in their browser. The code itself
+// only lives here on the server — the page never contains it.
+const PROMO = {
+  code: 'cookiewookie',            // compared after lowercasing and dropping spaces/punctuation
+  tier: 'studio',
+  // Midnight at the end of Nov 12 2026, Pacific time (PST = UTC-8). PROMO_ENDS_AT env overrides for tests.
+  endsAt: Number(process.env.PROMO_ENDS_AT ?? Date.parse('2026-11-13T08:00:00Z')),
+};
+const promoActive = () => Date.now() < PROMO.endsAt;
+const normalizePromoCode = (c) => String(c || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 60);
+const promoRateLimits = new Map();
+function isPromoRateLimited(req) {
+  const ip = req.ip || 'unknown'; const now = Date.now();
+  const ts = (promoRateLimits.get(ip) || []).filter((t) => now - t < 60 * 1000);
+  if (ts.length >= Number(process.env.PROMO_LIMIT_MAX ?? 10)) { promoRateLimits.set(ip, ts); return true; }
+  ts.push(now); promoRateLimits.set(ip, ts);
+  if (promoRateLimits.size > 10000) promoRateLimits.clear();
+  return false;
+}
+const guestPassFromReq = (req) => { const t = req.get('X-Valk-Pass'); return t ? String(t).slice(0, 100) : null; };
+
+// Flair for a live connection: the account's plan, else a guest pass (rainbow name for Studio).
+function flairForWs(ws) {
+  const f = db.accountFlair(ws && ws.accountId);
+  if (f) return f;
+  const g = ws && ws.guestPass ? db.getGuestPass(ws.guestPass) : null;
+  if (!g) return null;
+  return { tier: g.tier, nameColor: TIERS[g.tier] && TIERS[g.tier].rainbowName ? 'rainbow' : (TIERS[g.tier] && TIERS[g.tier].nameColor ? 'gold' : null), bubble: null };
+}
+
+app.get('/api/premium/promo', (req, res) => {
+  res.json({ active: promoActive(), endsAt: PROMO.endsAt, tier: PROMO.tier });
+});
+
+app.post('/api/premium/redeem', (req, res) => {
+  if (isPromoRateLimited(req)) return res.status(429).json({ error: 'Too many tries — wait a minute and try again.' });
+  if (!promoActive()) return res.status(410).json({ error: 'Sorry, this premium code has expired.' });
+  const code = normalizePromoCode(req.body && req.body.code);
+  if (!code || code !== PROMO.code) return res.status(400).json({ error: "That code doesn't work. Check the spelling and try again." });
+  const account = getAccountFromReq(req);
+  if (account) {
+    const current = db.getActivePremium(account.id);
+    // Never shorten or downgrade a plan someone already has for longer.
+    if (current && (!current.until || current.until >= PROMO.endsAt)) {
+      return res.json({ ok: true, alreadyPremium: true, tier: current.tier, until: current.until });
+    }
+    db.setPremium(account.id, PROMO.tier, PROMO.endsAt, 'code');
+    return res.json({ ok: true, tier: PROMO.tier, until: PROMO.endsAt });
+  }
+  const existing = db.getGuestPass(guestPassFromReq(req));
+  if (existing) return res.json({ ok: true, alreadyPremium: true, tier: existing.tier, until: existing.until, guestPass: guestPassFromReq(req) });
+  const guestPass = db.createGuestPass(PROMO.tier, PROMO.endsAt, 'code');
+  res.json({ ok: true, tier: PROMO.tier, until: PROMO.endsAt, guestPass });
+});
 
 // Drops any cosmetic the tier doesn't include, e.g. after an admin downgrades someone.
 function allowedCosmetics(perks, nameColor, bubble) {
@@ -1403,7 +1460,11 @@ app.get('/api/premium/tiers', (req, res) => {
 
 app.get('/api/premium/me', (req, res) => {
   const account = getAccountFromReq(req);
-  if (!account) return res.json({ signedIn: false, tier: null, perks: FREE_PERKS });
+  if (!account) {
+    const g = db.getGuestPass(guestPassFromReq(req));
+    if (g) return res.json({ signedIn: false, guestPass: true, tier: g.tier, until: g.until, perks: TIERS[g.tier] || FREE_PERKS, source: 'code' });
+    return res.json({ signedIn: false, tier: null, perks: FREE_PERKS });
+  }
   const p = db.getActivePremium(account.id);
   res.json({
     signedIn: true,
@@ -4736,7 +4797,7 @@ function roomUsers(code) {
     avatarUrl: c.profile.avatarUrl,
     status: c.profile.status,
     muted: !!(room.muted && room.muted.has(c.profile.name)),
-    flair: db.accountFlair(c.accountId),
+    flair: flairForWs(c),
     cohost: !!(c.accountId && cohostIds.has(c.accountId)),
     host: isRoomHost(dbRoomForFlags, c),
     away: !!c.profile.away,
@@ -6339,8 +6400,17 @@ wss.on('connection', (ws, req) => {
         if (account) registerAccountConnection(ws, account.id);
         else accountTokenInvalid = true;
       }
+      ws.guestPass = msg.guestPass && db.getGuestPass(String(msg.guestPass)) ? String(msg.guestPass).slice(0, 100) : null;
       send(ws, { type: 'joined-server', profile: ws.profile, accountTokenInvalid });
       broadcastWorldwideCount();
+      return;
+    }
+
+    // Sent right after a guest redeems a promo code, so their next messages carry the flair
+    // without a reconnect. Only ever accepts a token that resolves to a live pass.
+    if (msg.type === 'set-guest-pass') {
+      if (isWsMsgRateLimited(ws)) return;
+      if (msg.guestPass && db.getGuestPass(String(msg.guestPass))) ws.guestPass = String(msg.guestPass).slice(0, 100);
       return;
     }
 
@@ -9387,7 +9457,7 @@ wss.on('connection', (ws, req) => {
       const url = rawUrl && rawUrl.startsWith('/uploads/') ? rawUrl : null;
       // GIF and video wallpapers are a Power Creator/Studio perk — checked against the host's own
       // account, since only the host can set one.
-      if (url && /\.(gif|mp4|webm|mov|ogv)$/i.test(url) && !perksFor(ws.accountId).animatedWallpaper) {
+      if (url && /\.(gif|mp4|webm|mov|ogv)$/i.test(url) && !perksFor(ws.accountId, ws.guestPass).animatedWallpaper) {
         send(ws, { type: 'premium-required', message: 'Animated and video wallpapers come with Power Creator and Studio.' });
         return;
       }
@@ -10677,7 +10747,7 @@ wss.on('connection', (ws, req) => {
         at: Date.now(),
         kind,
         meta,
-        flair: db.accountFlair(ws.accountId),
+        flair: flairForWs(ws),
       };
       room.history.push(entry);
       if (room.history.length > HISTORY_LIMIT) room.history.shift();

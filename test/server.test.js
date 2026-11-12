@@ -6894,6 +6894,69 @@ describe('premium plans', () => {
   });
 });
 
+describe('premium promo code', () => {
+  const json = { 'Content-Type': 'application/json' };
+  const redeem = (code, headers = {}) => fetch(`${BASE_URL}/api/premium/redeem`, { method: 'POST', headers: { ...json, ...headers }, body: JSON.stringify({ code }) });
+
+  test('promo is advertised while running, and a wrong code is refused', async () => {
+    const promo = await fetch(`${BASE_URL}/api/premium/promo`).then((r) => r.json());
+    assert.equal(promo.active, true);
+    assert.equal(promo.tier, 'studio');
+    assert.ok(!JSON.stringify(promo).toLowerCase().includes('cookie'), 'the code itself is never sent to the page');
+    const bad = await redeem('chocolate chip');
+    assert.equal(bad.status, 400);
+  });
+
+  test('a guest gets a Studio pass that shows up in /api/premium/me and as flair on messages', async () => {
+    const r = await redeem('  Cookie Wookie! ');
+    assert.equal(r.status, 200);
+    const data = await r.json();
+    assert.equal(data.tier, 'studio');
+    assert.ok(data.guestPass && data.guestPass.length >= 32);
+    const me = await fetch(`${BASE_URL}/api/premium/me`, { headers: { 'X-Valk-Pass': data.guestPass } }).then((x) => x.json());
+    assert.equal(me.signedIn, false);
+    assert.equal(me.tier, 'studio');
+    assert.equal(me.perks.hd, true);
+    const nobody = await fetch(`${BASE_URL}/api/premium/me`, { headers: { 'X-Valk-Pass': 'not-a-real-pass' } }).then((x) => x.json());
+    assert.equal(nobody.tier, null, 'a made-up pass gives nothing');
+
+    const ws = await connectWs();
+    send(ws, { type: 'join-server', username: 'CookieGuest', guestPass: data.guestPass });
+    await waitFor(ws, (m) => m.type === 'joined-server');
+    send(ws, { type: 'create-room' });
+    await waitFor(ws, (m) => m.type === 'joined-room');
+    send(ws, { type: 'message', text: 'nom' });
+    const msg = await waitFor(ws, (m) => m.type === 'message' && m.text === 'nom');
+    assert.equal(msg.flair.tier, 'studio');
+    assert.equal(msg.flair.nameColor, 'rainbow');
+    ws.close();
+  });
+
+  test('a signed-in account gets Studio on the account until the promo ends', async () => {
+    const signup = await fetch(`${BASE_URL}/auth/signup`, { method: 'POST', headers: json, body: JSON.stringify({ username: 'CookieAcct', password: 'pass1234', email: 'cookieacct@test.com' }) }).then((x) => x.json());
+    const auth = { Authorization: `Bearer ${signup.token}` };
+    const r = await redeem('cookie wookie', auth);
+    assert.equal(r.status, 200);
+    const data = await r.json();
+    assert.equal(data.guestPass, undefined);
+    const me = await fetch(`${BASE_URL}/api/premium/me`, { headers: auth }).then((x) => x.json());
+    assert.equal(me.tier, 'studio');
+    assert.equal(me.until, data.until);
+  });
+
+  test('after the end time the code stops working', async () => {
+    const expired = await startTestServer({ PROMO_ENDS_AT: String(Date.now() - 1000) }, 3237);
+    try {
+      const promo = await fetch('http://localhost:3237/api/premium/promo').then((x) => x.json());
+      assert.equal(promo.active, false);
+      const r = await fetch('http://localhost:3237/api/premium/redeem', { method: 'POST', headers: json, body: JSON.stringify({ code: 'cookie wookie' }) });
+      assert.equal(r.status, 410);
+    } finally {
+      await expired.stop();
+    }
+  });
+});
+
 describe('stripe payments', () => {
   const json = { 'Content-Type': 'application/json' };
   const WEBHOOK_SECRET = 'whsec_testsecret';

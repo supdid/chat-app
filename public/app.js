@@ -452,14 +452,25 @@ function makeFlairName(name, flair) {
 
 // This user's own plan — only widens what the UI offers; the server checks every perk itself.
 let myPremium = null;
+// Guest premium pass from a promo code (no account needed) — see /api/premium/redeem.
+const GUEST_PASS_KEY = 'valk-guest-pass';
+let guestPass = null;
+try { guestPass = localStorage.getItem(GUEST_PASS_KEY) || null; } catch {}
+function premiumHeaders() {
+  const h = {};
+  if (accountToken) h.Authorization = `Bearer ${accountToken}`;
+  if (guestPass) h['X-Valk-Pass'] = guestPass;
+  return h;
+}
 async function refreshMyPremium() {
   myPremium = null;
-  if (accountToken) {
+  if (accountToken || guestPass) {
     try {
-      const res = await fetch('/api/premium/me', { headers: { Authorization: `Bearer ${accountToken}` } });
+      const res = await fetch('/api/premium/me', { headers: premiumHeaders() });
       if (res.ok) myPremium = await res.json();
     } catch {}
   }
+  setTimeout(refreshPromoTab, 0); // deferred: the promo-tab code is defined at the bottom of this file
   const perks = myPremium && myPremium.perks;
   wallpaperFileInput.accept = perks && perks.animatedWallpaper ? 'image/*,video/mp4,video/webm' : 'image/*';
   wallpaperSetBtn.textContent = perks && perks.animatedWallpaper
@@ -940,7 +951,7 @@ function connect() {
 
   ws.addEventListener('open', () => {
     if (myUsername) {
-      ws.send(JSON.stringify({ type: 'join-server', username: myUsername, accountToken: accountToken || undefined }));
+      ws.send(JSON.stringify({ type: 'join-server', username: myUsername, accountToken: accountToken || undefined, guestPass: guestPass || undefined }));
     }
   });
 
@@ -3859,7 +3870,7 @@ async function finishAccountSignIn(data) {
   // join-server — without this, ws.accountId on the server stays unset until the next
   // reconnect, and friend-DM push subscribing below would have nothing to attach to.
   if (ws && ws.readyState === WebSocket.OPEN && myProfile) {
-    ws.send(JSON.stringify({ type: 'join-server', username: myProfile.name, accountToken }));
+    ws.send(JSON.stringify({ type: 'join-server', username: myProfile.name, accountToken, guestPass: guestPass || undefined }));
   }
   subscribeToPush();
   await pushLocalRecentRoomsToAccount();
@@ -6620,7 +6631,7 @@ loginForm.addEventListener('submit', (e) => {
   loginErrorEl.classList.add('hidden');
   setLoginPending(true);
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'join-server', username: myUsername, accountToken: accountToken || undefined }));
+    ws.send(JSON.stringify({ type: 'join-server', username: myUsername, accountToken: accountToken || undefined, guestPass: guestPass || undefined }));
   }
   armLoginTimeout();
 });
@@ -10698,3 +10709,78 @@ document.getElementById('room-people-chip').addEventListener('click', () => {
   try { details.open = localStorage.getItem('valk-room-settings-open') === '1'; } catch (err) { /* ignore */ }
   details.addEventListener('toggle', () => { try { localStorage.setItem('valk-room-settings-open', details.open ? '1' : '0'); } catch (err) { /* ignore */ } });
 })();
+
+
+// --- Limited-time "Premium code" side tab (server decides if the promo is still running) ---
+const promoTab = document.getElementById('promo-tab');
+const promoModal = document.getElementById('promo-modal');
+const promoForm = document.getElementById('promo-form');
+const promoInput = document.getElementById('promo-input');
+const promoError = document.getElementById('promo-error');
+const promoEnds = document.getElementById('promo-ends');
+let promoInfo = null;
+async function refreshPromoTab() {
+  if (!promoTab) return;
+  if (!promoInfo) {
+    try { promoInfo = await (await fetch('/api/premium/promo')).json(); } catch { promoInfo = { active: false }; }
+  }
+  const live = promoInfo.active && Date.now() < promoInfo.endsAt;
+  const hasPremium = !!(myPremium && myPremium.tier);
+  promoTab.classList.toggle('hidden', !live || hasPremium);
+  if (live && promoEnds) {
+    promoEnds.textContent = `Only until ${promoEndText()}!`;
+  }
+}
+// "midnight tonight" when the end is the coming local midnight, else the local day + time.
+function promoEndText() {
+  const end = new Date(promoInfo.endsAt);
+  const nextMidnight = new Date(); nextMidnight.setHours(24, 0, 0, 0);
+  if (end.getTime() === nextMidnight.getTime()) return 'midnight tonight';
+  return end.toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+}
+function closePromoModal() { promoModal.classList.add('hidden'); }
+if (promoTab) {
+  promoTab.addEventListener('click', () => {
+    promoError.classList.add('hidden');
+    promoInput.value = '';
+    promoModal.classList.remove('hidden');
+    setTimeout(() => promoInput.focus(), 50);
+  });
+  document.getElementById('promo-cancel').addEventListener('click', closePromoModal);
+  promoModal.addEventListener('click', (e) => { if (e.target === promoModal) closePromoModal(); });
+  promoForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    promoError.classList.add('hidden');
+    const btn = promoForm.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    try {
+      const res = await fetch('/api/premium/redeem', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...premiumHeaders() },
+        body: JSON.stringify({ code: promoInput.value }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        promoError.textContent = data.error || 'Something went wrong — try again.';
+        promoError.classList.remove('hidden');
+        if (res.status === 410) { promoInfo = { active: false }; refreshPromoTab(); }
+      } else {
+        if (data.guestPass) {
+          guestPass = data.guestPass;
+          try { localStorage.setItem(GUEST_PASS_KEY, guestPass); } catch {}
+          if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'set-guest-pass', guestPass }));
+        }
+        closePromoModal();
+        await refreshMyPremium();
+        showAppToast(data.alreadyPremium ? "⭐ You already have Valk Premium!" : `🍪 Code accepted! You have Valk Premium Studio until ${promoEndText()}!`);
+      }
+    } catch {
+      promoError.textContent = 'Could not reach the server — check your connection.';
+      promoError.classList.remove('hidden');
+    }
+    btn.disabled = false;
+  });
+  refreshPromoTab();
+  // Hide the tab by itself once the promo runs out while the page is open.
+  setInterval(() => { if (promoInfo && promoInfo.active && Date.now() >= promoInfo.endsAt) { promoInfo.active = false; refreshPromoTab(); } }, 30000);
+}

@@ -762,6 +762,31 @@ function setPremium(accountId, tier, until, source = 'admin') {
     .run(tier, until || null, tier ? source : null, accountId);
 }
 
+// Guest premium passes: a promo code redeemed by someone with no Valk account. The random token
+// lives in that browser's localStorage and is sent back with requests/join-server; it's the guest's
+// whole "account" for premium purposes, so it only ever grants a tier until a fixed end time.
+db.exec(`CREATE TABLE IF NOT EXISTS guest_passes (
+  token TEXT PRIMARY KEY,
+  tier TEXT,
+  until INTEGER,
+  source TEXT,
+  created_at INTEGER
+)`);
+
+function createGuestPass(tier, until, source) {
+  const token = require('crypto').randomBytes(24).toString('hex');
+  db.prepare('INSERT INTO guest_passes (token, tier, until, source, created_at) VALUES (?, ?, ?, ?, ?)').run(token, tier, until, source || null, Date.now());
+  return token;
+}
+
+// Same contract as getActivePremium: null once expired, so every perk check stops at once.
+function getGuestPass(token) {
+  if (!token || typeof token !== 'string' || token.length > 100) return null;
+  const row = db.prepare('SELECT tier, until FROM guest_passes WHERE token = ?').get(token);
+  if (!row || !row.tier || (row.until && row.until <= Date.now())) return null;
+  return { tier: row.tier, until: row.until || null };
+}
+
 function setStripeCustomer(accountId, customerId) {
   db.prepare('UPDATE accounts SET stripe_customer_id = ? WHERE id = ?').run(customerId, accountId);
 }
@@ -3321,6 +3346,8 @@ module.exports = {
   getDirectMessageUnreadCounts,
   getActivePremium,
   setPremium,
+  createGuestPass,
+  getGuestPass,
   setPremiumCosmetics,
   setStripeCustomer,
   setStripeSubscription,

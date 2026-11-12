@@ -11,6 +11,7 @@ const BUBBLE_LABELS = { galaxy: 'Galaxy', sunset: 'Sunset', ocean: 'Ocean', neon
 
 const token = (() => { try { return localStorage.getItem('valk-account-token'); } catch { return null; } })();
 const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
+try { const pass = localStorage.getItem('valk-guest-pass'); if (pass) authHeaders['X-Valk-Pass'] = pass; } catch {}
 let catalog = null;
 let me = null;
 let billing = 'monthly';

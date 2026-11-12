@@ -45,7 +45,7 @@ async function startTestServer(envOverrides = {}, port = TEST_PORT) {
     // A test that wants to verify one of these limiters itself overrides it back down on its own
     // dedicated instance (see the "per-IP WS connection rate limit" and "/auth/google is
     // rate-limited" tests).
-    env: { ...process.env, PORT: String(port), WS_CONNECT_LIMIT_MAX: '1000000', AUTH_LIMIT_MAX: '1000000', FRIENDS_ACTION_MAX: '1000000', ...envOverrides },
+    env: { ...process.env, PORT: String(port), WS_CONNECT_LIMIT_MAX: '1000000', AUTH_LIMIT_MAX: '1000000', FRIENDS_ACTION_MAX: '1000000', PROMO_ENDS_AT: String(Date.now() + 365 * 86400000), ...envOverrides },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';

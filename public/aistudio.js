@@ -26,7 +26,11 @@ let studioPerks = { extraShapes: false, hd: false, galleryLimit: 40, batchSize: 
 async function loadStudioPerks() {
   try {
     const token = localStorage.getItem('valk-account-token');
-    const res = await fetch('/api/premium/me', { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    const pass = localStorage.getItem('valk-guest-pass');
+    const headers = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+    if (pass) headers['X-Valk-Pass'] = pass;
+    const res = await fetch('/api/premium/me', { headers });
     if (res.ok) studioPerks = (await res.json()).perks || studioPerks;
   } catch {}
   for (const opt of ratioSelect.querySelectorAll('option[data-premium]')) {
