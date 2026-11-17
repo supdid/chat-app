@@ -11087,7 +11087,7 @@ const MAX_MY_STICKERS = 40;
 const INVITE_GAMES = {
   typerace: ['typerace.html', '⌨️ Type Race'], quickdraw: ['quickdraw.html', '⚡ Quick Draw'], wordguess: ['wordguess.html', '🟩 Word Guess'],
   hangman: ['hangman.html', '🪢 Hangman'], trivia: ['trivia.html', '❓ Trivia'], pictionary: ['pictionary.html', '🖍️ Pictionary'],
-  chess: ['chess.html', '♟️ Chess'], tictactoe: ['tictactoe.html', '⭕ Tic-Tac-Toe'], blockbattle: ['blockbattle.html', '🧱 Block Battle'],
+  chess: ['chess.html', '♟️ Chess'], tictactoe: ['tictactoe.html', '⭕ Tic-Tac-Toe'], blockbattle: ['blockbattle.html', '🧱 Block Battle'], reload: ['reload.html', '🔫 Reload'],
   buildcraft: ['buildcraft.html', '🏝️ Build Craft'], webswing: ['webswing.html', '🕸️ Web Swing'], firefight: ['firefight.html', '🔫 Firefight'],
   fighterplane: ['fighterplane.html', '🛩️ Fighter Plane'], geometrywave: ['geometrywave.html', '🔺 Geometry Wave'],
   stickfighter: ['stickfighter.html', '🥊 Stick Fighter'], whiteboard: ['whiteboard.html', '🖌️ Whiteboard'], hello: ['hello.html', '👋 Hello'],

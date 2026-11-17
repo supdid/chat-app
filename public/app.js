@@ -69,6 +69,7 @@ const fighterplaneLink = document.getElementById('fighterplane-link');
 const stickfighterLink = document.getElementById('stickfighter-link');
 const firefightLink = document.getElementById('firefight-link');
 const blockbattleLink = document.getElementById('blockbattle-link');
+const reloadLink = document.getElementById('reload-link');
 const pictionaryLink = document.getElementById('pictionary-link');
 const triviaLink = document.getElementById('trivia-link');
 const tictactoeLink = document.getElementById('tictactoe-link');
@@ -3688,6 +3689,7 @@ function updateGameLinks() {
   stickfighterLink.href = `stickfighter.html${params}`;
   firefightLink.href = `firefight.html${params}`;
   blockbattleLink.href = `blockbattle.html${params}`;
+  reloadLink.href = `reload.html${params}`;
   pictionaryLink.href = `pictionary.html${params}`;
   triviaLink.href = `trivia.html${params}`;
   tictactoeLink.href = `tictactoe.html${params}`;
@@ -9998,7 +10000,7 @@ function setThreadCount(bubble, messageId, n) {
 // --- 🎮 Game invites + 🏆 Room champions ---
 const GAME_ALIASES = {
   typerace: ['type', 'typing', 'race'], quickdraw: ['quick', 'quickdraw', 'reaction', 'qd', 'fast'], wordguess: ['wordle', 'word', 'wg'], hangman: ['hang'], trivia: ['quiz'],
-  pictionary: ['draw', 'drawing'], chess: [], tictactoe: ['ttt', 'xo', 'connect4', 'connectfour'], blockbattle: ['bb', 'block'],
+  pictionary: ['draw', 'drawing'], chess: [], tictactoe: ['ttt', 'xo', 'connect4', 'connectfour'], blockbattle: ['bb', 'block'], reload: ['gungame', 'gun'],
   buildcraft: ['build', 'craft'], webswing: ['swing', 'spider'], firefight: ['fps', 'shooter'], fighterplane: ['plane', 'planes'],
   geometrywave: ['geometry', 'gw', 'dash'], stickfighter: ['stick', 'fight'], whiteboard: ['board', 'paint'], hello: [], minesweeper: ['mines', 'mine', 'ms', 'sweeper'], memory: ['match', 'pairs', 'cards', 'mm'], echo: ['pattern', 'sequence', 'simon'], sudoku: ['sd', 'numbers'],
 };

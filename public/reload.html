@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Reload</title>
+<meta name="description" content="Reload — a free browser gun game on Valk. Gun Game vs bots and a shooting range, with hand-animated reloads for every weapon.">
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="reload.css">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#14161c">
+<link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <div id="hud" class="hidden">
+    <div id="crosshair"><i class="ch-t"></i><i class="ch-b"></i><i class="ch-l"></i><i class="ch-r"></i></div>
+    <div id="hitmarker"></div>
+    <div id="scope" class="hidden"></div>
+    <div id="damage-flash"></div>
+    <div id="killfeed"></div>
+    <div id="banner"></div>
+    <div id="health"><div id="health-fill"></div><span id="health-num">100</span></div>
+    <div id="ammo">
+      <div id="weapon-name">—</div>
+      <div id="ammo-row"><span id="ammo-mag">0</span><span id="ammo-cap">/ 0</span></div>
+      <div id="reload-hint" class="hidden">Press <b>R</b> to reload</div>
+    </div>
+    <div id="ladder" class="hidden"></div>
+    <div id="range-help" class="hidden">
+      <b>Shooting Range</b><br>
+      <span>1–9 / scroll</span> change weapon<br>
+      <span>R</span> reload · <span>F</span> inspect<br>
+      <span>T</span> slow-motion (<b id="slowmo-state">off</b>)<br>
+      <span>Right-click</span> aim
+    </div>
+    <div id="slowmo-badge" class="hidden">SLOW-MO 0.25x</div>
+  </div>
+
+  <div id="menu" class="overlay">
+    <div class="panel">
+      <h1>RELOAD</h1>
+      <p class="tag">Every weapon, every reload, by hand.</p>
+      <button id="btn-gungame" class="big">🔫 Gun Game <small>Each kill gives you the next weapon. Get a knife kill to win.</small></button>
+      <button id="btn-range" class="big">🎯 Shooting Range <small>Try all 9 weapons and watch their reloads in slow-motion.</small></button>
+      <div id="best"></div>
+      <div class="controls">
+        <b>WASD</b> move · <b>Shift</b> sprint · <b>Space</b> jump · <b>Ctrl</b> slide<br>
+        <b>Click</b> shoot · <b>Right-click</b> aim · <b>R</b> reload · <b>F</b> inspect
+      </div>
+      <a class="back" id="back-link" href="/">← Back to chat</a>
+      <p id="touch-note" class="hidden">Reload needs a keyboard and mouse.</p>
+    </div>
+  </div>
+
+  <div id="pause" class="overlay hidden">
+    <div class="panel">
+      <h2>Paused</h2>
+      <button id="btn-resume" class="big">▶ Resume</button>
+      <button id="btn-quit" class="big">🏠 Main menu</button>
+    </div>
+  </div>
+
+  <div id="end" class="overlay hidden">
+    <div class="panel">
+      <h2 id="end-title">You win!</h2>
+      <p id="end-sub"></p>
+      <button id="btn-again" class="big">🔁 Play again</button>
+      <button id="btn-end-menu" class="big">🏠 Main menu</button>
+    </div>
+  </div>
+
+  <script src="error-report.js"></script>
+  <script src="vendor/three/three.min.js"></script>
+  <script src="reload.js"></script>
+</body>
+</html>

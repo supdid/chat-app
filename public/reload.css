@@ -1,0 +1,76 @@
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: #14161c; color: #f2f2f2; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; user-select: none; }
+#game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+.hidden { display: none !important; }
+
+/* ---- HUD ---- */
+#hud { position: fixed; inset: 0; pointer-events: none; }
+#crosshair { position: absolute; left: 50%; top: 50%; width: 0; height: 0; }
+#crosshair i { position: absolute; background: #fff; box-shadow: 0 0 2px #000; }
+#crosshair .ch-t, #crosshair .ch-b { width: 2px; height: 9px; left: -1px; }
+#crosshair .ch-l, #crosshair .ch-r { width: 9px; height: 2px; top: -1px; }
+#hitmarker { position: absolute; left: 50%; top: 50%; width: 22px; height: 22px; margin: -11px 0 0 -11px; opacity: 0;
+  background:
+    linear-gradient(45deg, transparent 45%, #fff 45%, #fff 55%, transparent 55%),
+    linear-gradient(-45deg, transparent 45%, #fff 45%, #fff 55%, transparent 55%);
+  -webkit-mask: radial-gradient(circle, transparent 5px, #000 6px); mask: radial-gradient(circle, transparent 5px, #000 6px); }
+#hitmarker.head { background:
+    linear-gradient(45deg, transparent 45%, #ff4a3a 45%, #ff4a3a 55%, transparent 55%),
+    linear-gradient(-45deg, transparent 45%, #ff4a3a 45%, #ff4a3a 55%, transparent 55%); }
+#scope { position: absolute; inset: 0; background: radial-gradient(circle at center, transparent 0 33vmin, #000 33.3vmin); }
+#scope::before, #scope::after { content: ""; position: absolute; background: #000; }
+#scope::before { left: 50%; top: 0; bottom: 0; width: 2px; margin-left: -1px; }
+#scope::after { top: 50%; left: 0; right: 0; height: 2px; margin-top: -1px; }
+#damage-flash { position: absolute; inset: 0; opacity: 0; background: radial-gradient(circle, transparent 50%, rgba(220, 30, 30, 0.55)); transition: opacity 0.25s; }
+
+#killfeed { position: absolute; right: 16px; top: 16px; display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
+#killfeed div { background: rgba(10, 12, 16, 0.7); padding: 4px 10px; border-radius: 6px; font-size: 14px; }
+#killfeed .me { color: #ffb347; font-weight: bold; }
+
+#banner { position: absolute; left: 50%; top: 22%; transform: translateX(-50%); font-size: 30px; font-weight: 900; letter-spacing: 0.04em;
+  text-shadow: 0 3px 10px #000; opacity: 0; transition: opacity 0.2s; text-align: center; white-space: nowrap; }
+#banner small { display: block; font-size: 16px; font-weight: 600; color: #ffd27a; }
+
+#health { position: absolute; left: 20px; bottom: 20px; width: 240px; height: 18px; background: rgba(0, 0, 0, 0.55); border-radius: 9px; overflow: hidden; }
+#health-fill { height: 100%; width: 100%; background: linear-gradient(90deg, #36d17a, #8ff0b0); transition: width 0.15s; }
+#health-num { position: absolute; inset: 0; text-align: center; font: bold 13px/18px system-ui; text-shadow: 0 1px 2px #000; }
+
+#ammo { position: absolute; right: 24px; bottom: 18px; text-align: right; text-shadow: 0 2px 6px #000; }
+#weapon-name { font-size: 15px; font-weight: 700; color: #ffb347; text-transform: uppercase; letter-spacing: 0.08em; }
+#ammo-row { font-weight: 900; }
+#ammo-mag { font-size: 52px; }
+#ammo-mag.low { color: #ff5a4a; }
+#ammo-cap { font-size: 22px; color: #bbb; margin-left: 6px; }
+#reload-hint { font-size: 14px; color: #ffd27a; }
+
+#ladder { position: absolute; left: 16px; top: 16px; background: rgba(10, 12, 16, 0.7); border-radius: 10px; padding: 10px 12px; font-size: 13px; min-width: 190px; }
+#ladder h3 { margin: 0 0 6px; font-size: 13px; color: #ffb347; letter-spacing: 0.08em; }
+#ladder .row { display: flex; justify-content: space-between; gap: 10px; padding: 1px 0; color: #999; }
+#ladder .row.done { color: #5f8; }
+#ladder .row.cur { color: #fff; font-weight: bold; }
+#ladder .lead { margin-top: 6px; color: #ccc; border-top: 1px solid #333; padding-top: 6px; }
+
+#range-help { position: absolute; left: 16px; top: 16px; background: rgba(10, 12, 16, 0.7); border-radius: 10px; padding: 10px 12px; font-size: 13px; line-height: 1.55; }
+#range-help span { color: #ffb347; font-weight: bold; }
+#slowmo-badge { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); background: #ffb347; color: #1a1206; font-weight: 900; padding: 4px 12px; border-radius: 999px; font-size: 13px; }
+
+/* ---- Menus ---- */
+.overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px;
+  background: radial-gradient(ellipse at top, rgba(255, 140, 40, 0.18), transparent 60%), rgba(12, 13, 18, 0.82); }
+.panel { width: min(460px, 100%); text-align: center; }
+h1 { font-size: clamp(56px, 14vw, 92px); margin: 0; font-weight: 900; letter-spacing: 0.06em; font-style: italic;
+  background: linear-gradient(180deg, #ffd27a, #ff7a1a); -webkit-background-clip: text; background-clip: text; color: transparent; }
+h2 { font-size: 36px; margin: 0 0 14px; }
+.tag { margin: 0 0 22px; color: #bbb; }
+button.big { display: block; width: 100%; margin: 10px 0; padding: 14px 16px; border: 0; border-radius: 12px; cursor: pointer;
+  background: #ff7a1a; color: #1a1206; font: 800 20px system-ui; text-align: left; }
+button.big:hover { background: #ff9440; }
+button.big small { display: block; font-size: 13px; font-weight: 500; opacity: 0.85; }
+#btn-quit, #btn-end-menu { background: #333842; color: #fff; }
+#btn-quit:hover, #btn-end-menu:hover { background: #444a56; }
+.controls { margin-top: 18px; font-size: 13px; color: #aaa; line-height: 1.7; }
+.controls b { color: #ffb347; }
+#best { color: #ffd27a; font-size: 14px; min-height: 18px; }
+.back { display: inline-block; margin-top: 16px; color: #999; text-decoration: none; font-size: 14px; }
+.back:hover { color: #fff; }
+#touch-note { color: #ff8a7a; font-size: 14px; }
