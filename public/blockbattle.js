@@ -2066,6 +2066,11 @@ let wantJump = false;   // fresh Space press, consumed once a tick — gates the
 let jumpsUsed = 0;      // resets to 0 on landing; fists gets a 2nd jump mid-air, guns don't
 let health = MAX_HEALTH;
 let dead = false;
+// Admin hacks (see bb-hacks.js — the panel only appears for server-approved admin accounts).
+// Plain flags read by the movement/fire/damage code below. bbHacksUsed latches on the first time
+// any hack is switched on, and from then on this page stops sending leaderboard scores.
+const bbHacks = { noclip: false, fly: false, god: false, infammo: false, onehit: false, rapid: false, speed: false, superjump: false, infrange: false };
+let bbHacksUsed = false;
 let kills = 0;
 let killsAtRunStart = 0; // kills carry across deaths for the weapon ladder; the scoreboard counts per-run
 let airMomX = 0;         // slide-jump momentum, held until landing
@@ -3796,6 +3801,7 @@ function damageBot(bot, amount, killCredit, isHeadshot, isMelee) {
   if (mode === 'headhunter' && !isHeadshot) { bot.flashT = 0.12; return false; } // body shots flinch the bot but do nothing — only headshots count
   if (mode === 'berserker' && !isMelee) { bot.flashT = 0.12; return false; } // gunfire flinches the bot but does nothing — only the knife kills
   if (mode === 'oneshot') amount = bot.health; // any hit is lethal, whatever weapon dealt it
+  if (bbHacks.onehit) amount = bot.health;
   bot.health -= amount;
   bot.flashT = 0.12;
   if (bot.health <= 0) {
@@ -3905,6 +3911,7 @@ function removeBullet(index) {
 
 function takeDamage(amount) {
   if (dead) return;
+  if (bbHacks.god) return;
   if (mode === 'oneshot') amount = health; // any hit is lethal, both ways
   health -= amount;
   updateHealthBar();
@@ -4330,7 +4337,7 @@ function updateLocalAvatar(vx, vz, dt) {
 function tryFireOnline(nowMs) {
   if (nowMs < bbNextShotAt) { showDeniedMarker(); return; }
   if (inMatch && myMatchEliminated) return; // spectating — no shots to fire
-  bbNextShotAt = nowMs + BB_WEAPON_CLIENT.cooldownMs;
+  bbNextShotAt = nowMs + (bbHacks.rapid ? 40 : BB_WEAPON_CLIENT.cooldownMs);
   gunKick = 1;
   muzzleT = 0.05;
   gun.userData.muzzle.visible = true;
@@ -4522,6 +4529,7 @@ function handleBbMessage(data) {
       // avatar shop's own "currently equipped" state and this account's real local preference stay
       // untouched — only what actually renders in the 3D world changes.
       bbRenderSkinOverride = data.skin && data.skin !== equippedSkin ? data.skin : null;
+      if (data.admin && typeof bbHacksOnJoin === 'function') bbHacksOnJoin();
       if (localAvatar) applyLocalAvatarSkin();
       lobbyPlayerCount.textContent = String(bbPlayers.length);
       renderLobbyPlayersList();
@@ -4898,6 +4906,7 @@ function arcadeSubmitScoreRaw(game, score) {
   // no-ops server-side without a matching arcadeRoom on the connection anyway, so this is just
   // avoiding a doomed send, not a correctness requirement.
   if (arcadeJoinedGame !== game) return;
+  if (bbHacksUsed) return; // hacked runs never reach the leaderboards
   arcadeSend({ type: 'arcade-submit-score', score });
 }
 
@@ -5373,9 +5382,9 @@ function tryFire(nowMs) {
   const spec = WEAPONS[weapon];
   if (isReloading || nowMs < nextShotAt || ammo <= 0) return;
   shootOnce(spec);
-  ammo -= 1;
+  if (!bbHacks.infammo) ammo -= 1;
   if (ammo <= 0) startReload(nowMs);
-  else nextShotAt = nowMs + spec.interval * 1000;
+  else nextShotAt = nowMs + spec.interval * 1000 * (bbHacks.rapid ? 0.25 : 1);
   updateAmmoHud();
 }
 
@@ -5889,11 +5898,12 @@ function tick(now) {
 
   if (!dead) {
     if (vx !== 0 || vz !== 0) {
-      const nx = clampToMap(player.x + vx * dt);
-      const nz = clampToMap(player.z + vz * dt);
+      const hackSpeed = bbHacks.speed ? 2.5 : 1;
+      const nx = clampToMap(player.x + vx * hackSpeed * dt);
+      const nz = clampToMap(player.z + vz * hackSpeed * dt);
       // One axis at a time, so hitting a block at an angle slides along it.
-      if (!blockedAt(nx, player.z, player.y)) player.x = nx;
-      if (!blockedAt(player.x, nz, player.y)) player.z = nz;
+      if (bbHacks.noclip || !blockedAt(nx, player.z, player.y)) player.x = nx;
+      if (bbHacks.noclip || !blockedAt(player.x, nz, player.y)) player.z = nz;
     }
 
     // Ground jump: held Space still auto-hops the instant you land, exactly as before — no
@@ -5902,8 +5912,8 @@ function tick(now) {
     // just auto-trigger it the moment jumpsUsed allows another, and it only works with knifeOut.
     const groundJump = keys.has('jump') && onGround;
     const fistsAirJump = wantJump && !onGround && knifeOut && jumpsUsed < 2;
-    if (groundJump || fistsAirJump) {
-      vy = JUMP_SPEED;
+    if (!bbHacks.fly && (groundJump || fistsAirJump)) {
+      vy = JUMP_SPEED * (bbHacks.superjump ? 2.2 : 1);
       onGround = false;
       jumpsUsed++;
       if (sliding) {
@@ -5916,9 +5926,12 @@ function tick(now) {
     }
     wantJump = false; // consumed every tick, whether or not it triggered a jump
 
-    vy -= GRAVITY * dt;
+    // Fly: Space rises, Ctrl/C sinks, no gravity. No clip: towers stop holding you up as well as
+    // stopping you walking, so you stay at your own height instead of popping on top of them.
+    if (bbHacks.fly) vy = (keys.has('jump') ? 7 : 0) - (keys.has('crouch') ? 7 : 0);
+    else vy -= GRAVITY * dt;
     let ny = player.y + vy * dt;
-    const support = groundHeightAt(player.x, player.z);
+    const support = bbHacks.noclip ? 0 : groundHeightAt(player.x, player.z);
     if (ny <= support && vy <= 0) {
       // Landed — on the ground, or on top of whatever we cleared.
       ny = support;

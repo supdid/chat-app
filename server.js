@@ -1421,6 +1421,10 @@ function flairForWs(ws) {
   return { tier: g.tier, nameColor: TIERS[g.tier] && TIERS[g.tier].rainbowName ? 'rainbow' : (TIERS[g.tier] && TIERS[g.tier].nameColor ? 'gold' : null), bubble: null };
 }
 
+app.get('/api/bb/admin', (req, res) => {
+  res.json({ admin: isBbHackAdmin(getAccountFromReq(req)) });
+});
+
 app.get('/api/premium/promo', (req, res) => {
   res.json({ active: promoActive(), endsAt: PROMO.endsAt, tier: PROMO.tier });
 });
@@ -4217,6 +4221,23 @@ const BB_WEAPON = { damage: 20, range: 60, cooldownMs: 150 };
 // freshly-started duel's position isn't updated server-side until the next ~100ms-throttled
 // bb-pos, so without this a shot fired in that window could land using stale position data.
 const BB_RESPAWN_GRACE_MS = Number(process.env.BB_RESPAWN_GRACE_MS ?? 500);
+// Fight for Glory admin hacks panel — only these signed-in Valk usernames (compared lowercase) get
+// it. The client-only hacks (no clip, fly, speed, etc.) can't be server-enforced in a game that
+// already trusts reported positions, but the ones that touch OTHER players (god mode, one-hit
+// kills, rapid fire, infinite range) are applied here, so they only ever work for these accounts.
+const BB_HACK_ADMINS = new Set(['supdid67', 'asher']);
+const BB_SERVER_HACKS = ['god', 'onehit', 'rapid', 'infrange'];
+function isBbHackAdmin(account) {
+  return !!(account && BB_HACK_ADMINS.has(String(account.username).toLowerCase()));
+}
+function bbHasHacks(p) {
+  return !!(p && p.hacks && BB_SERVER_HACKS.some((k) => p.hacks[k]));
+}
+function bbShotDamage(me, target) {
+  if (target.hacks && target.hacks.god) return 0;
+  if (me.hacks && me.hacks.onehit) return target.health;
+  return BB_WEAPON.damage;
+}
 
 // ---- Block Battle NvN match stations ----
 // Four fixed "match pad" stations along the office's open center aisle (see buildOffice() in
@@ -7486,7 +7507,7 @@ wss.on('connection', (ws, req) => {
       // uses — not live-updated if it changes again mid-session.
       const winStreak = db.getBbWinStreak(name);
       const entry = {
-        id, name, level, skin, winStreak, x: 0, y: 0, z: 0, yaw: 0, health: BB_MAX_HEALTH, dueling: false, opponentId: null, duelId: null, lastShotAt: 0, respawnedAt: 0,
+        id, name, level, skin, winStreak, admin: isBbHackAdmin(account), hacks: {}, x: 0, y: 0, z: 0, yaw: 0, health: BB_MAX_HEALTH, dueling: false, opponentId: null, duelId: null, lastShotAt: 0, respawnedAt: 0,
         // x/y/z start at the spawn default, not "position unknown" — and that default happens to
         // sit within BB_PLATE_ENTER_MAX_DIST of the two central stations (st2/st3). Without this
         // flag, bb-plate-enter's own position check (below) could be satisfied by a client that
@@ -7507,7 +7528,7 @@ wss.on('connection', (ws, req) => {
       // assume its own locally-equipped skin is what actually took effect (and, before this, had
       // no way to find out — the same class of gap BB_SKIN_IDS' own earlier fix closed for OTHER
       // players' view, just for the client's own local avatar this time).
-      send(ws, { type: 'bb-init', id, players: [...bb.players.values()].filter((p) => p.id !== id), stations, mapId: bb.currentMapId, skin });
+      send(ws, { type: 'bb-init', id, players: [...bb.players.values()].filter((p) => p.id !== id).map(({ hacks, admin, ...rest }) => rest), stations, mapId: bb.currentMapId, skin, admin: entry.admin });
       broadcastBb(code, { type: 'bb-player-joined', id, name, level, skin, winStreak, x: 0, y: 0, z: 0, yaw: 0 }, ws);
       setRoomActivity(code, name, 'bb');
       return;
@@ -7544,6 +7565,17 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'bb-leave') {
       leaveBb(ws);
+      return;
+    }
+
+    if (msg.type === 'bb-admin-hacks' && ws.bbRoom) {
+      if (isWsMsgRateLimited(ws)) return;
+      const room = rooms.get(ws.bbRoom);
+      const p = room && room.bb && room.bb.players.get(ws);
+      if (!p || !p.admin) return; // silently ignored for everyone who isn't on BB_HACK_ADMINS
+      const src = msg.hacks && typeof msg.hacks === 'object' ? msg.hacks : {};
+      p.hacks = {};
+      for (const k of BB_SERVER_HACKS) p.hacks[k] = !!src[k];
       return;
     }
 
@@ -7707,15 +7739,15 @@ wss.on('connection', (ws, req) => {
         const myMatch = bb.matches.get(me.matchId);
         if (!myMatch || myMatch.phase !== 'active' || me.eliminated) return; // still mid pre-match map vote, or already dead
         const now = Date.now();
-        if (now - me.lastShotAt < BB_WEAPON.cooldownMs) return;
+        if (now - me.lastShotAt < (me.hacks && me.hacks.rapid ? 40 : BB_WEAPON.cooldownMs)) return;
         me.lastShotAt = now;
         const target = bbFindById(bb, String(msg.targetId || ''));
         if (!target || target.ws === ws) return;
         if (target.p.matchId !== me.matchId || target.p.matchSide === me.matchSide || target.p.eliminated) return;
         if (now - target.p.respawnedAt < BB_RESPAWN_GRACE_MS) return;
         const dx = me.x - target.p.x, dy = me.y - target.p.y, dz = me.z - target.p.z;
-        if (Math.sqrt(dx * dx + dy * dy + dz * dz) > BB_WEAPON.range) return;
-        target.p.health = Math.max(0, target.p.health - BB_WEAPON.damage);
+        if (!(me.hacks && me.hacks.infrange) && Math.sqrt(dx * dx + dy * dy + dz * dz) > BB_WEAPON.range) return;
+        target.p.health = Math.max(0, target.p.health - bbShotDamage(me, target.p));
         if (target.p.health > 0) {
           send(target.ws, { type: 'bb-match-hit', health: target.p.health, byId: me.id });
           send(ws, { type: 'bb-match-hit-confirm', targetId: target.p.id, targetHealth: target.p.health });
@@ -7748,7 +7780,7 @@ wss.on('connection', (ws, req) => {
       const duel = bb.duels.get(me.duelId);
       if (!duel || duel.phase !== 'active') return; // still mid pre-duel map vote
       const now = Date.now();
-      if (now - me.lastShotAt < BB_WEAPON.cooldownMs) return;
+      if (now - me.lastShotAt < (me.hacks && me.hacks.rapid ? 40 : BB_WEAPON.cooldownMs)) return;
       // Consumed right after the cooldown check clears, not only on a landed hit — same fix (and
       // full explanation) as bc-punch/sw-strike/fg-shoot; a shot that misses used to cost
       // nothing, leaving the cooldown trivially bypassable by spamming at an out-of-range target.
@@ -7760,8 +7792,8 @@ wss.on('connection', (ws, req) => {
       if (!target.p.dueling || target.p.opponentId !== me.id) return; // opponent already left the duel
       if (now - target.p.respawnedAt < BB_RESPAWN_GRACE_MS) return;
       const dx = me.x - target.p.x, dy = me.y - target.p.y, dz = me.z - target.p.z;
-      if (Math.sqrt(dx * dx + dy * dy + dz * dz) > BB_WEAPON.range) return;
-      target.p.health = Math.max(0, target.p.health - BB_WEAPON.damage);
+      if (!(me.hacks && me.hacks.infrange) && Math.sqrt(dx * dx + dy * dy + dz * dz) > BB_WEAPON.range) return;
+      target.p.health = Math.max(0, target.p.health - bbShotDamage(me, target.p));
       if (target.p.health > 0) {
         send(target.ws, { type: 'bb-hit', health: target.p.health, byId: me.id });
         // The shooter has no other way to learn their opponent's new health — unlike fg-shoot's
@@ -7782,8 +7814,11 @@ wss.on('connection', (ws, req) => {
         const finishedDuelId = me.duelId;
         me.dueling = false; me.opponentId = null; me.duelId = null;
         target.p.dueling = false; target.p.opponentId = null; target.p.duelId = null;
-        db.bumpBbWinStreak(me.name, true);
-        db.bumpBbWinStreak(target.p.name, false);
+        // A win with admin hacks on doesn't touch either player's win streak (leaderboard stays fair).
+        if (!bbHasHacks(me) && !bbHasHacks(target.p)) {
+          db.bumpBbWinStreak(me.name, true);
+          db.bumpBbWinStreak(target.p.name, false);
+        }
         send(ws, { type: 'bb-duel-won', roundsWon: myRounds, roundsLost: oppRounds });
         send(target.ws, { type: 'bb-duel-lost', roundsWon: oppRounds, roundsLost: myRounds });
         bb.duels.delete(finishedDuelId);
