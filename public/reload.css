@@ -52,6 +52,20 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #14161c; col
 
 #range-help { position: absolute; left: 16px; top: 16px; background: rgba(10, 12, 16, 0.7); border-radius: 10px; padding: 10px 12px; font-size: 13px; line-height: 1.55; }
 #range-help span { color: #ffb347; font-weight: bold; }
+#duel-hud { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); text-align: center; }
+#duel-score { background: rgba(10, 12, 16, 0.75); padding: 6px 16px; border-radius: 10px; font-size: 16px; white-space: nowrap; }
+#duel-score b { font-size: 22px; color: #ffb347; }
+#duel-me { color: #8ff0b0; font-weight: 700; }
+#duel-opp { color: #ff8a7a; font-weight: 700; }
+#opp-hp { width: 180px; height: 8px; margin: 6px auto 0; background: rgba(0, 0, 0, 0.55); border-radius: 4px; overflow: hidden; }
+#opp-hp-fill { height: 100%; width: 100%; background: #ff6a5a; transition: width 0.15s; }
+.join-row { display: flex; gap: 8px; margin: 10px 0; }
+.join-row input { flex: 1; min-width: 0; padding: 12px; border-radius: 12px; border: 2px solid #444a56; background: #1c1f26; color: #fff;
+  font: 800 22px system-ui; letter-spacing: 0.3em; text-transform: uppercase; text-align: center; }
+button.small { padding: 0 20px; border: 0; border-radius: 12px; background: #ff7a1a; color: #1a1206; font: 800 18px system-ui; cursor: pointer; }
+#online-status { min-height: 24px; margin: 8px 0; color: #ffd27a; font-size: 16px; }
+#online-status .code { display: block; font-size: 44px; font-weight: 900; letter-spacing: 0.25em; color: #fff; margin: 6px 0; }
+#btn-online-back, #btn-online-cancel { background: #333842; color: #fff; }
 #slowmo-badge { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); background: #ffb347; color: #1a1206; font-weight: 900; padding: 4px 12px; border-radius: 999px; font-size: 13px; }
 
 /* ---- Menus ---- */

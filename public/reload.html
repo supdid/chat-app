@@ -36,6 +36,10 @@
       <span>Right-click</span> aim
     </div>
     <div id="slowmo-badge" class="hidden">SLOW-MO 0.25x</div>
+    <div id="duel-hud" class="hidden">
+      <div id="duel-score"><span id="duel-me">You</span> <b id="duel-sa">0</b> – <b id="duel-sb">0</b> <span id="duel-opp">Opponent</span></div>
+      <div id="opp-hp"><div id="opp-hp-fill"></div></div>
+    </div>
   </div>
 
   <div id="menu" class="overlay">
@@ -43,6 +47,7 @@
       <h1>RELOAD</h1>
       <p class="tag">Every weapon, every reload, by hand.</p>
       <button id="btn-gungame" class="big">🔫 Gun Game <small>Each kill gives you the next weapon. Get a knife kill to win.</small></button>
+      <button id="btn-duel" class="big">⚔️ 1v1 Online <small>Duel a real player. First to 5 rounds wins, and every round uses a new weapon.</small></button>
       <button id="btn-range" class="big">🎯 Shooting Range <small>Try all 9 weapons and watch their reloads in slow-motion.</small></button>
       <div id="best"></div>
       <div class="controls">
@@ -51,6 +56,20 @@
       </div>
       <a class="back" id="back-link" href="/">← Back to chat</a>
       <p id="touch-note" class="hidden">Reload needs a keyboard and mouse.</p>
+    </div>
+  </div>
+
+  <div id="online" class="overlay hidden">
+    <div class="panel">
+      <h2>⚔️ 1v1 Online</h2>
+      <div id="online-actions">
+        <button id="btn-quick" class="big">⚡ Quick Match <small>Play whoever else is looking for a match.</small></button>
+        <button id="btn-create" class="big">🔒 Private Match <small>Get a code to send to a friend.</small></button>
+        <div class="join-row"><input id="join-code" maxlength="5" placeholder="CODE" autocomplete="off" spellcheck="false"><button id="btn-join" class="small">Join</button></div>
+      </div>
+      <div id="online-status"></div>
+      <button id="btn-online-cancel" class="big hidden">✖ Cancel</button>
+      <button id="btn-online-back" class="big">← Back</button>
     </div>
   </div>
 

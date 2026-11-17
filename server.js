@@ -5269,6 +5269,111 @@ function endFgRound(code, winnerSlot) {
   fg.timer = setTimeout(() => startFgRound(code), FG_INTERMISSION_MS);
 }
 
+// ---- Reload: online 1v1 duels ----
+// Separate from the chat-room game plumbing on purpose: a Reload 1v1 isn't tied to any chat room.
+// Players either Quick Match (one shared queue) or meet through a 5-letter private code. The server
+// owns health, rounds and score; clients report hits, and the server caps every claim against the
+// round's weapon (fire rate, max damage per shot, range) before applying it.
+const RL_WEAPONS = {
+  p9: { dmg: 34, head: 2, pellets: 1, intervalMs: 130, range: 40 },
+  k7: { dmg: 21, head: 1.6, pellets: 1, intervalMs: 72, range: 28 },
+  ar: { dmg: 29, head: 1.8, pellets: 1, intervalMs: 98, range: 60 },
+  m8: { dmg: 13, head: 1.4, pellets: 9, intervalMs: 750, range: 16 },
+  six: { dmg: 64, head: 2, pellets: 1, intervalMs: 420, range: 50 },
+  lmg: { dmg: 25, head: 1.6, pellets: 1, intervalMs: 85, range: 55 },
+  lr: { dmg: 105, head: 2.5, pellets: 1, intervalMs: 1050, range: 400 },
+  th: { dmg: 120, head: 1, pellets: 1, intervalMs: 1500, range: 400 },
+  knife: { dmg: 100, head: 1, pellets: 1, intervalMs: 450, range: 4 },
+};
+const RL_ORDER = ['p9', 'k7', 'ar', 'm8', 'six', 'lmg', 'lr', 'th', 'knife'];
+const RL_ROUNDS_TO_WIN = Number(process.env.RL_ROUNDS_TO_WIN ?? 5);
+const RL_ROUND_DELAY_MS = Number(process.env.RL_ROUND_DELAY_MS ?? 3500);
+const RL_ROUND_TIME_MS = Number(process.env.RL_ROUND_TIME_MS ?? 75000);
+const RL_SPAWNS = [{ x: 0, z: -15, yaw: Math.PI }, { x: 0, z: 15, yaw: 0 }];
+let rlQueue = null;                 // the one ws waiting for a Quick Match
+const rlPrivate = new Map();        // code -> waiting ws
+const rlMatches = new Map();        // matchId -> match
+function rlName(msg) {
+  const account = typeof msg.accountToken === 'string' && msg.accountToken ? db.getSessionAccount(msg.accountToken) : null;
+  if (account) return account.username;
+  const n = String(msg.name || '').replace(/[^\w .-]/g, '').slice(0, 20).trim();
+  return n ? `${n} (guest)` : `Guest${Math.floor(1000 + Math.random() * 9000)}`;
+}
+function rlOpp(m, ws) { return m.a === ws ? m.b : m.a; }
+function rlStartMatch(a, b) {
+  const id = crypto.randomUUID();
+  const m = { id, a, b, scoreA: 0, scoreB: 0, round: 0, phase: 'starting', timer: null, roundEndsAt: 0, p: new Map() };
+  for (const ws of [a, b]) {
+    m.p.set(ws, { name: ws.rlName, hp: 100, alive: true, x: 0, y: 0, z: 0, lastShotAt: 0 });
+    ws.rlMatch = id; ws.rlWaiting = null;
+  }
+  rlMatches.set(id, m);
+  send(a, { type: 'rl-match', side: 'a', oppName: b.rlName, roundsToWin: RL_ROUNDS_TO_WIN });
+  send(b, { type: 'rl-match', side: 'b', oppName: a.rlName, roundsToWin: RL_ROUNDS_TO_WIN });
+  rlNextRound(m);
+}
+function rlNextRound(m) {
+  clearTimeout(m.timer);
+  const weapon = RL_ORDER[m.round % RL_ORDER.length];
+  m.round += 1;
+  m.phase = 'countdown';
+  const startsAt = Date.now() + RL_ROUND_DELAY_MS;
+  [m.a, m.b].forEach((ws, i) => {
+    const pl = m.p.get(ws);
+    Object.assign(pl, { hp: 100, alive: true, x: RL_SPAWNS[i].x, y: 0, z: RL_SPAWNS[i].z, lastShotAt: 0 });
+  });
+  m.weapon = weapon;
+  for (const ws of [m.a, m.b]) {
+    const mine = ws === m.a ? 0 : 1;
+    send(ws, { type: 'rl-round', round: m.round, weapon, spawn: RL_SPAWNS[mine], oppSpawn: RL_SPAWNS[1 - mine], startsIn: RL_ROUND_DELAY_MS, scoreA: m.scoreA, scoreB: m.scoreB });
+  }
+  m.timer = setTimeout(() => {
+    m.phase = 'active';
+    m.roundEndsAt = Date.now() + RL_ROUND_TIME_MS;
+    m.timer = setTimeout(() => rlRoundTimeout(m), RL_ROUND_TIME_MS);
+  }, RL_ROUND_DELAY_MS);
+}
+function rlRoundTimeout(m) {
+  if (m.phase !== 'active') return;
+  const ha = m.p.get(m.a).hp, hb = m.p.get(m.b).hp;
+  rlEndRound(m, ha === hb ? null : ha > hb ? 'a' : 'b', 'time');
+}
+function rlEndRound(m, winner, reason) {
+  m.phase = 'between';
+  clearTimeout(m.timer);
+  if (winner === 'a') m.scoreA += 1; else if (winner === 'b') m.scoreB += 1;
+  const over = m.scoreA >= RL_ROUNDS_TO_WIN || m.scoreB >= RL_ROUNDS_TO_WIN;
+  for (const ws of [m.a, m.b]) send(ws, { type: 'rl-round-end', winner, reason, scoreA: m.scoreA, scoreB: m.scoreB });
+  if (over) {
+    m.phase = 'over';
+    for (const ws of [m.a, m.b]) { send(ws, { type: 'rl-match-end', winner, scoreA: m.scoreA, scoreB: m.scoreB }); ws.rlMatch = null; }
+    rlMatches.delete(m.id);
+    return;
+  }
+  m.timer = setTimeout(() => rlNextRound(m), 2500);
+}
+function rlLeave(ws) {
+  if (rlQueue === ws) rlQueue = null;
+  if (ws.rlWaiting && rlPrivate.get(ws.rlWaiting) === ws) rlPrivate.delete(ws.rlWaiting);
+  ws.rlWaiting = null;
+  const m = ws.rlMatch && rlMatches.get(ws.rlMatch);
+  ws.rlMatch = null;
+  if (!m) return;
+  clearTimeout(m.timer);
+  rlMatches.delete(m.id);
+  const other = rlOpp(m, ws);
+  other.rlMatch = null;
+  send(other, { type: 'rl-opp-left', scoreA: m.scoreA, scoreB: m.scoreB });
+}
+function rlMakeCode() {
+  const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  for (let tries = 0; tries < 50; tries++) {
+    let c = ''; for (let i = 0; i < 5; i++) c += A[Math.floor(Math.random() * A.length)];
+    if (!rlPrivate.has(c)) return c;
+  }
+  return null;
+}
+
 function leaveFg(ws) {
   const code = ws.fgRoom;
   if (!code) return;
@@ -7291,6 +7396,79 @@ wss.on('connection', (ws, req) => {
       const code = String(msg.code || '').toUpperCase().trim();
       if (!code) return;
       send(ws, { type: 'sw-leaderboard-result', scores: db.getLeaderboard(code, 'sw', 10) });
+      return;
+    }
+
+    if (msg.type === 'rl-queue' || msg.type === 'rl-private-create' || msg.type === 'rl-private-join') {
+      if (isWsMsgRateLimited(ws)) return;
+      if (ws.rlMatch) return;
+      rlLeave(ws);
+      ws.rlName = rlName(msg);
+      if (msg.type === 'rl-queue') {
+        if (rlQueue && rlQueue !== ws && rlQueue.readyState === 1) { const other = rlQueue; rlQueue = null; rlStartMatch(other, ws); return; }
+        rlQueue = ws;
+        send(ws, { type: 'rl-waiting', mode: 'queue' });
+        return;
+      }
+      if (msg.type === 'rl-private-create') {
+        const code = rlMakeCode();
+        if (!code) return;
+        rlPrivate.set(code, ws); ws.rlWaiting = code;
+        send(ws, { type: 'rl-waiting', mode: 'private', code });
+        return;
+      }
+      const code = String(msg.code || '').toUpperCase().trim();
+      const host = rlPrivate.get(code);
+      if (!host || host === ws || host.readyState !== 1) { send(ws, { type: 'rl-error', message: 'No match with that code — check it and try again.' }); return; }
+      rlPrivate.delete(code); host.rlWaiting = null;
+      rlStartMatch(host, ws);
+      return;
+    }
+
+    if (msg.type === 'rl-cancel' || msg.type === 'rl-leave') {
+      rlLeave(ws);
+      return;
+    }
+
+    if (msg.type === 'rl-pos' && ws.rlMatch) {
+      if (isStrokeRateLimited(ws)) return;
+      const m = rlMatches.get(ws.rlMatch);
+      const me = m && m.p.get(ws);
+      if (!me) return;
+      const c = (n) => Math.max(-BC_MAX_COORD, Math.min(BC_MAX_COORD, +n || 0));
+      me.x = c(msg.x); me.y = c(msg.y); me.z = c(msg.z);
+      send(rlOpp(m, ws), { type: 'rl-opp-pos', x: me.x, y: me.y, z: me.z, yaw: +msg.yaw || 0, pitch: +msg.pitch || 0, crouch: !!msg.crouch, anim: typeof msg.anim === 'string' ? msg.anim.slice(0, 20) : null });
+      return;
+    }
+
+    if (msg.type === 'rl-shot' && ws.rlMatch) {
+      if (isStrokeRateLimited(ws)) return;
+      const m = rlMatches.get(ws.rlMatch);
+      if (!m || m.phase !== 'active') return;
+      const me = m.p.get(ws), oppWs = rlOpp(m, ws), opp = m.p.get(oppWs);
+      if (!me || !opp || !me.alive) return;
+      const w = RL_WEAPONS[m.weapon];
+      const now = Date.now();
+      // 25% slack for network jitter bunching two shots together.
+      if (now - me.lastShotAt < w.intervalMs * 0.75) return;
+      me.lastShotAt = now;
+      // Tracer/sound for the other player, hit or miss.
+      const pt = (v) => (Array.isArray(v) && v.length === 3 ? v.map((n) => Math.max(-500, Math.min(500, +n || 0))) : null);
+      send(oppWs, { type: 'rl-opp-shot', to: pt(msg.to) });
+      if (!msg.hit || !opp.alive) return;
+      const dist = Math.hypot(me.x - opp.x, me.y - opp.y, me.z - opp.z);
+      if (dist > w.range * 2.5 + 3) return;
+      const maxDmg = w.dmg * w.head * w.pellets;
+      const dmg = Math.max(0, Math.min(maxDmg, +msg.dmg || 0));
+      if (!dmg) return;
+      opp.hp = Math.max(0, opp.hp - dmg);
+      const head = !!msg.head;
+      send(ws, { type: 'rl-hit', target: 'opp', hp: opp.hp, dmg, head });
+      send(oppWs, { type: 'rl-hit', target: 'you', hp: opp.hp, dmg, head });
+      if (opp.hp <= 0) {
+        opp.alive = false;
+        rlEndRound(m, ws === m.a ? 'a' : 'b', 'kill');
+      }
       return;
     }
 
@@ -10978,6 +11156,7 @@ wss.on('connection', (ws, req) => {
     if (ws.gwRoom) leaveGw(ws);
     if (ws.swRoom) leaveSw(ws);
     if (ws.fgRoom) leaveFg(ws);
+    if (ws.rlMatch || ws.rlWaiting || rlQueue === ws) rlLeave(ws);
     if (ws.bbRoom) leaveBb(ws);
     if (ws.dgRoom) leaveDg(ws);
     if (ws.wbRoom) leaveWb(ws);

@@ -8963,3 +8963,91 @@ describe('Quick Draw (2026-11-09)', () => {
     a.ws.close(); b.ws.close(); c.ws.close(); host.close();
   });
 });
+
+describe('Reload online 1v1', () => {
+  let rlServer;
+  before(async () => { rlServer = await startTestServer({ RL_ROUND_DELAY_MS: '60', RL_ROUNDS_TO_WIN: '2' }, 3240); });
+  after(async () => { await rlServer.stop(); });
+  // Buffers every message, so a wait can match one that arrived before it was called (rl-match and
+  // rl-round go out back-to-back).
+  const rlConnect = () => new Promise((resolve) => {
+    const ws = new WebSocket(`ws://localhost:${rlServer.port}`);
+    ws.inbox = [];
+    ws.on('message', (d) => ws.inbox.push(JSON.parse(d)));
+    ws.on('open', () => resolve(ws));
+  });
+  const rlWait = (ws, pred, ms = 3000) => new Promise((resolve, reject) => {
+    const t0 = Date.now();
+    (function poll() {
+      const i = ws.inbox.findIndex(pred);
+      if (i >= 0) return resolve(ws.inbox.splice(i, 1)[0]);
+      if (Date.now() - t0 > ms) return reject(new Error('timed out waiting for ' + pred.toString()));
+      setTimeout(poll, 10);
+    })();
+  });
+
+  async function pair() {
+    const a = await rlConnect(), b = await rlConnect();
+    send(a, { type: 'rl-queue', name: 'Ann' });
+    await rlWait(a, (m) => m.type === 'rl-waiting');
+    send(b, { type: 'rl-queue', name: 'Bob' });
+    const ma = await rlWait(a, (m) => m.type === 'rl-match');
+    const mb = await rlWait(b, (m) => m.type === 'rl-match');
+    await rlWait(a, (m) => m.type === 'rl-round');
+    await rlWait(b, (m) => m.type === 'rl-round');
+    await sleep(120); // countdown over
+    return { a, b, ma, mb };
+  }
+
+  test('quick match pairs two players and the server caps hit damage to the weapon', async () => {
+    const { a, b, ma, mb } = await pair();
+    assert.equal(ma.side, 'a'); assert.equal(mb.side, 'b');
+    assert.equal(ma.oppName, 'Bob (guest)');
+    send(a, { type: 'rl-pos', x: 0, y: 0, z: -5 }); send(b, { type: 'rl-pos', x: 0, y: 0, z: 5 });
+    await sleep(40);
+    // Round 1 weapon is the pistol: max single-shot damage is 34 x 2 (headshot) = 68, not 999.
+    send(a, { type: 'rl-shot', hit: true, dmg: 999, head: true, to: [0, 1, 5] });
+    const hit = await rlWait(b, (m) => m.type === 'rl-hit');
+    assert.equal(hit.target, 'you'); assert.equal(hit.dmg, 68); assert.equal(hit.hp, 32);
+    // A second shot inside the pistol's fire-rate window is ignored.
+    send(a, { type: 'rl-shot', hit: true, dmg: 34, to: [0, 1, 5] });
+    await sleep(40);
+    send(a, { type: 'rl-shot', hit: true, dmg: 34, to: [0, 1, 5] });
+    await sleep(150);
+    send(a, { type: 'rl-shot', hit: true, dmg: 34, to: [0, 1, 5] });
+    const end = await rlWait(b, (m) => m.type === 'rl-round-end');
+    assert.equal(end.winner, 'a'); assert.equal(end.scoreA, 1);
+    a.close(); b.close();
+  });
+
+  test('first to the round target wins the match; next round switches weapon', async () => {
+    const { a, b } = await pair();
+    for (let r = 0; r < 2; r++) {
+      if (r === 1) {
+        const round = await rlWait(a, (m) => m.type === 'rl-round' && m.round === 2);
+        assert.equal(round.weapon, 'k7');
+        await sleep(120);
+      }
+      for (let i = 0; i < 6; i++) { send(b, { type: 'rl-shot', hit: true, dmg: 100, head: true, to: [0, 1, -15] }); await sleep(r === 0 ? 150 : 90); }
+      await rlWait(a, (m) => m.type === 'rl-round-end' && m.scoreB === r + 1, 4000);
+    }
+    const fin = await rlWait(a, (m) => m.type === 'rl-match-end');
+    assert.equal(fin.winner, 'b'); assert.equal(fin.scoreB, 2);
+    a.close(); b.close();
+  });
+
+  test('private codes: wrong code errors, right code pairs, leaving tells the opponent', async () => {
+    const host = await rlConnect(), guest = await rlConnect();
+    send(host, { type: 'rl-private-create', name: 'Host' });
+    const w = await rlWait(host, (m) => m.type === 'rl-waiting');
+    assert.match(w.code, /^[A-Z]{5}$/);
+    send(guest, { type: 'rl-private-join', code: 'ZZZZZ' === w.code ? 'YYYYY' : 'ZZZZZ' });
+    await rlWait(guest, (m) => m.type === 'rl-error');
+    send(guest, { type: 'rl-private-join', code: w.code.toLowerCase() });
+    await rlWait(guest, (m) => m.type === 'rl-match');
+    await rlWait(host, (m) => m.type === 'rl-match');
+    guest.close();
+    await rlWait(host, (m) => m.type === 'rl-opp-left');
+    host.close();
+  });
+});
