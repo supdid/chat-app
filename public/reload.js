@@ -90,15 +90,50 @@ const sc = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
 const lerp3 = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
 const Z3 = [0, 0, 0];
 
+// ---------------------------------------------------------------- save data (this browser)
+// Coins, owned/equipped skins, lifetime stats and settings. Single-player progress only, same as
+// the rest of the Valk minigames' local saves.
+const SAVE_KEY = 'valk-reload-save';
+const DEFAULT_SETTINGS = { sens: 1, adsSens: 0.7, fov: 75, volume: 0.8, quality: 'high', chColor: '#ffffff', chStyle: 'cross' };
+const SAVE = (() => {
+  let d = {};
+  try { d = JSON.parse(localStorage.getItem(SAVE_KEY)) || {}; } catch {}
+  return {
+    coins: Math.max(0, d.coins | 0),
+    owned: d.owned && typeof d.owned === 'object' ? d.owned : {},
+    equipped: d.equipped && typeof d.equipped === 'object' ? d.equipped : {},
+    stats: Object.assign({ kills: 0, deaths: 0, headshots: 0, ggWins: 0, duelWins: 0, bestStreak: 0 }, d.stats),
+    settings: Object.assign({}, DEFAULT_SETTINGS, d.settings),
+  };
+})();
+function persist() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(SAVE)); } catch {} }
+
 // ---------------------------------------------------------------- sound (all synthesized)
 let AC = null;
 let noiseBuf = null;
+let master = null;
+let sfxPan = 0, sfxVol = 1; // set briefly by spatial() so a sound plays from a direction
+function outNode(a) {
+  if (sfxPan === 0 && sfxVol === 1) return master;
+  const g = a.createGain(); g.gain.value = sfxVol;
+  if (a.createStereoPanner) { const pn = a.createStereoPanner(); pn.pan.value = sfxPan; g.connect(pn); pn.connect(master); } else g.connect(master);
+  return g;
+}
+// Play sounds as if they came from world point (x, z): panned left/right and quieter with distance.
+function spatial(x, z, fn, gain = 1) {
+  const dx = x - player.x, dz = z - player.z, d = Math.hypot(dx, dz) || 1;
+  const rx = Math.cos(player.yaw), rz = -Math.sin(player.yaw);
+  sfxPan = clamp((dx * rx + dz * rz) / d, -1, 1) * 0.85;
+  sfxVol = clamp(1.15 - d / 45, 0.15, 1) * gain;
+  try { fn(); } finally { sfxPan = 0; sfxVol = 1; }
+}
 function ac() {
   if (!AC) {
     try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch { return null; }
     noiseBuf = AC.createBuffer(1, AC.sampleRate, AC.sampleRate);
     const d = noiseBuf.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    master = AC.createGain(); master.gain.value = SAVE.settings.volume; master.connect(AC.destination);
   }
   if (AC.state === 'suspended') AC.resume();
   return AC;
@@ -110,7 +145,7 @@ function noise(dur, freq, gain, type = 'bandpass', q = 1, delay = 0, endFreq) {
   const f = a.createBiquadFilter(); f.type = type; f.frequency.setValueAtTime(freq, t); f.Q.value = q;
   if (endFreq) f.frequency.exponentialRampToValueAtTime(endFreq, t + dur);
   const g = a.createGain(); g.gain.setValueAtTime(gain, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
-  src.connect(f); f.connect(g); g.connect(a.destination);
+  src.connect(f); f.connect(g); g.connect(outNode(a));
   src.start(t, Math.random() * 0.5); src.stop(t + dur + 0.02);
 }
 function tone(freq, dur, gain, type = 'square', delay = 0, endFreq) {
@@ -119,7 +154,7 @@ function tone(freq, dur, gain, type = 'square', delay = 0, endFreq) {
   const o = a.createOscillator(); o.type = type; o.frequency.setValueAtTime(freq, t);
   if (endFreq) o.frequency.exponentialRampToValueAtTime(endFreq, t + dur);
   const g = a.createGain(); g.gain.setValueAtTime(gain, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
-  o.connect(g); g.connect(a.destination); o.start(t); o.stop(t + dur + 0.02);
+  o.connect(g); g.connect(outNode(a)); o.start(t); o.stop(t + dur + 0.02);
 }
 const click = (f = 3200, g = 0.25, d = 0) => { noise(0.03, f, g, 'highpass', 0.7, d); tone(f / 2.5, 0.02, g * 0.3, 'square', d); };
 const SFX = {
@@ -1781,10 +1816,13 @@ function damageBot(b, dmg, head, by) {
 }
 function killBot(b, by, head) {
   b.alive = false; b.respawnT = 2.5; b.g.visible = false;
+  b.deaths = (b.deaths || 0) + 1;
+  if (by && by !== 'you') by.kills = (by.kills || 0) + 1;
   spark(new THREE.Vector3(b.x, 1.2, b.z), BOT_COLORS[b.i], 14);
   if (by === 'you') {
     SFX.kill();
     feed(`You ${head ? '🎯' : '→'} ${b.name} (${cur.spec.name})`, true);
+    onPlayerKill(head);
     if (mode === 'gungame') playerLevelUp();
   } else if (by && by.name) {
     feed(`${by.name} → ${b.name}`);
@@ -1813,10 +1851,14 @@ function hurtPlayer(dmg, by) {
   if (!player.alive || mode !== 'gungame') return;
   player.hp -= dmg; player.regenT = 4;
   SFX.hurt();
+  if (by) showDamageDir(by.x, by.z);
   hudEls.dmg.style.opacity = 1; setTimeout(() => { hudEls.dmg.style.opacity = 0; }, 160);
   updateHpHud();
   if (player.hp <= 0) {
     player.alive = false; player.respawnT = 3;
+    player.deaths = (player.deaths || 0) + 1;
+    if (by) by.kills = (by.kills || 0) + 1;
+    onPlayerDeath();
     cancelAnim();
     cur.gun.visible = false;
     banner(`Eliminated${by ? ` by ${by.name}` : ''}<small>Respawning…</small>`, 2.6);
@@ -1921,7 +1963,7 @@ function updateBots(dt) {
       const to = t === 'player' ? new THREE.Vector3(player.x + (hitIt ? 0 : rand(-1, 1)), player.y + 1.3 + (hitIt ? 0 : rand(-0.5, 1)), player.z + (hitIt ? 0 : rand(-1, 1)))
         : new THREE.Vector3(t.x + (hitIt ? 0 : rand(-1, 1)), 1.3, t.z);
       tracer(from, to);
-      noise(0.08, 1500, clamp(0.25 - d * 0.004, 0.04, 0.25), 'lowpass');
+      spatial(b.x, b.z, () => { const k = ws.kind; SFX.shot(k === 'knife' ? 'pistol' : k); }, 0.55);
       if (hitIt) {
         const dmg = clamp(ws.dmg * (ws.pellets ? 4 : 1) * 0.45, 8, 30);
         if (t === 'player') hurtPlayer(dmg, b); else damageBot(t, dmg * 1.4, false, b);
@@ -1939,7 +1981,8 @@ document.addEventListener('pointerlockchange', () => {
 });
 document.addEventListener('mousemove', (e) => {
   if (document.pointerLockElement !== canvas) return;
-  const sens = 0.0022 * (aiming && cur && cur.spec.scope ? 0.3 : aiming ? 0.7 : 1);
+  const st = SAVE.settings;
+  const sens = 0.0022 * st.sens * (aiming && cur && cur.spec.scope ? 0.3 * st.adsSens / 0.7 : aiming ? st.adsSens : 1);
   player.yaw -= e.movementX * sens;
   player.pitch = clamp(player.pitch - e.movementY * sens, -1.5, 1.5);
   sway.x = clamp(sway.x - e.movementX * 0.0004, -0.06, 0.06);
@@ -1961,6 +2004,7 @@ document.addEventListener('wheel', (e) => {
 document.addEventListener('keydown', (e) => {
   if (!playing) return;
   keys.add(e.code);
+  if (e.code === 'Tab') { e.preventDefault(); renderScoreboard(); $('scoreboard').classList.remove('hidden'); }
   if (e.code === 'KeyR' && player.alive) startReload();
   if (e.code === 'KeyF' && player.alive) tryInspect();
   if ((e.code === 'ControlLeft' || e.code === 'KeyC') && player.onGround && keys.has('ShiftLeft') && player.slideT <= 0) {
@@ -1971,7 +2015,7 @@ document.addEventListener('keydown', (e) => {
   if (mode === 'range' && e.code === 'KeyT') setSlowmo(!slowmo);
   if (e.code === 'ControlLeft' || e.code === 'Space') e.preventDefault();
 });
-document.addEventListener('keyup', (e) => keys.delete(e.code));
+document.addEventListener('keyup', (e) => { keys.delete(e.code); if (e.code === 'Tab') $('scoreboard').classList.add('hidden'); });
 function setSlowmo(on) {
   slowmo = on; animSpeed = on ? 0.25 : 1;
   $('slowmo-state').textContent = on ? 'on' : 'off';
@@ -2056,20 +2100,22 @@ function onNet(m) {
       opp.flashT = 0.1;
       const d = Math.hypot(opp.x - player.x, opp.z - player.z);
       const kind = duel && weapons[duel.weapon] ? weapons[duel.weapon].spec.kind : 'pistol';
-      if (kind === 'knife') SFX.knife(); else if (kind === 'launcher') { if (m.to) explodeFx(new THREE.Vector3(m.to[0], m.to[1], m.to[2])); } else noise(0.12, 1400, clamp(0.45 - d * 0.008, 0.08, 0.45), 'lowpass');
+      void d;
+      spatial(opp.x, opp.z, () => { if (kind === 'knife') SFX.knife(); else if (kind === 'launcher') { if (m.to) explodeFx(new THREE.Vector3(m.to[0], m.to[1], m.to[2])); } else SFX.shot(kind); });
       break;
     }
     case 'rl-hit':
       if (m.target === 'you') {
         player.hp = m.hp; SFX.hurt();
+        showDamageDir(opp.x, opp.z);
         hudEls.dmg.style.opacity = 1; setTimeout(() => { hudEls.dmg.style.opacity = 0; }, 160);
         updateHpHud();
-        if (m.hp <= 0) { player.alive = false; player.respawnT = 1e9; cancelAnim(); if (cur) cur.gun.visible = false; }
+        if (m.hp <= 0) { player.alive = false; player.respawnT = 1e9; onPlayerDeath(); cancelAnim(); if (cur) cur.gun.visible = false; }
       } else {
         duel && (duel.oppHp = m.hp);
         showHit(m.head); m.head ? SFX.head() : SFX.hit();
         floatText(String(Math.round(m.dmg)), new THREE.Vector3(opp.x, m.head ? 1.9 : 1.3, opp.z), m.head ? '#ff5a4a' : '#fff');
-        if (m.hp <= 0) { opp.alive = false; opp.g.visible = false; spark(new THREE.Vector3(opp.x, 1.2, opp.z), 0xe8e8f0, 16); SFX.kill(); }
+        if (m.hp <= 0) { opp.alive = false; opp.g.visible = false; spark(new THREE.Vector3(opp.x, 1.2, opp.z), 0xe8e8f0, 16); SFX.kill(); onPlayerKill(m.head); }
         updateDuelHud();
       }
       break;
@@ -2077,6 +2123,7 @@ function onNet(m) {
       if (!duel) return;
       duel.active = false; duel.scoreA = m.scoreA; duel.scoreB = m.scoreB;
       const mine = m.winner === duel.side;
+      if (mine) addCoins(30, 'round won');
       banner(m.winner == null ? 'Draw — time ran out' : mine ? '<span style="color:#8ff0b0">Round won</span>' : '<span style="color:#ff8a7a">Round lost</span>',
         2.2);
       updateDuelHud();
@@ -2086,6 +2133,7 @@ function onNet(m) {
       const won = duel && m.winner === duel.side;
       const my = duel ? (duel.side === 'a' ? m.scoreA : m.scoreB) : 0, their = duel ? (duel.side === 'a' ? m.scoreB : m.scoreA) : 0;
       const name = duel ? duel.oppName : 'Opponent';
+      if (won) { SAVE.stats.duelWins++; addCoins(250, '1v1 win'); }
       duel = null;
       setTimeout(() => showEnd(won ? '🏆 You win the 1v1!' : `${name} wins`, `Final score ${my}–${their}.`), 1200);
       break;
@@ -2151,13 +2199,303 @@ const joinCode = () => {
 $('btn-join').onclick = joinCode;
 $('join-code').addEventListener('keydown', (e) => { if (e.key === 'Enter') joinCode(); });
 
+
+// ---------------------------------------------------------------- skins
+// Each weapon can wear any skin; skins are bought per weapon with coins. A skin swaps the gun's
+// body/furniture materials (never the hands, ammo, sights' glass or dark small parts).
+function patternTex(draw, size = 256, repeat = 1) {
+  const c = cnv(size), x = c.getContext('2d'); draw(x, size);
+  return tex(c, { repeat: [repeat, repeat] });
+}
+function camo(base, cols, n = 26, rMin = 14, rMax = 46) {
+  return patternTex((x, S) => {
+    x.fillStyle = base; x.fillRect(0, 0, S, S);
+    for (const c of cols) for (let i = 0; i < n / cols.length; i++) {
+      x.fillStyle = c; x.beginPath();
+      const cx = Math.random() * S, cy = Math.random() * S, r = rand(rMin, rMax);
+      for (let k = 0; k <= 10; k++) { const a = k / 10 * Math.PI * 2, rr = r * rand(0.6, 1.2); x.lineTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr * 0.7); }
+      x.fill();
+    }
+  });
+}
+const SKIN_DEFS = [
+  { id: 'factory', name: 'Factory', price: 0, swatch: '#2c2e32' },
+  { id: 'blued', name: 'Blued Steel', price: 150, swatch: '#1c2a3c', make: () => std({ color: 0x1b2737, metalness: 0.92, roughness: 0.26, roughnessMap: T.metalR }) },
+  { id: 'woodland', name: 'Woodland', price: 250, swatch: 'linear-gradient(135deg,#4d5a32,#5e4630,#1d1f17)',
+    make: () => std({ map: camo('#7d8b48', ['#26330f', '#8c5e2e', '#0d0e09', '#c2c97f'], 48, 9, 30), roughness: 0.75, metalness: 0.1 }) },
+  { id: 'arctic', name: 'Arctic', price: 250, swatch: 'linear-gradient(135deg,#e7ecef,#9aa3ab,#5b646d)',
+    make: () => std({ map: camo('#eef2f4', ['#8f99a3', '#3d454e', '#bcc4cb'], 48, 9, 30), roughness: 0.7, metalness: 0.05 }) },
+  { id: 'tiger', name: 'Desert Tiger', price: 300, swatch: 'repeating-linear-gradient(60deg,#b8955e 0 8px,#5b4024 8px 12px)',
+    make: () => std({ map: patternTex((x, S) => { x.fillStyle = '#b8955e'; x.fillRect(0, 0, S, S); x.strokeStyle = '#5b4024'; for (let i = 0; i < 22; i++) { x.lineWidth = rand(3, 9); x.beginPath(); const y = Math.random() * S; x.moveTo(0, y); for (let k = 1; k <= 6; k++) x.lineTo(k * S / 6, y + rand(-14, 14)); x.stroke(); } }), roughness: 0.7, metalness: 0.1 }) },
+  { id: 'crimson', name: 'Crimson Anodized', price: 400, swatch: 'linear-gradient(135deg,#a3192a,#4a0810)', make: () => std({ color: 0x8c1426, metalness: 0.75, roughness: 0.26, roughnessMap: T.metalR }) },
+  { id: 'carbon', name: 'Carbon Fiber', price: 600, swatch: 'repeating-linear-gradient(45deg,#111 0 4px,#2b2d31 4px 8px)',
+    make: () => new THREE.MeshPhysicalMaterial({ map: patternTex((x, S) => { const k = 16; for (let i = 0; i < S / k; i++) for (let j = 0; j < S / k; j++) { const g = x.createLinearGradient(i * k, j * k, (i + 1) * k, (j + 1) * k); const a = (i + j) % 2 ? ['#0d0d0f', '#34363b'] : ['#34363b', '#0d0d0f']; g.addColorStop(0, a[0]); g.addColorStop(1, a[1]); x.fillStyle = g; x.fillRect(i * k, j * k, k, k); } }, 256, 3), roughness: 0.35, metalness: 0.3, clearcoat: 1, clearcoatRoughness: 0.08 }) },
+  { id: 'damascus', name: 'Damascus', price: 800, swatch: 'repeating-radial-gradient(circle at 30% 40%,#9aa0a8 0 3px,#4c5058 3px 6px)',
+    make: () => std({ map: patternTex((x, S) => { x.fillStyle = '#5a5f66'; x.fillRect(0, 0, S, S); for (let i = 0; i < 70; i++) { x.strokeStyle = i % 2 ? 'rgba(200,205,212,0.7)' : 'rgba(40,42,46,0.7)'; x.lineWidth = rand(1, 3); x.beginPath(); const y0 = i * S / 60 - 20; x.moveTo(0, y0); for (let k = 1; k <= 16; k++) x.lineTo(k * S / 16, y0 + Math.sin(k * 0.9 + i * 0.35) * 12); x.stroke(); } }), metalness: 0.92, roughness: 0.3 }) },
+  { id: 'midnight', name: 'Midnight Hex', price: 1000, swatch: 'linear-gradient(135deg,#0b0c10,#123a44)',
+    make: () => { const hex = patternTex((x, S) => { x.fillStyle = '#000'; x.fillRect(0, 0, S, S); x.strokeStyle = '#3fe0ff'; x.lineWidth = 2; const r = 16; for (let row = -1; row < S / (r * 1.5) + 1; row++) for (let col = -1; col < S / (r * 1.732) + 1; col++) { const cx = col * r * 1.732 + (row % 2 ? r * 0.866 : 0), cy = row * r * 1.5; x.beginPath(); for (let k = 0; k <= 6; k++) { const a = Math.PI / 6 + k * Math.PI / 3; x.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r); } x.stroke(); } }, 256, 2);
+      return std({ color: 0x0d0e12, metalness: 0.6, roughness: 0.35, emissive: 0x2fd8ff, emissiveMap: hex, emissiveIntensity: 0.6 }); } },
+  { id: 'gilded', name: 'Gilded', price: 2500, swatch: 'linear-gradient(135deg,#f6d77a,#b0802a,#7a5418)', make: () => std({ color: 0xd8a640, metalness: 1, roughness: 0.16, roughnessMap: T.metalR }) },
+  { id: 'prism', name: 'Prism', price: 4000, swatch: 'linear-gradient(135deg,#4bd6ff,#b65cff,#ff5ca8,#ffd65c)',
+    make: () => new THREE.MeshPhysicalMaterial({ color: 0x8fa8c8, metalness: 1, roughness: 0.12, iridescence: 1, iridescenceIOR: 2.0, iridescenceThicknessRange: [200, 1100] }) },
+];
+const SKIN_BY_ID = Object.fromEntries(SKIN_DEFS.map((d) => [d.id, d]));
+const _skinMats = new Map();
+function skinMat(id) {
+  const d = SKIN_BY_ID[id];
+  if (!d || !d.make) return null;
+  if (!_skinMats.has(id)) _skinMats.set(id, d.make());
+  return _skinMats.get(id);
+}
+const SKINNABLE = new Set([MAT.metal, MAT.poly, MAT.tan, MAT.olive, MAT.red, MAT.teal, MAT.orange]);
+const NO_SKIN_PARTS = ['lh', 'rh', 'shell', 'ldr', 'clip', 'clipRounds', 'rounds', 'belt', 'rocket'];
+function applySkin(w, id) {
+  const m = skinMat(id);
+  const skip = new Set();
+  for (const n of NO_SKIN_PARTS) if (w.parts[n]) w.parts[n].traverse((o) => skip.add(o));
+  w.gun.traverse((o) => {
+    if (!o.isMesh || skip.has(o)) return;
+    if (o.userData.baseMat === undefined) o.userData.baseMat = o.material;
+    if (!SKINNABLE.has(o.userData.baseMat)) return;
+    o.material = m || o.userData.baseMat;
+  });
+  w.skin = id;
+}
+const ownsSkin = (wid, sid) => sid === 'factory' || (SAVE.owned[wid] || []).includes(sid);
+for (const id of GUN_ORDER) applySkin(weapons[id], ownsSkin(id, SAVE.equipped[id]) ? SAVE.equipped[id] : 'factory');
+
+// ---------------------------------------------------------------- coins, streaks, stats
+let streak = 0, multi = 0, lastKillAt = 0;
+let coinToastT = 0, coinToastSum = 0, announceT = 0;
+function addCoins(n, why) {
+  if (!n) return;
+  SAVE.coins += n; persist();
+  coinToastSum += n; coinToastT = 1.6;
+  $('coin-toast').textContent = `+${coinToastSum} 🪙${why ? ` ${why}` : ''}`;
+  $('coin-toast').style.opacity = 1;
+  updateWallet();
+}
+function announce(text, sub) {
+  const el = $('announce');
+  el.innerHTML = `${text}${sub ? `<small>${sub}</small>` : ''}`;
+  el.classList.add('show'); announceT = 1.8;
+  [660, 880, 1320].forEach((f, i) => tone(f, 0.1, 0.08, 'triangle', i * 0.06));
+}
+// Called for every kill the player scores in Gun Game or a 1v1 (not the range).
+function onPlayerKill(head) {
+  if (mode === 'range') return;
+  const now = performance.now();
+  SAVE.stats.kills++; if (head) SAVE.stats.headshots++;
+  multi = now - lastKillAt < 4000 ? multi + 1 : 1;
+  lastKillAt = now;
+  streak++;
+  if (streak > SAVE.stats.bestStreak) SAVE.stats.bestStreak = streak;
+  let coins = 15 + (head ? 5 : 0), label = head ? 'headshot' : '';
+  if (multi === 2) { announce('DOUBLE KILL'); coins += 20; }
+  else if (multi === 3) { announce('TRIPLE KILL'); coins += 40; }
+  else if (multi >= 4) { announce('MULTI KILL', `${multi} in a row`); coins += 60; }
+  if (streak === 5) { announce('KILLING SPREE', '5 kills without dying'); coins += 50; }
+  else if (streak === 10) { announce('UNSTOPPABLE', '10 kills without dying'); coins += 100; }
+  addCoins(coins, label);
+}
+function onPlayerDeath() {
+  if (mode === 'range') return;
+  SAVE.stats.deaths++; persist();
+  streak = 0; multi = 0;
+}
+function updateWallet() {
+  const st = SAVE.stats;
+  const kd = st.deaths ? (st.kills / st.deaths).toFixed(2) : st.kills.toFixed(2);
+  $('wallet').innerHTML = `<span class="coins">${SAVE.coins.toLocaleString()}</span> &nbsp;·&nbsp; ${st.kills} kills · K/D <b>${kd}</b> · ${st.headshots} headshots · best streak <b>${st.bestStreak}</b> · ${st.ggWins} Gun Game wins · ${st.duelWins} 1v1 wins`;
+  $('armory-coins').textContent = SAVE.coins.toLocaleString();
+}
+
+// ---------------------------------------------------------------- damage direction
+function showDamageDir(x, z) {
+  const dx = x - player.x, dz = z - player.z;
+  const rx = dx * Math.cos(player.yaw) - dz * Math.sin(player.yaw);
+  const fz = -dx * Math.sin(player.yaw) - dz * Math.cos(player.yaw);
+  const ang = Math.atan2(rx, fz) * 180 / Math.PI;
+  const el = document.createElement('div');
+  el.className = 'dmg-arc';
+  el.style.transform = `rotate(${ang}deg)`;
+  $('dmg-dir').appendChild(el);
+  requestAnimationFrame(() => requestAnimationFrame(() => { el.style.opacity = 0; }));
+  setTimeout(() => el.remove(), 1200);
+}
+
+// ---------------------------------------------------------------- scoreboard (hold Tab)
+function renderScoreboard() {
+  const sb = $('scoreboard');
+  if (mode === 'gungame') {
+    const rows = [{ name: 'You', me: true, lvl: player.level, k: player.kills, d: player.deaths || 0 },
+      ...bots.map((b) => ({ name: b.name, lvl: b.level, k: b.kills || 0, d: b.deaths || 0 }))]
+      .sort((a, b) => b.lvl - a.lvl || b.k - a.k);
+    sb.innerHTML = `<h3>GUN GAME</h3><table><tr><th>Player</th><th>Weapon</th><th class="n">Kills</th><th class="n">Deaths</th></tr>${rows.map((r) =>
+      `<tr class="${r.me ? 'me' : ''}"><td>${esc(r.name)}</td><td>${r.lvl + 1}/9 ${esc(weapons[GUN_ORDER[r.lvl]].spec.name)}</td><td class="n">${r.k}</td><td class="n">${r.d}</td></tr>`).join('')}</table>`;
+  } else if (mode === 'duel' && duel) {
+    const my = duel.side === 'a' ? duel.scoreA : duel.scoreB, their = duel.side === 'a' ? duel.scoreB : duel.scoreA;
+    sb.innerHTML = `<h3>1v1 — FIRST TO ${duel.roundsToWin}</h3><table><tr><th>Player</th><th class="n">Rounds</th></tr><tr class="me"><td>You</td><td class="n">${my}</td></tr><tr><td>${esc(duel.oppName)}</td><td class="n">${their}</td></tr></table>`;
+  } else {
+    sb.innerHTML = `<h3>SHOOTING RANGE</h3><p>No scores here — just practice.</p>`;
+  }
+}
+
+// ---------------------------------------------------------------- settings
+function applySettings() {
+  const st = SAVE.settings;
+  if (master) master.gain.value = st.volume;
+  const ch = $('crosshair');
+  ch.style.setProperty('--ch', st.chColor);
+  ch.classList.toggle('crossdot', st.chStyle === 'crossdot');
+  ch.classList.toggle('dot', st.chStyle === 'dot');
+  const q = st.quality;
+  renderer.setPixelRatio(q === 'high' ? Math.min(devicePixelRatio, 2) : q === 'medium' ? Math.min(devicePixelRatio, 1.25) : 1);
+  resize();
+  const wantShadows = q !== 'low';
+  const size = q === 'high' ? 2048 : 1024;
+  if (sun.shadow.mapSize.x !== size) { sun.shadow.mapSize.set(size, size); if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; } }
+  if (renderer.shadowMap.enabled !== wantShadows) {
+    renderer.shadowMap.enabled = wantShadows; sun.castShadow = wantShadows;
+    scene.traverse((o) => { if (o.material) [].concat(o.material).forEach((m) => { m.needsUpdate = true; }); });
+  }
+}
+function openSettings(from) {
+  const st = SAVE.settings;
+  const bind = (id, out, key, fmt) => {
+    const el = $(id); el.value = st[key];
+    const show = () => { if (out) $(out).textContent = fmt(+el.value); };
+    show();
+    el.oninput = () => { st[key] = el.type === 'range' ? +el.value : el.value; show(); applySettings(); persist(); };
+    el.onchange = el.oninput;
+  };
+  bind('s-sens', 'o-sens', 'sens', (v) => `${v.toFixed(2)}x`);
+  bind('s-ads', 'o-ads', 'adsSens', (v) => `${v.toFixed(2)}x`);
+  bind('s-fov', 'o-fov', 'fov', (v) => `${v}°`);
+  bind('s-vol', 'o-vol', 'volume', (v) => `${Math.round(v * 100)}%`);
+  bind('s-quality', null, 'quality');
+  bind('s-chcolor', null, 'chColor');
+  bind('s-chstyle', null, 'chStyle');
+  $('settings').dataset.from = from;
+  $('settings').classList.remove('hidden');
+  $(from).classList.add('hidden');
+}
+$('settings-close').onclick = () => { $('settings').classList.add('hidden'); $($('settings').dataset.from || 'menu').classList.remove('hidden'); };
+$('btn-settings').onclick = () => openSettings('menu');
+$('btn-pause-settings').onclick = () => openSettings('pause');
+
+// ---------------------------------------------------------------- armory (with a live 3D preview)
+let armoryOpen = false, armoryWeapon = 'p9', armorySkin = 'factory', previewAngle = 0.6, previewDrag = null;
+const _bounds = new Map();
+function gunBounds(w) {
+  if (_bounds.has(w.id)) return _bounds.get(w.id);
+  const skip = new Set();
+  for (const n of ['lh', 'rh']) w.parts[n].traverse((o) => skip.add(o));
+  const saved = [holder.position.clone(), holder.rotation.clone()];
+  holder.position.set(0, 0, 0); holder.rotation.set(0, 0, 0);
+  applyPose(w, 0); vmRoot.updateMatrixWorld(true);
+  const box3 = new THREE.Box3(), tmpB = new THREE.Box3();
+  w.gun.traverse((o) => {
+    if (!o.isMesh || skip.has(o) || !o.visible) return;
+    let hidden = false; for (let p = o.parent; p && p !== w.gun; p = p.parent) if (!p.visible) hidden = true;
+    if (hidden) return;
+    if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
+    box3.union(tmpB.copy(o.geometry.boundingBox).applyMatrix4(o.matrixWorld));
+  });
+  holder.position.copy(saved[0]); holder.rotation.copy(saved[1]);
+  const r = { center: box3.getCenter(new THREE.Vector3()), size: box3.getSize(new THREE.Vector3()) };
+  _bounds.set(w.id, r);
+  return r;
+}
+function renderArmory() {
+  $('armory-tabs').innerHTML = GUN_ORDER.map((id) => `<button data-w="${id}" class="${id === armoryWeapon ? 'on' : ''}">${esc(weapons[id].spec.name)}</button>`).join('');
+  const eq = weapons[armoryWeapon].skin;
+  $('armory-skins').innerHTML = SKIN_DEFS.map((d) => {
+    const owned = ownsSkin(armoryWeapon, d.id);
+    const pr = d.id === eq ? '<span class="pr eq">Equipped</span>' : owned ? '<span class="pr own">Owned</span>' : `<span class="pr">🪙 ${d.price.toLocaleString()}</span>`;
+    return `<button class="skin ${d.id === armorySkin ? 'sel' : ''}" data-s="${d.id}"><div class="sw" style="background:${d.swatch}"></div>${esc(d.name)}${pr}</button>`;
+  }).join('');
+  const d = SKIN_BY_ID[armorySkin], owned = ownsSkin(armoryWeapon, armorySkin), btn = $('armory-action');
+  if (armorySkin === eq) { btn.textContent = '✔ Equipped'; btn.disabled = true; }
+  else if (owned) { btn.textContent = 'Equip'; btn.disabled = false; }
+  else { btn.textContent = `Buy for 🪙 ${d.price.toLocaleString()}`; btn.disabled = SAVE.coins < d.price; }
+  $('armory-info').textContent = owned ? `${d.name} on the ${weapons[armoryWeapon].spec.name}.` : SAVE.coins < d.price ? `You need ${(d.price - SAVE.coins).toLocaleString()} more coins.` : `Preview: ${d.name}.`;
+  updateWallet();
+  // live preview wears the selected skin (restored to the equipped one when you leave)
+  applySkin(weapons[armoryWeapon], armorySkin);
+  for (const id of GUN_ORDER) weapons[id].gun.visible = id === armoryWeapon;
+}
+$('armory-tabs').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-w]'); if (!b) return;
+  applySkin(weapons[armoryWeapon], ownsSkin(armoryWeapon, SAVE.equipped[armoryWeapon]) ? SAVE.equipped[armoryWeapon] || 'factory' : 'factory');
+  armoryWeapon = b.dataset.w; armorySkin = weapons[armoryWeapon].skin; renderArmory();
+});
+$('armory-skins').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-s]'); if (!b) return;
+  armorySkin = b.dataset.s; tone(1200, 0.04, 0.05, 'triangle'); renderArmory();
+});
+$('armory-action').onclick = () => {
+  const d = SKIN_BY_ID[armorySkin];
+  if (!ownsSkin(armoryWeapon, armorySkin)) {
+    if (SAVE.coins < d.price) return;
+    SAVE.coins -= d.price;
+    (SAVE.owned[armoryWeapon] = SAVE.owned[armoryWeapon] || []).push(armorySkin);
+    SFX.level();
+  } else click(2600, 0.2);
+  SAVE.equipped[armoryWeapon] = armorySkin;
+  weapons[armoryWeapon].skin = armorySkin;
+  persist(); renderArmory();
+};
+function openArmory() {
+  ac();
+  armoryOpen = true;
+  armoryWeapon = cur ? cur.id : armoryWeapon; armorySkin = weapons[armoryWeapon].skin;
+  for (const id of GUN_ORDER) { const w = weapons[id]; w.parts.lh.visible = false; w.parts.rh.visible = false; }
+  $('menu').classList.add('hidden'); $('armory').classList.remove('hidden');
+  renderArmory();
+}
+function closeArmory() {
+  armoryOpen = false;
+  for (const id of GUN_ORDER) {
+    const w = weapons[id];
+    w.parts.lh.visible = true; w.parts.rh.visible = true; w.gun.visible = false;
+    applySkin(w, ownsSkin(id, SAVE.equipped[id]) ? SAVE.equipped[id] || 'factory' : 'factory');
+  }
+  if (cur) cur.gun.visible = true;
+  vmScene.background = null;
+  $('armory').classList.add('hidden'); $('menu').classList.remove('hidden');
+}
+$('btn-armory').onclick = openArmory;
+$('armory-close').onclick = closeArmory;
+canvas.addEventListener('pointerdown', (e) => { if (armoryOpen) previewDrag = { x: e.clientX, a: previewAngle }; });
+window.addEventListener('pointermove', (e) => { if (armoryOpen && previewDrag) previewAngle = previewDrag.a + (e.clientX - previewDrag.x) * 0.01; });
+window.addEventListener('pointerup', () => { previewDrag = null; });
+const previewBg = new THREE.Color(0x15171c);
+function renderPreview(dt) {
+  const w = weapons[armoryWeapon];
+  if (!previewDrag) previewAngle += dt * 0.35;
+  const b = gunBounds(w);
+  applyPose(w, dt);
+  w.gun.position.set(-b.center.x, -b.center.y, -b.center.z);
+  // Frame the gun in the space to the right of the panel (or above it on narrow screens).
+  const wide = innerWidth > 700;
+  const dist = Math.max(0.35, b.size.length() * (wide ? 1.5 : 1.8));
+  holder.position.set(wide ? dist * 0.2 : 0, wide ? 0 : dist * 0.22, -dist);
+  holder.rotation.set(0.12, previewAngle, 0);
+  vmCam.fov = 40; vmCam.updateProjectionMatrix();
+  vmScene.background = previewBg;
+  renderer.render(vmScene, vmCam);
+}
+
 // ---------------------------------------------------------------- game flow
 const vel = { x: 0, z: 0 };
 function startGame(m) {
   ac();
   mode = m; playing = true;
   for (const id of GUN_ORDER) { weapons[id].ammo = weapons[id].cap; weapons[id].locked = false; }
-  player.hp = 100; player.alive = true; player.level = 0; player.kills = 0; player.vy = 0; player.pitch = 0;
+  player.hp = 100; player.alive = true; player.level = 0; player.kills = 0; player.deaths = 0; player.vy = 0; player.pitch = 0;
+  streak = 0; multi = 0;
+  for (const b of bots) { b.kills = 0; b.deaths = 0; }
   setSlowmo(false);
   for (const b of bots) { b.alive = false; b.g.visible = false; b.level = 0; b.respawnT = rand(0.5, 2.5); }
   for (const t of tracers) scene.remove(t.l); tracers.length = 0;
@@ -2190,6 +2528,7 @@ function endGame(won, bot) {
   playing = false;
   if (document.pointerLockElement) document.exitPointerLock();
   const secs = (performance.now() - gameStart) / 1000;
+  if (won) { SAVE.stats.ggWins++; addCoins(200, 'Gun Game win'); }
   $('end-title').textContent = won ? '🏆 You win!' : `${bot.name} wins`;
   let sub = won ? `All 9 weapons in ${fmtTime(secs)}.` : 'They got the knife kill first. Run it back?';
   if (won) {
@@ -2213,7 +2552,7 @@ function toMenu() {
   if (document.pointerLockElement) document.exitPointerLock();
   $('hud').classList.add('hidden'); $('pause').classList.add('hidden'); $('end').classList.add('hidden'); $('menu').classList.remove('hidden');
   for (const b of bots) { b.alive = false; b.g.visible = false; }
-  showBest();
+  showBest(); updateWallet(); persist();
 }
 $('btn-gungame').onclick = () => startGame('gungame');
 $('btn-range').onclick = () => startGame('range');
@@ -2228,6 +2567,8 @@ $('btn-end-menu').onclick = toMenu;
 })();
 showBest();
 buildFoundry();
+applySettings();
+updateWallet();
 
 // ---------------------------------------------------------------- main loop
 let last = performance.now();
@@ -2298,8 +2639,9 @@ function tick(now) {
   camera.rotation.set(player.pitch + camKickPitch + camAnim.x, player.yaw, camAnim.z);
   const wantAds = aiming && player.alive && !isReloading() && cur && !cur.spec.melee && !(anim && anim.name === 'cycle') ? 1 : 0;
   adsAmt = lerp(adsAmt, wantAds, Math.min(1, dt * 14));
-  const zoom = cur ? cur.spec.zoom : 75;
-  const fov = lerp(75, zoom, adsAmt);
+  const baseFov = SAVE.settings.fov;
+  const zoom = cur ? (cur.spec.scope ? cur.spec.zoom : baseFov * cur.spec.zoom / 75) : baseFov;
+  const fov = lerp(baseFov, zoom, adsAmt);
   if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
   const scoped = cur && cur.spec.scope && adsAmt > 0.85;
   hudEls.scope.classList.toggle('hidden', !scoped);
@@ -2313,7 +2655,7 @@ function tick(now) {
   }
 
   // --- viewmodel
-  if (cur) {
+  if (cur && !armoryOpen) {
     updateAnim(dt);
     applyPose(cur, dt);
     const s = cur.spec;
@@ -2379,11 +2721,15 @@ function tick(now) {
   const ml = Math.max(0, muzzleLightT / 0.05);
   worldFlashLight.intensity = ml * 60; vmFlashLight.intensity = ml * 1.5;
   hitT -= rdt; if (hitT <= 0) hudEls.hit.style.opacity = 0;
+  coinToastT -= rdt; if (coinToastT <= 0 && coinToastSum) { $('coin-toast').style.opacity = 0; coinToastSum = 0; }
+  announceT -= rdt; if (announceT <= 0) $('announce').classList.remove('show');
+  if (!$('scoreboard').classList.contains('hidden') && Math.floor(now / 500) !== Math.floor((now - rdt * 1000) / 500)) renderScoreboard();
   bannerT -= rdt; if (bannerT <= 0) hudEls.banner.style.opacity = 0;
   if (cur) hudEls.hint.classList.toggle('hidden', !(cur.ammo <= Math.ceil(cur.cap * 0.25) && cur.ammo < cur.cap && !isReloading() && !cur.spec.melee));
 
   // --- render: world, then viewmodel on top
   renderer.clear();
+  if (armoryOpen) { renderPreview(rdt); return; }
   if (!playing && !mode) {
     // menu backdrop: slow orbit of the arena
     const a = now / 9000;
@@ -2400,4 +2746,4 @@ function tick(now) {
 requestAnimationFrame(tick);
 
 // Debug/test hooks (harmless for players): lets automated checks drive the game without pointer lock.
-window.__reload = { weapons, equip, startReload, play, get anim() { return anim; }, startGame, setSlowmo, get cur() { return cur; }, tryFire: (t) => { mouseFresh = true; tryFire(t); }, set testRun(v) { testRun = v; }, player, bots, keys, killBot: (i) => damageBot(bots[i], 999, false, 'you'), opp, get duel() { return duel; } };
+window.__reload = { weapons, equip, startReload, play, get anim() { return anim; }, startGame, setSlowmo, get cur() { return cur; }, tryFire: (t) => { mouseFresh = true; tryFire(t); }, set testRun(v) { testRun = v; }, player, bots, keys, killBot: (i) => damageBot(bots[i], 999, false, 'you'), opp, get duel() { return duel; }, SAVE, applySkin, openArmory, closeArmory, onPlayerKill, showDamageDir, renderScoreboard, get armoryOpen() { return armoryOpen; } };

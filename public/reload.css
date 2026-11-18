@@ -69,9 +69,9 @@ button.small { padding: 0 20px; border: 0; border-radius: 12px; background: #ff7
 #slowmo-badge { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); background: #ffb347; color: #1a1206; font-weight: 900; padding: 4px 12px; border-radius: 999px; font-size: 13px; }
 
 /* ---- Menus ---- */
-.overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px;
+.overlay { position: fixed; inset: 0; display: flex; align-items: flex-start; justify-content: center; padding: 16px; overflow-y: auto;
   background: radial-gradient(ellipse at top, rgba(255, 140, 40, 0.18), transparent 60%), rgba(12, 13, 18, 0.82); }
-.panel { width: min(460px, 100%); text-align: center; }
+.panel { width: min(460px, 100%); text-align: center; margin: auto 0; }
 h1 { font-size: clamp(56px, 14vw, 92px); margin: 0; font-weight: 900; letter-spacing: 0.06em; font-style: italic;
   background: linear-gradient(180deg, #ffd27a, #ff7a1a); -webkit-background-clip: text; background-clip: text; color: transparent; }
 h2 { font-size: 36px; margin: 0 0 14px; }
@@ -88,3 +88,64 @@ button.big small { display: block; font-size: 13px; font-weight: 500; opacity: 0
 .back { display: inline-block; margin-top: 16px; color: #999; text-decoration: none; font-size: 14px; }
 .back:hover { color: #fff; }
 #touch-note { color: #ff8a7a; font-size: 14px; }
+
+/* ---- combat feedback ---- */
+#dmg-dir { position: absolute; left: 50%; top: 50%; width: 0; height: 0; }
+.dmg-arc { position: absolute; left: -90px; top: -90px; width: 180px; height: 180px; border-radius: 50%;
+  border-top: 7px solid rgba(255, 40, 30, 0.85); filter: blur(0.5px); transition: opacity 1.1s ease-out; }
+#announce { position: absolute; left: 50%; top: 32%; transform: translateX(-50%); font: 900 italic 34px system-ui; letter-spacing: 0.06em;
+  color: #ffcf5a; text-shadow: 0 3px 12px #000, 0 0 18px rgba(255, 140, 30, 0.6); opacity: 0; transition: opacity 0.25s, transform 0.25s; white-space: nowrap; }
+#announce.show { opacity: 1; transform: translateX(-50%) scale(1.08); }
+#announce small { display: block; text-align: center; font: 700 15px system-ui; color: #fff; }
+#coin-toast { position: absolute; left: 50%; bottom: 70px; transform: translateX(-50%); font: 800 17px system-ui; color: #ffd76a; text-shadow: 0 2px 6px #000; opacity: 0; transition: opacity 0.3s; }
+#crosshair .ch-dot { position: absolute; width: 4px; height: 4px; left: -2px; top: -2px; border-radius: 50%; background: var(--ch, #fff); box-shadow: 0 0 2px #000; display: none; }
+#crosshair i { background: var(--ch, #fff) !important; }
+#crosshair.crossdot .ch-dot, #crosshair.dot .ch-dot { display: block; }
+#crosshair.dot .ch-t, #crosshair.dot .ch-b, #crosshair.dot .ch-l, #crosshair.dot .ch-r { display: none; }
+#scoreboard { position: absolute; left: 50%; top: 18%; transform: translateX(-50%); width: min(520px, calc(100vw - 32px)); background: rgba(10, 12, 16, 0.88);
+  border-radius: 12px; padding: 12px 16px; font-size: 15px; }
+#scoreboard h3 { margin: 0 0 8px; color: #ffb347; letter-spacing: 0.08em; font-size: 14px; }
+#scoreboard table { width: 100%; border-collapse: collapse; }
+#scoreboard th { text-align: left; color: #999; font-weight: 600; font-size: 12px; padding: 4px; }
+#scoreboard td { padding: 5px 4px; border-top: 1px solid #2a2d35; }
+#scoreboard tr.me td { color: #8ff0b0; font-weight: 700; }
+#scoreboard td.n, #scoreboard th.n { text-align: right; }
+
+/* ---- menu additions ---- */
+.menu-row { display: flex; gap: 10px; }
+button.mid { flex: 1; padding: 11px; border: 0; border-radius: 12px; background: #333842; color: #fff; font: 700 16px system-ui; cursor: pointer; }
+button.mid:hover { background: #444a56; }
+#wallet { margin: 10px 0 2px; color: #ddd; font-size: 14px; }
+#wallet b { color: #ffd76a; }
+.coins::before { content: "🪙 "; }
+.coins { color: #ffd76a; font-weight: 800; }
+
+/* ---- armory ---- */
+#armory { position: fixed; inset: 0; pointer-events: none; }
+.armory-panel { pointer-events: auto; position: absolute; left: 0; top: 0; bottom: 0; width: min(420px, 100%); overflow-y: auto;
+  background: linear-gradient(90deg, rgba(12, 13, 18, 0.96), rgba(12, 13, 18, 0.88)); padding: 18px 16px; box-sizing: border-box; }
+.armory-head { display: flex; justify-content: space-between; align-items: center; }
+.armory-head h2 { margin: 0; font-size: 26px; }
+.armory-head .coins { font-size: 20px; }
+#armory-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0; }
+#armory-tabs button { padding: 6px 10px; border-radius: 8px; border: 1px solid #3a3e48; background: #1c1f26; color: #ccc; font: 600 13px system-ui; cursor: pointer; }
+#armory-tabs button.on { background: #ff7a1a; border-color: #ff7a1a; color: #1a1206; }
+#armory-skins { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; }
+.skin { border: 2px solid #2a2e37; border-radius: 10px; padding: 8px; background: #181b21; cursor: pointer; text-align: left; color: #fff; font: 600 13px system-ui; }
+.skin.sel { border-color: #ff9a40; }
+.skin .sw { height: 38px; border-radius: 6px; margin-bottom: 6px; }
+.skin .pr { display: block; font-size: 12px; color: #ffd76a; margin-top: 2px; }
+.skin .pr.own { color: #8ff0b0; }
+.skin .pr.eq { color: #4fe3ff; }
+#armory-info { margin: 12px 0 0; font-size: 14px; color: #ccc; min-height: 20px; }
+.armory-actions { display: flex; gap: 8px; }
+.armory-actions .big { margin: 10px 0 0; text-align: center; }
+button.big.ghost { background: #333842; color: #fff; }
+button.big:disabled { opacity: 0.45; cursor: default; }
+.hint { color: #888; font-size: 12px; }
+
+/* ---- settings ---- */
+.settings-panel label { display: block; text-align: left; margin: 10px 0; font-size: 14px; color: #ddd; }
+.settings-panel output { float: right; color: #ffb347; font-weight: 700; }
+.settings-panel input[type=range] { display: block; width: 100%; margin-top: 6px; accent-color: #ff7a1a; }
+.settings-panel select { display: block; width: 100%; margin-top: 6px; padding: 8px; border-radius: 8px; background: #1c1f26; color: #fff; border: 1px solid #3a3e48; font: 14px system-ui; }

@@ -15,8 +15,12 @@
   <canvas id="game"></canvas>
 
   <div id="hud" class="hidden">
-    <div id="crosshair"><i class="ch-t"></i><i class="ch-b"></i><i class="ch-l"></i><i class="ch-r"></i></div>
+    <div id="crosshair"><i class="ch-t"></i><i class="ch-b"></i><i class="ch-l"></i><i class="ch-r"></i><b class="ch-dot"></b></div>
     <div id="hitmarker"></div>
+    <div id="dmg-dir"></div>
+    <div id="announce"></div>
+    <div id="coin-toast"></div>
+    <div id="scoreboard" class="hidden"></div>
     <div id="scope" class="hidden"></div>
     <div id="damage-flash"></div>
     <div id="killfeed"></div>
@@ -49,6 +53,11 @@
       <button id="btn-gungame" class="big">🔫 Gun Game <small>Each kill gives you the next weapon. Get a knife kill to win.</small></button>
       <button id="btn-duel" class="big">⚔️ 1v1 Online <small>Duel a real player. First to 5 rounds wins, and every round uses a new weapon.</small></button>
       <button id="btn-range" class="big">🎯 Shooting Range <small>Try all 9 weapons and watch their reloads in slow-motion.</small></button>
+      <div class="menu-row">
+        <button id="btn-armory" class="mid">🛠️ Armory</button>
+        <button id="btn-settings" class="mid">⚙️ Settings</button>
+      </div>
+      <div id="wallet"></div>
       <div id="best"></div>
       <div class="controls">
         <b>WASD</b> move · <b>Shift</b> sprint · <b>Space</b> jump · <b>Ctrl</b> slide<br>
@@ -73,10 +82,36 @@
     </div>
   </div>
 
+  <div id="armory" class="hidden">
+    <div class="armory-panel">
+      <div class="armory-head"><h2>🛠️ Armory</h2><span class="coins" id="armory-coins">0</span></div>
+      <div id="armory-tabs"></div>
+      <div id="armory-skins"></div>
+      <div id="armory-info"></div>
+      <div class="armory-actions"><button id="armory-action" class="big">Equip</button><button id="armory-close" class="big ghost">← Back</button></div>
+      <p class="hint">Drag the gun to spin it. Earn coins from kills, headshots, streaks and wins.</p>
+    </div>
+  </div>
+
+  <div id="settings" class="overlay hidden">
+    <div class="panel settings-panel">
+      <h2>⚙️ Settings</h2>
+      <label>Mouse sensitivity <output id="o-sens"></output><input type="range" id="s-sens" min="0.2" max="3" step="0.05"></label>
+      <label>Aim sensitivity <output id="o-ads"></output><input type="range" id="s-ads" min="0.3" max="1.2" step="0.05"></label>
+      <label>Field of view <output id="o-fov"></output><input type="range" id="s-fov" min="65" max="100" step="1"></label>
+      <label>Volume <output id="o-vol"></output><input type="range" id="s-vol" min="0" max="1" step="0.05"></label>
+      <label>Graphics <select id="s-quality"><option value="high">High (shadows, sharp)</option><option value="medium">Medium</option><option value="low">Low (fastest)</option></select></label>
+      <label>Crosshair colour <select id="s-chcolor"><option value="#ffffff">White</option><option value="#5bff7a">Green</option><option value="#4fe3ff">Cyan</option><option value="#ffe14f">Yellow</option><option value="#ff4f6a">Red</option><option value="#ff7bf2">Pink</option></select></label>
+      <label>Crosshair style <select id="s-chstyle"><option value="cross">Cross</option><option value="crossdot">Cross + dot</option><option value="dot">Dot only</option></select></label>
+      <button id="settings-close" class="big">✔ Done</button>
+    </div>
+  </div>
+
   <div id="pause" class="overlay hidden">
     <div class="panel">
       <h2>Paused</h2>
       <button id="btn-resume" class="big">▶ Resume</button>
+      <button id="btn-pause-settings" class="big">⚙️ Settings</button>
       <button id="btn-quit" class="big">🏠 Main menu</button>
     </div>
   </div>
