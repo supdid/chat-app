@@ -159,8 +159,9 @@ function tone(freq, dur, gain, type = 'square', delay = 0, endFreq) {
 const click = (f = 3200, g = 0.25, d = 0) => { noise(0.03, f, g, 'highpass', 0.7, d); tone(f / 2.5, 0.02, g * 0.3, 'square', d); };
 const SFX = {
   shot(k) {
+    if (k === 'crossbow') { noise(0.09, 900, 0.3, 'bandpass', 1.2, 0, 300); tone(140, 0.18, 0.12, 'triangle', 0, 70); noise(0.25, 2400, 0.06, 'bandpass', 4, 0.02); return; }
     const p = { pistol: [1800, 0.5, 0.18], smg: [2200, 0.4, 0.12], rifle: [1500, 0.55, 0.2], lmg: [1200, 0.6, 0.22],
-      shotgun: [900, 0.8, 0.35], revolver: [1100, 0.75, 0.35], sniper: [800, 0.9, 0.5], launcher: [400, 0.6, 0.5] }[k] || [1500, 0.5, 0.2];
+      shotgun: [900, 0.8, 0.35], revolver: [1100, 0.75, 0.35], sniper: [800, 0.9, 0.5], launcher: [400, 0.6, 0.5], break: [750, 0.95, 0.42], minigun: [2100, 0.32, 0.09] }[k] || [1500, 0.5, 0.2];
     noise(p[2], p[0], p[1], 'lowpass', 0.8);
     tone(90, p[2] * 0.8, p[1] * 0.4, 'sine', 0, 40);
   },
@@ -328,6 +329,7 @@ const MAT = {
   gloveDark: std({ color: 0x18191b, metalness: 0, roughness: 0.6 }),
   sleeve: std({ map: T.fabric, normalMap: T.fabricN, roughness: 0.95, metalness: 0 }),
   cuff: std({ color: 0x3b3d35, roughness: 0.9, metalness: 0 }),
+  walnut: std({ map: T.wood, normalMap: T.woodN, color: 0x8a5634, roughness: 0.55, metalness: 0.05 }),
   glass: std({ color: 0x0c1418, roughness: 0.05, metalness: 0.6, emissive: 0x1a0000 }),
   dot: new THREE.MeshBasicMaterial({ color: 0xff2a1a }),
   flash: new THREE.MeshBasicMaterial({ color: 0xffd27a, transparent: true, opacity: 0.95, depthWrite: false, blending: THREE.AdditiveBlending }),
@@ -1001,6 +1003,231 @@ weapon({ id: 'knife', name: 'Fang', kind: 'knife', cap: 0, interval: 0.5, auto: 
   });
 });
 
+// ---------------------------------------------------------------- new guns (batch 2)
+// 10. Twinbore — side-by-side break-action shotgun. Top lever, barrels drop, spent shells kick out,
+// two fresh shells thumbed into the breech, flick the gun up to snap it shut.
+weapon({ id: 'db', name: 'Twinbore', kind: 'break', cap: 2, interval: 0.26, auto: false, dmg: 15, pellets: 10, head: 1.4, spread: 0.075, adsSpread: 0.055,
+  range: 14, chamber: false, kick: 0.09, kickR: 0.22, camKick: 0.04, zoom: 64, hip: [0.12, -0.14, -0.47], ads: [0, -0.1, -0.32] }, (w) => {
+  const g = w.gun;
+  box(0.05, 0.06, 0.12, MAT.steel, 0, 0.04, -0.03, g);                   // receiver
+  box(0.044, 0.06, 0.26, MAT.walnut, 0, 0.01, 0.17, g, 0.18);              // stock
+  box(0.032, 0.09, 0.045, MAT.walnut, 0, -0.02, 0.06, g, -0.35);           // wrist
+  const lever = grp(g, 0, 0.072, 0.0);
+  box(0.012, 0.008, 0.05, MAT.steel, 0, 0, 0.012, lever);
+  const HINGE = [0, 0.03, -0.09];
+  const bar = grp(g, ...HINGE);
+  for (const x of [-0.013, 0.013]) { cyl(0.0125, 0.56, MAT.dark, x, 0.02, -0.28, bar); cyl(0.009, 0.004, MAT.dark, x, 0.02, -0.562, bar); }
+  box(0.01, 0.006, 0.54, MAT.metal, 0, 0.034, -0.28, bar);                 // rib
+  box(0.044, 0.03, 0.18, MAT.walnut, 0, -0.004, -0.13, bar);               // fore-end
+  cyl(0.003, 0.006, MAT.brass, 0, 0.04, -0.54, bar, 'y');                  // bead
+  const loaded = grp(bar, 0, 0, 0);
+  for (const x of [-0.013, 0.013]) cyl(0.0128, 0.004, MAT.brass, x, 0.02, 0.058, loaded);
+  const hs = grp(g, 0, 0, 0);
+  for (const x of [-0.013, 0.013]) { cyl(0.0115, 0.05, MAT.red, x, 0, -0.025, hs); cyl(0.012, 0.012, MAT.brass, x, 0, 0.004, hs); }
+  const rh = makeHand(1.05); rh.position.set(0.004, -0.04, 0.07); rh.rotation.set(-0.35, 0, 0); g.add(rh);
+  const lh = makeHand(); lh.position.set(-0.012, -0.03, -0.24); lh.rotation.set(0.1, 0.12, -0.3); g.add(lh);
+  reg(w, 'lever', lever); reg(w, 'bar', bar); reg(w, 'loaded', loaded); reg(w, 'hs', hs, false); reg(w, 'rh', rh); reg(w, 'lh', lh);
+  w.muzzle = grp(g, 0, 0.05, -0.66); w.eject = grp(g, 0, 0.07, -0.06);
+  const H = RP(w, 'lh'), HR = RR(w, 'lh'), B = RP(w, 'bar'), L = RP(w, 'lever');
+  const OPEN = -0.62;
+  // Where the breech is when the barrels hang open, and the axis the shells slide in along.
+  const breech = [0, HINGE[1] + 0.02 * Math.cos(OPEN) - 0.06 * Math.sin(OPEN), HINGE[2] + 0.02 * Math.sin(OPEN) + 0.06 * Math.cos(OPEN)];
+  const axis = [0, Math.sin(OPEN), -Math.cos(OPEN)]; // barrel "forward" when open, points down/forward
+  const behind = (k) => add(breech, sc(axis, -k));
+  const handOn = (p) => add(p, [-0.005, -0.045, 0.045]);
+  const hBar = add(H, [0, 0.02 * 0, 0]);
+  // When open, the left hand rides the fore-end down with the barrels.
+  const fore = [H[0], HINGE[1] + (H[1] - HINGE[1]) * Math.cos(OPEN) - (H[2] - HINGE[2]) * Math.sin(OPEN), HINGE[2] + (H[1] - HINGE[1]) * Math.sin(OPEN) + (H[2] - HINGE[2]) * Math.cos(OPEN)];
+  const T = { p: [-0.04, 0.075, 0.03], r: [0.35, 0.3, 0.45] };
+  w.anims.fire = mkDef(0.22, { gun: [[0, Z3, Z3], [0.04, [0, 0.01, 0.03], [0.12, 0, 0.02], 'o'], [0.22, Z3, Z3]] });
+  w.anims.reload = mkDef(1.75, {
+    gun: [[0, Z3, Z3], [0.18, T.p, T.r], [0.3, add(T.p, [0, 0.005, 0]), add(T.r, [-0.05, 0, 0])], [0.42, add(T.p, [0, 0.02, 0.01]), add(T.r, [0.35, 0, 0]), 'o'],
+      [0.62, T.p, T.r], [1.18, T.p, T.r], [1.3, add(T.p, [0, 0.03, 0.01]), add(T.r, [-0.25, 0, 0]), 'o'], [1.38, add(T.p, [0, 0.02, 0]), add(T.r, [-0.15, 0, 0])], [1.75, Z3, Z3]],
+    lever: [[0, L, Z3], [0.16, L, Z3], [0.22, L, [0, -0.6, 0], 'o'], [1.27, L, [0, -0.6, 0]], [1.31, L, Z3, 'o']],
+    bar: [[0, B, Z3], [0.22, B, Z3], [0.32, B, [OPEN, 0, 0], 'i'], [0.36, B, [OPEN + 0.04, 0, 0], 'o'], [0.42, B, [OPEN - 0.06, 0, 0], 'o'], [1.2, B, [OPEN, 0, 0]], [1.29, B, Z3, 'o']],
+    lh: [[0, H, HR], [0.22, hBar, HR], [0.32, fore, HR, 'i'], [0.5, fore, HR], [0.66, OFF, [0.4, 0, 0.6]], [0.82, handOn(behind(0.1)), [0.6, 0.1, -0.2], 'o'],
+      [0.96, handOn(behind(0.045)), [0.6, 0.1, -0.2]], [1.0, handOn(behind(0.0)), [0.6, 0.1, -0.2], 'o'], [1.1, add(fore, [0, -0.01, 0]), HR], [1.2, fore, HR], [1.3, H, HR, 'o']],
+    hs: [[0.66, add(OFF, [0.005, 0.045, -0.045]), [OPEN, 0, 0]], [0.82, behind(0.1), [OPEN, 0, 0], 'o'], [0.96, behind(0.045), [OPEN, 0, 0]], [1.0, behind(0.0), [OPEN, 0, 0], 'o']],
+  }, [
+    [0.21, () => click(2600, 0.25)],
+    [0.33, () => SFX.cylOpen()],
+    [0.4, (w2) => { w2.parts.loaded.visible = false; casing(w2, 'shell', 2); }],
+    [0.66, (w2) => { w2.parts.hs.visible = true; }],
+    [1.0, (w2) => { w2.parts.hs.visible = false; w2.parts.loaded.visible = true; w2.ammo = w2.cap; SFX.shell(); updateAmmoHud(); }],
+    [1.29, () => { SFX.cylShut(); click(2200, 0.3, 0.02); }],
+  ]);
+  w.anims.inspect = mkDef(2.2, {
+    gun: [[0, Z3, Z3], [0.35, [-0.05, 0.06, 0.03], [0.2, 0.8, 0.4]], [1.0, [-0.05, 0.07, 0.03], [0.25, 0.9, 0.45]], [1.4, [-0.03, 0.05, 0.02], [0.3, -0.45, -0.4]], [1.8, [-0.03, 0.05, 0.02], [0.3, -0.5, -0.4]], [2.2, Z3, Z3]],
+    lever: [[0, L, Z3], [0.5, L, Z3], [0.6, L, [0, -0.6, 0], 'o'], [0.95, L, [0, -0.6, 0]], [1.0, L, Z3, 'o']],
+    bar: [[0, B, Z3], [0.6, B, Z3], [0.72, B, [-0.3, 0, 0], 'o'], [0.9, B, [-0.3, 0, 0]], [0.98, B, Z3, 'o']],
+  }, [[0.6, () => click(2600, 0.2)], [0.98, () => SFX.cylShut()]]);
+});
+
+// 11. Quarrel — crossbow. Silent, hits hard, one bolt at a time: hand hauls the string back onto the
+// latch (limbs bend), then lays a fresh bolt on the rail and slides it home. Bolts stick in walls.
+weapon({ id: 'xb', name: 'Quarrel', kind: 'crossbow', cap: 1, interval: 0.4, auto: false, dmg: 110, head: 2, spread: 0.012, adsSpread: 0.0,
+  range: 80, chamber: false, lockEmpty: true, kick: 0.03, kickR: 0.08, camKick: 0.01, zoom: 42, hip: [0.12, -0.13, -0.5], ads: [0, -0.112, -0.36] }, (w) => {
+  const g = w.gun;
+  box(0.036, 0.04, 0.5, MAT.walnut, 0, 0.03, -0.12, g);                     // stock / tiller
+  box(0.012, 0.008, 0.42, MAT.steel, 0, 0.052, -0.18, g);                   // rail
+  box(0.032, 0.1, 0.045, MAT.poly, 0, -0.025, 0.04, g, -0.3);               // grip
+  box(0.04, 0.06, 0.12, MAT.walnut, 0, 0.02, 0.18, g, 0.15);                // butt
+  box(0.03, 0.03, 0.05, MAT.metal, 0, 0.06, 0.0, g);                        // latch housing
+  box(0.02, 0.03, 0.02, MAT.dark, 0, 0.09, -0.02, g);                       // sight post
+  box(0.016, 0.02, 0.016, MAT.dark, 0, 0.075, -0.33, g);
+  box(0.06, 0.04, 0.04, MAT.metal, 0, 0.04, -0.37, g);                      // riser
+  const limbs = [];
+  for (const sgn of [-1, 1]) {
+    const lb = grp(g, sgn * 0.03, 0.045, -0.37);
+    box(0.26, 0.022, 0.04, MAT.metal, sgn * 0.13, 0, 0, lb);
+    box(0.2, 0.024, 0.012, MAT.olive, sgn * 0.11, 0, 0.018, lb);
+    cyl(0.012, 0.03, MAT.dark, sgn * 0.255, 0, 0, lb, 'y');
+    limbs.push(lb);
+  }
+  const str = grp(g, 0, 0.055, 0.0);
+  const strL = box(0.004, 0.004, 0.1, MAT.tan, 0, 0, 0, str), strR = box(0.004, 0.004, 0.1, MAT.tan, 0, 0, 0, str);
+  const bolt = grp(g, 0, 0.062, -0.17);
+  cyl(0.004, 0.34, MAT.steel, 0, 0, 0, bolt);
+  cyl(0.007, 0.03, MAT.dark, 0, 0, -0.18, bolt, 'z', 4, 0.0005);
+  for (let i = 0; i < 3; i++) box(0.001, 0.016, 0.05, MAT.red, 0, 0, 0.14, bolt, 0, 0, (i * Math.PI * 2) / 3);
+  const rh = makeHand(1.05); rh.position.set(0.004, -0.045, 0.065); rh.rotation.set(-0.3, 0, 0); g.add(rh);
+  const lh = makeHand(); lh.position.set(-0.01, -0.005, -0.25); lh.rotation.set(0.1, 0.15, -0.35); g.add(lh);
+  reg(w, 'limbL', limbs[0]); reg(w, 'limbR', limbs[1]); reg(w, 'str', str); reg(w, 'bolt', bolt); reg(w, 'rh', rh); reg(w, 'lh', lh);
+  // Rest = cocked: limbs bent back, string on the latch. Locked (fired) = limbs relaxed, string forward.
+  limbs[0].rotation.y = -0.32; limbs[1].rotation.y = 0.32;
+  w.parts.limbL.userData.rr = [0, -0.32, 0]; w.parts.limbR.userData.rr = [0, 0.32, 0];
+  w.lock = { limbL: { r: [0, 0.32, 0] }, limbR: { r: [0, -0.32, 0] }, str: { p: [0, 0, -0.35] } };
+  // The two string halves are re-aimed every frame from the limb tips to the centre nock.
+  const tipW = new THREE.Vector3(), nock = new THREE.Vector3(), mid = new THREE.Vector3();
+  w.post = (w2) => {
+    g.updateMatrixWorld(true);
+    const nl = w2.parts.str.position;
+    [strL, strR].forEach((s, i) => {
+      const lb = limbs[i], sgn = i ? 1 : -1;
+      tipW.set(sgn * 0.255, 0, 0).applyEuler(lb.rotation).add(lb.position);
+      nock.set(nl.x, nl.y, nl.z);
+      mid.addVectors(tipW, nock).multiplyScalar(0.5);
+      const len = tipW.distanceTo(nock);
+      s.position.copy(mid).sub(nl);
+      s.scale.set(1, 1, len / 0.1);
+      s.rotation.set(0, Math.atan2(nock.x - tipW.x, nock.z - tipW.z), 0);
+    });
+    if (w2.ammo === 0 && !(anim && anim.w === w2 && anim.name === 'reload' && anim.t > 1.12)) w2.parts.bolt.visible = false;
+  };
+  w.refresh = (w2) => { w2.parts.bolt.visible = w2.ammo > 0; };
+  const H = RP(w, 'lh'), HR = RR(w, 'lh'), S = RP(w, 'str'), SF = LP(w, 'str'), Bo = RP(w, 'bolt');
+  const LLr = RR(w, 'limbL'), LRr = RR(w, 'limbR'), LLx = LR(w, 'limbL'), LRx = LR(w, 'limbR');
+  const PL = RP(w, 'limbL'), PR = RP(w, 'limbR');
+  const T = { p: [-0.05, 0.03, -0.07], r: [-0.4, 0.35, 0.3] };
+  const grabS = (p) => add(p, [-0.005, 0.015, 0.035]);
+  w.anims.fire = mkDef(0.25, {
+    str: [[0, S, Z3], [0.03, SF, Z3, 'o']], limbL: [[0, PL, LLr], [0.03, PL, LLx, 'o']], limbR: [[0, PR, LRr], [0.03, PR, LRx, 'o']],
+    gun: [[0, Z3, Z3], [0.05, [0, 0.008, 0.02], [0.06, 0, 0.03], 'o'], [0.25, Z3, Z3]],
+  }, [[0, (w2) => { w2.locked = true; w2.parts.bolt.visible = false; }]]);
+  w.anims.reload = mkDef(1.9, {
+    gun: [[0, Z3, Z3], [0.25, T.p, T.r], [0.7, add(T.p, [0, -0.01, 0.02]), add(T.r, [-0.08, 0, 0])], [0.76, add(T.p, [0, 0.008, 0]), add(T.r, [0.05, 0, 0]), 'o'],
+      [1.45, T.p, T.r], [1.55, add(T.p, [0, 0.005, 0]), add(T.r, [0.04, 0, 0]), 'o'], [1.9, Z3, Z3]],
+    lh: [[0, H, HR], [0.28, grabS(SF), [0.3, 0, -1.4]], [0.36, grabS(SF), [0.3, 0, -1.4]], [0.72, grabS(S), [0.3, 0, -1.4]], [0.86, add(S, [-0.06, 0.04, 0.02]), [0.3, 0, -0.8], 'o'],
+      [1.02, OFF, [0.4, 0, 0.6]], [1.2, add(Bo, [-0.005, 0.03, -0.1]), [0.3, 0, -1.2], 'o'], [1.36, add(Bo, [-0.005, 0.03, 0.02]), [0.3, 0, -1.2]], [1.44, add(Bo, [-0.005, 0.03, 0.05]), [0.3, 0, -1.2], 'o'], [1.7, H, HR]],
+    str: [[0, SF, Z3], [0.36, SF, Z3], [0.72, S, Z3, 'i']],
+    limbL: [[0, PL, LLx], [0.36, PL, LLx], [0.72, PL, LLr, 'i']], limbR: [[0, PR, LRx], [0.36, PR, LRx], [0.72, PR, LRr, 'i']],
+    bolt: [[1.02, add(OFF, [0.005, -0.03, 0.06]), [0.2, 0, 0]], [1.2, add(Bo, [0, 0.0, -0.12]), Z3, 'o'], [1.36, add(Bo, [0, 0, 0.0]), Z3], [1.44, add(Bo, [0, 0, 0.03]), Z3, 'o'], [1.5, Bo, Z3]],
+  }, [
+    [0.38, () => noise(0.32, 400, 0.12, 'bandpass', 3, 0, 900)],
+    [0.72, (w2) => { w2.locked = false; click(2800, 0.35); click(1800, 0.2, 0.02); }],
+    [1.12, (w2) => { w2.parts.bolt.visible = true; }],
+    [1.4, (w2) => { w2.ammo = 1; noise(0.08, 2200, 0.1, 'bandpass', 2); updateAmmoHud(); }],
+  ]);
+});
+
+// 12. Triad — 3-round-burst rifle. Mag pulled and stowed, fresh mag, slap; empty adds a side-handle slap.
+weapon({ id: 'br', name: 'Triad', kind: 'rifle', cap: 24, interval: 0.36, burst: 3, burstGap: 0.062, auto: false, dmg: 30, head: 1.9, spread: 0.014, adsSpread: 0.002,
+  range: 60, chamber: true, kick: 0.014, kickR: 0.028, camKick: 0.0055, zoom: 48, hip: [0.12, -0.135, -0.47], ads: [0, -0.127, -0.3] }, (w) => {
+  const g = w.gun;
+  box(0.05, 0.075, 0.36, MAT.olive, 0, 0.055, -0.12, g);
+  box(0.03, 0.012, 0.32, MAT.dark, 0, 0.098, -0.14, g);
+  box(0.054, 0.05, 0.2, MAT.poly, 0, 0.045, -0.4, g);
+  for (let i = 0; i < 4; i++) box(0.056, 0.012, 0.012, MAT.dark, 0, 0.07, -0.33 - i * 0.045, g);
+  cyl(0.011, 0.18, MAT.dark, 0, 0.06, -0.58, g);
+  box(0.03, 0.03, 0.06, MAT.metal, 0, 0.06, -0.69, g);                     // brake
+  box(0.042, 0.065, 0.17, MAT.olive, 0, 0.03, 0.13, g, 0.1);
+  box(0.03, 0.1, 0.044, MAT.poly, 0, -0.02, 0.03, g, -0.22);
+  // holo sight
+  box(0.036, 0.012, 0.07, MAT.dark, 0, 0.11, -0.07, g);
+  box(0.036, 0.04, 0.006, MAT.dark, 0, 0.13, -0.1, g); box(0.036, 0.04, 0.006, MAT.dark, 0, 0.13, -0.04, g);
+  box(0.004, 0.04, 0.066, MAT.dark, -0.017, 0.13, -0.07, g); box(0.004, 0.04, 0.066, MAT.dark, 0.017, 0.13, -0.07, g);
+  box(0.028, 0.03, 0.002, MAT.glass, 0, 0.13, -0.1, g);
+  const chg = grp(g, -0.028, 0.075, -0.24);
+  box(0.016, 0.014, 0.026, MAT.orange, -0.006, 0, 0, chg);
+  const mag = grp(g, 0, -0.035, -0.12, 0.12);
+  box(0.026, 0.14, 0.055, MAT.poly, 0, 0, 0, mag);
+  box(0.032, 0.012, 0.06, MAT.orange, 0, -0.075, 0, mag);
+  round(mag, 0, 0.068, 0.01, 0.03, 0.005);
+  const rh = makeHand(1.05); rh.position.set(0.004, -0.035, 0.055); rh.rotation.set(-0.22, 0, 0); g.add(rh);
+  const lh = makeHand(); lh.position.set(-0.01, 0.012, -0.4); lh.rotation.set(0.1, 0.18, -0.4); g.add(lh);
+  reg(w, 'mag', mag); reg(w, 'chg', chg); reg(w, 'rh', rh); reg(w, 'lh', lh);
+  w.lock = { chg: { p: [0, 0.012, 0.07], r: [0, 0, -0.9] } };
+  w.muzzle = grp(g, 0, 0.06, -0.73); w.eject = grp(g, 0.03, 0.07, -0.08);
+  const d = [0, -Math.cos(0.12), -Math.sin(0.12)];
+  magReload(w, { d, grip: 0.09, handRot: [0.2, 0, -0.15], pull: true, retain: true, charge: 'slap', speed: 0.95,
+    tilt: { p: [-0.05, 0.075, 0.03], r: [0.25, 0.35, 0.55] } });
+});
+
+// 13. Buzzsaw — six-barrel rotary gun. Hold fire to spin it up (it won't shoot until it's at speed).
+// Reload: unclip the ammo can, swing a new one on, feed the belt into the delinker, crank the barrels.
+weapon({ id: 'mg', name: 'Buzzsaw', kind: 'minigun', cap: 150, interval: 0.042, auto: true, spinUp: 0.6, dmg: 15, head: 1.5, spread: 0.034, adsSpread: 0.022,
+  range: 45, chamber: false, kick: 0.006, kickR: 0.012, camKick: 0.0028, zoom: 66, hip: [0.13, -0.17, -0.5], ads: [0.05, -0.15, -0.42] }, (w) => {
+  const g = w.gun;
+  box(0.08, 0.09, 0.22, MAT.metal, 0, 0.03, -0.04, g);                      // motor housing
+  cyl(0.04, 0.05, MAT.dark, 0, 0.03, -0.17, g);                             // clutch
+  const bar = grp(g, 0, 0.03, -0.2);
+  for (let i = 0; i < 6; i++) { const a = (i / 6) * Math.PI * 2; cyl(0.0085, 0.42, MAT.dark, Math.cos(a) * 0.024, Math.sin(a) * 0.024, -0.21, bar, 'z', 10); }
+  cyl(0.036, 0.016, MAT.metal, 0, 0, -0.12, bar); cyl(0.036, 0.016, MAT.metal, 0, 0, -0.38, bar);
+  box(0.03, 0.03, 0.12, MAT.orange, 0, 0.09, -0.02, g);                     // carry handle
+  box(0.012, 0.05, 0.012, MAT.dark, 0, 0.07, -0.07, g); box(0.012, 0.05, 0.012, MAT.dark, 0, 0.07, 0.03, g);
+  box(0.03, 0.11, 0.045, MAT.poly, 0, -0.04, 0.06, g, -0.15);               // rear grip
+  box(0.028, 0.09, 0.04, MAT.poly, -0.01, -0.03, -0.2, g, 0.1);             // front grip
+  const box1 = grp(g, 0.075, -0.03, -0.03);
+  box(0.06, 0.1, 0.13, MAT.olive, 0, 0, 0, box1);
+  box(0.062, 0.012, 0.132, MAT.dark, 0, 0.044, 0, box1);
+  box(0.03, 0.02, 0.03, MAT.dark, 0, 0.01, 0.068, box1);
+  const belt = grp(g, 0.05, 0.03, -0.03);
+  for (let i = 0; i < 5; i++) round(belt, 0, 0.014 - i * 0.008, -0.03 + i * 0.012, 0.04, 0.005);
+  const chg = grp(g, -0.045, 0.03, 0.02);
+  cyl(0.006, 0.03, MAT.dark, 0, 0, 0, chg, 'x', 8);
+  box(0.01, 0.03, 0.01, MAT.orange, -0.015, -0.015, 0, chg);
+  const rh = makeHand(1.05); rh.position.set(0.004, -0.06, 0.08); rh.rotation.set(-0.15, 0, 0); g.add(rh);
+  const lh = makeHand(); lh.position.set(-0.015, -0.03, -0.2); lh.rotation.set(-0.2, 0.2, -0.6); g.add(lh);
+  reg(w, 'bar', bar); reg(w, 'box', box1); reg(w, 'belt', belt); reg(w, 'chg', chg); reg(w, 'rh', rh); reg(w, 'lh', lh);
+  w.muzzle = grp(g, 0, 0.03, -0.62); w.eject = grp(g, 0.05, 0.0, 0.02);
+  w.spin = 0; w.barAngle = 0;
+  w.post = (w2, dt) => { w2.barAngle += dt * w2.spin * 40; w2.parts.bar.rotation.z = w2.barAngle; };
+  const H = RP(w, 'lh'), HR = RR(w, 'lh'), Bx = RP(w, 'box'), Be = RP(w, 'belt'), C = RP(w, 'chg');
+  const T = { p: [-0.07, 0.05, 0.02], r: [0.1, 0.55, 0.55] };
+  const below = add(Bx, [0.0, -0.06, 0.02]);
+  const handBox = (p) => add(p, [-0.02, -0.06, 0.0]);
+  w.anims.reload = mkDef(2.35, {
+    gun: [[0, Z3, Z3], [0.3, T.p, T.r], [0.62, add(T.p, [0, -0.008, 0]), add(T.r, [-0.05, 0, 0])], [1.2, T.p, T.r], [1.26, add(T.p, [0, 0.01, 0]), add(T.r, [0.06, 0, 0]), 'o'],
+      [1.62, add(T.p, [0, 0.005, 0]), T.r], [1.8, [-0.02, 0.02, 0], [0.05, -0.2, -0.15]], [2.1, [-0.02, 0.02, 0], [0.05, -0.25, -0.15]], [2.35, Z3, Z3]],
+    lh: [[0, H, HR], [0.32, handBox(Bx), [0, 0, 0.6]], [0.46, handBox(Bx), [0, 0, 0.6]], [0.62, handBox(below), [0, 0, 0.6], 'o'],
+      [0.78, OFF, [0.4, 0, 0.6]], [0.92, OFF, [0.4, 0, 0.6]], [1.12, handBox(below), [0, 0, 0.6], 'o'], [1.24, handBox(Bx), [0, 0, 0.6], 'o'],
+      [1.36, add(Be, [-0.01, 0.05, -0.02]), [0.6, 0, 0.2]], [1.5, add(Be, [-0.01, 0.03, 0.0]), [0.6, 0, 0.2]], [1.6, add(Be, [-0.02, 0.06, 0.0]), [0.6, 0, 0.2]],
+      [1.86, add(C, [-0.04, -0.02, 0]), [0, 0, -0.5]], [1.94, add(C, [-0.04, -0.05, 0.02]), [0.3, 0, -0.5]], [2.02, add(C, [-0.04, -0.02, 0.04]), [0.6, 0, -0.5]], [2.25, H, HR]],
+    box: [[0, Bx, Z3], [0.46, Bx, Z3], [0.62, below, [0.2, 0, 0], 'o'], [0.92, add(OFF, [0.02, 0.06, 0]), Z3], [1.12, below, [0.2, 0, 0], 'o'], [1.24, Bx, Z3, 'o']],
+    belt: [[0, Be, Z3], [1.36, add(Be, [0, 0.03, -0.02]), [0.4, 0, 0]], [1.5, Be, Z3, 'o']],
+    chg: [[0, C, Z3], [1.86, C, Z3], [1.94, C, [Math.PI, 0, 0]], [2.02, C, [Math.PI * 2, 0, 0]]],
+  }, [
+    [0.4, () => click(2000, 0.3)],
+    [0.62, (w2) => { dropPart(w2, 'box', [0.2, -0.9, 0.2]); w2.parts.belt.visible = false; }],
+    [0.92, (w2) => { w2.parts.box.visible = true; }],
+    [1.24, () => { SFX.magin(); SFX.slap(); }],
+    [1.4, (w2) => { w2.parts.belt.visible = true; }],
+    [1.5, (w2) => { w2.ammo = w2.cap; SFX.lid(); updateAmmoHud(); }],
+    [1.94, (w2) => { w2.barAngle += 1; noise(0.2, 1800, 0.12, 'bandpass', 2); }],
+    [2.02, (w2) => { w2.barAngle += 1; click(3000, 0.2); }],
+  ]);
+});
+
 const FLASH_MAT = new THREE.MeshBasicMaterial({ map: tex((() => {
   const c = cnv(128), x = c.getContext('2d');
   const g = x.createRadialGradient(64, 64, 0, 64, 64, 64);
@@ -1018,6 +1245,10 @@ const FLASH_SIDE_MAT = new THREE.MeshBasicMaterial({ map: tex((() => {
   return c;
 })()), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide });
 const GUN_ORDER = ['p9', 'k7', 'ar', 'm8', 'six', 'lmg', 'lr', 'th', 'knife'];
+// Every gun (Range, Armory) and the long "Arms Race" ladder that uses all of them.
+const ALL_GUNS = ['p9', 'k7', 'br', 'ar', 'm8', 'db', 'six', 'mg', 'lmg', 'xb', 'lr', 'th', 'knife'];
+const ARMS_ORDER = ALL_GUNS;
+let LADDER = GUN_ORDER;
 const weapons = {};
 const holder = new THREE.Group();
 vmRoot.add(holder);
@@ -1310,6 +1541,23 @@ function addDecal(hit) {
   scene.add(m); decals.push(m);
   if (decals.length > 80) scene.remove(decals.shift());
 }
+// Crossbow bolts stay where they land (walls, floors), pointing the way they flew.
+const STUCK_BOLT = (() => {
+  const g = new THREE.Group();
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, 0.5, 6), new THREE.MeshStandardMaterial({ color: 0xb8bcc2, metalness: 0.9, roughness: 0.3 }));
+  shaft.rotation.x = Math.PI / 2; shaft.position.z = -0.2; g.add(shaft);
+  const fl = new THREE.MeshStandardMaterial({ color: 0x9a2a20, roughness: 0.7, side: THREE.DoubleSide });
+  for (let i = 0; i < 3; i++) { const p = new THREE.Group(); p.rotation.z = (i * Math.PI * 2) / 3; const f = new THREE.Mesh(new THREE.PlaneGeometry(0.03, 0.09), fl); f.rotation.set(Math.PI / 2, 0, 0); f.position.set(0, 0.015, -0.4); p.add(f); g.add(p); }
+  return g;
+})();
+function stickBolt(point, dir) {
+  const b = STUCK_BOLT.clone();
+  b.position.copy(point).addScaledVector(dir, 0.06);
+  b.lookAt(point.clone().sub(dir));
+  b.traverse((o) => { o.castShadow = true; });
+  scene.add(b); decals.push(b);
+  if (decals.length > 80) scene.remove(decals.shift());
+}
 
 let ARENA = 'foundry';
 let SPAWNS = [];
@@ -1506,7 +1754,8 @@ const player = { x: 0, y: 0, z: 0, vy: 0, yaw: 0, pitch: 0, hp: 100, alive: true
 const RADIUS = 0.35;
 const keys = new Set();
 let mouseDown = false, mouseFresh = false, aiming = false;
-let mode = null; // 'gungame' | 'range'
+let mode = null; // 'gungame' | 'armsrace' | 'range' | 'duel'
+const ladderMode = () => mode === 'gungame' || mode === 'armsrace';
 let playing = false;
 let cur = null;
 let slowmo = false;
@@ -1577,14 +1826,14 @@ function feed(text, me) {
   setTimeout(() => d.remove(), 5000);
 }
 function renderLadder() {
-  if (mode !== 'gungame') return;
+  if (!ladderMode()) return;
   const leader = bots.reduce((a, b) => (b.level > a.level ? b : a), bots[0]);
-  let html = '<h3>GUN GAME</h3>';
-  GUN_ORDER.forEach((id, i) => {
+  let html = `<h3>${mode === 'armsrace' ? 'ARMS RACE' : 'GUN GAME'}</h3>`;
+  LADDER.forEach((id, i) => {
     const cls = i < player.level ? 'done' : i === player.level ? 'cur' : '';
     html += `<div class="row ${cls}"><span>${i + 1}. ${weapons[id].spec.name}</span><span>${i < player.level ? '✓' : i === player.level ? '◀' : ''}</span></div>`;
   });
-  html += `<div class="lead">Top bot: ${leader.name} — ${leader.level + 1}/9</div>`;
+  html += `<div class="lead">Top bot: ${leader.name} — ${leader.level + 1}/${LADDER.length}</div>`;
   hudEls.ladder.innerHTML = html;
 }
 function floatText(text, pos, color) {
@@ -1627,7 +1876,7 @@ function startReload() {
     play('reloadStart', loop);
     return;
   }
-  if (s.kind === 'sniper' || s.kind === 'launcher' || s.kind === 'revolver' || s.kind === 'lmg') {
+  if (s.kind === 'sniper' || s.kind === 'launcher' || s.kind === 'revolver' || s.kind === 'lmg' || s.kind === 'break' || s.kind === 'crossbow' || s.kind === 'minigun') {
     if (w.ammo >= w.cap) return;
     play('reload');
     return;
@@ -1680,30 +1929,56 @@ function tryFire(now) {
   mouseFresh = false;
   if (s.melee) { w.nextShot = now + s.interval; w.slashAlt = !w.slashAlt; play(w.slashAlt ? 'fire' : 'fire2'); setTimeout(() => meleeHit(), 120); return; }
   if (w.ammo <= 0) { w.nextShot = now + 0.3; SFX.dry(); if (!anim) play('dry', () => startReload()); return; }
-  w.ammo--;
+  // Rotary gun: has to be spun up to speed first (spin is driven every frame in updateSpin).
+  if (s.spinUp && w.spin < 1) return;
   w.nextShot = now + s.interval;
+  if (s.burst) { w.burstLeft = s.burst - 1; w.burstNext = now + s.burstGap; }
+  fireOne(w);
+}
+// One round leaving the barrel: ammo, the shot itself, and the per-shot animation.
+function fireOne(w) {
+  const s = w.spec;
+  w.ammo--;
   shoot(w);
-  if (w.ammo === 0 && w.lock && Object.keys(w.lock).length && s.chamber) w.locked = true;
+  if (w.ammo === 0 && w.lock && Object.keys(w.lock).length && (s.chamber || s.lockEmpty)) w.locked = true;
   const after = () => {
     if (cur !== w) return;
     if (s.kind === 'sniper' && w.ammo > 0) play('cycle');
-    else if (w.ammo === 0) setTimeout(() => { if (cur === w && !anim && w.ammo === 0 && player.alive) startReload(); }, s.kind === 'launcher' ? 250 : 200);
+    else if (w.ammo === 0) setTimeout(() => { if (cur === w && !anim && w.ammo === 0 && player.alive) startReload(); }, s.kind === 'launcher' || s.kind === 'crossbow' ? 250 : 200);
   };
   if (w.ammo === 0 && w.anims.fireLast) play('fireLast', after);
   else if (w.anims.fire) play('fire', after);
   else { cancelAnim(); after(); }
   if (s.kind === 'revolver') w.cylAngle += Math.PI / 3;
   if (s.kind === 'launcher') w.parts.rocket.visible = false;
+  if (w.ammo === 0) w.burstLeft = 0;
   updateAmmoHud();
+}
+// Burst rifles finish their burst on their own; rotary guns spin up/down with the trigger.
+let spinSoundT = 0;
+function updateWeaponTimers(now, dt) {
+  const w = cur; if (!w) return;
+  const s = w.spec;
+  if (w.burstLeft > 0 && now >= w.burstNext) {
+    if (!player.alive || cur !== w || w.ammo <= 0 || isReloading()) w.burstLeft = 0;
+    else { w.burstLeft--; w.burstNext = now + s.burstGap; fireOne(w); }
+  }
+  if (s.spinUp) {
+    const want = (mouseDown || (aiming && keys.has('KeyE'))) && player.alive && !isReloading() && !frozen() && w.ammo > 0;
+    w.spin = clamp(w.spin + (want ? dt / s.spinUp : -dt / (s.spinUp * 1.6)), 0, 1);
+    spinSoundT -= dt;
+    if (w.spin > 0.02 && spinSoundT <= 0) { spinSoundT = 0.09; tone(70 + w.spin * 160, 0.12, 0.035 + w.spin * 0.03, 'sawtooth'); noise(0.1, 600 + w.spin * 1400, 0.03 * w.spin, 'bandpass', 2); }
+  }
 }
 function shoot(w) {
   const s = w.spec;
   SFX.shot(s.kind);
-  muzzleLightT = 0.05;
+  const silent = s.kind === 'crossbow';
+  if (!silent) muzzleLightT = 0.05;
   worldFlashLight.position.copy(muzzleWorld());
   if (w.muzzle) w.muzzle.getWorldPosition(vmFlashLight.position);
-  if (w.flash) { w.flash.visible = true; w.flash.rotation.z = Math.random() * Math.PI; w.flash.scale.setScalar(rand(0.8, 1.3) * (s.kind === 'shotgun' || s.kind === 'sniper' ? 1.6 : 1)); w.flashT = 0.04; }
-  if (s.kind !== 'revolver' && s.kind !== 'shotgun' && s.kind !== 'sniper' && s.kind !== 'launcher') casing(w);
+  if (w.flash && !silent) { w.flash.visible = true; w.flash.rotation.z = Math.random() * Math.PI; w.flash.scale.setScalar(rand(0.8, 1.3) * (s.kind === 'shotgun' || s.kind === 'sniper' || s.kind === 'break' ? 1.6 : 1)); w.flashT = 0.04; }
+  if (s.kind !== 'revolver' && s.kind !== 'shotgun' && s.kind !== 'sniper' && s.kind !== 'launcher' && s.kind !== 'break' && s.kind !== 'crossbow') casing(w);
   recoil.vz += s.kick * 30; recoil.vrx += s.kickR * 30;
   camKickPitch += s.camKick * (1 - adsAmt * 0.4);
   if (s.kind === 'launcher') { fireRocket(); return; }
@@ -1720,7 +1995,8 @@ function shoot(w) {
     const hits = ray.intersectObjects([...solids, ...botHitMeshes(), ...targets.flatMap((t) => t.hit)], false);
     const h = hits[0];
     const end = h ? h.point : camera.position.clone().addScaledVector(dir, 120);
-    if (i < 3) tracer(muzzleWorld(), end);
+    if (silent) { if (h && !h.object.userData.bot && !h.object.userData.target) stickBolt(h.point, dir); }
+    else if (i < 3) tracer(muzzleWorld(), end);
     if (!firstEnd) firstEnd = end;
     if (!h) continue;
     const dist = h.distance;
@@ -1793,7 +2069,7 @@ function explode(p) {
     if (d < s.splash) hitTarget(t, s.dmg * (1 - d / s.splash * 0.6), false, t.pivot.position.clone().setY(1.4));
   }
   const pd = Math.hypot(player.x - p.x, player.y + 1 - p.y, player.z - p.z);
-  if (pd < s.splash && mode === 'gungame') hurtPlayer(35 * (1 - pd / s.splash), null);
+  if (pd < s.splash && ladderMode()) hurtPlayer(35 * (1 - pd / s.splash), null);
   camKickPitch += Math.max(0, 0.05 * (1 - pd / 15));
 }
 function hitTarget(t, dmg, head, point) {
@@ -1823,7 +2099,7 @@ function killBot(b, by, head) {
     SFX.kill();
     feed(`You ${head ? '🎯' : '→'} ${b.name} (${cur.spec.name})`, true);
     onPlayerKill(head);
-    if (mode === 'gungame') playerLevelUp();
+    if (ladderMode()) playerLevelUp();
   } else if (by && by.name) {
     feed(`${by.name} → ${b.name}`);
     botLevelUp(by);
@@ -1831,24 +2107,24 @@ function killBot(b, by, head) {
 }
 function playerLevelUp() {
   player.kills++;
-  if (player.level >= GUN_ORDER.length - 1) { endGame(true); return; }
+  if (player.level >= LADDER.length - 1) { endGame(true); return; }
   player.level++;
-  const next = weapons[GUN_ORDER[player.level]];
+  const next = weapons[LADDER[player.level]];
   next.ammo = next.cap; next.locked = false;
   equip(next.id);
   SFX.level();
-  banner(`${next.spec.name}<small>Weapon ${player.level + 1} of 9${player.level === 8 ? ' — get a knife kill to win!' : ''}</small>`);
+  banner(`${next.spec.name}<small>Weapon ${player.level + 1} of ${LADDER.length}${player.level === LADDER.length - 1 ? ' — get a knife kill to win!' : ''}</small>`);
   renderLadder();
 }
 function botLevelUp(b) {
-  if (mode !== 'gungame') return;
-  if (b.level >= GUN_ORDER.length - 1) { endGame(false, b); return; }
+  if (!ladderMode()) return;
+  if (b.level >= LADDER.length - 1) { endGame(false, b); return; }
   b.level++;
-  if (b.level === 8) banner(`<span style="color:#ff6a5a">${b.name} has the knife!</span><small>Stop them!</small>`, 2);
+  if (b.level === LADDER.length - 1) banner(`<span style="color:#ff6a5a">${b.name} has the knife!</span><small>Stop them!</small>`, 2);
   renderLadder();
 }
 function hurtPlayer(dmg, by) {
-  if (!player.alive || mode !== 'gungame') return;
+  if (!player.alive || !ladderMode()) return;
   player.hp -= dmg; player.regenT = 4;
   SFX.hurt();
   if (by) showDamageDir(by.x, by.z);
@@ -1870,7 +2146,7 @@ function respawnPlayer() {
   player.x = sp[0]; player.z = sp[1]; player.y = 0; player.vy = 0; player.hp = 100; player.alive = true;
   player.yaw = Math.atan2(player.x, player.z);
   updateHpHud();
-  for (const id of GUN_ORDER) { weapons[id].ammo = weapons[id].cap; weapons[id].locked = false; }
+  for (const id of ALL_GUNS) { weapons[id].ammo = weapons[id].cap; weapons[id].locked = false; }
   cur.gun.visible = true; resetVis(cur); play('draw'); updateAmmoHud();
 }
 function farthestSpawn() {
@@ -1899,7 +2175,7 @@ function los(ax, ay, az, bx, by, bz) {
 }
 function updateBots(dt) {
   for (const b of bots) {
-    if (!b.alive) { b.respawnT -= dt; if (b.respawnT <= 0 && mode === 'gungame') spawnBot(b); continue; }
+    if (!b.alive) { b.respawnT -= dt; if (b.respawnT <= 0 && ladderMode()) spawnBot(b); continue; }
     b.retargetT -= dt;
     if (b.retargetT <= 0) {
       b.retargetT = rand(0.6, 1.2);
@@ -1922,7 +2198,7 @@ function updateBots(dt) {
     const wantYaw = Math.atan2(-dx, -dz);
     let dy = wantYaw - b.yaw; while (dy > Math.PI) dy -= Math.PI * 2; while (dy < -Math.PI) dy += Math.PI * 2;
     b.yaw += dy * Math.min(1, dt * 6);
-    const knife = b.level === 8;
+    const knife = b.level === LADDER.length - 1;
     let mx = 0, mz = 0;
     if (knife || !b.sees || d > 16) { mx = dx / d; mz = dz / d; }
     else if (d < 7) { mx = -dx / d * 0.6; mz = -dz / d * 0.6; }
@@ -1950,7 +2226,7 @@ function updateBots(dt) {
       continue;
     }
     if (b.sees && b.fireT <= 0 && d < 45) {
-      const ws = weapons[GUN_ORDER[b.level]].spec;
+      const ws = weapons[LADDER[b.level]].spec;
       b.fireT = clamp(ws.interval * 3, 0.35, 1.4) * rand(0.8, 1.3);
       b.flashT = 0.1;
       const from = new THREE.Vector3(b.x, 1.4, b.z).add(new THREE.Vector3(-Math.sin(b.yaw), 0, -Math.cos(b.yaw)).multiplyScalar(0.8));
@@ -1973,7 +2249,10 @@ function updateBots(dt) {
 }
 
 // ---------------------------------------------------------------- input
-canvas.addEventListener('click', () => { if (playing && !document.pointerLockElement) canvas.requestPointerLock(); });
+// requestPointerLock() returns a promise that rejects when the browser says no (e.g. clicking again
+// right after Esc, or inside an iframe without permission) — swallow it so it isn't an uncaught error.
+function lockMouse() { try { const r = canvas.requestPointerLock && canvas.requestPointerLock(); if (r && r.catch) r.catch(() => {}); } catch (e) {} }
+canvas.addEventListener('click', () => { if (playing && !document.pointerLockElement) lockMouse(); });
 document.addEventListener('pointerlockchange', () => {
   const locked = document.pointerLockElement === canvas;
   if (!locked && playing && $('end').classList.contains('hidden')) { $('pause').classList.remove('hidden'); keys.clear(); mouseDown = false; aiming = false; }
@@ -1989,7 +2268,7 @@ document.addEventListener('mousemove', (e) => {
   sway.y = clamp(sway.y - e.movementY * 0.0004, -0.06, 0.06);
 });
 document.addEventListener('mousedown', (e) => {
-  if (document.pointerLockElement !== canvas) return;
+  if (document.pointerLockElement !== canvas && !testRun) return;
   ac();
   if (e.button === 0) { mouseDown = true; mouseFresh = true; }
   if (e.button === 2) aiming = true;
@@ -1998,8 +2277,8 @@ document.addEventListener('mouseup', (e) => { if (e.button === 0) mouseDown = fa
 document.addEventListener('contextmenu', (e) => e.preventDefault());
 document.addEventListener('wheel', (e) => {
   if (!playing || mode !== 'range' || !player.alive) return;
-  const i = GUN_ORDER.indexOf(cur.id);
-  equip(GUN_ORDER[(i + (e.deltaY > 0 ? 1 : -1) + GUN_ORDER.length) % GUN_ORDER.length]);
+  const i = ALL_GUNS.indexOf(cur.id);
+  equip(ALL_GUNS[(i + (e.deltaY > 0 ? 1 : -1) + ALL_GUNS.length) % ALL_GUNS.length]);
 });
 document.addEventListener('keydown', (e) => {
   if (!playing) return;
@@ -2011,7 +2290,8 @@ document.addEventListener('keydown', (e) => {
     player.slideT = 0.75; player.slideDir = [-Math.sin(player.yaw), -Math.cos(player.yaw)];
     noise(0.4, 600, 0.1, 'lowpass');
   }
-  if (mode === 'range' && /^Digit[1-9]$/.test(e.code)) equip(GUN_ORDER[+e.code.slice(5) - 1]);
+  if (mode === 'range' && /^Digit[0-9]$/.test(e.code)) equip(ALL_GUNS[(+e.code.slice(5) + 9) % 10]);
+  if (mode === 'range' && e.code === 'KeyQ') equip(ALL_GUNS[(ALL_GUNS.indexOf(cur.id) + 1) % ALL_GUNS.length]);
   if (mode === 'range' && e.code === 'KeyT') setSlowmo(!slowmo);
   if (e.code === 'ControlLeft' || e.code === 'Space') e.preventDefault();
 });
@@ -2262,7 +2542,7 @@ function applySkin(w, id) {
   w.skin = id;
 }
 const ownsSkin = (wid, sid) => sid === 'factory' || (SAVE.owned[wid] || []).includes(sid);
-for (const id of GUN_ORDER) applySkin(weapons[id], ownsSkin(id, SAVE.equipped[id]) ? SAVE.equipped[id] : 'factory');
+for (const id of ALL_GUNS) applySkin(weapons[id], ownsSkin(id, SAVE.equipped[id]) ? SAVE.equipped[id] : 'factory');
 
 // ---------------------------------------------------------------- coins, streaks, stats
 let streak = 0, multi = 0, lastKillAt = 0;
@@ -2327,12 +2607,12 @@ function showDamageDir(x, z) {
 // ---------------------------------------------------------------- scoreboard (hold Tab)
 function renderScoreboard() {
   const sb = $('scoreboard');
-  if (mode === 'gungame') {
+  if (ladderMode()) {
     const rows = [{ name: 'You', me: true, lvl: player.level, k: player.kills, d: player.deaths || 0 },
       ...bots.map((b) => ({ name: b.name, lvl: b.level, k: b.kills || 0, d: b.deaths || 0 }))]
       .sort((a, b) => b.lvl - a.lvl || b.k - a.k);
-    sb.innerHTML = `<h3>GUN GAME</h3><table><tr><th>Player</th><th>Weapon</th><th class="n">Kills</th><th class="n">Deaths</th></tr>${rows.map((r) =>
-      `<tr class="${r.me ? 'me' : ''}"><td>${esc(r.name)}</td><td>${r.lvl + 1}/9 ${esc(weapons[GUN_ORDER[r.lvl]].spec.name)}</td><td class="n">${r.k}</td><td class="n">${r.d}</td></tr>`).join('')}</table>`;
+    sb.innerHTML = `<h3>${mode === 'armsrace' ? 'ARMS RACE' : 'GUN GAME'}</h3><table><tr><th>Player</th><th>Weapon</th><th class="n">Kills</th><th class="n">Deaths</th></tr>${rows.map((r) =>
+      `<tr class="${r.me ? 'me' : ''}"><td>${esc(r.name)}</td><td>${r.lvl + 1}/${LADDER.length} ${esc(weapons[LADDER[r.lvl]].spec.name)}</td><td class="n">${r.k}</td><td class="n">${r.d}</td></tr>`).join('')}</table>`;
   } else if (mode === 'duel' && duel) {
     const my = duel.side === 'a' ? duel.scoreA : duel.scoreB, their = duel.side === 'a' ? duel.scoreB : duel.scoreA;
     sb.innerHTML = `<h3>1v1 — FIRST TO ${duel.roundsToWin}</h3><table><tr><th>Player</th><th class="n">Rounds</th></tr><tr class="me"><td>You</td><td class="n">${my}</td></tr><tr><td>${esc(duel.oppName)}</td><td class="n">${their}</td></tr></table>`;
@@ -2408,7 +2688,7 @@ function gunBounds(w) {
   return r;
 }
 function renderArmory() {
-  $('armory-tabs').innerHTML = GUN_ORDER.map((id) => `<button data-w="${id}" class="${id === armoryWeapon ? 'on' : ''}">${esc(weapons[id].spec.name)}</button>`).join('');
+  $('armory-tabs').innerHTML = ALL_GUNS.map((id) => `<button data-w="${id}" class="${id === armoryWeapon ? 'on' : ''}">${esc(weapons[id].spec.name)}</button>`).join('');
   const eq = weapons[armoryWeapon].skin;
   $('armory-skins').innerHTML = SKIN_DEFS.map((d) => {
     const owned = ownsSkin(armoryWeapon, d.id);
@@ -2423,7 +2703,7 @@ function renderArmory() {
   updateWallet();
   // live preview wears the selected skin (restored to the equipped one when you leave)
   applySkin(weapons[armoryWeapon], armorySkin);
-  for (const id of GUN_ORDER) weapons[id].gun.visible = id === armoryWeapon;
+  for (const id of ALL_GUNS) weapons[id].gun.visible = id === armoryWeapon;
 }
 $('armory-tabs').addEventListener('click', (e) => {
   const b = e.target.closest('button[data-w]'); if (!b) return;
@@ -2450,13 +2730,13 @@ function openArmory() {
   ac();
   armoryOpen = true;
   armoryWeapon = cur ? cur.id : armoryWeapon; armorySkin = weapons[armoryWeapon].skin;
-  for (const id of GUN_ORDER) { const w = weapons[id]; w.parts.lh.visible = false; w.parts.rh.visible = false; }
+  for (const id of ALL_GUNS) { const w = weapons[id]; w.parts.lh.visible = false; w.parts.rh.visible = false; }
   $('menu').classList.add('hidden'); $('armory').classList.remove('hidden');
   renderArmory();
 }
 function closeArmory() {
   armoryOpen = false;
-  for (const id of GUN_ORDER) {
+  for (const id of ALL_GUNS) {
     const w = weapons[id];
     w.parts.lh.visible = true; w.parts.rh.visible = true; w.gun.visible = false;
     applySkin(w, ownsSkin(id, SAVE.equipped[id]) ? SAVE.equipped[id] || 'factory' : 'factory');
@@ -2492,14 +2772,15 @@ const vel = { x: 0, z: 0 };
 function startGame(m) {
   ac();
   mode = m; playing = true;
-  for (const id of GUN_ORDER) { weapons[id].ammo = weapons[id].cap; weapons[id].locked = false; }
+  LADDER = m === 'armsrace' ? ARMS_ORDER : GUN_ORDER;
+  for (const id of ALL_GUNS) { weapons[id].ammo = weapons[id].cap; weapons[id].locked = false; }
   player.hp = 100; player.alive = true; player.level = 0; player.kills = 0; player.deaths = 0; player.vy = 0; player.pitch = 0;
   streak = 0; multi = 0;
   for (const b of bots) { b.kills = 0; b.deaths = 0; }
   setSlowmo(false);
   for (const b of bots) { b.alive = false; b.g.visible = false; b.level = 0; b.respawnT = rand(0.5, 2.5); }
   for (const t of tracers) scene.remove(t.l); tracers.length = 0;
-  for (const id of GUN_ORDER) weapons[id].drawn = false;
+  for (const id of ALL_GUNS) weapons[id].drawn = false;
   opp.alive = false; opp.g.visible = false;
   if (m === 'range') {
     buildRange();
@@ -2512,28 +2793,29 @@ function startGame(m) {
   }
   if (cur) cur.gun.visible = false;
   cur = null;
-  if (m !== 'duel') equip(GUN_ORDER[0]);
+  if (m !== 'duel') equip(LADDER[0]);
   $('menu').classList.add('hidden'); $('end').classList.add('hidden'); $('pause').classList.add('hidden');
   $('hud').classList.remove('hidden');
-  $('ladder').classList.toggle('hidden', m !== 'gungame');
+  $('ladder').classList.toggle('hidden', m !== 'gungame' && m !== 'armsrace');
   $('duel-hud').classList.toggle('hidden', m !== 'duel');
   $('online').classList.add('hidden');
   $('range-help').classList.toggle('hidden', m !== 'range');
   updateHpHud(); renderLadder();
   gameStart = performance.now();
-  if (m !== 'duel') banner(m === 'range' ? 'Shooting Range<small>Press T for slow-motion reloads</small>' : 'Gun Game<small>Each kill gives you the next weapon</small>', 2.2);
-  canvas.requestPointerLock && canvas.requestPointerLock();
+  if (m !== 'duel') banner(m === 'range' ? 'Shooting Range<small>Press T for slow-motion reloads</small>' : m === 'armsrace' ? `Arms Race<small>All ${LADDER.length} weapons — each kill gives you the next one</small>` : 'Gun Game<small>Each kill gives you the next weapon</small>', 2.2);
+  lockMouse();
 }
 function endGame(won, bot) {
   playing = false;
   if (document.pointerLockElement) document.exitPointerLock();
   const secs = (performance.now() - gameStart) / 1000;
-  if (won) { SAVE.stats.ggWins++; addCoins(200, 'Gun Game win'); }
+  if (won) { SAVE.stats.ggWins++; addCoins(mode === 'armsrace' ? 350 : 200, mode === 'armsrace' ? 'Arms Race win' : 'Gun Game win'); }
   $('end-title').textContent = won ? '🏆 You win!' : `${bot.name} wins`;
-  let sub = won ? `All 9 weapons in ${fmtTime(secs)}.` : 'They got the knife kill first. Run it back?';
+  let sub = won ? `All ${LADDER.length} weapons in ${fmtTime(secs)}.` : 'They got the knife kill first. Run it back?';
   if (won) {
-    let best = 0; try { best = +localStorage.getItem('valk-reload-best') || 0; } catch {}
-    if (!best || secs < best) { try { localStorage.setItem('valk-reload-best', String(secs)); } catch {} sub += ' New personal best!'; }
+    const bk = mode === 'armsrace' ? 'valk-reload-best-ar' : 'valk-reload-best';
+    let best = 0; try { best = +localStorage.getItem(bk) || 0; } catch {}
+    if (!best || secs < best) { try { localStorage.setItem(bk, String(secs)); } catch {} sub += ' New personal best!'; }
   }
   $('end-sub').textContent = sub;
   $('end').classList.remove('hidden');
@@ -2556,7 +2838,8 @@ function toMenu() {
 }
 $('btn-gungame').onclick = () => startGame('gungame');
 $('btn-range').onclick = () => startGame('range');
-$('btn-resume').onclick = () => canvas.requestPointerLock();
+$('btn-armsrace').onclick = () => startGame('armsrace');
+$('btn-resume').onclick = () => lockMouse();
 $('btn-quit').onclick = toMenu;
 $('btn-again').onclick = () => { if (mode === 'duel') { mode = null; $('hud').classList.add('hidden'); openOnline(); } else startGame(mode || 'gungame'); };
 $('btn-end-menu').onclick = toMenu;
@@ -2589,9 +2872,10 @@ function tick(now) {
       let fx = 0, fz = 0;
       if (keys.has('KeyW')) fz -= 1; if (keys.has('KeyS')) fz += 1; if (keys.has('KeyA')) fx -= 1; if (keys.has('KeyD')) fx += 1;
       if (frozen()) { fx = 0; fz = 0; } // countdown / between rounds: look around, but no moving
-      const sprint = keys.has('ShiftLeft') && fz < 0 && !aiming;
+      const sprint = keys.has('ShiftLeft') && fz < 0 && !aiming && !(cur && cur.burstLeft > 0) && !(cur && cur.spec.spinUp && cur.spin > 0.05);
       const crouch = keys.has('ControlLeft') || keys.has('KeyC');
       let speed = aiming ? 3.2 : sprint ? 8.2 : crouch ? 3 : 5.4;
+      if (cur && cur.spec.spinUp && cur.spin > 0.05) speed = Math.min(speed, 3.4);
       const sy = Math.sin(player.yaw), cy = Math.cos(player.yaw);
       let tx = fx * cy + fz * sy, tz = -fx * sy + fz * cy;
       const tl = Math.hypot(tx, tz); if (tl > 0) { tx /= tl; tz /= tl; }
@@ -2614,7 +2898,8 @@ function tick(now) {
       else if (player.y > gh + 0.05) player.onGround = false;
       if (player.onGround && Math.hypot(vel.x, vel.z) > 1) { const before = Math.floor(bobPhase / Math.PI); bobPhase += dt * Math.hypot(vel.x, vel.z) * 1.6; if (Math.floor(bobPhase / Math.PI) !== before) SFX.step(); }
       // regen
-      if (mode === 'gungame') { player.regenT -= dt; if (player.regenT <= 0 && player.hp < 100) { player.hp = Math.min(100, player.hp + dt * 18); updateHpHud(); } }
+      if (ladderMode()) { player.regenT -= dt; if (player.regenT <= 0 && player.hp < 100) { player.hp = Math.min(100, player.hp + dt * 18); updateHpHud(); } }
+      updateWeaponTimers(now / 1000, dt);
       if (mouseDown) tryFire(now / 1000);
     }
     updateBots(dt);

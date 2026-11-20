@@ -6718,6 +6718,11 @@ function handleReminderCommand(raw) {
     ws.send(JSON.stringify({ type: 'set-reminder', text: r.text, inMs: r.inMs }));
     return true;
   }
+  const bareStyle = raw.match(/^\/(mock|upside|bubble|tiny|wide|clap)$/i);
+  if (bareStyle) {
+    showAppToast(`Add some text: /${bareStyle[1].toLowerCase()} ${styleText(bareStyle[1].toLowerCase(), 'hello there')}`);
+    return true;
+  }
   return false;
 }
 
@@ -6735,7 +6740,33 @@ function resolveSlashCommand(text) {
     const prefix = shrugMatch[1].trim();
     return prefix ? `${prefix} ¯\\_(ツ)_/¯` : '¯\\_(ツ)_/¯';
   }
+  const styleMatch = text.match(/^\/(mock|upside|bubble|tiny|wide|clap)\s+([\s\S]+)$/i);
+  if (styleMatch) return styleText(styleMatch[1].toLowerCase(), styleMatch[2].trim());
   return text;
+}
+
+// Text-style commands: /mock, /upside, /bubble, /tiny, /wide, /clap. Pure text in → text out,
+// so the message is sent (and stored) already styled, like /shrug.
+const UPSIDE_MAP = { a: 'ɐ', b: 'q', c: 'ɔ', d: 'p', e: 'ǝ', f: 'ɟ', g: 'ƃ', h: 'ɥ', i: 'ᴉ', j: 'ɾ', k: 'ʞ', l: 'l', m: 'ɯ', n: 'u', o: 'o', p: 'd', q: 'b', r: 'ɹ', s: 's', t: 'ʇ', u: 'n', v: 'ʌ', w: 'ʍ', x: 'x', y: 'ʎ', z: 'z',
+  A: '∀', B: 'ᗺ', C: 'Ɔ', D: 'ᗡ', E: 'Ǝ', F: 'Ⅎ', G: '⅁', H: 'H', I: 'I', J: 'ſ', K: 'ꓘ', L: '˥', M: 'W', N: 'N', O: 'O', P: 'Ԁ', Q: 'Ό', R: 'ᴚ', S: 'S', T: '⊥', U: '∩', V: 'Λ', W: 'M', X: 'X', Y: '⅄', Z: 'Z',
+  '1': 'Ɩ', '2': 'ᄅ', '3': 'Ɛ', '4': 'ㄣ', '5': 'ϛ', '6': '9', '7': 'ㄥ', '8': '8', '9': '6', '0': '0',
+  '.': '˙', ',': "'", "'": ',', '"': '„', '!': '¡', '?': '¿', '(': ')', ')': '(', '[': ']', ']': '[', '{': '}', '}': '{', '<': '>', '>': '<', '_': '‾', '&': '⅋' };
+const TINY_MAP = { a: 'ᵃ', b: 'ᵇ', c: 'ᶜ', d: 'ᵈ', e: 'ᵉ', f: 'ᶠ', g: 'ᵍ', h: 'ʰ', i: 'ⁱ', j: 'ʲ', k: 'ᵏ', l: 'ˡ', m: 'ᵐ', n: 'ⁿ', o: 'ᵒ', p: 'ᵖ', q: 'ᑫ', r: 'ʳ', s: 'ˢ', t: 'ᵗ', u: 'ᵘ', v: 'ᵛ', w: 'ʷ', x: 'ˣ', y: 'ʸ', z: 'ᶻ',
+  '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹', '+': '⁺', '-': '⁻', '=': '⁼', '(': '⁽', ')': '⁾', '?': 'ˀ', '!': 'ᵎ' };
+function styleText(kind, t) {
+  const chars = Array.from(t);
+  if (kind === 'mock') { let up = false; return chars.map((c) => (/[a-z]/i.test(c) ? ((up = !up) ? c.toLowerCase() : c.toUpperCase()) : c)).join(''); }
+  if (kind === 'upside') return chars.reverse().map((c) => UPSIDE_MAP[c] || c).join('');
+  if (kind === 'tiny') return chars.map((c) => TINY_MAP[c.toLowerCase()] || c).join('');
+  if (kind === 'clap') return t.split(/\s+/).join(' 👏 ');
+  if (kind === 'wide') return chars.map((c) => { const n = c.codePointAt(0); return n >= 0x21 && n <= 0x7e ? String.fromCodePoint(n + 0xfee0) : c === ' ' ? '\u3000' : c; }).join('');
+  if (kind === 'bubble') return chars.map((c) => {
+    if (/[a-z]/.test(c)) return String.fromCodePoint(0x24d0 + c.charCodeAt(0) - 97);
+    if (/[A-Z]/.test(c)) return String.fromCodePoint(0x24b6 + c.charCodeAt(0) - 65);
+    if (/[1-9]/.test(c)) return String.fromCodePoint(0x2460 + c.charCodeAt(0) - 49);
+    return c === '0' ? '⓪' : c;
+  }).join('');
+  return t;
 }
 
 messageForm.addEventListener('submit', (e) => {
@@ -9718,8 +9749,14 @@ function flushOutbox(code) {
 
 
 // --- ✨ What's new (shown once per update to people who've used Valk before) ---
-const WHATS_NEW_VERSION = '2026-11-10';
+const WHATS_NEW_VERSION = '2026-11-19';
 const WHATS_NEW = [
+  ['🔫', 'Reload: 4 new guns', 'Twinbore (break-open shotgun), Quarrel (crossbow), Triad (3-round burst) and Buzzsaw (minigun that spins up), each with its own hand-made reload. /play reload'],
+  ['🧨', 'Reload: Arms Race', 'A longer Gun Game: work through all 13 weapons in a row, pistol to knife.'],
+  ['🔤', 'Text styles', '/mock nO wAy, /upside flip it, /bubble ⓗⓘ, /tiny ᵖˢˢᵗ, /wide ｖｉｂｅｓ, /clap this 👏 is 👏 it'],
+];
+// Older entries, folded under "Earlier updates".
+const WHATS_NEW_EARLIER = [
   ['📺', 'Watch together', '/watch + a YouTube link — everyone who opens it watches in sync (play, pause and skip are shared).'],
   ['🎲', 'Fun stuff button', 'Tap 🎲 next to the message box for polls, checklists, stories, games and more.'],
   ['🌍', 'Public rooms', 'Hosts can list their room and give it a one-line description (Room settings) so anyone can find it on the start screen.'],
@@ -9741,9 +9778,6 @@ const WHATS_NEW = [
   ['🔗', 'Links tab', 'Menu → 🖼️ Media gallery → 🔗 Links lists every link shared in the room.'],
   ['📜', 'Tidier long messages', 'Really long messages fold up with a Show more button.'],
   ['😀', 'Your reactions first', 'The reaction picker now shows the emoji you use most recently first.'],
-];
-// Older entries, folded under "Earlier updates".
-const WHATS_NEW_EARLIER = [
   ['⚡', 'Quick Draw', 'Another new game: wait for green, tap fastest! Menu → ⚡ Play Quick Draw, or /play quick.'],
   ['⌨️', 'Type Race', 'A new game! Everyone types the same sentence — fastest fingers win. Menu → ⌨️ Play Type Race.'],
   ['🛡️', 'Co-hosts', 'Hosts can tap ⭐ next to someone to make them a co-host who helps moderate.'],
@@ -10524,6 +10558,12 @@ const SLASH_COMMANDS = [
   ['/remind', '10m feed the dog', 'Remind yourself'],
   ['/reminders', '', 'List your reminders'],
   ['/shrug', '', '¯\\_(ツ)_/¯'],
+  ['/mock', 'no way', 'nO wAy (mocking text)'],
+  ['/upside', 'hello', 'Flip text upside down'],
+  ['/bubble', 'hi', 'ⓑⓤⓑⓑⓛⓔ letters'],
+  ['/tiny', 'psst', 'ᵗⁱⁿʸ text'],
+  ['/wide', 'vibes', 'ｗｉｄｅ text'],
+  ['/clap', 'this is it', 'this 👏 is 👏 it'],
 ];
 function updateCommandSuggestions() {
   const v = messageInput.value;
